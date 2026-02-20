@@ -45,7 +45,7 @@ pub enum SearchDirEntry {
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    /// Directories to scan for git repositories. Each directory can be scanned to a specified depth.
+    /// Directories to scan for git repositories. Each directory can be scanned to a specified depth, with a default of 1 (i.e. just the top level).
     /// Supports `~` for the home directory. For example:
     /// ```toml
     /// search_dirs = ["~/Development", { path = "~/Work", depth = 2 }]

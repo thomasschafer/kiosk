@@ -2,15 +2,9 @@
 
 Tmux session manager that handles worktrees for you.
 
+![kiosk preview](media/preview.png)
+
 Search for the repo you want, and optionally select a branch: if a session already exists you jump straight in. If one doesn't, a new session is created, with a new worktree if needed.
-
-## What it does
-
-1. Scans your configured directories for git repos
-2. Lets you fuzzy-search for a repo
-3. Press Tab to pick a branch (with fuzzy search)
-4. Opens or creates a tmux session in the right directory
-5. Automatically creates/reuses worktrees for non-default branches
 
 ## Configuration
 
@@ -24,10 +18,10 @@ The following options can be set in your configuration file:
 <!-- CONFIG START -->
 #### `search_dirs`
 
-Directories to scan for git repositories. Each directory is scanned one level deep.
+Directories to scan for git repositories. Each directory can be scanned to a specified depth, with a default of 1 (i.e. just the top level).
 Supports `~` for the home directory. For example:
 ```toml
-search_dirs = ["~/Development", "~/Work"]
+search_dirs = ["~/Development", { path = "~/Work", depth = 2 }]
 ```
 
 ### `[session]` section
@@ -42,6 +36,22 @@ Helix in a vertical split:
 [session]
 split_command = "hx"
 ```
+
+### `[theme]` section
+
+Color theme configuration.
+
+#### `accent`
+
+Primary accent color (default: "magenta").
+
+#### `secondary`
+
+Secondary accent color (default: "cyan").
+
+#### `success`
+
+Success/positive color (default: "green").
 
 <!-- CONFIG END -->
 

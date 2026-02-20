@@ -3,14 +3,14 @@ members = ["kiosk", "kiosk-core", "kiosk-tui", "xtask"]
 resolver = "3"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 
 [workspace.dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
-kiosk-core = { version = "0.1.0", path = "kiosk-core" }
-kiosk-tui = { version = "0.1.0", path = "kiosk-tui" }
+kiosk-core = { version = "0.2.0", path = "kiosk-core" }
+kiosk-tui = { version = "0.2.0", path = "kiosk-tui" }
 serde = { version = "1", features = ["derive"] }
 
 [workspace.lints.clippy]

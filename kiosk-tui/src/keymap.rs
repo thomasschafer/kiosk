@@ -10,7 +10,10 @@ pub fn resolve_action(key: KeyEvent, state: &AppState) -> Option<Action> {
     }
 
     // Ctrl+N for new branch in branch select mode
-    if key.code == KeyCode::Char('n') && key.modifiers.contains(KeyModifiers::CONTROL) && state.mode == Mode::BranchSelect {
+    if key.code == KeyCode::Char('n')
+        && key.modifiers.contains(KeyModifiers::CONTROL)
+        && state.mode == Mode::BranchSelect
+    {
         return Some(Action::StartNewBranchFlow);
     }
 
@@ -70,8 +73,8 @@ fn resolve_new_branch_key(key: KeyCode) -> Option<Action> {
 
 fn resolve_confirm_delete_key(key: KeyCode) -> Option<Action> {
     match key {
-        KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => Some(Action::CancelDeleteWorktree),
-        KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => Some(Action::ConfirmDeleteWorktree),
+        KeyCode::Esc | KeyCode::Char('n' | 'N') => Some(Action::CancelDeleteWorktree),
+        KeyCode::Enter | KeyCode::Char('y' | 'Y') => Some(Action::ConfirmDeleteWorktree),
         _ => None,
     }
 }

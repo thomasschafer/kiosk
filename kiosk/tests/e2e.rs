@@ -383,7 +383,9 @@ fn test_e2e_ctrl_n_new_branch() {
 
     let screen = env.capture();
     assert!(
-        screen.contains("pick base") || screen.contains("New branch") || screen.contains("base branch"),
+        screen.contains("pick base")
+            || screen.contains("New branch")
+            || screen.contains("base branch"),
         "Should show new branch dialog or base picker: {screen}"
     );
 }
@@ -399,9 +401,19 @@ fn test_e2e_delete_worktree() {
 
     // Create a branch and worktree for it
     run_git(&repo, &["branch", "feat/to-delete"]);
-    let wt_dir = search_dir.join(".kiosk_worktrees").join("delete-repo--feat-to-delete");
+    let wt_dir = search_dir
+        .join(".kiosk_worktrees")
+        .join("delete-repo--feat-to-delete");
     fs::create_dir_all(&wt_dir).unwrap();
-    run_git(&repo, &["worktree", "add", &wt_dir.to_string_lossy(), "feat/to-delete"]);
+    run_git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            &wt_dir.to_string_lossy(),
+            "feat/to-delete",
+        ],
+    );
 
     env.write_config(&search_dir);
     env.launch_kiosk();
@@ -441,7 +453,7 @@ fn test_e2e_clean_dry_run() {
     let env = TestEnv::new("clean-dry-run");
     let search_dir = env.search_dir();
 
-    // Create .kiosk_worktrees directory 
+    // Create .kiosk_worktrees directory
     let worktrees_dir = search_dir.join(".kiosk_worktrees");
     fs::create_dir_all(&worktrees_dir).unwrap();
 

@@ -255,7 +255,12 @@ fn draw_confirm_delete_dialog(
 }
 
 /// Handle events from background tasks
-fn process_app_event(event: AppEvent, state: &mut AppState, git: &dyn GitProvider, tmux: &dyn TmuxProvider) -> Option<OpenAction> {
+fn process_app_event(
+    event: AppEvent,
+    state: &mut AppState,
+    git: &dyn GitProvider,
+    tmux: &dyn TmuxProvider,
+) -> Option<OpenAction> {
     match event {
         AppEvent::ReposDiscovered { repos } => {
             state.repos = repos;
@@ -334,7 +339,10 @@ fn spawn_worktree_creation(
             return;
         }
         match git.add_worktree(&repo_path, &branch, &wt_path) {
-            Ok(()) => sender.send(AppEvent::WorktreeCreated { path: wt_path, session_name }),
+            Ok(()) => sender.send(AppEvent::WorktreeCreated {
+                path: wt_path,
+                session_name,
+            }),
             Err(e) => sender.send(AppEvent::GitError(format!("{e}"))),
         }
     });
@@ -377,7 +385,10 @@ fn spawn_branch_and_worktree_creation(
             return;
         }
         match git.create_branch_and_worktree(&repo_path, &new_branch, &base, &wt_path) {
-            Ok(()) => sender.send(AppEvent::WorktreeCreated { path: wt_path, session_name }),
+            Ok(()) => sender.send(AppEvent::WorktreeCreated {
+                path: wt_path,
+                session_name,
+            }),
             Err(e) => sender.send(AppEvent::GitError(format!("{e}"))),
         }
     });
@@ -438,21 +449,7 @@ fn process_action(
         }
 
         Action::StartNewBranchFlow => {
-            let repo_idx = state.selected_repo_idx?;
-            let repo = &state.repos[repo_idx];
-            let bases = git.list_branches(&repo.path);
-            let filtered: Vec<(usize, i64)> =
-                bases.iter().enumerate().map(|(i, _)| (i, 0)).collect();
-            let selected = if filtered.is_empty() { None } else { Some(0) };
-
-            state.new_branch_base = Some(NewBranchFlow {
-                new_name: state.branch_search.clone(),
-                bases,
-                filtered,
-                selected,
-                search: String::new(),
-            });
-            state.mode = Mode::NewBranchBase;
+            handle_start_new_branch(state, git);
         }
 
         Action::MoveSelection(delta) => match state.mode {
@@ -479,32 +476,8 @@ fn process_action(
             s.pop();
         }),
 
-        Action::DeleteWorktree => {
-            // Only allow deletion on branches with worktrees that are not current
-            if let Some(sel) = state.branch_selected
-                && let Some(&(idx, _)) = state.filtered_branches.get(sel)
-            {
-                let branch = &state.branches[idx];
-                if branch.worktree_path.is_some() && !branch.is_current {
-                    state.mode = Mode::ConfirmDelete(branch.name.clone());
-                }
-            }
-        }
-
-        Action::ConfirmDeleteWorktree => {
-            if let Mode::ConfirmDelete(branch_name) = &state.mode {
-                let branch_name = branch_name.clone();
-                // Find the branch and its worktree path
-                if let Some(branch) = state.branches.iter().find(|b| b.name == branch_name)
-                    && let Some(worktree_path) = &branch.worktree_path
-                {
-                    let worktree_path = worktree_path.clone();
-                    state.mode = Mode::Loading(format!("Removing worktree for {branch_name}..."));
-                    spawn_worktree_removal(git, sender, worktree_path, branch_name);
-                }
-            }
-        }
-
+        Action::DeleteWorktree => handle_delete_worktree(state),
+        Action::ConfirmDeleteWorktree => handle_confirm_delete(state, git, sender),
         Action::CancelDeleteWorktree => {
             state.mode = Mode::BranchSelect;
         }
@@ -518,6 +491,53 @@ fn process_action(
     }
 
     None
+}
+
+fn handle_start_new_branch(state: &mut AppState, git: &Arc<dyn GitProvider>) {
+    let Some(repo_idx) = state.selected_repo_idx else {
+        return;
+    };
+    let repo = &state.repos[repo_idx];
+    let bases = git.list_branches(&repo.path);
+    let filtered: Vec<(usize, i64)> = bases.iter().enumerate().map(|(i, _)| (i, 0)).collect();
+    let selected = if filtered.is_empty() { None } else { Some(0) };
+
+    state.new_branch_base = Some(NewBranchFlow {
+        new_name: state.branch_search.clone(),
+        bases,
+        filtered,
+        selected,
+        search: String::new(),
+    });
+    state.mode = Mode::NewBranchBase;
+}
+
+fn handle_delete_worktree(state: &mut AppState) {
+    if let Some(sel) = state.branch_selected
+        && let Some(&(idx, _)) = state.filtered_branches.get(sel)
+    {
+        let branch = &state.branches[idx];
+        if branch.worktree_path.is_some() && !branch.is_current {
+            state.mode = Mode::ConfirmDelete(branch.name.clone());
+        }
+    }
+}
+
+fn handle_confirm_delete(
+    state: &mut AppState,
+    git: &Arc<dyn GitProvider>,
+    sender: &EventSender,
+) {
+    if let Mode::ConfirmDelete(branch_name) = &state.mode {
+        let branch_name = branch_name.clone();
+        if let Some(branch) = state.branches.iter().find(|b| b.name == branch_name)
+            && let Some(worktree_path) = &branch.worktree_path
+        {
+            let worktree_path = worktree_path.clone();
+            state.mode = Mode::Loading(format!("Removing worktree for {branch_name}..."));
+            spawn_worktree_removal(git, sender, worktree_path, branch_name);
+        }
+    }
 }
 
 fn handle_search_update(

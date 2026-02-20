@@ -357,3 +357,127 @@ fn test_e2e_worktree_creation() {
     // Cleanup the created session
     cleanup_session(session_name);
 }
+
+#[test]
+fn test_e2e_ctrl_n_new_branch() {
+    let env = TestEnv::new("ctrl-n-new-branch");
+    let search_dir = env.search_dir();
+
+    let repo = search_dir.join("ctrl-n-repo");
+    fs::create_dir_all(&repo).unwrap();
+    init_test_repo(&repo);
+
+    // Create an additional branch so we have more than one
+    run_git(&repo, &["branch", "develop"]);
+
+    env.write_config(&search_dir);
+    env.launch_kiosk();
+
+    // Enter the repo
+    env.send_special("Tab");
+    wait_ms(200);
+
+    // Press Ctrl+N to trigger new branch flow
+    env.send_special("C-n");
+    wait_ms(300);
+
+    let screen = env.capture();
+    assert!(
+        screen.contains("pick base") || screen.contains("New branch") || screen.contains("base branch"),
+        "Should show new branch dialog or base picker: {screen}"
+    );
+}
+
+#[test]
+fn test_e2e_delete_worktree() {
+    let env = TestEnv::new("delete-worktree");
+    let search_dir = env.search_dir();
+
+    let repo = search_dir.join("delete-repo");
+    fs::create_dir_all(&repo).unwrap();
+    init_test_repo(&repo);
+
+    // Create a branch and worktree for it
+    run_git(&repo, &["branch", "feat/to-delete"]);
+    let wt_dir = search_dir.join(".kiosk_worktrees").join("delete-repo--feat-to-delete");
+    fs::create_dir_all(&wt_dir).unwrap();
+    run_git(&repo, &["worktree", "add", &wt_dir.to_string_lossy(), "feat/to-delete"]);
+
+    env.write_config(&search_dir);
+    env.launch_kiosk();
+
+    // Enter the repo
+    env.send_special("Tab");
+    wait_ms(500);
+
+    // Navigate to the branch that has the worktree
+    env.send("feat/to-delete");
+    wait_ms(200);
+
+    // Press 'd' to trigger delete
+    env.send("d");
+    wait_ms(500);
+
+    let screen = env.capture();
+    assert!(
+        screen.contains("Delete") || screen.contains("remove") || screen.contains("confirm"),
+        "Should show confirmation dialog: {screen}"
+    );
+
+    // Press 'y' to confirm deletion
+    env.send("y");
+    wait_ms(500);
+
+    // Just verify that we're back to the branch listing (the confirmation was processed)
+    let screen = env.capture();
+    assert!(
+        screen.contains("select branch") || !screen.contains("Confirm Delete"),
+        "Should return to branch listing after deletion: {screen}"
+    );
+}
+
+#[test]
+fn test_e2e_clean_dry_run() {
+    let env = TestEnv::new("clean-dry-run");
+    let search_dir = env.search_dir();
+
+    // Create .kiosk_worktrees directory 
+    let worktrees_dir = search_dir.join(".kiosk_worktrees");
+    fs::create_dir_all(&worktrees_dir).unwrap();
+
+    // Create a fake/broken worktree directory (just a regular dir, no valid .git file)
+    let fake_worktree = worktrees_dir.join("fake-repo--broken-branch");
+    fs::create_dir_all(&fake_worktree).unwrap();
+    fs::write(fake_worktree.join("some_file.txt"), "fake content").unwrap();
+
+    env.write_config(&search_dir);
+
+    // Run `kiosk clean --dry-run` with the config via environment variable
+    let output = Command::new(kiosk_binary())
+        .args(["clean", "--dry-run"])
+        .env("XDG_CONFIG_HOME", &env.config_dir)
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // Verify the command succeeded
+    assert!(
+        output.status.success(),
+        "clean --dry-run should succeed. stdout: {stdout}, stderr: {stderr}"
+    );
+
+    // Verify the output lists the orphaned worktree
+    assert!(
+        stdout.contains("fake-repo--broken-branch") || stderr.contains("fake-repo--broken-branch"),
+        "Should list the orphaned worktree. stdout: {stdout}, stderr: {stderr}"
+    );
+
+    // Verify the directory still exists (dry-run shouldn't remove it)
+    assert!(
+        fake_worktree.exists(),
+        "Dry-run should not remove the directory: {}",
+        fake_worktree.display()
+    );
+}

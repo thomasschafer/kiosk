@@ -9,6 +9,11 @@ pub fn resolve_action(key: KeyEvent, state: &AppState) -> Option<Action> {
         return Some(Action::Quit);
     }
 
+    // Ctrl+N for new branch in branch select mode
+    if key.code == KeyCode::Char('n') && key.modifiers.contains(KeyModifiers::CONTROL) && state.mode == Mode::BranchSelect {
+        return Some(Action::StartNewBranchFlow);
+    }
+
     // Clear error on any keypress
     match state.mode {
         Mode::RepoSelect => resolve_repo_key(key.code),

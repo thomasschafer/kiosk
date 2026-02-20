@@ -1,4 +1,5 @@
 use crate::git::Repo;
+use anyhow::Result;
 use std::path::PathBuf;
 
 /// Rich branch entry with worktree and session metadata
@@ -89,22 +90,22 @@ impl AppState {
 /// ~/Development/.kiosk_worktrees/kiosk--feat-awesome/
 /// ~/Development/.kiosk_worktrees/scooter--fix-bug/
 /// ```
-pub fn worktree_dir(repo: &Repo, branch: &str) -> PathBuf {
+pub fn worktree_dir(repo: &Repo, branch: &str) -> anyhow::Result<PathBuf> {
     let parent = repo.path.parent().unwrap_or(&repo.path);
     let worktree_root = parent.join(".kiosk_worktrees");
     let safe_branch = branch.replace('/', "-");
     let base = format!("{}--{safe_branch}", repo.name);
     let candidate = worktree_root.join(&base);
     if !candidate.exists() {
-        return candidate;
+        return Ok(candidate);
     }
-    for i in 2.. {
+    for i in 2..1000 {
         let candidate = worktree_root.join(format!("{base}-{i}"));
         if !candidate.exists() {
-            return candidate;
+            return Ok(candidate);
         }
     }
-    unreachable!()
+    anyhow::bail!("Could not find an available worktree directory name after 1000 attempts")
 }
 
 #[cfg(test)]
@@ -117,6 +118,7 @@ mod tests {
     fn make_repo(dir: &std::path::Path, name: &str) -> Repo {
         Repo {
             name: name.to_string(),
+            session_name: name.to_string(),
             path: dir.join(name),
             worktrees: vec![],
         }
@@ -126,7 +128,7 @@ mod tests {
     fn test_worktree_dir_basic() {
         let tmp = tempdir().unwrap();
         let repo = make_repo(tmp.path(), "myrepo");
-        let result = worktree_dir(&repo, "main");
+        let result = worktree_dir(&repo, "main").unwrap();
         assert_eq!(
             result,
             tmp.path().join(".kiosk_worktrees").join("myrepo--main")
@@ -137,7 +139,7 @@ mod tests {
     fn test_worktree_dir_slash_in_branch() {
         let tmp = tempdir().unwrap();
         let repo = make_repo(tmp.path(), "repo");
-        let result = worktree_dir(&repo, "feat/awesome");
+        let result = worktree_dir(&repo, "feat/awesome").unwrap();
         assert_eq!(
             result,
             tmp.path()
@@ -152,7 +154,7 @@ mod tests {
         let repo = make_repo(tmp.path(), "repo");
         let first = tmp.path().join(".kiosk_worktrees").join("repo--main");
         fs::create_dir_all(&first).unwrap();
-        let result = worktree_dir(&repo, "main");
+        let result = worktree_dir(&repo, "main").unwrap();
         assert_eq!(
             result,
             tmp.path().join(".kiosk_worktrees").join("repo--main-2")
@@ -163,7 +165,7 @@ mod tests {
     fn test_worktree_dir_in_kiosk_worktrees_subdir() {
         let tmp = tempdir().unwrap();
         let repo = make_repo(tmp.path(), "myrepo");
-        let result = worktree_dir(&repo, "dev");
+        let result = worktree_dir(&repo, "dev").unwrap();
         assert!(result.to_string_lossy().contains(".kiosk_worktrees"));
     }
 }

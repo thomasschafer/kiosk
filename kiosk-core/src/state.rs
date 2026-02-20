@@ -82,17 +82,24 @@ impl AppState {
     }
 }
 
-/// Determine where to put a new worktree for a branch, avoiding collisions
+/// Determine where to put a new worktree for a branch, avoiding collisions.
+///
+/// Worktrees are placed in `.kiosk_worktrees/` inside the repo's parent directory:
+/// ```text
+/// ~/Development/.kiosk_worktrees/kiosk--feat-awesome/
+/// ~/Development/.kiosk_worktrees/scooter--fix-bug/
+/// ```
 pub fn worktree_dir(repo: &Repo, branch: &str) -> PathBuf {
     let parent = repo.path.parent().unwrap_or(&repo.path);
+    let worktree_root = parent.join(".kiosk_worktrees");
     let safe_branch = branch.replace('/', "-");
-    let base = format!("{}-{safe_branch}", repo.name);
-    let candidate = parent.join(&base);
+    let base = format!("{}--{safe_branch}", repo.name);
+    let candidate = worktree_root.join(&base);
     if !candidate.exists() {
         return candidate;
     }
     for i in 2.. {
-        let candidate = parent.join(format!("{base}-{i}"));
+        let candidate = worktree_root.join(format!("{base}-{i}"));
         if !candidate.exists() {
             return candidate;
         }

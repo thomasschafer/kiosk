@@ -35,7 +35,14 @@ impl TmuxProvider for CliTmuxProvider {
 
         if let Some(cmd) = split_command {
             let _ = Command::new("tmux")
-                .args(["split-window", "-h", "-t", &format!("={name}"), "-c", &dir_str])
+                .args([
+                    "split-window",
+                    "-h",
+                    "-t",
+                    &format!("={name}"),
+                    "-c",
+                    &dir_str,
+                ])
                 .status();
             let _ = Command::new("tmux")
                 .args(["send-keys", "-t", &format!("={name}:0.1"), cmd, "Enter"])

@@ -7,12 +7,7 @@ use kiosk_core::{
     tmux::CliTmuxProvider,
 };
 use kiosk_tui::{OpenAction, Theme};
-use std::{
-    fs, io,
-    path::Path,
-    process::Command,
-    sync::Arc,
-};
+use std::{fs, io, path::Path, process::Command, sync::Arc};
 
 #[derive(Parser)]
 #[command(version, about = "Tmux session manager with worktree support")]
@@ -45,19 +40,20 @@ fn main() -> Result<()> {
             clean_orphaned_worktrees(&search_dirs, dry_run)?;
         }
         None => {
-            run_tui(config)?;
+            run_tui(&config)?;
         }
     }
 
     Ok(())
 }
 
-fn run_tui(config: config::Config) -> Result<()> {
+fn run_tui(config: &config::Config) -> Result<()> {
     let search_dirs = config.resolved_search_dirs();
 
     let git: Arc<dyn GitProvider> = Arc::new(CliGitProvider);
     let tmux = CliTmuxProvider;
-    let mut state = AppState::new_loading("Discovering repos...", config.session.split_command.clone());
+    let mut state =
+        AppState::new_loading("Discovering repos...", config.session.split_command.clone());
 
     let theme = Theme::from_config(&config.theme);
 
@@ -85,7 +81,10 @@ fn run_tui(config: config::Config) -> Result<()> {
     Ok(())
 }
 
-fn clean_orphaned_worktrees(search_dirs: &[(std::path::PathBuf, u16)], dry_run: bool) -> Result<()> {
+fn clean_orphaned_worktrees(
+    search_dirs: &[(std::path::PathBuf, u16)],
+    dry_run: bool,
+) -> Result<()> {
     let mut orphaned_worktrees = Vec::new();
 
     // Scan all search directories for .kiosk_worktrees directories
@@ -146,7 +145,7 @@ fn clean_orphaned_worktrees(search_dirs: &[(std::path::PathBuf, u16)], dry_run: 
 
 fn is_orphaned_worktree(path: &Path) -> bool {
     let git_file = path.join(".git");
-    
+
     // If there's no .git file, it's definitely orphaned
     if !git_file.exists() {
         return true;
@@ -158,7 +157,10 @@ fn is_orphaned_worktree(path: &Path) -> bool {
     };
 
     // .git file should contain "gitdir: /path/to/repo/.git/worktrees/name"
-    let Some(gitdir_line) = git_content.lines().find(|line| line.starts_with("gitdir: ")) else {
+    let Some(gitdir_line) = git_content
+        .lines()
+        .find(|line| line.starts_with("gitdir: "))
+    else {
         return true; // Malformed .git file
     };
 
@@ -171,14 +173,11 @@ fn is_orphaned_worktree(path: &Path) -> bool {
     }
 
     // Check if there's a valid worktree entry in the main repo
-    if let Some(main_git_dir) = gitdir.parent() {
-        if let Some(worktrees_dir) = main_git_dir.parent() {
-            // The path should be something like .git/worktrees/name
-            // The main repo should exist
-            if worktrees_dir.join("HEAD").exists() {
-                return false; // This appears to be a valid worktree
-            }
-        }
+    if let Some(main_git_dir) = gitdir.parent()
+        && let Some(worktrees_dir) = main_git_dir.parent()
+        && worktrees_dir.join("HEAD").exists()
+    {
+        return false; // This appears to be a valid worktree
     }
 
     true // Couldn't validate the worktree, treat as orphaned

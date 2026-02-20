@@ -1,3 +1,4 @@
+use crate::theme::Theme;
 use kiosk_core::state::AppState;
 use ratatui::{
     Frame,
@@ -7,7 +8,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
 };
 
-pub fn draw(f: &mut Frame, area: Rect, state: &AppState) {
+pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme) {
     let chunks = Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(area);
 
     // Search bar
@@ -22,7 +23,7 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState) {
     let search_block = Block::default()
         .borders(Borders::ALL)
         .title(" kiosk — select repo ")
-        .border_style(Style::default().fg(Color::Magenta));
+        .border_style(Style::default().fg(theme.accent));
     f.render_widget(Paragraph::new(search_text).block(search_block), chunks[0]);
 
     // Repo list
@@ -66,7 +67,7 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState) {
         )
         .highlight_style(
             Style::default()
-                .bg(Color::Magenta)
+                .bg(theme.accent)
                 .fg(Color::Black)
                 .add_modifier(Modifier::BOLD),
         )

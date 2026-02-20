@@ -1,3 +1,4 @@
+use crate::theme::Theme;
 use kiosk_core::state::AppState;
 use ratatui::{
     Frame,
@@ -7,7 +8,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
 };
 
-pub fn draw(f: &mut Frame, state: &AppState) {
+pub fn draw(f: &mut Frame, state: &AppState, theme: &Theme) {
     let Some(flow) = &state.new_branch_base else {
         return;
     };
@@ -29,7 +30,7 @@ pub fn draw(f: &mut Frame, state: &AppState) {
     let search_block = Block::default()
         .borders(Borders::ALL)
         .title(title)
-        .border_style(Style::default().fg(Color::Green));
+        .border_style(Style::default().fg(theme.success));
     f.render_widget(Paragraph::new(search_text).block(search_block), chunks[0]);
 
     let items: Vec<ListItem> = flow
@@ -46,7 +47,7 @@ pub fn draw(f: &mut Frame, state: &AppState) {
         )
         .highlight_style(
             Style::default()
-                .bg(Color::Green)
+                .bg(theme.success)
                 .fg(Color::Black)
                 .add_modifier(Modifier::BOLD),
         )

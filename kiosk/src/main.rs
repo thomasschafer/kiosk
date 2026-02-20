@@ -6,7 +6,7 @@ use kiosk_core::{
     state::AppState,
     tmux::CliTmuxProvider,
 };
-use kiosk_tui::OpenAction;
+use kiosk_tui::{OpenAction, Theme};
 use std::sync::Arc;
 
 #[derive(Parser)]
@@ -27,8 +27,10 @@ fn main() -> Result<()> {
     let repos = git.discover_repos(&search_dirs);
     let mut state = AppState::new(repos, config.session.split_command.clone());
 
+    let theme = Theme::from_config(&config.theme);
+
     let mut terminal = ratatui::init();
-    let result = kiosk_tui::run(&mut terminal, &mut state, &git, &tmux);
+    let result = kiosk_tui::run(&mut terminal, &mut state, &git, &tmux, &theme);
     ratatui::restore();
 
     match result? {

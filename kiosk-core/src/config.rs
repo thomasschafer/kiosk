@@ -1,6 +1,9 @@
 use anyhow::Result;
 use serde::Deserialize;
-use std::{fs, path::{Path, PathBuf}};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 pub const APP_NAME: &str = "kiosk";
 
@@ -8,10 +11,10 @@ fn config_dir() -> PathBuf {
     // Use ~/.config on both Linux and macOS (not ~/Library/Application Support)
     #[cfg(unix)]
     {
-        if let Ok(xdg_config_home) = std::env::var("XDG_CONFIG_HOME") {
-            if !xdg_config_home.is_empty() {
-                return PathBuf::from(xdg_config_home).join(APP_NAME);
-            }
+        if let Ok(xdg_config_home) = std::env::var("XDG_CONFIG_HOME")
+            && !xdg_config_home.is_empty()
+        {
+            return PathBuf::from(xdg_config_home).join(APP_NAME);
         }
         dirs::home_dir()
             .expect("Unable to find home directory")
@@ -88,7 +91,7 @@ impl Config {
                     SearchDirEntry::Simple(path) => (path.as_str(), 1),
                     SearchDirEntry::Rich { path, depth } => (path.as_str(), depth.unwrap_or(1)),
                 };
-                
+
                 let resolved_path = if let Some(rest) = path_str.strip_prefix("~/")
                     && let Some(home) = dirs::home_dir()
                 {
@@ -100,7 +103,7 @@ impl Config {
                 } else {
                     PathBuf::from(path_str)
                 };
-                
+
                 if resolved_path.is_dir() {
                     Some((resolved_path, depth))
                 } else {
@@ -141,7 +144,9 @@ mod tests {
     #[test]
     fn test_minimal_config() {
         let config = load_config_from_str(r#"search_dirs = ["~/Development"]"#).unwrap();
-        assert!(matches!(&config.search_dirs[0], SearchDirEntry::Simple(s) if s == "~/Development"));
+        assert!(
+            matches!(&config.search_dirs[0], SearchDirEntry::Simple(s) if s == "~/Development")
+        );
         assert!(config.session.split_command.is_none());
     }
 
@@ -157,7 +162,9 @@ split_command = "hx"
         )
         .unwrap();
         assert_eq!(config.search_dirs.len(), 2);
-        assert!(matches!(&config.search_dirs[0], SearchDirEntry::Simple(s) if s == "~/Development"));
+        assert!(
+            matches!(&config.search_dirs[0], SearchDirEntry::Simple(s) if s == "~/Development")
+        );
         assert!(matches!(&config.search_dirs[1], SearchDirEntry::Simple(s) if s == "~/Work"));
         assert_eq!(config.session.split_command.as_deref(), Some("hx"));
     }
@@ -200,10 +207,13 @@ unknown_field = true
                 { path = "~/Work", depth = 3 },
                 { path = "~/Projects" }
             ]"#,
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(config.search_dirs.len(), 3);
-        
-        assert!(matches!(&config.search_dirs[0], SearchDirEntry::Simple(s) if s == "~/Development"));
+
+        assert!(
+            matches!(&config.search_dirs[0], SearchDirEntry::Simple(s) if s == "~/Development")
+        );
         match &config.search_dirs[1] {
             SearchDirEntry::Rich { path, depth } => {
                 assert_eq!(path, "~/Work");

@@ -22,9 +22,9 @@ impl GitProvider for CliGitProvider {
         repos_with_dirs.sort_by(|a, b| a.0.name.to_lowercase().cmp(&b.0.name.to_lowercase()));
 
         // Count occurrences of each repo name
-        let mut name_counts = std::collections::HashMap::new();
+        let mut name_counts = std::collections::HashMap::<String, usize>::new();
         for (repo, _) in &repos_with_dirs {
-            *name_counts.entry(&repo.name).or_insert(0) += 1;
+            *name_counts.entry(repo.name.clone()).or_insert(0) += 1;
         }
 
         // Apply collision resolution
@@ -32,14 +32,11 @@ impl GitProvider for CliGitProvider {
         for (mut repo, search_dir) in repos_with_dirs {
             if name_counts[&repo.name] > 1 {
                 // Multiple repos with same name - disambiguate with parent dir
-                let parent_dir_name = search_dir
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy();
+                let parent_dir_name = search_dir.file_name().unwrap_or_default().to_string_lossy();
                 repo.session_name = format!("{}--({parent_dir_name})", repo.name);
             } else {
                 // Unique name - use as is
-                repo.session_name = repo.name.clone();
+                repo.session_name.clone_from(&repo.name);
             }
             repos.push(repo);
         }
@@ -128,8 +125,8 @@ impl GitProvider for CliGitProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
     use std::collections::HashMap;
+    use std::fs;
 
     fn init_test_repo(dir: &Path) {
         Command::new("git")
@@ -202,7 +199,7 @@ mod tests {
     fn test_discover_repos_collision_detection() {
         let tmp1 = tempfile::tempdir().unwrap();
         let tmp2 = tempfile::tempdir().unwrap();
-        
+
         // Create repos with same name in different directories
         let repo1 = tmp1.path().join("myrepo");
         let repo2 = tmp2.path().join("myrepo");
@@ -212,17 +209,21 @@ mod tests {
         init_test_repo(&repo2);
 
         let provider = CliGitProvider;
-        let repos = provider.discover_repos(&[(tmp1.path().to_path_buf(), 1), (tmp2.path().to_path_buf(), 1)]);
+        let repos = provider.discover_repos(&[
+            (tmp1.path().to_path_buf(), 1),
+            (tmp2.path().to_path_buf(), 1),
+        ]);
         assert_eq!(repos.len(), 2);
-        
+
         // Both should have same name but different session names
         assert_eq!(repos[0].name, "myrepo");
         assert_eq!(repos[1].name, "myrepo");
-        
+
         // Session names should be disambiguated with parent dir names
-        let session_names: std::collections::HashSet<String> = repos.iter().map(|r| r.session_name.clone()).collect();
+        let session_names: std::collections::HashSet<String> =
+            repos.iter().map(|r| r.session_name.clone()).collect();
         assert_eq!(session_names.len(), 2); // Both should be unique
-        
+
         // Both should contain the repo name and parent dir somehow
         for repo in &repos {
             assert!(repo.session_name.contains("myrepo"));
@@ -304,23 +305,23 @@ mod tests {
 }
 
 impl CliGitProvider {
-    fn scan_dir_recursive(
-        &self, 
-        dir: &Path, 
-        search_root: &Path, 
-        depth: u16, 
-        repos: &mut Vec<(Repo, &Path)>
+    fn scan_dir_recursive<'a>(
+        &self,
+        dir: &Path,
+        search_root: &'a Path,
+        depth: u16,
+        repos: &mut Vec<(Repo, &'a Path)>,
     ) {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return;
         };
-        
+
         for entry in entries.flatten() {
             let path = entry.path();
             if !path.is_dir() {
                 continue;
             }
-            
+
             // If this directory is a git repo, add it
             if path.join(".git").exists() {
                 if let Some(repo) = self.build_repo(&path) {
@@ -332,7 +333,7 @@ impl CliGitProvider {
             }
         }
     }
-    
+
     fn build_repo(&self, path: &Path) -> Option<Repo> {
         let name = path.file_name()?.to_string_lossy().to_string();
         let worktrees = self.list_worktrees(path);

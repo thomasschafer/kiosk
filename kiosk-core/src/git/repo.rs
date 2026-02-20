@@ -20,8 +20,8 @@ pub struct Repo {
 
 impl Repo {
     /// Tmux session name for a given branch/worktree path.
-    /// For the main worktree, returns session_name.
-    /// For other worktrees, returns session_name--safe_branch.
+    /// For the main worktree, returns `session_name`.
+    /// For other worktrees, returns `session_name--safe_branch`.
     pub fn tmux_session_name(&self, worktree_path: &Path) -> String {
         if worktree_path == self.path {
             self.session_name.replace('.', "_")

@@ -393,6 +393,7 @@ name = "kiosk"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "clap",
  "kiosk-core",
  "kiosk-tui",
  "ratatui",

@@ -11,13 +11,17 @@ use kiosk_core::{
 use ratatui::{
     DefaultTerminal, Frame,
     layout::{Constraint, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
 };
 use std::{
     path::PathBuf,
-    sync::{Arc, atomic::{AtomicBool, Ordering}, mpsc},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -58,7 +62,10 @@ pub fn run(
     let matcher = SkimMatcherV2::default();
     let (tx, rx) = mpsc::channel::<AppEvent>();
     let cancel = Arc::new(AtomicBool::new(false));
-    let event_sender = EventSender { tx, cancel: Arc::clone(&cancel) };
+    let event_sender = EventSender {
+        tx,
+        cancel: Arc::clone(&cancel),
+    };
     let spinner_start = Instant::now();
 
     loop {
@@ -136,7 +143,13 @@ fn draw(f: &mut Frame, state: &AppState, theme: &crate::theme::Theme, spinner_st
     }
 }
 
-fn draw_loading(f: &mut Frame, area: Rect, message: &str, theme: &crate::theme::Theme, start: &Instant) {
+fn draw_loading(
+    f: &mut Frame,
+    area: Rect,
+    message: &str,
+    theme: &crate::theme::Theme,
+    start: &Instant,
+) {
     let elapsed = start.elapsed().as_millis() as usize;
     let frame_idx = (elapsed / 80) % SPINNER_FRAMES.len();
     let spinner = SPINNER_FRAMES[frame_idx];
@@ -182,7 +195,8 @@ fn process_app_event(event: AppEvent, state: &mut AppState) -> Option<OpenAction
         AppEvent::WorktreeCreated { path } => {
             // We need to compute the session name based on the worktree path
             // For now, we'll use a simplified approach - this needs the repo context
-            let session_name = path.file_name()
+            let session_name = path
+                .file_name()
                 .unwrap_or_default()
                 .to_string_lossy()
                 .replace('.', "_");
@@ -215,18 +229,16 @@ fn spawn_worktree_creation(
 ) {
     let git = Arc::clone(git);
     let sender = sender.clone();
-    thread::spawn(
-        move || {
-            // Check if cancelled before starting
-            if sender.cancel.load(Ordering::Relaxed) {
-                return;
-            }
-            match git.add_worktree(&repo_path, &branch, &wt_path) {
-                Ok(()) => sender.send(AppEvent::WorktreeCreated { path: wt_path }),
-                Err(e) => sender.send(AppEvent::GitError(format!("{e}"))),
-            }
-        },
-    );
+    thread::spawn(move || {
+        // Check if cancelled before starting
+        if sender.cancel.load(Ordering::Relaxed) {
+            return;
+        }
+        match git.add_worktree(&repo_path, &branch, &wt_path) {
+            Ok(()) => sender.send(AppEvent::WorktreeCreated { path: wt_path }),
+            Err(e) => sender.send(AppEvent::GitError(format!("{e}"))),
+        }
+    });
 }
 
 fn spawn_branch_and_worktree_creation(
@@ -404,8 +416,15 @@ fn handle_open_branch(
                 match worktree_dir(repo, &branch.name) {
                     Ok(wt_path) => {
                         let branch_name = branch.name.clone();
-                        state.mode = Mode::Loading(format!("Creating worktree for {branch_name}..."));
-                        spawn_worktree_creation(git, sender, repo.path.clone(), branch_name, wt_path);
+                        state.mode =
+                            Mode::Loading(format!("Creating worktree for {branch_name}..."));
+                        spawn_worktree_creation(
+                            git,
+                            sender,
+                            repo.path.clone(),
+                            branch_name,
+                            wt_path,
+                        );
                     }
                     Err(e) => {
                         state.error = Some(format!("Failed to determine worktree path: {e}"));
@@ -425,7 +444,8 @@ fn handle_open_branch(
                 let repo = &state.repos[repo_idx];
                 match worktree_dir(repo, &new_name) {
                     Ok(wt_path) => {
-                        state.mode = Mode::Loading(format!("Creating branch {new_name} from {base}..."));
+                        state.mode =
+                            Mode::Loading(format!("Creating branch {new_name} from {base}..."));
                         spawn_branch_and_worktree_creation(
                             git,
                             sender,
@@ -593,7 +613,10 @@ mod tests {
 
     fn make_sender() -> EventSender {
         let (tx, _rx) = mpsc::channel();
-        EventSender { tx, cancel: Arc::new(AtomicBool::new(false)) }
+        EventSender {
+            tx,
+            cancel: Arc::new(AtomicBool::new(false)),
+        }
     }
 
     fn make_repo(name: &str) -> Repo {
@@ -704,10 +727,12 @@ mod tests {
         );
         assert!(result.is_some());
         match result.unwrap() {
-            OpenAction::Open { path, session_name, .. } => {
+            OpenAction::Open {
+                path, session_name, ..
+            } => {
                 assert_eq!(path, PathBuf::from("/tmp/alpha"));
                 assert_eq!(session_name, "alpha");
-            },
+            }
             _ => panic!("Expected OpenAction::Open"),
         }
     }

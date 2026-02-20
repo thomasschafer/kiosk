@@ -1,3 +1,4 @@
+use crate::theme::Theme;
 use kiosk_core::state::AppState;
 use ratatui::{
     Frame,
@@ -7,7 +8,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
 };
 
-pub fn draw(f: &mut Frame, area: Rect, state: &AppState) {
+pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme) {
     let repo_name = state
         .selected_repo_idx
         .map_or("??", |i| state.repos[i].name.as_str());
@@ -26,7 +27,7 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState) {
     let search_block = Block::default()
         .borders(Borders::ALL)
         .title(format!(" {repo_name} — select branch "))
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(theme.secondary));
     f.render_widget(Paragraph::new(search_text).block(search_block), chunks[0]);
 
     // Branch list
@@ -40,7 +41,7 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState) {
             if branch.has_session {
                 spans.push(Span::styled(
                     " (session)",
-                    Style::default().fg(Color::Green),
+                    Style::default().fg(theme.success),
                 ));
             } else if branch.worktree_path.is_some() {
                 spans.push(Span::styled(
@@ -49,7 +50,7 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState) {
                 ));
             }
             if branch.is_current {
-                spans.push(Span::styled(" *", Style::default().fg(Color::Magenta)));
+                spans.push(Span::styled(" *", Style::default().fg(theme.accent)));
             }
 
             ListItem::new(Line::from(spans))
@@ -59,11 +60,11 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState) {
     // If search doesn't match anything, show "create new branch" option
     if state.filtered_branches.is_empty() && !state.branch_search.is_empty() {
         items.push(ListItem::new(Line::from(vec![
-            Span::styled("+ Create branch ", Style::default().fg(Color::Green)),
+            Span::styled("+ Create branch ", Style::default().fg(theme.success)),
             Span::styled(
                 format!("\"{}\"", state.branch_search),
                 Style::default()
-                    .fg(Color::Green)
+                    .fg(theme.success)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
@@ -83,7 +84,7 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState) {
         )
         .highlight_style(
             Style::default()
-                .bg(Color::Cyan)
+                .bg(theme.secondary)
                 .fg(Color::Black)
                 .add_modifier(Modifier::BOLD),
         )

@@ -1,5 +1,4 @@
 use crate::git::Repo;
-use anyhow::Result;
 use std::path::PathBuf;
 
 /// Rich branch entry with worktree and session metadata

@@ -8,8 +8,19 @@ use kiosk_core::{
     state::{AppState, BranchEntry, Mode, NewBranchFlow, worktree_dir},
     tmux::TmuxProvider,
 };
-use ratatui::{DefaultTerminal, Frame, layout::Constraint, prelude::Layout};
-use std::{path::PathBuf, sync::mpsc, thread, time::Duration};
+use ratatui::{
+    DefaultTerminal, Frame,
+    layout::{Constraint, Layout, Rect},
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, Paragraph},
+};
+use std::{
+    path::PathBuf,
+    sync::{Arc, mpsc},
+    thread,
+    time::{Duration, Instant},
+};
 
 /// What to do after the TUI exits
 pub enum OpenAction {
@@ -20,13 +31,8 @@ pub enum OpenAction {
     Quit,
 }
 
-/// Input to the main loop — either a keyboard/terminal event or a background event
-enum LoopEvent {
-    Terminal(Event),
-    App(AppEvent),
-}
-
 /// Handle for dispatching background work
+#[derive(Clone)]
 pub struct EventSender {
     tx: mpsc::Sender<AppEvent>,
 }
@@ -38,29 +44,23 @@ impl EventSender {
     }
 }
 
-impl Clone for EventSender {
-    fn clone(&self) -> Self {
-        Self {
-            tx: self.tx.clone(),
-        }
-    }
-}
+const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 pub fn run(
     terminal: &mut DefaultTerminal,
     state: &mut AppState,
-    git: &dyn GitProvider,
+    git: Arc<dyn GitProvider>,
     tmux: &dyn TmuxProvider,
 ) -> anyhow::Result<Option<OpenAction>> {
     let matcher = SkimMatcherV2::default();
     let (tx, rx) = mpsc::channel::<AppEvent>();
-    let _event_sender = EventSender { tx };
+    let event_sender = EventSender { tx };
+    let spinner_start = Instant::now();
 
     loop {
-        terminal.draw(|f| draw(f, state))?;
+        terminal.draw(|f| draw(f, state, &spinner_start))?;
 
-        // Poll for events: check background channel first (non-blocking),
-        // then block briefly on terminal input
+        // Check background channel (non-blocking)
         if let Ok(app_event) = rx.try_recv() {
             if let Some(result) = process_app_event(app_event, state) {
                 return Ok(Some(result));
@@ -68,10 +68,22 @@ pub fn run(
             continue;
         }
 
-        // Poll terminal events with a timeout so we can check the channel periodically
-        if event::poll(Duration::from_millis(50))? {
+        // Poll terminal events with a timeout so we can update spinner + check channel
+        if event::poll(Duration::from_millis(80))? {
             if let Event::Key(key) = event::read()? {
                 if key.kind != KeyEventKind::Press {
+                    continue;
+                }
+
+                // In loading mode, only allow Ctrl+C
+                if matches!(state.mode, Mode::Loading(_)) {
+                    if key.code == crossterm::event::KeyCode::Char('c')
+                        && key
+                            .modifiers
+                            .contains(crossterm::event::KeyModifiers::CONTROL)
+                    {
+                        return Ok(Some(OpenAction::Quit));
+                    }
                     continue;
                 }
 
@@ -79,7 +91,9 @@ pub fn run(
                 state.error = None;
 
                 if let Some(action) = keymap::resolve_action(key, state) {
-                    if let Some(result) = process_action(action, state, git, tmux, &matcher) {
+                    if let Some(result) =
+                        process_action(action, state, &git, tmux, &matcher, &event_sender)
+                    {
                         return Ok(Some(result));
                     }
                 }
@@ -88,7 +102,13 @@ pub fn run(
     }
 }
 
-fn draw(f: &mut Frame, state: &AppState) {
+fn draw(f: &mut Frame, state: &AppState, spinner_start: &Instant) {
+    // Loading mode: full-screen spinner
+    if let Mode::Loading(ref msg) = state.mode {
+        draw_loading(f, f.area(), msg, spinner_start);
+        return;
+    }
+
     let (main_area, error_area) = if state.error.is_some() {
         let chunks = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(f.area());
         (chunks[0], Some(chunks[1]))
@@ -103,11 +123,52 @@ fn draw(f: &mut Frame, state: &AppState) {
             components::branch_picker::draw(f, main_area, state);
             components::new_branch::draw(f, state);
         }
+        Mode::Loading(_) => unreachable!(),
     }
 
     if let Some(area) = error_area {
         components::error_bar::draw(f, area, state);
     }
+}
+
+fn draw_loading(f: &mut Frame, area: Rect, message: &str, start: &Instant) {
+    let elapsed = start.elapsed().as_millis() as usize;
+    let frame_idx = (elapsed / 80) % SPINNER_FRAMES.len();
+    let spinner = SPINNER_FRAMES[frame_idx];
+
+    let text = Line::from(vec![
+        Span::styled(
+            format!("{spinner} "),
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(message),
+    ]);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Magenta));
+
+    // Centre vertically
+    let vertical = Layout::vertical([
+        Constraint::Percentage(45),
+        Constraint::Length(3),
+        Constraint::Percentage(45),
+    ])
+    .split(area);
+
+    let horizontal = Layout::horizontal([
+        Constraint::Percentage(25),
+        Constraint::Percentage(50),
+        Constraint::Percentage(25),
+    ])
+    .split(vertical[1]);
+
+    let paragraph = Paragraph::new(text)
+        .block(block)
+        .alignment(ratatui::layout::Alignment::Center);
+    f.render_widget(paragraph, horizontal[1]);
 }
 
 /// Handle events from background tasks
@@ -120,6 +181,13 @@ fn process_app_event(event: AppEvent, state: &mut AppState) -> Option<OpenAction
             });
         }
         AppEvent::GitError(msg) => {
+            // Return to the appropriate mode
+            if state.new_branch_base.is_some() {
+                state.new_branch_base = None;
+                state.mode = Mode::BranchSelect;
+            } else {
+                state.mode = Mode::BranchSelect;
+            }
             state.error = Some(msg);
         }
         AppEvent::ReposLoaded(repos) => {
@@ -130,12 +198,48 @@ fn process_app_event(event: AppEvent, state: &mut AppState) -> Option<OpenAction
     None
 }
 
+fn spawn_worktree_creation(
+    git: &Arc<dyn GitProvider>,
+    sender: &EventSender,
+    repo_path: PathBuf,
+    branch: String,
+    wt_path: PathBuf,
+) {
+    let git = Arc::clone(git);
+    let sender = sender.clone();
+    thread::spawn(
+        move || match git.add_worktree(&repo_path, &branch, &wt_path) {
+            Ok(()) => sender.send(AppEvent::WorktreeCreated { path: wt_path }),
+            Err(e) => sender.send(AppEvent::GitError(format!("{e}"))),
+        },
+    );
+}
+
+fn spawn_branch_and_worktree_creation(
+    git: &Arc<dyn GitProvider>,
+    sender: &EventSender,
+    repo_path: PathBuf,
+    new_branch: String,
+    base: String,
+    wt_path: PathBuf,
+) {
+    let git = Arc::clone(git);
+    let sender = sender.clone();
+    thread::spawn(move || {
+        match git.create_branch_and_worktree(&repo_path, &new_branch, &base, &wt_path) {
+            Ok(()) => sender.send(AppEvent::WorktreeCreated { path: wt_path }),
+            Err(e) => sender.send(AppEvent::GitError(format!("{e}"))),
+        }
+    });
+}
+
 fn process_action(
     action: Action,
     state: &mut AppState,
-    git: &dyn GitProvider,
+    git: &Arc<dyn GitProvider>,
     tmux: &dyn TmuxProvider,
     matcher: &SkimMatcherV2,
+    sender: &EventSender,
 ) -> Option<OpenAction> {
     match action {
         Action::Quit => return Some(OpenAction::Quit),
@@ -143,7 +247,7 @@ fn process_action(
         Action::EnterRepo => {
             if let Some(sel) = state.repo_selected {
                 if let Some(&(idx, _)) = state.filtered_repos.get(sel) {
-                    enter_branch_select(state, idx, git, tmux);
+                    enter_branch_select(state, idx, git.as_ref(), tmux);
                 }
             }
         }
@@ -157,7 +261,7 @@ fn process_action(
                 state.new_branch_base = None;
                 state.mode = Mode::BranchSelect;
             }
-            Mode::RepoSelect => {}
+            Mode::RepoSelect | Mode::Loading(_) => {}
         },
 
         Action::OpenBranch => match state.mode {
@@ -174,17 +278,16 @@ fn process_action(
                             });
                         }
                         let wt_path = worktree_dir(repo, &branch.name);
-                        match git.add_worktree(&repo.path, &branch.name, &wt_path) {
-                            Ok(()) => {
-                                return Some(OpenAction::Open {
-                                    path: wt_path,
-                                    split_command: state.split_command.clone(),
-                                });
-                            }
-                            Err(e) => {
-                                state.error = Some(format!("{e}"));
-                            }
-                        }
+                        let branch_name = branch.name.clone();
+                        state.mode =
+                            Mode::Loading(format!("Creating worktree for {branch_name}..."));
+                        spawn_worktree_creation(
+                            git,
+                            sender,
+                            repo.path.clone(),
+                            branch_name,
+                            wt_path,
+                        );
                     }
                 }
             }
@@ -196,26 +299,21 @@ fn process_action(
                             let new_name = flow.new_name.clone();
                             let repo = &state.repos[state.selected_repo_idx.unwrap()];
                             let wt_path = worktree_dir(repo, &new_name);
-                            match git
-                                .create_branch_and_worktree(&repo.path, &new_name, &base, &wt_path)
-                            {
-                                Ok(()) => {
-                                    return Some(OpenAction::Open {
-                                        path: wt_path,
-                                        split_command: state.split_command.clone(),
-                                    });
-                                }
-                                Err(e) => {
-                                    state.error = Some(format!("{e}"));
-                                    state.new_branch_base = None;
-                                    state.mode = Mode::BranchSelect;
-                                }
-                            }
+                            state.mode =
+                                Mode::Loading(format!("Creating branch {new_name} from {base}..."));
+                            spawn_branch_and_worktree_creation(
+                                git,
+                                sender,
+                                repo.path.clone(),
+                                new_name,
+                                base,
+                                wt_path,
+                            );
                         }
                     }
                 }
             }
-            Mode::RepoSelect => {}
+            Mode::RepoSelect | Mode::Loading(_) => {}
         },
 
         Action::StartNewBranchFlow => {
@@ -251,6 +349,7 @@ fn process_action(
                     move_selection(&mut flow.selected, flow.filtered.len(), delta);
                 }
             }
+            Mode::Loading(_) => {}
         },
 
         Action::SearchPush(c) => match state.mode {
@@ -268,6 +367,7 @@ fn process_action(
                     update_flow_filter(flow, matcher);
                 }
             }
+            Mode::Loading(_) => {}
         },
 
         Action::SearchPop => match state.mode {
@@ -285,6 +385,7 @@ fn process_action(
                     update_flow_filter(flow, matcher);
                 }
             }
+            Mode::Loading(_) => {}
         },
 
         Action::ShowError(msg) => {

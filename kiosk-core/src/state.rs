@@ -17,6 +17,8 @@ pub enum Mode {
     RepoSelect,
     BranchSelect,
     NewBranchBase,
+    /// Blocking loading state — shows spinner, no input except Ctrl+C
+    Loading(String),
 }
 
 /// The new-branch flow state

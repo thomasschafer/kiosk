@@ -14,6 +14,7 @@ pub fn resolve_action(key: KeyEvent, state: &AppState) -> Option<Action> {
         Mode::RepoSelect => resolve_repo_key(key.code),
         Mode::BranchSelect => resolve_branch_key(key.code, state),
         Mode::NewBranchBase => resolve_new_branch_key(key.code),
+        Mode::Loading(_) => None, // Handled directly in app.rs (only Ctrl+C)
     }
 }
 

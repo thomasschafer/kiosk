@@ -6,18 +6,19 @@ use kiosk_core::{
     tmux::CliTmuxProvider,
 };
 use kiosk_tui::OpenAction;
+use std::sync::Arc;
 
 fn main() -> Result<()> {
     let config = config::load_config()?;
     let search_dirs = config.resolved_search_dirs();
 
-    let git = CliGitProvider;
+    let git: Arc<dyn GitProvider> = Arc::new(CliGitProvider);
     let tmux = CliTmuxProvider;
     let repos = git.discover_repos(&search_dirs);
     let mut state = AppState::new(repos, config.session.split_command.clone());
 
     let mut terminal = ratatui::init();
-    let result = kiosk_tui::run(&mut terminal, &mut state, &git, &tmux);
+    let result = kiosk_tui::run(&mut terminal, &mut state, git, &tmux);
     ratatui::restore();
 
     match result? {

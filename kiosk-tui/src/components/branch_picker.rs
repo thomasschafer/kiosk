@@ -38,7 +38,10 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState) {
             let mut spans = vec![Span::raw(&branch.name)];
 
             if branch.has_session {
-                spans.push(Span::styled(" ●", Style::default().fg(Color::Green)));
+                spans.push(Span::styled(
+                    " (session)",
+                    Style::default().fg(Color::Green),
+                ));
             } else if branch.worktree_path.is_some() {
                 spans.push(Span::styled(
                     " (worktree)",

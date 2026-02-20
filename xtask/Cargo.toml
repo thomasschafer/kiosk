@@ -1,0 +1,14 @@
+[package]
+name = "xtask"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+syn = { version = "2", features = ["full", "parsing"] }
+quote = "1"
+
+[lints]
+workspace = true

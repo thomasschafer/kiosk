@@ -32,6 +32,17 @@ jobs:
       - name: Run clippy
         run: cargo clippy --workspace -- -D warnings
 
+      - name: Check README is up to date
+        id: check-readme
+        run: cargo run -p xtask -- readme --check
+
+      - name: Show diff (if outdated)
+        if: failure() && steps.check-readme.outcome == 'failure'
+        run: |
+          cargo run -p xtask -- readme
+          git diff README.md
+          echo "Run \`cargo run -p xtask -- readme\` to regenerate"
+
   test:
     name: Test (${{ matrix.os }})
     needs: [check]

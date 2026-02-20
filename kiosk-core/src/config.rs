@@ -5,9 +5,20 @@ use std::{fs, path::PathBuf};
 pub const APP_NAME: &str = "kiosk";
 
 fn config_dir() -> PathBuf {
-    dirs::config_dir()
-        .expect("Unable to find config directory")
-        .join(APP_NAME)
+    // Use ~/.config on both Linux and macOS (not ~/Library/Application Support)
+    #[cfg(unix)]
+    {
+        dirs::home_dir()
+            .expect("Unable to find home directory")
+            .join(".config")
+            .join(APP_NAME)
+    }
+    #[cfg(windows)]
+    {
+        dirs::config_dir()
+            .expect("Unable to find config directory")
+            .join(APP_NAME)
+    }
 }
 
 fn config_file() -> PathBuf {
@@ -17,10 +28,14 @@ fn config_file() -> PathBuf {
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    /// Directories to scan for git repos (scanned 1 level deep)
+    /// Directories to scan for git repositories. Each directory is scanned one level deep.
+    /// Supports `~` for the home directory. For example:
+    /// ```toml
+    /// search_dirs = ["~/Development", "~/Work"]
+    /// ```
     pub search_dirs: Vec<String>,
 
-    /// Layout when creating a new tmux session
+    /// Layout when creating a new tmux session.
     #[serde(default)]
     pub session: SessionConfig,
 }
@@ -28,7 +43,12 @@ pub struct Config {
 #[derive(Debug, Deserialize, Clone, Default)]
 #[serde(deny_unknown_fields)]
 pub struct SessionConfig {
-    /// Command to run in a split pane when creating a new session (e.g. "hx")
+    /// Command to run in a split pane when creating a new session. For example, to open
+    /// Helix in a vertical split:
+    /// ```toml
+    /// [session]
+    /// split_command = "hx"
+    /// ```
     pub split_command: Option<String>,
 }
 

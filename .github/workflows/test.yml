@@ -32,6 +32,9 @@ jobs:
       - name: Run clippy
         run: cargo clippy --workspace -- -D warnings
 
+      - name: Run cargo check
+        run: cargo check
+
       - name: Check README is up to date
         id: check-readme
         run: cargo run -p xtask -- readme --check

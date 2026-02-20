@@ -2,6 +2,14 @@
 name = "kiosk-core"
 version.workspace = true
 edition.workspace = true
+authors = ["thomasschafer97@gmail.com"]
+license = "MIT"
+description = "Core library for kiosk — tmux session manager with worktree support"
+readme = "../README.md"
+homepage = "https://github.com/thomasschafer/kiosk"
+repository = "https://github.com/thomasschafer/kiosk"
+keywords = ["cli", "tmux", "worktree", "git"]
+categories = ["command-line-utilities"]
 
 [dependencies]
 anyhow.workspace = true

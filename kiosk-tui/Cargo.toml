@@ -2,12 +2,20 @@
 name = "kiosk-tui"
 version.workspace = true
 edition.workspace = true
+authors = ["thomasschafer97@gmail.com"]
+license = "MIT"
+description = "Terminal UI for kiosk — tmux session manager with worktree support"
+readme = "../README.md"
+homepage = "https://github.com/thomasschafer/kiosk"
+repository = "https://github.com/thomasschafer/kiosk"
+keywords = ["cli", "tmux", "worktree", "git"]
+categories = ["command-line-utilities"]
 
 [dependencies]
 anyhow.workspace = true
 crossterm = "0.28"
 fuzzy-matcher = "0.3"
-kiosk-core = { path = "../kiosk-core" }
+kiosk-core = { version = "0.1.0", path = "../kiosk-core" }
 ratatui = "0.29"
 
 [lints]

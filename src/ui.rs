@@ -102,9 +102,7 @@ impl App {
                 self.error = None;
 
                 // Global quit
-                if key.code == KeyCode::Char('c')
-                    && key.modifiers.contains(KeyModifiers::CONTROL)
-                {
+                if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
                     return Ok(None);
                 }
 
@@ -129,10 +127,7 @@ impl App {
         }
     }
 
-    fn handle_repo_select(
-        &mut self,
-        key: KeyCode,
-    ) -> anyhow::Result<Option<OpenAction>> {
+    fn handle_repo_select(&mut self, key: KeyCode) -> anyhow::Result<Option<OpenAction>> {
         match key {
             KeyCode::Esc => return Ok(Some(OpenAction::Quit)),
             KeyCode::Enter => {
@@ -157,10 +152,7 @@ impl App {
         Ok(None)
     }
 
-    fn handle_branch_select(
-        &mut self,
-        key: KeyCode,
-    ) -> anyhow::Result<Option<OpenAction>> {
+    fn handle_branch_select(&mut self, key: KeyCode) -> anyhow::Result<Option<OpenAction>> {
         match key {
             KeyCode::Esc => {
                 self.mode = Mode::RepoSelect;
@@ -216,10 +208,7 @@ impl App {
         Ok(None)
     }
 
-    fn handle_new_branch_base(
-        &mut self,
-        key: KeyCode,
-    ) -> anyhow::Result<Option<OpenAction>> {
+    fn handle_new_branch_base(&mut self, key: KeyCode) -> anyhow::Result<Option<OpenAction>> {
         let flow = self.new_branch_base.as_mut().unwrap();
         match key {
             KeyCode::Esc => {
@@ -236,10 +225,7 @@ impl App {
                         // Create new branch and worktree
                         let wt_path = worktree_dir(repo, &new_name);
                         match git::create_branch_and_worktree(
-                            &repo.path,
-                            &new_name,
-                            &base,
-                            &wt_path,
+                            &repo.path, &new_name, &base, &wt_path,
                         ) {
                             Ok(()) => {
                                 return Ok(Some(OpenAction::Open {
@@ -317,10 +303,7 @@ impl App {
                     .as_ref()
                     .map(|p| sessions.contains(&tmux::session_name_for(p)))
                     .unwrap_or(false);
-                let is_current = repo
-                    .worktrees
-                    .first()
-                    .and_then(|wt| wt.branch.as_deref())
+                let is_current = repo.worktrees.first().and_then(|wt| wt.branch.as_deref())
                     == Some(branch_name.as_str());
 
                 BranchEntry {
@@ -413,8 +396,8 @@ impl App {
 
     fn draw(&mut self, f: &mut Frame) {
         let (main_area, error_area) = if self.error.is_some() {
-            let chunks = Layout::vertical([Constraint::Min(1), Constraint::Length(1)])
-                .split(f.area());
+            let chunks =
+                Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(f.area());
             (chunks[0], Some(chunks[1]))
         } else {
             (f.area(), None)
@@ -440,8 +423,7 @@ impl App {
     }
 
     fn draw_repo_select_area(&mut self, f: &mut Frame, area: Rect) {
-        let chunks =
-            Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(area);
+        let chunks = Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(area);
 
         // Search bar
         let search_text = if self.repo_search.is_empty() {
@@ -511,8 +493,7 @@ impl App {
             .map(|i| self.repos[i].name.as_str())
             .unwrap_or("??");
 
-        let chunks =
-            Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(area);
+        let chunks = Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(area);
 
         // Search bar
         let search_text = if self.branch_search.is_empty() {
@@ -599,8 +580,7 @@ impl App {
         let area = centered_rect(60, 60, f.area());
         f.render_widget(Clear, area);
 
-        let chunks =
-            Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(area);
+        let chunks = Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(area);
 
         let search_text = if flow.search.is_empty() {
             Line::from(Span::styled(

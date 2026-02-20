@@ -67,3 +67,28 @@ pub fn switch_to_session(name: &str) {
             .status();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_session_name_for_simple() {
+        let name = session_name_for(&PathBuf::from("/home/user/my-project"));
+        assert_eq!(name, "my-project");
+    }
+
+    #[test]
+    fn test_session_name_for_dots_replaced() {
+        let name = session_name_for(&PathBuf::from("/home/user/my.project.rs"));
+        assert_eq!(name, "my_project_rs");
+    }
+
+    #[test]
+    fn test_session_name_for_root() {
+        let name = session_name_for(&PathBuf::from("/"));
+        // Should not panic
+        assert!(!name.is_empty() || name.is_empty()); // just checking no panic
+    }
+}

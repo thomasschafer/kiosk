@@ -9,6 +9,8 @@ edition = "2024"
 [workspace.dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
+kiosk-core = { version = "0.1.0", path = "kiosk-core" }
+kiosk-tui = { version = "0.1.0", path = "kiosk-tui" }
 serde = { version = "1", features = ["derive"] }
 
 [workspace.lints.clippy]

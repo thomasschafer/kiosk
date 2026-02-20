@@ -14,8 +14,8 @@ categories = ["command-line-utilities"]
 [dependencies]
 anyhow.workspace = true
 clap = { workspace = true }
-kiosk-core = { version = "0.1.0", path = "../kiosk-core" }
-kiosk-tui = { version = "0.1.0", path = "../kiosk-tui" }
+kiosk-core.workspace = true
+kiosk-tui.workspace = true
 ratatui = "0.29"
 
 [dev-dependencies]

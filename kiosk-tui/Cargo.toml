@@ -15,7 +15,7 @@ categories = ["command-line-utilities"]
 anyhow.workspace = true
 crossterm = "0.28"
 fuzzy-matcher = "0.3"
-kiosk-core = { version = "0.1.0", path = "../kiosk-core" }
+kiosk-core.workspace = true
 ratatui = "0.29"
 
 [lints]

@@ -28,7 +28,7 @@ fn main() -> Result<()> {
 
             tmux::switch_to_session(&session_name);
         }
-        None => {}
+        Some(OpenAction::Quit) | None => {}
     }
 
     Ok(())

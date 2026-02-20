@@ -138,7 +138,7 @@ pub fn list_branches(repo_path: &Path) -> Vec<String> {
         .collect()
 }
 
-/// Add a new worktree
+/// Add a new worktree for an existing branch
 pub fn add_worktree(repo_path: &Path, branch: &str, worktree_path: &Path) -> Result<()> {
     let output = Command::new("git")
         .args(["worktree", "add", &worktree_path.to_string_lossy(), branch])
@@ -148,6 +148,33 @@ pub fn add_worktree(repo_path: &Path, branch: &str, worktree_path: &Path) -> Res
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         anyhow::bail!("git worktree add failed: {stderr}");
+    }
+
+    Ok(())
+}
+
+/// Create a new branch from a base and set up a worktree for it
+pub fn create_branch_and_worktree(
+    repo_path: &Path,
+    new_branch: &str,
+    base_branch: &str,
+    worktree_path: &Path,
+) -> Result<()> {
+    let output = Command::new("git")
+        .args([
+            "worktree",
+            "add",
+            "-b",
+            new_branch,
+            &worktree_path.to_string_lossy(),
+            base_branch,
+        ])
+        .current_dir(repo_path)
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("git worktree add -b failed: {stderr}");
     }
 
     Ok(())

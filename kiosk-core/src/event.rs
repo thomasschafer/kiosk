@@ -5,7 +5,7 @@ use std::path::PathBuf;
 #[derive(Debug, Clone)]
 pub enum AppEvent {
     /// A background git operation completed successfully
-    WorktreeCreated { path: PathBuf },
+    WorktreeCreated { path: PathBuf, session_name: String },
 
     /// A background git operation failed
     GitError(String),

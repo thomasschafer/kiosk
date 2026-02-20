@@ -192,14 +192,7 @@ fn draw_loading(
 /// Handle events from background tasks
 fn process_app_event(event: AppEvent, state: &mut AppState) -> Option<OpenAction> {
     match event {
-        AppEvent::WorktreeCreated { path } => {
-            // We need to compute the session name based on the worktree path
-            // For now, we'll use a simplified approach - this needs the repo context
-            let session_name = path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .replace('.', "_");
+        AppEvent::WorktreeCreated { path, session_name } => {
             return Some(OpenAction::Open {
                 path,
                 session_name,
@@ -226,6 +219,7 @@ fn spawn_worktree_creation(
     repo_path: PathBuf,
     branch: String,
     wt_path: PathBuf,
+    session_name: String,
 ) {
     let git = Arc::clone(git);
     let sender = sender.clone();
@@ -235,7 +229,7 @@ fn spawn_worktree_creation(
             return;
         }
         match git.add_worktree(&repo_path, &branch, &wt_path) {
-            Ok(()) => sender.send(AppEvent::WorktreeCreated { path: wt_path }),
+            Ok(()) => sender.send(AppEvent::WorktreeCreated { path: wt_path, session_name }),
             Err(e) => sender.send(AppEvent::GitError(format!("{e}"))),
         }
     });
@@ -248,6 +242,7 @@ fn spawn_branch_and_worktree_creation(
     new_branch: String,
     base: String,
     wt_path: PathBuf,
+    session_name: String,
 ) {
     let git = Arc::clone(git);
     let sender = sender.clone();
@@ -257,7 +252,7 @@ fn spawn_branch_and_worktree_creation(
             return;
         }
         match git.create_branch_and_worktree(&repo_path, &new_branch, &base, &wt_path) {
-            Ok(()) => sender.send(AppEvent::WorktreeCreated { path: wt_path }),
+            Ok(()) => sender.send(AppEvent::WorktreeCreated { path: wt_path, session_name }),
             Err(e) => sender.send(AppEvent::GitError(format!("{e}"))),
         }
     });
@@ -416,6 +411,7 @@ fn handle_open_branch(
                 match worktree_dir(repo, &branch.name) {
                     Ok(wt_path) => {
                         let branch_name = branch.name.clone();
+                        let session_name = repo.tmux_session_name(&wt_path);
                         state.mode =
                             Mode::Loading(format!("Creating worktree for {branch_name}..."));
                         spawn_worktree_creation(
@@ -424,6 +420,7 @@ fn handle_open_branch(
                             repo.path.clone(),
                             branch_name,
                             wt_path,
+                            session_name,
                         );
                     }
                     Err(e) => {
@@ -444,6 +441,7 @@ fn handle_open_branch(
                 let repo = &state.repos[repo_idx];
                 match worktree_dir(repo, &new_name) {
                     Ok(wt_path) => {
+                        let session_name = repo.tmux_session_name(&wt_path);
                         state.mode =
                             Mode::Loading(format!("Creating branch {new_name} from {base}..."));
                         spawn_branch_and_worktree_creation(
@@ -453,6 +451,7 @@ fn handle_open_branch(
                             new_name,
                             base,
                             wt_path,
+                            session_name,
                         );
                     }
                     Err(e) => {

@@ -17,7 +17,7 @@ use ratatui::{
 };
 use std::{
     path::PathBuf,
-    sync::{Arc, mpsc},
+    sync::{Arc, atomic::{AtomicBool, Ordering}, mpsc},
     thread,
     time::{Duration, Instant},
 };
@@ -26,6 +26,7 @@ use std::{
 pub enum OpenAction {
     Open {
         path: PathBuf,
+        session_name: String,
         split_command: Option<String>,
     },
     Quit,
@@ -35,6 +36,7 @@ pub enum OpenAction {
 #[derive(Clone)]
 pub struct EventSender {
     tx: mpsc::Sender<AppEvent>,
+    cancel: Arc<AtomicBool>,
 }
 
 impl EventSender {
@@ -51,14 +53,16 @@ pub fn run(
     state: &mut AppState,
     git: &Arc<dyn GitProvider>,
     tmux: &dyn TmuxProvider,
+    theme: &crate::theme::Theme,
 ) -> anyhow::Result<Option<OpenAction>> {
     let matcher = SkimMatcherV2::default();
     let (tx, rx) = mpsc::channel::<AppEvent>();
-    let event_sender = EventSender { tx };
+    let cancel = Arc::new(AtomicBool::new(false));
+    let event_sender = EventSender { tx, cancel: Arc::clone(&cancel) };
     let spinner_start = Instant::now();
 
     loop {
-        terminal.draw(|f| draw(f, state, &spinner_start))?;
+        terminal.draw(|f| draw(f, state, theme, &spinner_start))?;
 
         // Check background channel (non-blocking)
         if let Ok(app_event) = rx.try_recv() {
@@ -83,6 +87,8 @@ pub fn run(
                         .modifiers
                         .contains(crossterm::event::KeyModifiers::CONTROL)
                 {
+                    // Signal cancellation to background threads
+                    cancel.store(true, Ordering::Relaxed);
                     return Ok(Some(OpenAction::Quit));
                 }
                 continue;
@@ -101,10 +107,10 @@ pub fn run(
     }
 }
 
-fn draw(f: &mut Frame, state: &AppState, spinner_start: &Instant) {
+fn draw(f: &mut Frame, state: &AppState, theme: &crate::theme::Theme, spinner_start: &Instant) {
     // Loading mode: full-screen spinner
     if let Mode::Loading(ref msg) = state.mode {
-        draw_loading(f, f.area(), msg, spinner_start);
+        draw_loading(f, f.area(), msg, theme, spinner_start);
         return;
     }
 
@@ -116,11 +122,11 @@ fn draw(f: &mut Frame, state: &AppState, spinner_start: &Instant) {
     };
 
     match state.mode {
-        Mode::RepoSelect => components::repo_list::draw(f, main_area, state),
-        Mode::BranchSelect => components::branch_picker::draw(f, main_area, state),
+        Mode::RepoSelect => components::repo_list::draw(f, main_area, state, theme),
+        Mode::BranchSelect => components::branch_picker::draw(f, main_area, state, theme),
         Mode::NewBranchBase => {
-            components::branch_picker::draw(f, main_area, state);
-            components::new_branch::draw(f, state);
+            components::branch_picker::draw(f, main_area, state, theme);
+            components::new_branch::draw(f, state, theme);
         }
         Mode::Loading(_) => unreachable!(),
     }
@@ -130,7 +136,7 @@ fn draw(f: &mut Frame, state: &AppState, spinner_start: &Instant) {
     }
 }
 
-fn draw_loading(f: &mut Frame, area: Rect, message: &str, start: &Instant) {
+fn draw_loading(f: &mut Frame, area: Rect, message: &str, theme: &crate::theme::Theme, start: &Instant) {
     let elapsed = start.elapsed().as_millis() as usize;
     let frame_idx = (elapsed / 80) % SPINNER_FRAMES.len();
     let spinner = SPINNER_FRAMES[frame_idx];
@@ -139,7 +145,7 @@ fn draw_loading(f: &mut Frame, area: Rect, message: &str, start: &Instant) {
         Span::styled(
             format!("{spinner} "),
             Style::default()
-                .fg(Color::Magenta)
+                .fg(theme.accent)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw(message),
@@ -147,7 +153,7 @@ fn draw_loading(f: &mut Frame, area: Rect, message: &str, start: &Instant) {
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Magenta));
+        .border_style(Style::default().fg(theme.accent));
 
     // Centre vertically
     let vertical = Layout::vertical([
@@ -174,8 +180,15 @@ fn draw_loading(f: &mut Frame, area: Rect, message: &str, start: &Instant) {
 fn process_app_event(event: AppEvent, state: &mut AppState) -> Option<OpenAction> {
     match event {
         AppEvent::WorktreeCreated { path } => {
+            // We need to compute the session name based on the worktree path
+            // For now, we'll use a simplified approach - this needs the repo context
+            let session_name = path.file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .replace('.', "_");
             return Some(OpenAction::Open {
                 path,
+                session_name,
                 split_command: state.split_command.clone(),
             });
         }
@@ -203,9 +216,15 @@ fn spawn_worktree_creation(
     let git = Arc::clone(git);
     let sender = sender.clone();
     thread::spawn(
-        move || match git.add_worktree(&repo_path, &branch, &wt_path) {
-            Ok(()) => sender.send(AppEvent::WorktreeCreated { path: wt_path }),
-            Err(e) => sender.send(AppEvent::GitError(format!("{e}"))),
+        move || {
+            // Check if cancelled before starting
+            if sender.cancel.load(Ordering::Relaxed) {
+                return;
+            }
+            match git.add_worktree(&repo_path, &branch, &wt_path) {
+                Ok(()) => sender.send(AppEvent::WorktreeCreated { path: wt_path }),
+                Err(e) => sender.send(AppEvent::GitError(format!("{e}"))),
+            }
         },
     );
 }
@@ -221,6 +240,10 @@ fn spawn_branch_and_worktree_creation(
     let git = Arc::clone(git);
     let sender = sender.clone();
     thread::spawn(move || {
+        // Check if cancelled before starting
+        if sender.cancel.load(Ordering::Relaxed) {
+            return;
+        }
         match git.create_branch_and_worktree(&repo_path, &new_branch, &base, &wt_path) {
             Ok(()) => sender.send(AppEvent::WorktreeCreated { path: wt_path }),
             Err(e) => sender.send(AppEvent::GitError(format!("{e}"))),
@@ -244,8 +267,10 @@ fn process_action(
                 && let Some(&(idx, _)) = state.filtered_repos.get(sel)
             {
                 let repo = &state.repos[idx];
+                let session_name = repo.tmux_session_name(&repo.path);
                 return Some(OpenAction::Open {
                     path: repo.path.clone(),
+                    session_name,
                     split_command: state.split_command.clone(),
                 });
             }
@@ -369,15 +394,24 @@ fn handle_open_branch(
                 let repo = &state.repos[repo_idx];
 
                 if let Some(wt_path) = &branch.worktree_path {
+                    let session_name = repo.tmux_session_name(wt_path);
                     return Some(OpenAction::Open {
                         path: wt_path.clone(),
+                        session_name,
                         split_command: state.split_command.clone(),
                     });
                 }
-                let wt_path = worktree_dir(repo, &branch.name);
-                let branch_name = branch.name.clone();
-                state.mode = Mode::Loading(format!("Creating worktree for {branch_name}..."));
-                spawn_worktree_creation(git, sender, repo.path.clone(), branch_name, wt_path);
+                match worktree_dir(repo, &branch.name) {
+                    Ok(wt_path) => {
+                        let branch_name = branch.name.clone();
+                        state.mode = Mode::Loading(format!("Creating worktree for {branch_name}..."));
+                        spawn_worktree_creation(git, sender, repo.path.clone(), branch_name, wt_path);
+                    }
+                    Err(e) => {
+                        state.error = Some(format!("Failed to determine worktree path: {e}"));
+                        return None;
+                    }
+                }
             }
         }
         Mode::NewBranchBase => {
@@ -389,16 +423,23 @@ fn handle_open_branch(
                 let new_name = flow.new_name.clone();
                 let repo_idx = state.selected_repo_idx?;
                 let repo = &state.repos[repo_idx];
-                let wt_path = worktree_dir(repo, &new_name);
-                state.mode = Mode::Loading(format!("Creating branch {new_name} from {base}..."));
-                spawn_branch_and_worktree_creation(
-                    git,
-                    sender,
-                    repo.path.clone(),
-                    new_name,
-                    base,
-                    wt_path,
-                );
+                match worktree_dir(repo, &new_name) {
+                    Ok(wt_path) => {
+                        state.mode = Mode::Loading(format!("Creating branch {new_name} from {base}..."));
+                        spawn_branch_and_worktree_creation(
+                            git,
+                            sender,
+                            repo.path.clone(),
+                            new_name,
+                            base,
+                            wt_path,
+                        );
+                    }
+                    Err(e) => {
+                        state.error = Some(format!("Failed to determine worktree path: {e}"));
+                        return None;
+                    }
+                }
             }
         }
         Mode::RepoSelect | Mode::Loading(_) => {}
@@ -434,7 +475,7 @@ fn enter_branch_select(
                 .map(|wt| wt.path.clone());
             let has_session = worktree_path
                 .as_ref()
-                .is_some_and(|p| sessions.contains(&tmux.session_name_for(p)));
+                .is_some_and(|p| sessions.contains(&repo.tmux_session_name(p)));
             let is_current = repo.worktrees.first().and_then(|wt| wt.branch.as_deref())
                 == Some(branch_name.as_str());
 
@@ -552,12 +593,13 @@ mod tests {
 
     fn make_sender() -> EventSender {
         let (tx, _rx) = mpsc::channel();
-        EventSender { tx }
+        EventSender { tx, cancel: Arc::new(AtomicBool::new(false)) }
     }
 
     fn make_repo(name: &str) -> Repo {
         Repo {
             name: name.to_string(),
+            session_name: name.to_string(),
             path: PathBuf::from(format!("/tmp/{name}")),
             worktrees: vec![Worktree {
                 path: PathBuf::from(format!("/tmp/{name}")),
@@ -662,7 +704,10 @@ mod tests {
         );
         assert!(result.is_some());
         match result.unwrap() {
-            OpenAction::Open { path, .. } => assert_eq!(path, PathBuf::from("/tmp/alpha")),
+            OpenAction::Open { path, session_name, .. } => {
+                assert_eq!(path, PathBuf::from("/tmp/alpha"));
+                assert_eq!(session_name, "alpha");
+            },
             _ => panic!("Expected OpenAction::Open"),
         }
     }
@@ -782,9 +827,11 @@ mod tests {
         match result.unwrap() {
             OpenAction::Open {
                 path,
+                session_name,
                 split_command,
             } => {
                 assert_eq!(path, PathBuf::from("/tmp/beta"));
+                assert_eq!(session_name, "beta");
                 assert_eq!(split_command.as_deref(), Some("hx"));
             }
             _ => panic!("Expected OpenAction::Open"),

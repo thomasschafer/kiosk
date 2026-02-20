@@ -18,7 +18,7 @@ pub struct MockGitProvider {
 }
 
 impl GitProvider for MockGitProvider {
-    fn discover_repos(&self, _dirs: &[PathBuf]) -> Vec<Repo> {
+    fn discover_repos(&self, _dirs: &[(PathBuf, u16)]) -> Vec<Repo> {
         self.repos.clone()
     }
 

@@ -23,11 +23,4 @@ impl TmuxProvider for MockTmuxProvider {
     fn is_inside_tmux(&self) -> bool {
         self.inside_tmux
     }
-
-    fn session_name_for(&self, path: &Path) -> String {
-        path.file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .replace('.', "_")
-    }
 }

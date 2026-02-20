@@ -1,4 +1,5 @@
 use anyhow::Result;
+use clap::Parser;
 use kiosk_core::{
     config,
     git::{CliGitProvider, GitProvider},
@@ -8,8 +9,17 @@ use kiosk_core::{
 use kiosk_tui::OpenAction;
 use std::sync::Arc;
 
+#[derive(Parser)]
+#[command(version, about = "Tmux session manager with worktree support")]
+struct Cli {
+    /// Path to config file (default: ~/.config/kiosk/config.toml)
+    #[arg(short, long)]
+    config: Option<std::path::PathBuf>,
+}
+
 fn main() -> Result<()> {
-    let config = config::load_config()?;
+    let cli = Cli::parse();
+    let config = config::load_config(cli.config.as_deref())?;
     let search_dirs = config.resolved_search_dirs();
 
     let git: Arc<dyn GitProvider> = Arc::new(CliGitProvider);
@@ -24,10 +34,10 @@ fn main() -> Result<()> {
     match result? {
         Some(OpenAction::Open {
             path,
+            session_name,
             split_command,
         }) => {
             use kiosk_core::tmux::TmuxProvider;
-            let session_name = tmux.session_name_for(&path);
 
             if !tmux.session_exists(&session_name) {
                 tmux.create_session(&session_name, &path, split_command.as_deref());

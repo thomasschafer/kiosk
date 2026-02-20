@@ -12,27 +12,38 @@ use std::{
 pub struct CliGitProvider;
 
 impl GitProvider for CliGitProvider {
-    fn discover_repos(&self, dirs: &[PathBuf]) -> Vec<Repo> {
-        let mut repos = Vec::new();
+    fn discover_repos(&self, dirs: &[(PathBuf, u16)]) -> Vec<Repo> {
+        let mut repos_with_dirs = Vec::new();
 
-        for dir in dirs {
-            let Ok(entries) = std::fs::read_dir(dir) else {
-                continue;
-            };
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if !path.is_dir() {
-                    continue;
-                }
-                if path.join(".git").exists()
-                    && let Some(repo) = self.build_repo(&path)
-                {
-                    repos.push(repo);
-                }
-            }
+        for (dir, depth) in dirs {
+            self.scan_dir_recursive(dir, dir, *depth, &mut repos_with_dirs);
         }
 
-        repos.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        repos_with_dirs.sort_by(|a, b| a.0.name.to_lowercase().cmp(&b.0.name.to_lowercase()));
+
+        // Count occurrences of each repo name
+        let mut name_counts = std::collections::HashMap::new();
+        for (repo, _) in &repos_with_dirs {
+            *name_counts.entry(&repo.name).or_insert(0) += 1;
+        }
+
+        // Apply collision resolution
+        let mut repos = Vec::new();
+        for (mut repo, search_dir) in repos_with_dirs {
+            if name_counts[&repo.name] > 1 {
+                // Multiple repos with same name - disambiguate with parent dir
+                let parent_dir_name = search_dir
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy();
+                repo.session_name = format!("{}--({parent_dir_name})", repo.name);
+            } else {
+                // Unique name - use as is
+                repo.session_name = repo.name.clone();
+            }
+            repos.push(repo);
+        }
+
         repos
     }
 
@@ -114,11 +125,219 @@ impl GitProvider for CliGitProvider {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::collections::HashMap;
+
+    fn init_test_repo(dir: &Path) {
+        Command::new("git")
+            .args(["init"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        let dummy = dir.join("README.md");
+        fs::write(&dummy, "# test").unwrap();
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+    }
+
+    #[test]
+    fn test_discover_repos() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_dir = tmp.path().join("my-repo");
+        fs::create_dir_all(&repo_dir).unwrap();
+        init_test_repo(&repo_dir);
+
+        fs::create_dir_all(tmp.path().join("not-a-repo")).unwrap();
+
+        let provider = CliGitProvider;
+        let repos = provider.discover_repos(&[(tmp.path().to_path_buf(), 1)]);
+        assert_eq!(repos.len(), 1);
+        assert_eq!(repos[0].name, "my-repo");
+        assert_eq!(repos[0].session_name, "my-repo");
+        assert_eq!(repos[0].worktrees.len(), 1);
+        assert_eq!(repos[0].worktrees[0].branch.as_deref(), Some("master"));
+    }
+
+    #[test]
+    fn test_discover_repos_sorted() {
+        let tmp = tempfile::tempdir().unwrap();
+        for name in ["zebra", "alpha", "Middle"] {
+            let d = tmp.path().join(name);
+            fs::create_dir_all(&d).unwrap();
+            init_test_repo(&d);
+        }
+
+        let provider = CliGitProvider;
+        let repos = provider.discover_repos(&[(tmp.path().to_path_buf(), 1)]);
+        let names: Vec<&str> = repos.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, vec!["alpha", "Middle", "zebra"]);
+        // All should have unique names, so session_names should match names
+        for repo in &repos {
+            assert_eq!(repo.session_name, repo.name);
+        }
+    }
+
+    #[test]
+    fn test_discover_repos_collision_detection() {
+        let tmp1 = tempfile::tempdir().unwrap();
+        let tmp2 = tempfile::tempdir().unwrap();
+        
+        // Create repos with same name in different directories
+        let repo1 = tmp1.path().join("myrepo");
+        let repo2 = tmp2.path().join("myrepo");
+        fs::create_dir_all(&repo1).unwrap();
+        fs::create_dir_all(&repo2).unwrap();
+        init_test_repo(&repo1);
+        init_test_repo(&repo2);
+
+        let provider = CliGitProvider;
+        let repos = provider.discover_repos(&[(tmp1.path().to_path_buf(), 1), (tmp2.path().to_path_buf(), 1)]);
+        assert_eq!(repos.len(), 2);
+        
+        // Both should have same name but different session names
+        assert_eq!(repos[0].name, "myrepo");
+        assert_eq!(repos[1].name, "myrepo");
+        
+        // Session names should be disambiguated with parent dir names
+        let session_names: std::collections::HashSet<String> = repos.iter().map(|r| r.session_name.clone()).collect();
+        assert_eq!(session_names.len(), 2); // Both should be unique
+        
+        // Both should contain the repo name and parent dir somehow
+        for repo in &repos {
+            assert!(repo.session_name.contains("myrepo"));
+            assert!(repo.session_name.contains("--"));
+        }
+    }
+
+    #[test]
+    fn test_list_branches() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_test_repo(tmp.path());
+
+        Command::new("git")
+            .args(["branch", "feat/test"])
+            .current_dir(tmp.path())
+            .output()
+            .unwrap();
+
+        let provider = CliGitProvider;
+        let branches = provider.list_branches(tmp.path());
+        assert!(branches.contains(&"master".to_string()));
+        assert!(branches.contains(&"feat/test".to_string()));
+    }
+
+    #[test]
+    fn test_add_worktree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        init_test_repo(&repo);
+
+        Command::new("git")
+            .args(["branch", "feat/wt-test"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+
+        let provider = CliGitProvider;
+        let wt_path = tmp.path().join("repo-feat-wt-test");
+        provider
+            .add_worktree(&repo, "feat/wt-test", &wt_path)
+            .unwrap();
+
+        assert!(wt_path.exists());
+        assert!(wt_path.join("README.md").exists());
+
+        let worktrees = provider.list_worktrees(&repo);
+        assert_eq!(worktrees.len(), 2);
+    }
+
+    #[test]
+    fn test_create_branch_and_worktree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        init_test_repo(&repo);
+
+        let provider = CliGitProvider;
+        let wt_path = tmp.path().join("repo-new-branch");
+        provider
+            .create_branch_and_worktree(&repo, "new-branch", "master", &wt_path)
+            .unwrap();
+
+        assert!(wt_path.exists());
+        let branches = provider.list_branches(&repo);
+        assert!(branches.contains(&"new-branch".to_string()));
+    }
+
+    #[test]
+    fn test_add_worktree_fails_for_nonexistent_branch() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_test_repo(tmp.path());
+
+        let provider = CliGitProvider;
+        let wt_path = tmp.path().join("wt-nope");
+        let result = provider.add_worktree(tmp.path(), "nonexistent-branch", &wt_path);
+        assert!(result.is_err());
+    }
+}
+
 impl CliGitProvider {
+    fn scan_dir_recursive(
+        &self, 
+        dir: &Path, 
+        search_root: &Path, 
+        depth: u16, 
+        repos: &mut Vec<(Repo, &Path)>
+    ) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            
+            // If this directory is a git repo, add it
+            if path.join(".git").exists() {
+                if let Some(repo) = self.build_repo(&path) {
+                    repos.push((repo, search_root));
+                }
+            } else if depth > 1 {
+                // Recurse into subdirectories if we have remaining depth
+                self.scan_dir_recursive(&path, search_root, depth - 1, repos);
+            }
+        }
+    }
+    
     fn build_repo(&self, path: &Path) -> Option<Repo> {
         let name = path.file_name()?.to_string_lossy().to_string();
         let worktrees = self.list_worktrees(path);
         Some(Repo {
+            session_name: name.clone(),
             name,
             path: path.to_path_buf(),
             worktrees,

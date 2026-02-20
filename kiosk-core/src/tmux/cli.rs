@@ -58,48 +58,4 @@ impl TmuxProvider for CliTmuxProvider {
     fn is_inside_tmux(&self) -> bool {
         std::env::var("TMUX").is_ok()
     }
-
-    fn session_name_for(&self, path: &Path) -> String {
-        path.file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .replace('.', "_")
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::path::PathBuf;
-
-    #[test]
-    fn test_session_name_for_simple() {
-        let provider = CliTmuxProvider;
-        let name = provider.session_name_for(&PathBuf::from("/home/user/my-project"));
-        assert_eq!(name, "my-project");
-    }
-
-    #[test]
-    fn test_session_name_for_dots_replaced() {
-        let provider = CliTmuxProvider;
-        let name = provider.session_name_for(&PathBuf::from("/home/user/my.project.rs"));
-        assert_eq!(name, "my_project_rs");
-    }
-
-    #[test]
-    fn test_session_name_for_root() {
-        let provider = CliTmuxProvider;
-        let name = provider.session_name_for(&PathBuf::from("/"));
-        assert!(!name.is_empty() || name.is_empty()); // just checking no panic
-    }
-
-    #[test]
-    fn test_session_name_for_worktree() {
-        let provider = CliTmuxProvider;
-        // Worktree dirs include repo name, so basename is already unique
-        let name = provider.session_name_for(&PathBuf::from(
-            "/home/user/Development/.kiosk_worktrees/kiosk--feat-awesome",
-        ));
-        assert_eq!(name, "kiosk--feat-awesome");
-    }
 }

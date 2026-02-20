@@ -19,6 +19,8 @@ pub enum Mode {
     NewBranchBase,
     /// Blocking loading state — shows spinner, no input except Ctrl+C
     Loading(String),
+    /// Confirmation dialog for worktree deletion
+    ConfirmDelete(String),
 }
 
 /// The new-branch flow state

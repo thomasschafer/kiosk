@@ -15,6 +15,7 @@ pub struct MockGitProvider {
     pub worktrees: Vec<Worktree>,
     pub add_worktree_result: Mutex<Option<Result<()>>>,
     pub create_branch_result: Mutex<Option<Result<()>>>,
+    pub remove_worktree_result: Mutex<Option<Result<()>>>,
 }
 
 impl GitProvider for MockGitProvider {
@@ -46,6 +47,14 @@ impl GitProvider for MockGitProvider {
         _worktree_path: &Path,
     ) -> Result<()> {
         self.create_branch_result
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap_or(Ok(()))
+    }
+
+    fn remove_worktree(&self, _worktree_path: &Path) -> Result<()> {
+        self.remove_worktree_result
             .lock()
             .unwrap()
             .take()

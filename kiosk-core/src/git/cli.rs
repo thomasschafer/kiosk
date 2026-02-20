@@ -120,6 +120,19 @@ impl GitProvider for CliGitProvider {
 
         Ok(())
     }
+
+    fn remove_worktree(&self, worktree_path: &Path) -> Result<()> {
+        let output = Command::new("git")
+            .args(["worktree", "remove", &worktree_path.to_string_lossy()])
+            .output()?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("git worktree remove failed: {stderr}");
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]

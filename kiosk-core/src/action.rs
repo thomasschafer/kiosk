@@ -15,6 +15,9 @@ pub enum Action {
 
     // UI
     StartNewBranchFlow,
+    DeleteWorktree,
+    ConfirmDeleteWorktree,
+    CancelDeleteWorktree,
     ShowError(String),
     ClearError,
 }

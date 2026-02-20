@@ -14,4 +14,5 @@ pub trait GitProvider: Send + Sync {
         base: &str,
         worktree_path: &Path,
     ) -> Result<()>;
+    fn remove_worktree(&self, worktree_path: &Path) -> Result<()>;
 }

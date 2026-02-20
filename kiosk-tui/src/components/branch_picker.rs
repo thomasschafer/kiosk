@@ -79,7 +79,7 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(format!(" {count} branches (Esc to go back, Ctrl+N for new branch) "))
+                .title(format!(" {count} branches (Esc to go back, Ctrl+N for new branch, d to delete) "))
                 .border_style(Style::default().fg(Color::DarkGray)),
         )
         .highlight_style(

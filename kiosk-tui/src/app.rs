@@ -79,7 +79,7 @@ pub fn run(
 
         // Check background channel (non-blocking)
         if let Ok(app_event) = rx.try_recv() {
-            if let Some(result) = process_app_event(app_event, state) {
+            if let Some(result) = process_app_event(app_event, state, git.as_ref(), tmux) {
                 return Ok(Some(result));
             }
             continue;
@@ -141,6 +141,10 @@ fn draw(f: &mut Frame, state: &AppState, theme: &crate::theme::Theme, spinner_st
             components::branch_picker::draw(f, main_area, state, theme);
             components::new_branch::draw(f, state, theme);
         }
+        Mode::ConfirmDelete(_) => {
+            components::branch_picker::draw(f, main_area, state, theme);
+            draw_confirm_delete_dialog(f, main_area, state, theme);
+        }
         Mode::Loading(_) => unreachable!(),
     }
 
@@ -195,8 +199,63 @@ fn draw_loading(
     f.render_widget(paragraph, horizontal[1]);
 }
 
+fn draw_confirm_delete_dialog(
+    f: &mut Frame,
+    area: Rect,
+    state: &AppState,
+    theme: &crate::theme::Theme,
+) {
+    if let Mode::ConfirmDelete(branch_name) = &state.mode {
+        let text = vec![
+            Line::from(vec![
+                Span::raw("Delete worktree for branch "),
+                Span::styled(
+                    format!("\"{branch_name}\""),
+                    Style::default()
+                        .fg(theme.accent)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("?"),
+            ]),
+            Line::raw(""),
+            Line::from(vec![
+                Span::styled("y", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw("es / "),
+                Span::styled("n", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw("o / "),
+                Span::styled("Esc", Style::default().add_modifier(Modifier::BOLD)),
+            ]),
+        ];
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" Confirm Delete ")
+            .border_style(Style::default().fg(theme.accent));
+
+        // Centre the dialog
+        let vertical = Layout::vertical([
+            Constraint::Percentage(40),
+            Constraint::Length(5),
+            Constraint::Percentage(40),
+        ])
+        .split(area);
+
+        let horizontal = Layout::horizontal([
+            Constraint::Percentage(25),
+            Constraint::Percentage(50),
+            Constraint::Percentage(25),
+        ])
+        .split(vertical[1]);
+
+        let paragraph = Paragraph::new(text)
+            .block(block)
+            .alignment(ratatui::layout::Alignment::Center);
+        f.render_widget(paragraph, horizontal[1]);
+    }
+}
+
 /// Handle events from background tasks
-fn process_app_event(event: AppEvent, state: &mut AppState) -> Option<OpenAction> {
+fn process_app_event(event: AppEvent, state: &mut AppState, git: &dyn GitProvider, tmux: &dyn TmuxProvider) -> Option<OpenAction> {
     match event {
         AppEvent::ReposDiscovered { repos } => {
             state.repos = repos;
@@ -219,6 +278,14 @@ fn process_app_event(event: AppEvent, state: &mut AppState) -> Option<OpenAction
                 session_name,
                 split_command: state.split_command.clone(),
             });
+        }
+        AppEvent::WorktreeRemoved { branch_name: _ } => {
+            // Return to branch select and refresh the branch list
+            if let Some(repo_idx) = state.selected_repo_idx {
+                enter_branch_select(state, repo_idx, git, tmux);
+            } else {
+                state.mode = Mode::BranchSelect;
+            }
         }
         AppEvent::GitError(msg) => {
             // Return to the appropriate mode
@@ -268,6 +335,26 @@ fn spawn_worktree_creation(
         }
         match git.add_worktree(&repo_path, &branch, &wt_path) {
             Ok(()) => sender.send(AppEvent::WorktreeCreated { path: wt_path, session_name }),
+            Err(e) => sender.send(AppEvent::GitError(format!("{e}"))),
+        }
+    });
+}
+
+fn spawn_worktree_removal(
+    git: &Arc<dyn GitProvider>,
+    sender: &EventSender,
+    worktree_path: PathBuf,
+    branch_name: String,
+) {
+    let git = Arc::clone(git);
+    let sender = sender.clone();
+    thread::spawn(move || {
+        // Check if cancelled before starting
+        if sender.cancel.load(Ordering::Relaxed) {
+            return;
+        }
+        match git.remove_worktree(&worktree_path) {
+            Ok(()) => sender.send(AppEvent::WorktreeRemoved { branch_name }),
             Err(e) => sender.send(AppEvent::GitError(format!("{e}"))),
         }
     });
@@ -338,6 +425,9 @@ fn process_action(
                 state.new_branch_base = None;
                 state.mode = Mode::BranchSelect;
             }
+            Mode::ConfirmDelete(_) => {
+                state.mode = Mode::BranchSelect;
+            }
             Mode::RepoSelect | Mode::Loading(_) => {}
         },
 
@@ -381,13 +471,43 @@ fn process_action(
                     move_selection(&mut flow.selected, flow.filtered.len(), delta);
                 }
             }
-            Mode::Loading(_) => {}
+            Mode::ConfirmDelete(_) | Mode::Loading(_) => {}
         },
 
         Action::SearchPush(c) => handle_search_update(state, matcher, |s| s.push(c)),
         Action::SearchPop => handle_search_update(state, matcher, |s| {
             s.pop();
         }),
+
+        Action::DeleteWorktree => {
+            // Only allow deletion on branches with worktrees that are not current
+            if let Some(sel) = state.branch_selected
+                && let Some(&(idx, _)) = state.filtered_branches.get(sel)
+            {
+                let branch = &state.branches[idx];
+                if branch.worktree_path.is_some() && !branch.is_current {
+                    state.mode = Mode::ConfirmDelete(branch.name.clone());
+                }
+            }
+        }
+
+        Action::ConfirmDeleteWorktree => {
+            if let Mode::ConfirmDelete(branch_name) = &state.mode {
+                let branch_name = branch_name.clone();
+                // Find the branch and its worktree path
+                if let Some(branch) = state.branches.iter().find(|b| b.name == branch_name)
+                    && let Some(worktree_path) = &branch.worktree_path
+                {
+                    let worktree_path = worktree_path.clone();
+                    state.mode = Mode::Loading(format!("Removing worktree for {branch_name}..."));
+                    spawn_worktree_removal(git, sender, worktree_path, branch_name);
+                }
+            }
+        }
+
+        Action::CancelDeleteWorktree => {
+            state.mode = Mode::BranchSelect;
+        }
 
         Action::ShowError(msg) => {
             state.error = Some(msg);
@@ -420,7 +540,7 @@ fn handle_search_update(
                 update_flow_filter(flow, matcher);
             }
         }
-        Mode::Loading(_) => {}
+        Mode::ConfirmDelete(_) | Mode::Loading(_) => {}
     }
 }
 
@@ -499,7 +619,7 @@ fn handle_open_branch(
                 }
             }
         }
-        Mode::RepoSelect | Mode::Loading(_) => {}
+        Mode::RepoSelect | Mode::ConfirmDelete(_) | Mode::Loading(_) => {}
     }
     None
 }

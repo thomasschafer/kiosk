@@ -19,6 +19,7 @@ pub fn resolve_action(key: KeyEvent, state: &AppState) -> Option<Action> {
         Mode::RepoSelect => resolve_repo_key(key.code),
         Mode::BranchSelect => resolve_branch_key(key.code, state),
         Mode::NewBranchBase => resolve_new_branch_key(key.code),
+        Mode::ConfirmDelete(_) => resolve_confirm_delete_key(key.code),
         Mode::Loading(_) => None, // Handled directly in app.rs (only Ctrl+C)
     }
 }
@@ -49,6 +50,7 @@ fn resolve_branch_key(key: KeyCode, state: &AppState) -> Option<Action> {
         KeyCode::Up => Some(Action::MoveSelection(-1)),
         KeyCode::Down => Some(Action::MoveSelection(1)),
         KeyCode::Backspace => Some(Action::SearchPop),
+        KeyCode::Char('d') => Some(Action::DeleteWorktree),
         KeyCode::Char(c) => Some(Action::SearchPush(c)),
         _ => None,
     }
@@ -62,6 +64,14 @@ fn resolve_new_branch_key(key: KeyCode) -> Option<Action> {
         KeyCode::Down => Some(Action::MoveSelection(1)),
         KeyCode::Backspace => Some(Action::SearchPop),
         KeyCode::Char(c) => Some(Action::SearchPush(c)),
+        _ => None,
+    }
+}
+
+fn resolve_confirm_delete_key(key: KeyCode) -> Option<Action> {
+    match key {
+        KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => Some(Action::CancelDeleteWorktree),
+        KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => Some(Action::ConfirmDeleteWorktree),
         _ => None,
     }
 }

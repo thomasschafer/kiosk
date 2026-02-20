@@ -12,6 +12,9 @@ pub enum AppEvent {
     /// A background git operation completed successfully
     WorktreeCreated { path: PathBuf, session_name: String },
 
+    /// A worktree was successfully removed
+    WorktreeRemoved { branch_name: String },
+
     /// A background git operation failed
     GitError(String),
 }

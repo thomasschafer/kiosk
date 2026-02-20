@@ -291,13 +291,32 @@ name = "kiosk"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "crossterm",
- "dirs",
- "fuzzy-matcher",
+ "kiosk-core",
+ "kiosk-tui",
  "ratatui",
+ "tempfile",
+]
+
+[[package]]
+name = "kiosk-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dirs",
  "serde",
  "tempfile",
  "toml",
+]
+
+[[package]]
+name = "kiosk-tui"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "crossterm",
+ "fuzzy-matcher",
+ "kiosk-core",
+ "ratatui",
 ]
 
 [[package]]

@@ -1,0 +1,60 @@
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use kiosk_core::action::Action;
+use kiosk_core::state::{AppState, Mode};
+
+/// Resolve a key event into an Action based on current mode
+pub fn resolve_action(key: KeyEvent, state: &AppState) -> Option<Action> {
+    // Global quit
+    if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        return Some(Action::Quit);
+    }
+
+    // Clear error on any keypress
+    match state.mode {
+        Mode::RepoSelect => resolve_repo_key(key.code),
+        Mode::BranchSelect => resolve_branch_key(key.code, state),
+        Mode::NewBranchBase => resolve_new_branch_key(key.code),
+    }
+}
+
+fn resolve_repo_key(key: KeyCode) -> Option<Action> {
+    match key {
+        KeyCode::Esc => Some(Action::Quit),
+        KeyCode::Enter => Some(Action::EnterRepo),
+        KeyCode::Up => Some(Action::MoveSelection(-1)),
+        KeyCode::Down => Some(Action::MoveSelection(1)),
+        KeyCode::Backspace => Some(Action::SearchPop),
+        KeyCode::Char(c) => Some(Action::SearchPush(c)),
+        _ => None,
+    }
+}
+
+fn resolve_branch_key(key: KeyCode, state: &AppState) -> Option<Action> {
+    match key {
+        KeyCode::Esc => Some(Action::GoBack),
+        KeyCode::Enter => {
+            if !state.branch_search.is_empty() && state.filtered_branches.is_empty() {
+                Some(Action::StartNewBranchFlow)
+            } else {
+                Some(Action::OpenBranch)
+            }
+        }
+        KeyCode::Up => Some(Action::MoveSelection(-1)),
+        KeyCode::Down => Some(Action::MoveSelection(1)),
+        KeyCode::Backspace => Some(Action::SearchPop),
+        KeyCode::Char(c) => Some(Action::SearchPush(c)),
+        _ => None,
+    }
+}
+
+fn resolve_new_branch_key(key: KeyCode) -> Option<Action> {
+    match key {
+        KeyCode::Esc => Some(Action::GoBack),
+        KeyCode::Enter => Some(Action::OpenBranch),
+        KeyCode::Up => Some(Action::MoveSelection(-1)),
+        KeyCode::Down => Some(Action::MoveSelection(1)),
+        KeyCode::Backspace => Some(Action::SearchPop),
+        KeyCode::Char(c) => Some(Action::SearchPush(c)),
+        _ => None,
+    }
+}

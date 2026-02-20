@@ -21,7 +21,7 @@ impl TmuxProvider for CliTmuxProvider {
 
     fn session_exists(&self, name: &str) -> bool {
         Command::new("tmux")
-            .args(["has-session", "-t", name])
+            .args(["has-session", "-t", &format!("={name}")])
             .output()
             .is_ok_and(|o| o.status.success())
     }
@@ -35,10 +35,10 @@ impl TmuxProvider for CliTmuxProvider {
 
         if let Some(cmd) = split_command {
             let _ = Command::new("tmux")
-                .args(["split-window", "-h", "-t", name, "-c", &dir_str])
+                .args(["split-window", "-h", "-t", &format!("={name}"), "-c", &dir_str])
                 .status();
             let _ = Command::new("tmux")
-                .args(["send-keys", "-t", &format!("{name}:0.1"), cmd, "Enter"])
+                .args(["send-keys", "-t", &format!("={name}:0.1"), cmd, "Enter"])
                 .status();
         }
     }
@@ -46,11 +46,11 @@ impl TmuxProvider for CliTmuxProvider {
     fn switch_to_session(&self, name: &str) {
         if self.is_inside_tmux() {
             let _ = Command::new("tmux")
-                .args(["switch-client", "-t", name])
+                .args(["switch-client", "-t", &format!("={name}")])
                 .status();
         } else {
             let _ = Command::new("tmux")
-                .args(["attach-session", "-t", name])
+                .args(["attach-session", "-t", &format!("={name}")])
                 .status();
         }
     }

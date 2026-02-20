@@ -57,13 +57,12 @@ fn run_tui(config: config::Config) -> Result<()> {
 
     let git: Arc<dyn GitProvider> = Arc::new(CliGitProvider);
     let tmux = CliTmuxProvider;
-    let repos = git.discover_repos(&search_dirs);
-    let mut state = AppState::new(repos, config.session.split_command.clone());
+    let mut state = AppState::new_loading("Discovering repos...", config.session.split_command.clone());
 
     let theme = Theme::from_config(&config.theme);
 
     let mut terminal = ratatui::init();
-    let result = kiosk_tui::run(&mut terminal, &mut state, &git, &tmux, &theme);
+    let result = kiosk_tui::run(&mut terminal, &mut state, &git, &tmux, &theme, search_dirs);
     ratatui::restore();
 
     match result? {

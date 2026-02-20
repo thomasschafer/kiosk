@@ -80,6 +80,24 @@ impl AppState {
             error: None,
         }
     }
+
+    pub fn new_loading(loading_message: &str, split_command: Option<String>) -> Self {
+        Self {
+            repos: Vec::new(),
+            filtered_repos: Vec::new(),
+            repo_selected: None,
+            repo_search: String::new(),
+            selected_repo_idx: None,
+            branches: Vec::new(),
+            filtered_branches: Vec::new(),
+            branch_selected: None,
+            branch_search: String::new(),
+            new_branch_base: None,
+            split_command,
+            mode: Mode::Loading(loading_message.to_string()),
+            error: None,
+        }
+    }
 }
 
 /// Determine where to put a new worktree for a branch, avoiding collisions.

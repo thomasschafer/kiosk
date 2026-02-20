@@ -58,6 +58,7 @@ pub fn run(
     git: &Arc<dyn GitProvider>,
     tmux: &dyn TmuxProvider,
     theme: &crate::theme::Theme,
+    search_dirs: Vec<(std::path::PathBuf, u16)>,
 ) -> anyhow::Result<Option<OpenAction>> {
     let matcher = SkimMatcherV2::default();
     let (tx, rx) = mpsc::channel::<AppEvent>();
@@ -67,6 +68,11 @@ pub fn run(
         cancel: Arc::clone(&cancel),
     };
     let spinner_start = Instant::now();
+
+    // Start repo discovery in background if repos are empty
+    if state.repos.is_empty() {
+        spawn_repo_discovery(git, &event_sender, search_dirs);
+    }
 
     loop {
         terminal.draw(|f| draw(f, state, theme, &spinner_start))?;
@@ -192,6 +198,21 @@ fn draw_loading(
 /// Handle events from background tasks
 fn process_app_event(event: AppEvent, state: &mut AppState) -> Option<OpenAction> {
     match event {
+        AppEvent::ReposDiscovered { repos } => {
+            state.repos = repos;
+            state.filtered_repos = state
+                .repos
+                .iter()
+                .enumerate()
+                .map(|(i, _)| (i, 0))
+                .collect();
+            state.repo_selected = if state.filtered_repos.is_empty() {
+                None
+            } else {
+                Some(0)
+            };
+            state.mode = Mode::RepoSelect;
+        }
         AppEvent::WorktreeCreated { path, session_name } => {
             return Some(OpenAction::Open {
                 path,
@@ -211,6 +232,23 @@ fn process_app_event(event: AppEvent, state: &mut AppState) -> Option<OpenAction
         }
     }
     None
+}
+
+fn spawn_repo_discovery(
+    git: &Arc<dyn GitProvider>,
+    sender: &EventSender,
+    search_dirs: Vec<(std::path::PathBuf, u16)>,
+) {
+    let git = Arc::clone(git);
+    let sender = sender.clone();
+    thread::spawn(move || {
+        // Check if cancelled before starting
+        if sender.cancel.load(Ordering::Relaxed) {
+            return;
+        }
+        let repos = git.discover_repos(&search_dirs);
+        sender.send(AppEvent::ReposDiscovered { repos });
+    });
 }
 
 fn spawn_worktree_creation(

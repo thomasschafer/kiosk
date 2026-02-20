@@ -1,6 +1,8 @@
 # kiosk — Worktree Switcher
 
-A TUI for navigating git repos and worktrees with tmux session management.
+Tmux session manager that manages worktrees for you.
+
+Search for the repo you want, and optionally select a branch: if a session already exists you jump straight in. If one doesn't, a new session is created, with a new worktree if needed.
 
 ## What it does
 

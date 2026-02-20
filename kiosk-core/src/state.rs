@@ -106,3 +106,64 @@ pub fn worktree_dir(repo: &Repo, branch: &str) -> PathBuf {
     }
     unreachable!()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::git::Repo;
+    use std::fs;
+    use tempfile::tempdir;
+
+    fn make_repo(dir: &std::path::Path, name: &str) -> Repo {
+        Repo {
+            name: name.to_string(),
+            path: dir.join(name),
+            worktrees: vec![],
+        }
+    }
+
+    #[test]
+    fn test_worktree_dir_basic() {
+        let tmp = tempdir().unwrap();
+        let repo = make_repo(tmp.path(), "myrepo");
+        let result = worktree_dir(&repo, "main");
+        assert_eq!(
+            result,
+            tmp.path().join(".kiosk_worktrees").join("myrepo--main")
+        );
+    }
+
+    #[test]
+    fn test_worktree_dir_slash_in_branch() {
+        let tmp = tempdir().unwrap();
+        let repo = make_repo(tmp.path(), "repo");
+        let result = worktree_dir(&repo, "feat/awesome");
+        assert_eq!(
+            result,
+            tmp.path()
+                .join(".kiosk_worktrees")
+                .join("repo--feat-awesome")
+        );
+    }
+
+    #[test]
+    fn test_worktree_dir_dedup() {
+        let tmp = tempdir().unwrap();
+        let repo = make_repo(tmp.path(), "repo");
+        let first = tmp.path().join(".kiosk_worktrees").join("repo--main");
+        fs::create_dir_all(&first).unwrap();
+        let result = worktree_dir(&repo, "main");
+        assert_eq!(
+            result,
+            tmp.path().join(".kiosk_worktrees").join("repo--main-2")
+        );
+    }
+
+    #[test]
+    fn test_worktree_dir_in_kiosk_worktrees_subdir() {
+        let tmp = tempdir().unwrap();
+        let repo = make_repo(tmp.path(), "myrepo");
+        let result = worktree_dir(&repo, "dev");
+        assert!(result.to_string_lossy().contains(".kiosk_worktrees"));
+    }
+}

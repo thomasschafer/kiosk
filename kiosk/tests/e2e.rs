@@ -286,3 +286,74 @@ fn test_e2e_new_branch_flow() {
         "Should show create branch option: {screen}"
     );
 }
+
+#[test]
+fn test_e2e_worktree_creation() {
+    let env = TestEnv::new("worktree");
+    let search_dir = env.search_dir();
+
+    let repo = search_dir.join("wt-repo");
+    fs::create_dir_all(&repo).unwrap();
+    init_test_repo(&repo);
+
+    // Create a branch (but no worktree for it)
+    run_git(&repo, &["branch", "feat/wt-test"]);
+
+    env.write_config(&search_dir);
+    env.launch_kiosk();
+
+    // Enter the repo
+    env.send_special("Enter");
+    wait_ms(300);
+
+    // Search for the branch and select it
+    env.send("feat/wt");
+    wait_ms(300);
+    env.send_special("Enter");
+    wait_ms(2000); // Wait for worktree creation + session
+
+    // Verify the worktree was created in .kiosk_worktrees/ with -- separator
+    let wt_root = search_dir.join(".kiosk_worktrees");
+    let expected_wt = wt_root.join("wt-repo--feat-wt-test");
+    assert!(
+        expected_wt.exists(),
+        "Worktree should exist at {}: found {:?}",
+        expected_wt.display(),
+        fs::read_dir(&wt_root).ok().map(|d| d
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name())
+            .collect::<Vec<_>>())
+    );
+
+    // Verify tmux session was created with the worktree basename
+    let session_name = "wt-repo--feat-wt-test";
+    let output = Command::new("tmux")
+        .args(["has-session", "-t", session_name])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "tmux session '{}' should exist",
+        session_name
+    );
+
+    // Verify session working directory is the worktree path
+    let output = Command::new("tmux")
+        .args([
+            "display-message",
+            "-t",
+            session_name,
+            "-p",
+            "#{pane_current_path}",
+        ])
+        .output()
+        .unwrap();
+    let pane_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    assert!(
+        PathBuf::from(&pane_path) == expected_wt || pane_path.ends_with("wt-repo--feat-wt-test"),
+        "Session dir should be the worktree path, got: {pane_path}"
+    );
+
+    // Cleanup the created session
+    cleanup_session(session_name);
+}

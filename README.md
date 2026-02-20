@@ -69,14 +69,15 @@ Then `<prefix> F` opens the switcher in a popup.
 
 ### crates.io
 
-TODO
+Ensure you have the Rust toolchain installed, then run:
 
 ```sh
+cargo install kiosk
 ```
 
 ### Building from source
 
-Pull down the repo and run
+Ensure you have the Rust toolchain installed, then pull down the repo and run:
 
 ```sh
 cargo install --path kiosk

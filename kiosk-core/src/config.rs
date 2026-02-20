@@ -33,6 +33,8 @@ fn config_file() -> PathBuf {
     config_dir().join("config.toml")
 }
 
+pub const DEFAULT_SEARCH_DEPTH: u16 = 1;
+
 #[derive(Debug, Deserialize, Clone)]
 #[serde(untagged)]
 pub enum SearchDirEntry {
@@ -71,15 +73,104 @@ pub struct SessionConfig {
     pub split_command: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct ThemeConfig {
-    /// Primary accent color (default: magenta)
-    pub accent: Option<String>,
-    /// Secondary accent color (default: cyan)
-    pub secondary: Option<String>,
-    /// Success/positive color (default: green)
-    pub success: Option<String>,
+    /// Primary accent color (default: "magenta").
+    #[serde(
+        default = "ThemeConfig::default_accent",
+        deserialize_with = "deserialize_color"
+    )]
+    pub accent: ThemeColor,
+    /// Secondary accent color (default: "cyan").
+    #[serde(
+        default = "ThemeConfig::default_secondary",
+        deserialize_with = "deserialize_color"
+    )]
+    pub secondary: ThemeColor,
+    /// Success/positive color (default: "green").
+    #[serde(
+        default = "ThemeConfig::default_success",
+        deserialize_with = "deserialize_color"
+    )]
+    pub success: ThemeColor,
+}
+
+impl Default for ThemeConfig {
+    fn default() -> Self {
+        Self {
+            accent: Self::default_accent(),
+            secondary: Self::default_secondary(),
+            success: Self::default_success(),
+        }
+    }
+}
+
+impl ThemeConfig {
+    fn default_accent() -> ThemeColor {
+        ThemeColor::Named(NamedColor::Magenta)
+    }
+    fn default_secondary() -> ThemeColor {
+        ThemeColor::Named(NamedColor::Cyan)
+    }
+    fn default_success() -> ThemeColor {
+        ThemeColor::Named(NamedColor::Green)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ThemeColor {
+    Named(NamedColor),
+    Rgb(u8, u8, u8),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NamedColor {
+    Black,
+    Red,
+    Green,
+    Yellow,
+    Blue,
+    Magenta,
+    Cyan,
+    White,
+}
+
+impl ThemeColor {
+    pub fn parse(s: &str) -> Option<Self> {
+        if let Some(hex) = s.strip_prefix('#')
+            && hex.len() == 6
+        {
+            let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+            let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+            let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+            return Some(Self::Rgb(r, g, b));
+        }
+        let named = match s.to_lowercase().as_str() {
+            "black" => NamedColor::Black,
+            "red" => NamedColor::Red,
+            "green" => NamedColor::Green,
+            "yellow" => NamedColor::Yellow,
+            "blue" => NamedColor::Blue,
+            "magenta" => NamedColor::Magenta,
+            "cyan" => NamedColor::Cyan,
+            "white" => NamedColor::White,
+            _ => return None,
+        };
+        Some(Self::Named(named))
+    }
+}
+
+fn deserialize_color<'de, D>(deserializer: D) -> Result<ThemeColor, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s = String::deserialize(deserializer)?;
+    ThemeColor::parse(&s).ok_or_else(|| {
+        serde::de::Error::custom(format!(
+            "invalid color '{s}': expected a named color (black, red, green, yellow, blue, magenta, cyan, white) or hex (#rrggbb)"
+        ))
+    })
 }
 
 impl Config {
@@ -88,8 +179,10 @@ impl Config {
             .iter()
             .filter_map(|entry| {
                 let (path_str, depth) = match entry {
-                    SearchDirEntry::Simple(path) => (path.as_str(), 1),
-                    SearchDirEntry::Rich { path, depth } => (path.as_str(), depth.unwrap_or(1)),
+                    SearchDirEntry::Simple(path) => (path.as_str(), DEFAULT_SEARCH_DEPTH),
+                    SearchDirEntry::Rich { path, depth } => {
+                        (path.as_str(), depth.unwrap_or(DEFAULT_SEARCH_DEPTH))
+                    }
                 };
 
                 let resolved_path = if let Some(rest) = path_str.strip_prefix("~/")
@@ -197,9 +290,9 @@ unknown_field = true
     #[test]
     fn test_theme_config_defaults() {
         let config = load_config_from_str(r#"search_dirs = ["~/Development"]"#).unwrap();
-        assert!(config.theme.accent.is_none());
-        assert!(config.theme.secondary.is_none());
-        assert!(config.theme.success.is_none());
+        assert_eq!(config.theme.accent, ThemeColor::Named(NamedColor::Magenta));
+        assert_eq!(config.theme.secondary, ThemeColor::Named(NamedColor::Cyan));
+        assert_eq!(config.theme.success, ThemeColor::Named(NamedColor::Green));
     }
 
     #[test]
@@ -214,9 +307,43 @@ secondary = "#ff00ff"
 "##,
         )
         .unwrap();
-        assert_eq!(config.theme.accent.as_deref(), Some("blue"));
-        assert_eq!(config.theme.secondary.as_deref(), Some("#ff00ff"));
-        assert!(config.theme.success.is_none());
+        assert_eq!(config.theme.accent, ThemeColor::Named(NamedColor::Blue));
+        assert_eq!(config.theme.secondary, ThemeColor::Rgb(255, 0, 255));
+        assert_eq!(config.theme.success, ThemeColor::Named(NamedColor::Green));
+    }
+
+    #[test]
+    fn test_theme_invalid_color_rejected() {
+        let result = load_config_from_str(
+            r#"
+search_dirs = ["~/Development"]
+
+[theme]
+accent = "notacolor"
+"#,
+        );
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("invalid color"), "Error was: {err}");
+    }
+
+    #[test]
+    fn test_theme_color_parse() {
+        assert_eq!(
+            ThemeColor::parse("magenta"),
+            Some(ThemeColor::Named(NamedColor::Magenta))
+        );
+        assert_eq!(
+            ThemeColor::parse("RED"),
+            Some(ThemeColor::Named(NamedColor::Red))
+        );
+        assert_eq!(
+            ThemeColor::parse("#ff0000"),
+            Some(ThemeColor::Rgb(255, 0, 0))
+        );
+        assert_eq!(ThemeColor::parse("notacolor"), None);
+        assert_eq!(ThemeColor::parse("#fff"), None);
+        assert_eq!(ThemeColor::parse("#zzzzzz"), None);
     }
 
     #[test]

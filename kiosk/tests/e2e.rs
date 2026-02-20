@@ -220,7 +220,7 @@ fn test_e2e_enter_repo_shows_branches() {
     env.write_config(&search_dir);
     env.launch_kiosk();
 
-    env.send_special("Enter");
+    env.send_special("Tab");
     let screen = env.capture();
     assert!(
         screen.contains("select branch"),
@@ -246,7 +246,7 @@ fn test_e2e_esc_goes_back() {
     env.launch_kiosk();
 
     // Enter branch picker
-    env.send_special("Enter");
+    env.send_special("Tab");
     let screen = env.capture();
     assert!(
         screen.contains("select branch"),
@@ -275,7 +275,7 @@ fn test_e2e_new_branch_flow() {
     env.launch_kiosk();
 
     // Enter repo
-    env.send_special("Enter");
+    env.send_special("Tab");
     wait_ms(200);
 
     // Type a new branch name
@@ -303,7 +303,7 @@ fn test_e2e_worktree_creation() {
     env.launch_kiosk();
 
     // Enter the repo
-    env.send_special("Enter");
+    env.send_special("Tab");
     wait_ms(300);
 
     // Search for the branch and select it

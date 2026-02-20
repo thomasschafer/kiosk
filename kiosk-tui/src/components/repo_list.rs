@@ -58,7 +58,10 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(format!(" {} repos ", state.filtered_repos.len()))
+                .title(format!(
+                    " {} repos (Enter: open, Tab: branches) ",
+                    state.filtered_repos.len()
+                ))
                 .border_style(Style::default().fg(Color::DarkGray)),
         )
         .highlight_style(

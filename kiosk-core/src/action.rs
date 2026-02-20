@@ -2,6 +2,7 @@
 #[derive(Debug, Clone)]
 pub enum Action {
     // Navigation
+    OpenRepo,
     EnterRepo,
     OpenBranch,
     GoBack,

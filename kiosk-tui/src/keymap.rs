@@ -21,7 +21,8 @@ pub fn resolve_action(key: KeyEvent, state: &AppState) -> Option<Action> {
 fn resolve_repo_key(key: KeyCode) -> Option<Action> {
     match key {
         KeyCode::Esc => Some(Action::Quit),
-        KeyCode::Enter => Some(Action::EnterRepo),
+        KeyCode::Enter => Some(Action::OpenRepo),
+        KeyCode::Tab => Some(Action::EnterRepo),
         KeyCode::Up => Some(Action::MoveSelection(-1)),
         KeyCode::Down => Some(Action::MoveSelection(1)),
         KeyCode::Backspace => Some(Action::SearchPop),

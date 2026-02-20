@@ -1,4 +1,4 @@
-# kiosk — Worktree Switcher
+# kiosk
 
 Tmux session manager that manages worktrees for you.
 
@@ -6,14 +6,11 @@ Search for the repo you want, and optionally select a branch: if a session alrea
 
 ## What it does
 
-- Scans configured directories for git repos
-- Shows each repo with its branch and any git worktrees
-- Fuzzy search across everything
-- Enter opens/attaches a tmux session for that directory
-- `Ctrl+W` creates a new worktree from a branch picker
-- Shows which entries have active tmux sessions (green dot)
+TODO
 
 ## Config
+
+TODO: auto-generate
 
 `~/.config/kiosk/config.toml`:
 
@@ -38,19 +35,4 @@ Then `<prefix> F` opens the switcher in a popup.
 
 ## Keybindings
 
-| Key | Action |
-|-----|--------|
-| Type | Fuzzy search |
-| ↑/↓ | Navigate |
-| Enter | Open/attach session |
-| Ctrl+W | New worktree (branch picker) |
-| Esc | Quit / close popup |
-
-## Building
-
-```sh
-nix develop -c cargo build --release
-# or just: cargo build --release (if you have a C linker)
-```
-
-Binary will be at `target/release/kiosk`.
+TODO

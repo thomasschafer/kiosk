@@ -239,6 +239,18 @@ fn process_action(
     match action {
         Action::Quit => return Some(OpenAction::Quit),
 
+        Action::OpenRepo => {
+            if let Some(sel) = state.repo_selected
+                && let Some(&(idx, _)) = state.filtered_repos.get(sel)
+            {
+                let repo = &state.repos[idx];
+                return Some(OpenAction::Open {
+                    path: repo.path.clone(),
+                    split_command: state.split_command.clone(),
+                });
+            }
+        }
+
         Action::EnterRepo => {
             if let Some(sel) = state.repo_selected
                 && let Some(&(idx, _)) = state.filtered_repos.get(sel)
@@ -752,5 +764,30 @@ mod tests {
             &sender,
         );
         assert_eq!(state.repo_selected, Some(2));
+    }
+
+    #[test]
+    fn test_open_repo_returns_repo_path() {
+        let repos = vec![make_repo("alpha"), make_repo("beta")];
+        let mut state = AppState::new(repos, Some("hx".into()));
+        state.repo_selected = Some(1);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux = MockTmuxProvider::default();
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+
+        let result = process_action(Action::OpenRepo, &mut state, &git, &tmux, &matcher, &sender);
+        assert!(result.is_some());
+        match result.unwrap() {
+            OpenAction::Open {
+                path,
+                split_command,
+            } => {
+                assert_eq!(path, PathBuf::from("/tmp/beta"));
+                assert_eq!(split_command.as_deref(), Some("hx"));
+            }
+            _ => panic!("Expected OpenAction::Open"),
+        }
     }
 }

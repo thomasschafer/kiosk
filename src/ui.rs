@@ -41,6 +41,7 @@ pub struct App {
     matcher: SkimMatcherV2,
     split_command: Option<String>,
     mode: Mode,
+    error: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -84,6 +85,7 @@ impl App {
             matcher: SkimMatcherV2::default(),
             split_command,
             mode: Mode::RepoSelect,
+            error: None,
         }
     }
 
@@ -95,6 +97,9 @@ impl App {
                 if key.kind != KeyEventKind::Press {
                     continue;
                 }
+
+                // Clear error on any keypress
+                self.error = None;
 
                 // Global quit
                 if key.code == KeyCode::Char('c')
@@ -177,11 +182,17 @@ impl App {
                         }
                         // No worktree — create one
                         let wt_path = worktree_dir(repo, &branch.name);
-                        git::add_worktree(&repo.path, &branch.name, &wt_path)?;
-                        return Ok(Some(OpenAction::Open {
-                            path: wt_path,
-                            split_command: self.split_command.clone(),
-                        }));
+                        match git::add_worktree(&repo.path, &branch.name, &wt_path) {
+                            Ok(()) => {
+                                return Ok(Some(OpenAction::Open {
+                                    path: wt_path,
+                                    split_command: self.split_command.clone(),
+                                }));
+                            }
+                            Err(e) => {
+                                self.error = Some(format!("{e}"));
+                            }
+                        }
                     }
                 }
 
@@ -224,16 +235,24 @@ impl App {
 
                         // Create new branch and worktree
                         let wt_path = worktree_dir(repo, &new_name);
-                        git::create_branch_and_worktree(
+                        match git::create_branch_and_worktree(
                             &repo.path,
                             &new_name,
                             &base,
                             &wt_path,
-                        )?;
-                        return Ok(Some(OpenAction::Open {
-                            path: wt_path,
-                            split_command: self.split_command.clone(),
-                        }));
+                        ) {
+                            Ok(()) => {
+                                return Ok(Some(OpenAction::Open {
+                                    path: wt_path,
+                                    split_command: self.split_command.clone(),
+                                }));
+                            }
+                            Err(e) => {
+                                self.error = Some(format!("{e}"));
+                                self.new_branch_base = None;
+                                self.mode = Mode::BranchSelect;
+                            }
+                        }
                     }
                 }
             }
@@ -393,19 +412,36 @@ impl App {
     // -- Drawing --
 
     fn draw(&mut self, f: &mut Frame) {
+        let (main_area, error_area) = if self.error.is_some() {
+            let chunks = Layout::vertical([Constraint::Min(1), Constraint::Length(1)])
+                .split(f.area());
+            (chunks[0], Some(chunks[1]))
+        } else {
+            (f.area(), None)
+        };
+
+        // Temporarily override f.area() by using main_area in draw calls
         match self.mode {
-            Mode::RepoSelect => self.draw_repo_select(f),
-            Mode::BranchSelect => self.draw_branch_select(f),
+            Mode::RepoSelect => self.draw_repo_select_area(f, main_area),
+            Mode::BranchSelect => self.draw_branch_select_area(f, main_area),
             Mode::NewBranchBase => {
-                self.draw_branch_select(f);
+                self.draw_branch_select_area(f, main_area);
                 self.draw_new_branch_popup(f);
             }
         }
+
+        if let (Some(error), Some(area)) = (&self.error, error_area) {
+            let error_line = Paragraph::new(Span::styled(
+                format!(" Error: {error}"),
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ));
+            f.render_widget(error_line, area);
+        }
     }
 
-    fn draw_repo_select(&mut self, f: &mut Frame) {
+    fn draw_repo_select_area(&mut self, f: &mut Frame, area: Rect) {
         let chunks =
-            Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(f.area());
+            Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(area);
 
         // Search bar
         let search_text = if self.repo_search.is_empty() {
@@ -469,14 +505,14 @@ impl App {
         f.render_stateful_widget(list, chunks[1], &mut self.repo_list_state);
     }
 
-    fn draw_branch_select(&mut self, f: &mut Frame) {
+    fn draw_branch_select_area(&mut self, f: &mut Frame, area: Rect) {
         let repo_name = self
             .selected_repo_idx
             .map(|i| self.repos[i].name.as_str())
             .unwrap_or("??");
 
         let chunks =
-            Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(f.area());
+            Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(area);
 
         // Search bar
         let search_text = if self.branch_search.is_empty() {
@@ -613,13 +649,23 @@ pub enum OpenAction {
     Quit,
 }
 
-/// Determine where to put a new worktree for a branch
+/// Determine where to put a new worktree for a branch, avoiding collisions
 fn worktree_dir(repo: &Repo, branch: &str) -> PathBuf {
-    // Place worktrees as siblings: ../repo-name-branch
     let parent = repo.path.parent().unwrap_or(&repo.path);
-    // Sanitize branch name for filesystem
     let safe_branch = branch.replace('/', "-");
-    parent.join(format!("{}-{safe_branch}", repo.name))
+    let base = format!("{}-{safe_branch}", repo.name);
+    let candidate = parent.join(&base);
+    if !candidate.exists() {
+        return candidate;
+    }
+    // Append incrementing suffix to avoid collision
+    for i in 2.. {
+        let candidate = parent.join(format!("{base}-{i}"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    unreachable!()
 }
 
 fn update_fuzzy_filter(

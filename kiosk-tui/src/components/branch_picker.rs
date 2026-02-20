@@ -10,8 +10,7 @@ use ratatui::{
 pub fn draw(f: &mut Frame, area: Rect, state: &AppState) {
     let repo_name = state
         .selected_repo_idx
-        .map(|i| state.repos[i].name.as_str())
-        .unwrap_or("??");
+        .map_or("??", |i| state.repos[i].name.as_str());
 
     let chunks = Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(area);
 

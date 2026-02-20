@@ -60,10 +60,14 @@ impl TmuxProvider for CliTmuxProvider {
     }
 
     fn session_name_for(&self, path: &Path) -> String {
-        path.file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .replace('.', "_")
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        // Include parent dir to avoid collisions between worktrees of different repos
+        if let Some(parent) = path.parent().and_then(|p| p.file_name()) {
+            let parent_name = parent.to_string_lossy();
+            format!("{parent_name}/{name}").replace('.', "_")
+        } else {
+            name.replace('.', "_")
+        }
     }
 }
 
@@ -76,14 +80,14 @@ mod tests {
     fn test_session_name_for_simple() {
         let provider = CliTmuxProvider;
         let name = provider.session_name_for(&PathBuf::from("/home/user/my-project"));
-        assert_eq!(name, "my-project");
+        assert_eq!(name, "user/my-project");
     }
 
     #[test]
     fn test_session_name_for_dots_replaced() {
         let provider = CliTmuxProvider;
         let name = provider.session_name_for(&PathBuf::from("/home/user/my.project.rs"));
-        assert_eq!(name, "my_project_rs");
+        assert_eq!(name, "user/my_project_rs");
     }
 
     #[test]
@@ -91,5 +95,14 @@ mod tests {
         let provider = CliTmuxProvider;
         let name = provider.session_name_for(&PathBuf::from("/"));
         assert!(!name.is_empty() || name.is_empty()); // just checking no panic
+    }
+
+    #[test]
+    fn test_session_name_avoids_collisions() {
+        let provider = CliTmuxProvider;
+        let a = provider.session_name_for(&PathBuf::from("/Dev/scooter-main"));
+        let b = provider.session_name_for(&PathBuf::from("/Dev/photodrop-main"));
+        // Both would have been "main" before; now they differ
+        assert_ne!(a, b);
     }
 }

@@ -49,7 +49,7 @@ const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦
 pub fn run(
     terminal: &mut DefaultTerminal,
     state: &mut AppState,
-    git: Arc<dyn GitProvider>,
+    git: &Arc<dyn GitProvider>,
     tmux: &dyn TmuxProvider,
 ) -> anyhow::Result<Option<OpenAction>> {
     let matcher = SkimMatcherV2::default();
@@ -69,34 +69,33 @@ pub fn run(
         }
 
         // Poll terminal events with a timeout so we can update spinner + check channel
-        if event::poll(Duration::from_millis(80))? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind != KeyEventKind::Press {
-                    continue;
-                }
+        if event::poll(Duration::from_millis(80))?
+            && let Event::Key(key) = event::read()?
+        {
+            if key.kind != KeyEventKind::Press {
+                continue;
+            }
 
-                // In loading mode, only allow Ctrl+C
-                if matches!(state.mode, Mode::Loading(_)) {
-                    if key.code == crossterm::event::KeyCode::Char('c')
-                        && key
-                            .modifiers
-                            .contains(crossterm::event::KeyModifiers::CONTROL)
-                    {
-                        return Ok(Some(OpenAction::Quit));
-                    }
-                    continue;
+            // In loading mode, only allow Ctrl+C
+            if matches!(state.mode, Mode::Loading(_)) {
+                if key.code == crossterm::event::KeyCode::Char('c')
+                    && key
+                        .modifiers
+                        .contains(crossterm::event::KeyModifiers::CONTROL)
+                {
+                    return Ok(Some(OpenAction::Quit));
                 }
+                continue;
+            }
 
-                // Clear error on any keypress
-                state.error = None;
+            // Clear error on any keypress
+            state.error = None;
 
-                if let Some(action) = keymap::resolve_action(key, state) {
-                    if let Some(result) =
-                        process_action(action, state, &git, tmux, &matcher, &event_sender)
-                    {
-                        return Ok(Some(result));
-                    }
-                }
+            if let Some(action) = keymap::resolve_action(key, state)
+                && let Some(result) =
+                    process_action(action, state, git, tmux, &matcher, &event_sender)
+            {
+                return Ok(Some(result));
             }
         }
     }
@@ -190,10 +189,6 @@ fn process_app_event(event: AppEvent, state: &mut AppState) -> Option<OpenAction
             }
             state.error = Some(msg);
         }
-        AppEvent::ReposLoaded(repos) => {
-            // Future: handle async repo discovery
-            let _ = repos;
-        }
     }
     None
 }
@@ -245,10 +240,10 @@ fn process_action(
         Action::Quit => return Some(OpenAction::Quit),
 
         Action::EnterRepo => {
-            if let Some(sel) = state.repo_selected {
-                if let Some(&(idx, _)) = state.filtered_repos.get(sel) {
-                    enter_branch_select(state, idx, git.as_ref(), tmux);
-                }
+            if let Some(sel) = state.repo_selected
+                && let Some(&(idx, _)) = state.filtered_repos.get(sel)
+            {
+                enter_branch_select(state, idx, git.as_ref(), tmux);
             }
         }
 
@@ -264,60 +259,15 @@ fn process_action(
             Mode::RepoSelect | Mode::Loading(_) => {}
         },
 
-        Action::OpenBranch => match state.mode {
-            Mode::BranchSelect => {
-                if let Some(sel) = state.branch_selected {
-                    if let Some(&(idx, _)) = state.filtered_branches.get(sel) {
-                        let branch = &state.branches[idx];
-                        let repo = &state.repos[state.selected_repo_idx.unwrap()];
-
-                        if let Some(wt_path) = &branch.worktree_path {
-                            return Some(OpenAction::Open {
-                                path: wt_path.clone(),
-                                split_command: state.split_command.clone(),
-                            });
-                        }
-                        let wt_path = worktree_dir(repo, &branch.name);
-                        let branch_name = branch.name.clone();
-                        state.mode =
-                            Mode::Loading(format!("Creating worktree for {branch_name}..."));
-                        spawn_worktree_creation(
-                            git,
-                            sender,
-                            repo.path.clone(),
-                            branch_name,
-                            wt_path,
-                        );
-                    }
-                }
+        Action::OpenBranch => {
+            if let Some(result) = handle_open_branch(state, git, sender) {
+                return Some(result);
             }
-            Mode::NewBranchBase => {
-                if let Some(flow) = &state.new_branch_base {
-                    if let Some(sel) = flow.selected {
-                        if let Some(&(idx, _)) = flow.filtered.get(sel) {
-                            let base = flow.bases[idx].clone();
-                            let new_name = flow.new_name.clone();
-                            let repo = &state.repos[state.selected_repo_idx.unwrap()];
-                            let wt_path = worktree_dir(repo, &new_name);
-                            state.mode =
-                                Mode::Loading(format!("Creating branch {new_name} from {base}..."));
-                            spawn_branch_and_worktree_creation(
-                                git,
-                                sender,
-                                repo.path.clone(),
-                                new_name,
-                                base,
-                                wt_path,
-                            );
-                        }
-                    }
-                }
-            }
-            Mode::RepoSelect | Mode::Loading(_) => {}
-        },
+        }
 
         Action::StartNewBranchFlow => {
-            let repo = &state.repos[state.selected_repo_idx.unwrap()];
+            let repo_idx = state.selected_repo_idx?;
+            let repo = &state.repos[repo_idx];
             let bases = git.list_branches(&repo.path);
             let filtered: Vec<(usize, i64)> =
                 bases.iter().enumerate().map(|(i, _)| (i, 0)).collect();
@@ -352,41 +302,10 @@ fn process_action(
             Mode::Loading(_) => {}
         },
 
-        Action::SearchPush(c) => match state.mode {
-            Mode::RepoSelect => {
-                state.repo_search.push(c);
-                update_repo_filter(state, matcher);
-            }
-            Mode::BranchSelect => {
-                state.branch_search.push(c);
-                update_branch_filter(state, matcher);
-            }
-            Mode::NewBranchBase => {
-                if let Some(flow) = &mut state.new_branch_base {
-                    flow.search.push(c);
-                    update_flow_filter(flow, matcher);
-                }
-            }
-            Mode::Loading(_) => {}
-        },
-
-        Action::SearchPop => match state.mode {
-            Mode::RepoSelect => {
-                state.repo_search.pop();
-                update_repo_filter(state, matcher);
-            }
-            Mode::BranchSelect => {
-                state.branch_search.pop();
-                update_branch_filter(state, matcher);
-            }
-            Mode::NewBranchBase => {
-                if let Some(flow) = &mut state.new_branch_base {
-                    flow.search.pop();
-                    update_flow_filter(flow, matcher);
-                }
-            }
-            Mode::Loading(_) => {}
-        },
+        Action::SearchPush(c) => handle_search_update(state, matcher, |s| s.push(c)),
+        Action::SearchPop => handle_search_update(state, matcher, |s| {
+            s.pop();
+        }),
 
         Action::ShowError(msg) => {
             state.error = Some(msg);
@@ -394,15 +313,84 @@ fn process_action(
         Action::ClearError => {
             state.error = None;
         }
-
-        // These are handled internally or not needed at this level
-        Action::SelectRepo(_)
-        | Action::SelectBranch(_)
-        | Action::CreateWorktree { .. }
-        | Action::CreateBranchAndWorktree { .. }
-        | Action::OpenSession { .. } => {}
     }
 
+    None
+}
+
+fn handle_search_update(
+    state: &mut AppState,
+    matcher: &SkimMatcherV2,
+    mutate: impl FnOnce(&mut String),
+) {
+    match state.mode {
+        Mode::RepoSelect => {
+            mutate(&mut state.repo_search);
+            update_repo_filter(state, matcher);
+        }
+        Mode::BranchSelect => {
+            mutate(&mut state.branch_search);
+            update_branch_filter(state, matcher);
+        }
+        Mode::NewBranchBase => {
+            if let Some(flow) = &mut state.new_branch_base {
+                mutate(&mut flow.search);
+                update_flow_filter(flow, matcher);
+            }
+        }
+        Mode::Loading(_) => {}
+    }
+}
+
+fn handle_open_branch(
+    state: &mut AppState,
+    git: &Arc<dyn GitProvider>,
+    sender: &EventSender,
+) -> Option<OpenAction> {
+    match state.mode {
+        Mode::BranchSelect => {
+            if let Some(sel) = state.branch_selected
+                && let Some(&(idx, _)) = state.filtered_branches.get(sel)
+            {
+                let branch = &state.branches[idx];
+                let repo_idx = state.selected_repo_idx?;
+                let repo = &state.repos[repo_idx];
+
+                if let Some(wt_path) = &branch.worktree_path {
+                    return Some(OpenAction::Open {
+                        path: wt_path.clone(),
+                        split_command: state.split_command.clone(),
+                    });
+                }
+                let wt_path = worktree_dir(repo, &branch.name);
+                let branch_name = branch.name.clone();
+                state.mode = Mode::Loading(format!("Creating worktree for {branch_name}..."));
+                spawn_worktree_creation(git, sender, repo.path.clone(), branch_name, wt_path);
+            }
+        }
+        Mode::NewBranchBase => {
+            if let Some(flow) = &state.new_branch_base
+                && let Some(sel) = flow.selected
+                && let Some(&(idx, _)) = flow.filtered.get(sel)
+            {
+                let base = flow.bases[idx].clone();
+                let new_name = flow.new_name.clone();
+                let repo_idx = state.selected_repo_idx?;
+                let repo = &state.repos[repo_idx];
+                let wt_path = worktree_dir(repo, &new_name);
+                state.mode = Mode::Loading(format!("Creating branch {new_name} from {base}..."));
+                spawn_branch_and_worktree_creation(
+                    git,
+                    sender,
+                    repo.path.clone(),
+                    new_name,
+                    base,
+                    wt_path,
+                );
+            }
+        }
+        Mode::RepoSelect | Mode::Loading(_) => {}
+    }
     None
 }
 
@@ -434,8 +422,7 @@ fn enter_branch_select(
                 .map(|wt| wt.path.clone());
             let has_session = worktree_path
                 .as_ref()
-                .map(|p| sessions.contains(&tmux.session_name_for(p)))
-                .unwrap_or(false);
+                .is_some_and(|p| sessions.contains(&tmux.session_name_for(p)));
             let is_current = repo.worktrees.first().and_then(|wt| wt.branch.as_deref())
                 == Some(branch_name.as_str());
 
@@ -473,9 +460,16 @@ fn move_selection(selected: &mut Option<usize>, len: usize, delta: i32) {
     if len == 0 {
         return;
     }
-    let current = selected.unwrap_or(0) as i32;
-    let next = (current + delta).clamp(0, len as i32 - 1) as usize;
-    *selected = Some(next);
+    let current = selected.unwrap_or(0);
+    if delta > 0 {
+        *selected = Some(
+            current
+                .saturating_add(delta.unsigned_abs() as usize)
+                .min(len - 1),
+        );
+    } else {
+        *selected = Some(current.saturating_sub(delta.unsigned_abs() as usize));
+    }
 }
 
 fn update_repo_filter(state: &mut AppState, matcher: &SkimMatcherV2) {
@@ -533,5 +527,230 @@ fn update_fuzzy_filter(
         *selected = None;
     } else {
         *selected = Some(0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kiosk_core::git::mock::MockGitProvider;
+    use kiosk_core::git::{Repo, Worktree};
+    use kiosk_core::state::{AppState, BranchEntry, Mode};
+    use kiosk_core::tmux::mock::MockTmuxProvider;
+
+    fn make_sender() -> EventSender {
+        let (tx, _rx) = mpsc::channel();
+        EventSender { tx }
+    }
+
+    fn make_repo(name: &str) -> Repo {
+        Repo {
+            name: name.to_string(),
+            path: PathBuf::from(format!("/tmp/{name}")),
+            worktrees: vec![Worktree {
+                path: PathBuf::from(format!("/tmp/{name}")),
+                branch: Some("main".to_string()),
+                is_main: true,
+            }],
+        }
+    }
+
+    #[test]
+    fn test_enter_repo_populates_branches() {
+        let repos = vec![make_repo("alpha"), make_repo("beta")];
+        let mut state = AppState::new(repos, None);
+        state.repo_selected = Some(0);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider {
+            branches: vec!["main".into(), "dev".into()],
+            ..Default::default()
+        });
+        let tmux = MockTmuxProvider::default();
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+
+        let result = process_action(
+            Action::EnterRepo,
+            &mut state,
+            &git,
+            &tmux,
+            &matcher,
+            &sender,
+        );
+        assert!(result.is_none());
+        assert_eq!(state.mode, Mode::BranchSelect);
+        assert_eq!(state.branches.len(), 2);
+    }
+
+    #[test]
+    fn test_go_back_from_branch_to_repo() {
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+        state.mode = Mode::BranchSelect;
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux = MockTmuxProvider::default();
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+
+        process_action(Action::GoBack, &mut state, &git, &tmux, &matcher, &sender);
+        assert_eq!(state.mode, Mode::RepoSelect);
+    }
+
+    #[test]
+    fn test_go_back_from_new_branch_to_branch() {
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+        state.mode = Mode::NewBranchBase;
+        state.new_branch_base = Some(kiosk_core::state::NewBranchFlow {
+            new_name: "feat".into(),
+            bases: vec!["main".into()],
+            filtered: vec![(0, 0)],
+            selected: Some(0),
+            search: String::new(),
+        });
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux = MockTmuxProvider::default();
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+
+        process_action(Action::GoBack, &mut state, &git, &tmux, &matcher, &sender);
+        assert_eq!(state.mode, Mode::BranchSelect);
+        assert!(state.new_branch_base.is_none());
+    }
+
+    #[test]
+    fn test_open_branch_with_existing_worktree() {
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+        state.selected_repo_idx = Some(0);
+        state.mode = Mode::BranchSelect;
+        state.branches = vec![BranchEntry {
+            name: "main".into(),
+            worktree_path: Some(PathBuf::from("/tmp/alpha")),
+            has_session: false,
+            is_current: true,
+        }];
+        state.filtered_branches = vec![(0, 0)];
+        state.branch_selected = Some(0);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux = MockTmuxProvider::default();
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+
+        let result = process_action(
+            Action::OpenBranch,
+            &mut state,
+            &git,
+            &tmux,
+            &matcher,
+            &sender,
+        );
+        assert!(result.is_some());
+        match result.unwrap() {
+            OpenAction::Open { path, .. } => assert_eq!(path, PathBuf::from("/tmp/alpha")),
+            _ => panic!("Expected OpenAction::Open"),
+        }
+    }
+
+    #[test]
+    fn test_open_branch_creates_worktree() {
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+        state.selected_repo_idx = Some(0);
+        state.mode = Mode::BranchSelect;
+        state.branches = vec![BranchEntry {
+            name: "dev".into(),
+            worktree_path: None,
+            has_session: false,
+            is_current: false,
+        }];
+        state.filtered_branches = vec![(0, 0)];
+        state.branch_selected = Some(0);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux = MockTmuxProvider::default();
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+
+        let result = process_action(
+            Action::OpenBranch,
+            &mut state,
+            &git,
+            &tmux,
+            &matcher,
+            &sender,
+        );
+        assert!(result.is_none());
+        assert!(matches!(state.mode, Mode::Loading(_)));
+    }
+
+    #[test]
+    fn test_search_push_filters() {
+        let repos = vec![make_repo("alpha"), make_repo("beta")];
+        let mut state = AppState::new(repos, None);
+        assert_eq!(state.filtered_repos.len(), 2);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux = MockTmuxProvider::default();
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+
+        process_action(
+            Action::SearchPush('a'),
+            &mut state,
+            &git,
+            &tmux,
+            &matcher,
+            &sender,
+        );
+        assert_eq!(state.repo_search, "a");
+        // "alpha" matches "a", "beta" also matches "a" — but both should be present
+        assert!(!state.filtered_repos.is_empty());
+    }
+
+    #[test]
+    fn test_move_selection() {
+        let repos = vec![make_repo("alpha"), make_repo("beta"), make_repo("gamma")];
+        let mut state = AppState::new(repos, None);
+        assert_eq!(state.repo_selected, Some(0));
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux = MockTmuxProvider::default();
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+
+        process_action(
+            Action::MoveSelection(1),
+            &mut state,
+            &git,
+            &tmux,
+            &matcher,
+            &sender,
+        );
+        assert_eq!(state.repo_selected, Some(1));
+
+        process_action(
+            Action::MoveSelection(1),
+            &mut state,
+            &git,
+            &tmux,
+            &matcher,
+            &sender,
+        );
+        assert_eq!(state.repo_selected, Some(2));
+
+        // Should clamp at max
+        process_action(
+            Action::MoveSelection(1),
+            &mut state,
+            &git,
+            &tmux,
+            &matcher,
+            &sender,
+        );
+        assert_eq!(state.repo_selected, Some(2));
     }
 }

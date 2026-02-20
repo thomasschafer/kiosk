@@ -9,7 +9,4 @@ pub enum AppEvent {
 
     /// A background git operation failed
     GitError(String),
-
-    /// Repos finished loading (for future async discovery)
-    ReposLoaded(Vec<crate::git::Repo>),
 }

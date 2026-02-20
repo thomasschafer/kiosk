@@ -24,10 +24,10 @@ impl GitProvider for CliGitProvider {
                 if !path.is_dir() {
                     continue;
                 }
-                if path.join(".git").exists() {
-                    if let Some(repo) = self.build_repo(&path) {
-                        repos.push(repo);
-                    }
+                if path.join(".git").exists()
+                    && let Some(repo) = self.build_repo(&path)
+                {
+                    repos.push(repo);
                 }
             }
         }
@@ -59,14 +59,14 @@ impl GitProvider for CliGitProvider {
             .output();
 
         let Ok(output) = output else {
-            return vec![self.main_worktree(repo_path)];
+            return vec![Self::main_worktree(repo_path)];
         };
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let worktrees = parse_worktree_porcelain(&stdout);
 
         if worktrees.is_empty() {
-            vec![self.main_worktree(repo_path)]
+            vec![Self::main_worktree(repo_path)]
         } else {
             worktrees
         }
@@ -125,7 +125,7 @@ impl CliGitProvider {
         })
     }
 
-    fn main_worktree(&self, repo_path: &Path) -> Worktree {
+    fn main_worktree(repo_path: &Path) -> Worktree {
         let branch = Command::new("git")
             .args(["rev-parse", "--abbrev-ref", "HEAD"])
             .current_dir(repo_path)

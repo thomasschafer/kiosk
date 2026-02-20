@@ -10,34 +10,34 @@ fn kiosk_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_kiosk"))
 }
 
+fn run_git(dir: &Path, args: &[&str]) {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {} failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 fn init_test_repo(dir: &Path) {
-    Command::new("git")
-        .args(["init"])
+    run_git(dir, &["init"]);
+    run_git(dir, &["config", "user.email", "test@test.com"]);
+    run_git(dir, &["config", "user.name", "Test"]);
+    run_git(dir, &["config", "init.defaultBranch", "main"]);
+    // Rename the branch to main in case git init used a different default
+    let _ = Command::new("git")
+        .args(["branch", "-M", "main"])
         .current_dir(dir)
-        .output()
-        .unwrap();
-    Command::new("git")
-        .args(["config", "user.email", "test@test.com"])
-        .current_dir(dir)
-        .output()
-        .unwrap();
-    Command::new("git")
-        .args(["config", "user.name", "Test"])
-        .current_dir(dir)
-        .output()
-        .unwrap();
+        .output();
     let dummy = dir.join("README.md");
     fs::write(&dummy, "# test").unwrap();
-    Command::new("git")
-        .args(["add", "."])
-        .current_dir(dir)
-        .output()
-        .unwrap();
-    Command::new("git")
-        .args(["commit", "-m", "init"])
-        .current_dir(dir)
-        .output()
-        .unwrap();
+    run_git(dir, &["add", "."]);
+    run_git(dir, &["commit", "-m", "init"]);
 }
 
 fn tmux_capture(session: &str) -> String {
@@ -156,7 +156,6 @@ fn test_e2e_repo_list_shows_repos() {
     let env = TestEnv::new("repo-list");
     let search_dir = env.search_dir();
 
-    // Create two repos
     let repo_a = search_dir.join("alpha-project");
     let repo_b = search_dir.join("beta-project");
     fs::create_dir_all(&repo_a).unwrap();
@@ -216,11 +215,7 @@ fn test_e2e_enter_repo_shows_branches() {
     init_test_repo(&repo);
 
     // Add a branch
-    Command::new("git")
-        .args(["branch", "feat/awesome"])
-        .current_dir(&repo)
-        .output()
-        .unwrap();
+    run_git(&repo, &["branch", "feat/awesome"]);
 
     env.write_config(&search_dir);
     env.launch_kiosk();
@@ -231,7 +226,7 @@ fn test_e2e_enter_repo_shows_branches() {
         screen.contains("select branch"),
         "Should be in branch picker: {screen}"
     );
-    assert!(screen.contains("master"), "Should show master: {screen}");
+    assert!(screen.contains("main"), "Should show main: {screen}");
     assert!(
         screen.contains("feat/awesome"),
         "Should show feat/awesome: {screen}"

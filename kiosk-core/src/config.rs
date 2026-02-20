@@ -37,14 +37,14 @@ impl Config {
         self.search_dirs
             .iter()
             .map(|d| {
-                if let Some(rest) = d.strip_prefix("~/") {
-                    if let Some(home) = dirs::home_dir() {
-                        return home.join(rest);
-                    }
-                } else if d == "~" {
-                    if let Some(home) = dirs::home_dir() {
-                        return home;
-                    }
+                if let Some(rest) = d.strip_prefix("~/")
+                    && let Some(home) = dirs::home_dir()
+                {
+                    return home.join(rest);
+                } else if d == "~"
+                    && let Some(home) = dirs::home_dir()
+                {
+                    return home;
                 }
                 PathBuf::from(d)
             })

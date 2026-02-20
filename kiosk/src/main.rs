@@ -18,7 +18,7 @@ fn main() -> Result<()> {
     let mut state = AppState::new(repos, config.session.split_command.clone());
 
     let mut terminal = ratatui::init();
-    let result = kiosk_tui::run(&mut terminal, &mut state, git, &tmux);
+    let result = kiosk_tui::run(&mut terminal, &mut state, &git, &tmux);
     ratatui::restore();
 
     match result? {

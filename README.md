@@ -1,4 +1,4 @@
-# wts — Worktree Switcher
+# kiosk — Worktree Switcher
 
 A TUI for navigating git repos and worktrees with tmux session management.
 
@@ -13,7 +13,7 @@ A TUI for navigating git repos and worktrees with tmux session management.
 
 ## Config
 
-`~/.config/wts/config.toml`:
+`~/.config/kiosk/config.toml`:
 
 ```toml
 # Directories to scan for git repos (1 level deep)
@@ -29,7 +29,7 @@ split_command = "hx"
 Add to your `tmux.conf`:
 
 ```tmux
-bind-key F popup -xC -yC -w90% -h90% -E "wts"
+bind-key F popup -xC -yC -w90% -h90% -E "kiosk"
 ```
 
 Then `<prefix> F` opens the switcher in a popup.
@@ -51,4 +51,4 @@ nix develop -c cargo build --release
 # or just: cargo build --release (if you have a C linker)
 ```
 
-Binary will be at `target/release/wts`.
+Binary will be at `target/release/kiosk`.

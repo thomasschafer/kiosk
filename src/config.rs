@@ -2,7 +2,7 @@ use anyhow::Result;
 use serde::Deserialize;
 use std::{fs, path::PathBuf};
 
-pub const APP_NAME: &str = "wts";
+pub const APP_NAME: &str = "kiosk";
 
 fn config_dir() -> PathBuf {
     dirs::config_dir()

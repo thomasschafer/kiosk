@@ -6,8 +6,8 @@ use std::{
     time::Duration,
 };
 
-fn wts_binary() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_wts"))
+fn kiosk_binary() -> PathBuf {
+    PathBuf::from(env!("CARGO_BIN_EXE_kiosk"))
 }
 
 fn init_test_repo(dir: &Path) {
@@ -84,7 +84,7 @@ impl TestEnv {
         let config_dir = tmp.path().join("config");
         fs::create_dir_all(&config_dir).unwrap();
 
-        let session_name = format!("wts-e2e-{test_name}");
+        let session_name = format!("kiosk-e2e-{test_name}");
         cleanup_session(&session_name);
 
         Self {
@@ -101,14 +101,14 @@ impl TestEnv {
     }
 
     fn write_config(&self, search_dir: &Path) {
-        let wts_config_dir = self.config_dir.join("wts");
-        fs::create_dir_all(&wts_config_dir).unwrap();
+        let kiosk_config_dir = self.config_dir.join("kiosk");
+        fs::create_dir_all(&kiosk_config_dir).unwrap();
         let config = format!(r#"search_dirs = ["{}"]"#, search_dir.to_string_lossy());
-        fs::write(wts_config_dir.join("config.toml"), config).unwrap();
+        fs::write(kiosk_config_dir.join("config.toml"), config).unwrap();
     }
 
-    fn launch_wts(&self) {
-        let binary = wts_binary();
+    fn launch_kiosk(&self) {
+        let binary = kiosk_binary();
         Command::new("tmux")
             .args([
                 "new-session",
@@ -165,7 +165,7 @@ fn test_e2e_repo_list_shows_repos() {
     init_test_repo(&repo_b);
 
     env.write_config(&search_dir);
-    env.launch_wts();
+    env.launch_kiosk();
 
     let screen = env.capture();
     assert!(
@@ -195,7 +195,7 @@ fn test_e2e_fuzzy_search_filters() {
     init_test_repo(&repo_b);
 
     env.write_config(&search_dir);
-    env.launch_wts();
+    env.launch_kiosk();
 
     env.send("cool");
     let screen = env.capture();
@@ -223,7 +223,7 @@ fn test_e2e_enter_repo_shows_branches() {
         .unwrap();
 
     env.write_config(&search_dir);
-    env.launch_wts();
+    env.launch_kiosk();
 
     env.send_special("Enter");
     let screen = env.capture();
@@ -248,7 +248,7 @@ fn test_e2e_esc_goes_back() {
     init_test_repo(&repo);
 
     env.write_config(&search_dir);
-    env.launch_wts();
+    env.launch_kiosk();
 
     // Enter branch picker
     env.send_special("Enter");
@@ -277,7 +277,7 @@ fn test_e2e_new_branch_flow() {
     init_test_repo(&repo);
 
     env.write_config(&search_dir);
-    env.launch_wts();
+    env.launch_kiosk();
 
     // Enter repo
     env.send_special("Enter");

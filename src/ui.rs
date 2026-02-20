@@ -436,7 +436,7 @@ impl App {
         };
         let search_block = Block::default()
             .borders(Borders::ALL)
-            .title(" wts — select repo ")
+            .title(" kiosk — select repo ")
             .border_style(Style::default().fg(Color::Magenta));
         f.render_widget(Paragraph::new(search_text).block(search_block), chunks[0]);
 

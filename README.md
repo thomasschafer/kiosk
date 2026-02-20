@@ -64,6 +64,24 @@ bind-key F popup -xC -yC -w90% -h90% -E "kiosk"
 
 Then `<prefix> F` opens the switcher in a popup.
 
+
+## Installing
+
+### crates.io
+
+TODO
+
+```sh
+```
+
+### Building from source
+
+Pull down the repo and run
+
+```sh
+cargo install --path kiosk
+```
+
 ## Keybindings
 
 | Key | Action |

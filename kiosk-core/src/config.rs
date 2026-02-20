@@ -126,9 +126,7 @@ pub fn load_config(config_override: Option<&Path>) -> Result<Config> {
     };
     if !config_file.exists() {
         anyhow::bail!(
-            "Config file not found at {}. Create it with:\n\n\
-             [example]\n\
-             search_dirs = [\"~/Development\"]\n",
+            "Config file not found at {}",
             config_file.display()
         );
     }

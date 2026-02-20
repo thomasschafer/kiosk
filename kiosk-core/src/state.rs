@@ -161,6 +161,21 @@ mod tests {
     }
 
     #[test]
+    fn test_worktree_dir_bounded_error() {
+        let tmp = tempdir().unwrap();
+        let repo = make_repo(tmp.path(), "repo");
+        let wt_root = tmp.path().join(".kiosk_worktrees");
+        // Create the base and 2..999 suffixed dirs to exhaust the loop
+        fs::create_dir_all(wt_root.join("repo--main")).unwrap();
+        for i in 2..1000 {
+            fs::create_dir_all(wt_root.join(format!("repo--main-{i}"))).unwrap();
+        }
+        let result = worktree_dir(&repo, "main");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("1000 attempts"));
+    }
+
+    #[test]
     fn test_worktree_dir_in_kiosk_worktrees_subdir() {
         let tmp = tempdir().unwrap();
         let repo = make_repo(tmp.path(), "myrepo");

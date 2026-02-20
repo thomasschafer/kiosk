@@ -36,3 +36,56 @@ impl Repo {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_repo(name: &str, session_name: &str) -> Repo {
+        Repo {
+            name: name.to_string(),
+            session_name: session_name.to_string(),
+            path: PathBuf::from(format!("/home/user/{name}")),
+            worktrees: vec![],
+        }
+    }
+
+    #[test]
+    fn test_tmux_session_name_main_worktree() {
+        let repo = make_repo("myrepo", "myrepo");
+        let name = repo.tmux_session_name(&PathBuf::from("/home/user/myrepo"));
+        assert_eq!(name, "myrepo");
+    }
+
+    #[test]
+    fn test_tmux_session_name_main_worktree_dots_replaced() {
+        let repo = make_repo("my.repo.rs", "my.repo.rs");
+        let name = repo.tmux_session_name(&PathBuf::from("/home/user/my.repo.rs"));
+        assert_eq!(name, "my_repo_rs");
+    }
+
+    #[test]
+    fn test_tmux_session_name_branch_worktree() {
+        let repo = make_repo("kiosk", "kiosk");
+        let name = repo.tmux_session_name(&PathBuf::from(
+            "/home/user/.kiosk_worktrees/kiosk--feat-awesome",
+        ));
+        assert_eq!(name, "kiosk--feat-awesome");
+    }
+
+    #[test]
+    fn test_tmux_session_name_disambiguated() {
+        let repo = make_repo("api", "api--(Work)");
+        let name = repo.tmux_session_name(&PathBuf::from("/home/user/Work/api"));
+        assert_eq!(name, "api--(Work)");
+    }
+
+    #[test]
+    fn test_tmux_session_name_disambiguated_worktree() {
+        let repo = make_repo("api", "api--(Work)");
+        let name = repo.tmux_session_name(&PathBuf::from(
+            "/home/user/.kiosk_worktrees/api--feat-thing",
+        ));
+        assert_eq!(name, "api--(Work)--feat-thing");
+    }
+}

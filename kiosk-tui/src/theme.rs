@@ -40,3 +40,53 @@ fn parse_color(s: Option<&str>) -> Option<Color> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kiosk_core::config::ThemeConfig;
+
+    #[test]
+    fn test_parse_color_named() {
+        assert_eq!(parse_color(Some("magenta")), Some(Color::Magenta));
+        assert_eq!(parse_color(Some("cyan")), Some(Color::Cyan));
+        assert_eq!(parse_color(Some("green")), Some(Color::Green));
+        assert_eq!(parse_color(Some("RED")), Some(Color::Red));
+    }
+
+    #[test]
+    fn test_parse_color_hex() {
+        assert_eq!(parse_color(Some("#ff0000")), Some(Color::Rgb(255, 0, 0)));
+        assert_eq!(parse_color(Some("#00ff00")), Some(Color::Rgb(0, 255, 0)));
+        assert_eq!(parse_color(Some("#0000ff")), Some(Color::Rgb(0, 0, 255)));
+    }
+
+    #[test]
+    fn test_parse_color_invalid() {
+        assert_eq!(parse_color(None), None);
+        assert_eq!(parse_color(Some("notacolor")), None);
+        assert_eq!(parse_color(Some("#fff")), None); // too short
+        assert_eq!(parse_color(Some("#zzzzzz")), None); // invalid hex
+    }
+
+    #[test]
+    fn test_theme_defaults() {
+        let theme = Theme::from_config(&ThemeConfig::default());
+        assert_eq!(theme.accent, Color::Magenta);
+        assert_eq!(theme.secondary, Color::Cyan);
+        assert_eq!(theme.success, Color::Green);
+    }
+
+    #[test]
+    fn test_theme_custom() {
+        let config = ThemeConfig {
+            accent: Some("blue".to_string()),
+            secondary: Some("#ff00ff".to_string()),
+            success: None,
+        };
+        let theme = Theme::from_config(&config);
+        assert_eq!(theme.accent, Color::Blue);
+        assert_eq!(theme.secondary, Color::Rgb(255, 0, 255));
+        assert_eq!(theme.success, Color::Green); // default
+    }
+}

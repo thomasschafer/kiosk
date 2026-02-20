@@ -125,10 +125,7 @@ pub fn load_config(config_override: Option<&Path>) -> Result<Config> {
         None => config_file(),
     };
     if !config_file.exists() {
-        anyhow::bail!(
-            "Config file not found at {}",
-            config_file.display()
-        );
+        anyhow::bail!("Config file not found at {}", config_file.display());
     }
     let contents = fs::read_to_string(&config_file)?;
     let config: Config = toml::from_str(&contents)?;
@@ -195,6 +192,45 @@ unknown_field = true
             assert!(!d.to_string_lossy().contains('~'));
             assert_eq!(*depth, 1); // default depth
         }
+    }
+
+    #[test]
+    fn test_theme_config_defaults() {
+        let config = load_config_from_str(r#"search_dirs = ["~/Development"]"#).unwrap();
+        assert!(config.theme.accent.is_none());
+        assert!(config.theme.secondary.is_none());
+        assert!(config.theme.success.is_none());
+    }
+
+    #[test]
+    fn test_theme_config_custom() {
+        let config = load_config_from_str(
+            r##"
+search_dirs = ["~/Development"]
+
+[theme]
+accent = "blue"
+secondary = "#ff00ff"
+"##,
+        )
+        .unwrap();
+        assert_eq!(config.theme.accent.as_deref(), Some("blue"));
+        assert_eq!(config.theme.secondary.as_deref(), Some("#ff00ff"));
+        assert!(config.theme.success.is_none());
+    }
+
+    #[test]
+    fn test_theme_unknown_field_rejected() {
+        let result = load_config_from_str(
+            r#"
+search_dirs = ["~/Development"]
+
+[theme]
+accent = "blue"
+unknown = "bad"
+"#,
+        );
+        assert!(result.is_err());
     }
 
     #[test]

@@ -301,6 +301,58 @@ mod tests {
         let result = provider.add_worktree(tmp.path(), "nonexistent-branch", &wt_path);
         assert!(result.is_err());
     }
+
+    #[test]
+    fn test_discover_repos_depth_1_skips_nested() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        // Create a repo nested two levels deep
+        let nested = tmp.path().join("org").join("my-repo");
+        fs::create_dir_all(&nested).unwrap();
+        init_test_repo(&nested);
+
+        let provider = CliGitProvider;
+        // Depth 1 should NOT find it (it's 2 levels deep)
+        let repos = provider.discover_repos(&[(tmp.path().to_path_buf(), 1)]);
+        assert_eq!(repos.len(), 0);
+    }
+
+    #[test]
+    fn test_discover_repos_depth_2_finds_nested() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        // Create a repo nested two levels deep
+        let nested = tmp.path().join("org").join("my-repo");
+        fs::create_dir_all(&nested).unwrap();
+        init_test_repo(&nested);
+
+        let provider = CliGitProvider;
+        // Depth 2 should find it
+        let repos = provider.discover_repos(&[(tmp.path().to_path_buf(), 2)]);
+        assert_eq!(repos.len(), 1);
+        assert_eq!(repos[0].name, "my-repo");
+    }
+
+    #[test]
+    fn test_discover_repos_depth_does_not_recurse_into_repos() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        // Create a repo at depth 1
+        let repo_dir = tmp.path().join("parent-repo");
+        fs::create_dir_all(&repo_dir).unwrap();
+        init_test_repo(&repo_dir);
+
+        // Create a nested repo inside it (submodule-like)
+        let nested = repo_dir.join("sub-repo");
+        fs::create_dir_all(&nested).unwrap();
+        init_test_repo(&nested);
+
+        let provider = CliGitProvider;
+        // Should find the parent but not recurse into it (it has .git)
+        let repos = provider.discover_repos(&[(tmp.path().to_path_buf(), 3)]);
+        assert_eq!(repos.len(), 1);
+        assert_eq!(repos[0].name, "parent-repo");
+    }
 }
 
 impl CliGitProvider {

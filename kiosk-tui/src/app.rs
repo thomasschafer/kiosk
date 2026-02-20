@@ -3,12 +3,13 @@ use crossterm::event::{self, Event, KeyEventKind};
 use fuzzy_matcher::{FuzzyMatcher, skim::SkimMatcherV2};
 use kiosk_core::{
     action::Action,
+    event::AppEvent,
     git::GitProvider,
     state::{AppState, BranchEntry, Mode, NewBranchFlow, worktree_dir},
     tmux::TmuxProvider,
 };
 use ratatui::{DefaultTerminal, Frame, layout::Constraint, prelude::Layout};
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::mpsc, thread, time::Duration};
 
 /// What to do after the TUI exits
 pub enum OpenAction {
@@ -19,6 +20,32 @@ pub enum OpenAction {
     Quit,
 }
 
+/// Input to the main loop — either a keyboard/terminal event or a background event
+enum LoopEvent {
+    Terminal(Event),
+    App(AppEvent),
+}
+
+/// Handle for dispatching background work
+pub struct EventSender {
+    tx: mpsc::Sender<AppEvent>,
+}
+
+impl EventSender {
+    /// Send an event from a background thread to the main loop
+    pub fn send(&self, event: AppEvent) {
+        let _ = self.tx.send(event);
+    }
+}
+
+impl Clone for EventSender {
+    fn clone(&self) -> Self {
+        Self {
+            tx: self.tx.clone(),
+        }
+    }
+}
+
 pub fn run(
     terminal: &mut DefaultTerminal,
     state: &mut AppState,
@@ -26,21 +53,35 @@ pub fn run(
     tmux: &dyn TmuxProvider,
 ) -> anyhow::Result<Option<OpenAction>> {
     let matcher = SkimMatcherV2::default();
+    let (tx, rx) = mpsc::channel::<AppEvent>();
+    let _event_sender = EventSender { tx };
 
     loop {
         terminal.draw(|f| draw(f, state))?;
 
-        if let Event::Key(key) = event::read()? {
-            if key.kind != KeyEventKind::Press {
-                continue;
+        // Poll for events: check background channel first (non-blocking),
+        // then block briefly on terminal input
+        if let Ok(app_event) = rx.try_recv() {
+            if let Some(result) = process_app_event(app_event, state) {
+                return Ok(Some(result));
             }
+            continue;
+        }
 
-            // Clear error on any keypress
-            state.error = None;
+        // Poll terminal events with a timeout so we can check the channel periodically
+        if event::poll(Duration::from_millis(50))? {
+            if let Event::Key(key) = event::read()? {
+                if key.kind != KeyEventKind::Press {
+                    continue;
+                }
 
-            if let Some(action) = keymap::resolve_action(key, state) {
-                if let Some(result) = process_action(action, state, git, tmux, &matcher) {
-                    return Ok(Some(result));
+                // Clear error on any keypress
+                state.error = None;
+
+                if let Some(action) = keymap::resolve_action(key, state) {
+                    if let Some(result) = process_action(action, state, git, tmux, &matcher) {
+                        return Ok(Some(result));
+                    }
                 }
             }
         }
@@ -67,6 +108,26 @@ fn draw(f: &mut Frame, state: &AppState) {
     if let Some(area) = error_area {
         components::error_bar::draw(f, area, state);
     }
+}
+
+/// Handle events from background tasks
+fn process_app_event(event: AppEvent, state: &mut AppState) -> Option<OpenAction> {
+    match event {
+        AppEvent::WorktreeCreated { path } => {
+            return Some(OpenAction::Open {
+                path,
+                split_command: state.split_command.clone(),
+            });
+        }
+        AppEvent::GitError(msg) => {
+            state.error = Some(msg);
+        }
+        AppEvent::ReposLoaded(repos) => {
+            // Future: handle async repo discovery
+            let _ = repos;
+        }
+    }
+    None
 }
 
 fn process_action(

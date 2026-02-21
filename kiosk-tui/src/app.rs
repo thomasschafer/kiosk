@@ -3,6 +3,7 @@ use crossterm::event::{self, Event, KeyEventKind};
 use fuzzy_matcher::{FuzzyMatcher, skim::SkimMatcherV2};
 use kiosk_core::{
     action::Action,
+    config::{KeysConfig, keys::Command},
     event::AppEvent,
     git::GitProvider,
     state::{AppState, BranchEntry, Mode, NewBranchFlow, SearchableList, worktree_dir},
@@ -150,7 +151,7 @@ fn draw(
         }
         Mode::ConfirmDelete { .. } => {
             components::branch_picker::draw(f, main_area, state, theme, keys);
-            draw_confirm_delete_dialog(f, main_area, state, theme);
+            draw_confirm_delete_dialog(f, main_area, state, theme, keys);
         }
         Mode::Help { previous } => {
             // Draw the previous mode as background
@@ -167,7 +168,7 @@ fn draw(
                 }
                 Mode::ConfirmDelete { .. } => {
                     components::branch_picker::draw(f, main_area, state, theme, keys);
-                    draw_confirm_delete_dialog(f, main_area, state, theme);
+                    draw_confirm_delete_dialog(f, main_area, state, theme, keys);
                 }
                 _ => {}
             }
@@ -233,6 +234,7 @@ fn draw_confirm_delete_dialog(
     area: Rect,
     state: &AppState,
     theme: &crate::theme::Theme,
+    keys: &kiosk_core::config::KeysConfig,
 ) {
     if let Mode::ConfirmDelete {
         branch_name,
@@ -244,6 +246,12 @@ fn draw_confirm_delete_dialog(
         } else {
             "Delete worktree for branch "
         };
+
+        let confirm_key = KeysConfig::find_key(&keys.confirmation, &Command::Confirm)
+            .map_or("y".to_string(), |k| k.to_string());
+        let cancel_key = KeysConfig::find_key(&keys.confirmation, &Command::Cancel)
+            .map_or("Esc".to_string(), |k| k.to_string());
+
         let text = vec![
             Line::from(vec![
                 Span::raw(action_text),
@@ -257,11 +265,9 @@ fn draw_confirm_delete_dialog(
             ]),
             Line::raw(""),
             Line::from(vec![
-                Span::styled("y", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw("es / "),
-                Span::styled("n", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw("o / "),
-                Span::styled("Esc", Style::default().add_modifier(Modifier::BOLD)),
+                Span::styled(&confirm_key, Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(" / "),
+                Span::styled(&cancel_key, Style::default().add_modifier(Modifier::BOLD)),
             ]),
         ];
 
@@ -1292,6 +1298,123 @@ mod tests {
             }
         );
         assert!(state.error.is_none());
+    }
+
+    #[test]
+    fn test_delete_worktree_with_session_shows_session_warning() {
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+        state.mode = Mode::BranchSelect;
+        state.branches = vec![BranchEntry {
+            name: "dev".to_string(),
+            worktree_path: Some(PathBuf::from("/tmp/alpha-dev")),
+            has_session: true,
+            is_current: false,
+        }];
+        state.branch_list.filtered = vec![(0, 0)];
+        state.branch_list.selected = Some(0);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux = MockTmuxProvider::default();
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+
+        process_action(
+            Action::DeleteWorktree,
+            &mut state,
+            &git,
+            &tmux,
+            &matcher,
+            &sender,
+        );
+
+        assert_eq!(
+            state.mode,
+            Mode::ConfirmDelete {
+                branch_name: "dev".to_string(),
+                has_session: true,
+            }
+        );
+    }
+
+    #[test]
+    fn test_confirm_delete_kills_tmux_session() {
+        let mut repos = vec![make_repo("alpha")];
+        repos[0].worktrees.push(Worktree {
+            path: PathBuf::from("/tmp/alpha-dev"),
+            branch: Some("dev".to_string()),
+            is_main: false,
+        });
+        let mut state = AppState::new(repos, None);
+        state.selected_repo_idx = Some(0);
+        state.mode = Mode::ConfirmDelete {
+            branch_name: "dev".to_string(),
+            has_session: true,
+        };
+        state.branches = vec![BranchEntry {
+            name: "dev".to_string(),
+            worktree_path: Some(PathBuf::from("/tmp/alpha-dev")),
+            has_session: true,
+            is_current: false,
+        }];
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux = MockTmuxProvider::default();
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+
+        process_action(
+            Action::ConfirmDeleteWorktree,
+            &mut state,
+            &git,
+            &tmux,
+            &matcher,
+            &sender,
+        );
+
+        let killed = tmux.killed_sessions.borrow();
+        assert_eq!(killed.as_slice(), &["alpha-dev"]);
+        assert!(matches!(state.mode, Mode::Loading(_)));
+    }
+
+    #[test]
+    fn test_confirm_delete_without_session_does_not_kill() {
+        let mut repos = vec![make_repo("alpha")];
+        repos[0].worktrees.push(Worktree {
+            path: PathBuf::from("/tmp/alpha-dev"),
+            branch: Some("dev".to_string()),
+            is_main: false,
+        });
+        let mut state = AppState::new(repos, None);
+        state.selected_repo_idx = Some(0);
+        state.mode = Mode::ConfirmDelete {
+            branch_name: "dev".to_string(),
+            has_session: false,
+        };
+        state.branches = vec![BranchEntry {
+            name: "dev".to_string(),
+            worktree_path: Some(PathBuf::from("/tmp/alpha-dev")),
+            has_session: false,
+            is_current: false,
+        }];
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux = MockTmuxProvider::default();
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+
+        process_action(
+            Action::ConfirmDeleteWorktree,
+            &mut state,
+            &git,
+            &tmux,
+            &matcher,
+            &sender,
+        );
+
+        let killed = tmux.killed_sessions.borrow();
+        assert!(killed.is_empty());
+        assert!(matches!(state.mode, Mode::Loading(_)));
     }
 
     #[test]

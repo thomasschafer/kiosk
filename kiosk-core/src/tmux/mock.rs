@@ -1,10 +1,12 @@
 use super::provider::TmuxProvider;
+use std::cell::RefCell;
 use std::path::Path;
 
 #[derive(Default)]
 pub struct MockTmuxProvider {
     pub sessions: Vec<String>,
     pub inside_tmux: bool,
+    pub killed_sessions: RefCell<Vec<String>>,
 }
 
 impl TmuxProvider for MockTmuxProvider {
@@ -19,7 +21,10 @@ impl TmuxProvider for MockTmuxProvider {
     fn create_session(&self, _name: &str, _dir: &Path, _split_command: Option<&str>) {}
 
     fn switch_to_session(&self, _name: &str) {}
-    fn kill_session(&self, _name: &str) {}
+
+    fn kill_session(&self, name: &str) {
+        self.killed_sessions.borrow_mut().push(name.to_string());
+    }
 
     fn is_inside_tmux(&self) -> bool {
         self.inside_tmux

@@ -658,3 +658,55 @@ fn test_e2e_dynamic_hints() {
         "Branch hints should show dynamic bindings: {screen}"
     );
 }
+
+#[test]
+fn test_e2e_delete_confirm_dialog_text() {
+    let env = TestEnv::new("delete-dialog-text");
+    let search_dir = env.search_dir();
+
+    let repo = search_dir.join("dialog-repo");
+    fs::create_dir_all(&repo).unwrap();
+    init_test_repo(&repo);
+
+    // Create a branch and worktree
+    run_git(&repo, &["branch", "feat/dialog-test"]);
+    let wt_dir = search_dir
+        .join(".kiosk_worktrees")
+        .join("dialog-repo--feat-dialog-test");
+    fs::create_dir_all(&wt_dir).unwrap();
+    run_git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            &wt_dir.to_string_lossy(),
+            "feat/dialog-test",
+        ],
+    );
+
+    env.write_config(&search_dir);
+    env.launch_kiosk();
+
+    // Enter the repo
+    env.send_special("Tab");
+    wait_ms(500);
+
+    // Search for and select the branch with worktree
+    env.send("feat/dialog-test");
+    wait_ms(200);
+
+    // Trigger delete
+    env.send_special("C-x");
+    wait_ms(500);
+
+    let screen = env.capture();
+    // No tmux session, so dialog should say just "Delete worktree"
+    assert!(
+        screen.contains("Delete worktree for branch"),
+        "Should show worktree-only delete text: {screen}"
+    );
+    assert!(
+        !screen.contains("kill tmux session"),
+        "Should NOT mention tmux session when none exists: {screen}"
+    );
+}

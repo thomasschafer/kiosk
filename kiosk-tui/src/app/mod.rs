@@ -4,8 +4,10 @@ mod spawn;
 use crate::{components, keymap};
 use actions::{
     enter_branch_select, enter_branch_select_with_loading, handle_confirm_delete,
-    handle_delete_worktree, handle_go_back, handle_open_branch, handle_search_delete_word,
-    handle_search_pop, handle_search_push, handle_show_help, handle_start_new_branch,
+    handle_delete_worktree, handle_go_back, handle_open_branch, handle_search_delete_forward,
+    handle_search_delete_to_end, handle_search_delete_to_start, handle_search_delete_word,
+    handle_search_delete_word_forward, handle_search_pop, handle_search_push, handle_show_help,
+    handle_start_new_branch,
 };
 use crossterm::event::{self, Event, KeyEventKind};
 use fuzzy_matcher::{FuzzyMatcher, skim::SkimMatcherV2};
@@ -485,6 +487,18 @@ fn handle_simple_actions(action: &Action, state: &mut AppState) -> bool {
             }
             true
         }
+        Action::CursorWordLeft => {
+            if let Some(list) = state.active_list_mut() {
+                list.cursor_word_left();
+            }
+            true
+        }
+        Action::CursorWordRight => {
+            if let Some(list) = state.active_list_mut() {
+                list.cursor_word_right();
+            }
+            true
+        }
         Action::CursorStart => {
             if let Some(list) = state.active_list_mut() {
                 list.cursor_start();
@@ -564,6 +578,10 @@ fn process_action<T: TmuxProvider + ?Sized + 'static>(
 
         Action::SearchPush(c) => handle_search_push(state, matcher, c),
         Action::SearchPop => handle_search_pop(state, matcher),
+        Action::SearchDeleteForward => handle_search_delete_forward(state, matcher),
+        Action::SearchDeleteWordForward => handle_search_delete_word_forward(state, matcher),
+        Action::SearchDeleteToStart => handle_search_delete_to_start(state, matcher),
+        Action::SearchDeleteToEnd => handle_search_delete_to_end(state, matcher),
 
         Action::DeleteWorktree => handle_delete_worktree(state),
         Action::ConfirmDeleteWorktree => handle_confirm_delete(state, git, tmux.as_ref(), sender),
@@ -583,6 +601,8 @@ fn process_action<T: TmuxProvider + ?Sized + 'static>(
         | Action::MoveBottom
         | Action::CursorLeft
         | Action::CursorRight
+        | Action::CursorWordLeft
+        | Action::CursorWordRight
         | Action::CursorStart
         | Action::CursorEnd
         | Action::CancelDeleteWorktree => {}

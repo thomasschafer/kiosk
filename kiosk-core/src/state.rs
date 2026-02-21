@@ -113,25 +113,99 @@ impl SearchableList {
         }
     }
 
-    /// Delete word backwards from cursor position
-    pub fn delete_word(&mut self) {
-        if self.search.is_empty() || self.cursor == 0 {
-            return;
+    /// Find the byte offset of the previous word boundary (for word-left movement).
+    fn prev_word_boundary(&self) -> usize {
+        if self.cursor == 0 {
+            return 0;
         }
         let bytes = self.search.as_bytes();
-        let mut new_cursor = self.cursor.min(bytes.len());
+        let mut pos = self.cursor.min(bytes.len());
 
-        // Skip whitespace
-        while new_cursor > 0 && bytes[new_cursor - 1].is_ascii_whitespace() {
-            new_cursor -= 1;
+        // Skip whitespace backwards
+        while pos > 0 && bytes[pos - 1].is_ascii_whitespace() {
+            pos -= 1;
         }
-        // Delete non-whitespace
-        while new_cursor > 0 && !bytes[new_cursor - 1].is_ascii_whitespace() {
-            new_cursor -= 1;
+        // Skip non-whitespace backwards
+        while pos > 0 && !bytes[pos - 1].is_ascii_whitespace() {
+            pos -= 1;
         }
+        pos
+    }
 
-        self.search.drain(new_cursor..self.cursor);
-        self.cursor = new_cursor;
+    /// Find the byte offset of the next word boundary (for word-right movement).
+    fn next_word_boundary(&self) -> usize {
+        let len = self.search.len();
+        if self.cursor >= len {
+            return len;
+        }
+        let bytes = self.search.as_bytes();
+        let mut pos = self.cursor;
+
+        // Skip non-whitespace forwards
+        while pos < len && !bytes[pos].is_ascii_whitespace() {
+            pos += 1;
+        }
+        // Skip whitespace forwards
+        while pos < len && bytes[pos].is_ascii_whitespace() {
+            pos += 1;
+        }
+        pos
+    }
+
+    /// Move cursor left by one word
+    pub fn cursor_word_left(&mut self) {
+        self.cursor = self.prev_word_boundary();
+    }
+
+    /// Move cursor right by one word
+    pub fn cursor_word_right(&mut self) {
+        self.cursor = self.next_word_boundary();
+    }
+
+    /// Delete word backwards from cursor position
+    pub fn delete_word(&mut self) {
+        let boundary = self.prev_word_boundary();
+        if boundary < self.cursor {
+            self.search.drain(boundary..self.cursor);
+            self.cursor = boundary;
+        }
+    }
+
+    /// Delete word forwards from cursor position
+    pub fn delete_word_forward(&mut self) {
+        let boundary = self.next_word_boundary();
+        if self.cursor < boundary {
+            self.search.drain(self.cursor..boundary);
+        }
+    }
+
+    /// Delete from cursor to start of line
+    pub fn delete_to_start(&mut self) {
+        if self.cursor > 0 {
+            self.search.drain(..self.cursor);
+            self.cursor = 0;
+        }
+    }
+
+    /// Delete from cursor to end of line
+    pub fn delete_to_end(&mut self) {
+        if self.cursor < self.search.len() {
+            self.search.truncate(self.cursor);
+        }
+    }
+
+    /// Delete the character under/after the cursor (forward delete)
+    pub fn delete_forward(&mut self) -> bool {
+        if self.cursor < self.search.len() {
+            let next = self.search[self.cursor..]
+                .char_indices()
+                .nth(1)
+                .map_or(self.search.len(), |(i, _)| self.cursor + i);
+            self.search.drain(self.cursor..next);
+            true
+        } else {
+            false
+        }
     }
 }
 
@@ -617,5 +691,114 @@ mod tests {
 
         assert!(state.reconcile_pending_worktree_deletes());
         assert!(state.pending_worktree_deletes.is_empty());
+    }
+
+    // --- SearchableList text editing tests ---
+
+    fn list_with(text: &str, cursor: usize) -> SearchableList {
+        let mut list = SearchableList::new(0);
+        list.search = text.to_string();
+        list.cursor = cursor;
+        list
+    }
+
+    #[test]
+    fn test_cursor_word_left_basic() {
+        let mut list = list_with("hello world foo", 15); // at end
+        list.cursor_word_left();
+        assert_eq!(list.cursor, 12); // before "foo"
+        list.cursor_word_left();
+        assert_eq!(list.cursor, 6); // before "world"
+        list.cursor_word_left();
+        assert_eq!(list.cursor, 0); // before "hello"
+        list.cursor_word_left();
+        assert_eq!(list.cursor, 0); // stays at 0
+    }
+
+    #[test]
+    fn test_cursor_word_right_basic() {
+        let mut list = list_with("hello world foo", 0);
+        list.cursor_word_right();
+        assert_eq!(list.cursor, 6); // after "hello "
+        list.cursor_word_right();
+        assert_eq!(list.cursor, 12); // after "world "
+        list.cursor_word_right();
+        assert_eq!(list.cursor, 15); // end
+        list.cursor_word_right();
+        assert_eq!(list.cursor, 15); // stays at end
+    }
+
+    #[test]
+    fn test_cursor_word_left_multiple_spaces() {
+        let mut list = list_with("hello   world", 13);
+        list.cursor_word_left();
+        assert_eq!(list.cursor, 8); // before "world"
+        list.cursor_word_left();
+        assert_eq!(list.cursor, 0);
+    }
+
+    #[test]
+    fn test_delete_word_forward() {
+        let mut list = list_with("hello world foo", 0);
+        list.delete_word_forward();
+        assert_eq!(list.search, "world foo");
+        assert_eq!(list.cursor, 0);
+        list.delete_word_forward();
+        assert_eq!(list.search, "foo");
+        assert_eq!(list.cursor, 0);
+    }
+
+    #[test]
+    fn test_delete_to_start() {
+        let mut list = list_with("hello world", 6);
+        list.delete_to_start();
+        assert_eq!(list.search, "world");
+        assert_eq!(list.cursor, 0);
+    }
+
+    #[test]
+    fn test_delete_to_end() {
+        let mut list = list_with("hello world", 5);
+        list.delete_to_end();
+        assert_eq!(list.search, "hello");
+        assert_eq!(list.cursor, 5);
+    }
+
+    #[test]
+    fn test_delete_forward() {
+        let mut list = list_with("hello", 0);
+        assert!(list.delete_forward());
+        assert_eq!(list.search, "ello");
+        assert_eq!(list.cursor, 0);
+    }
+
+    #[test]
+    fn test_delete_forward_at_end() {
+        let mut list = list_with("hello", 5);
+        assert!(!list.delete_forward());
+        assert_eq!(list.search, "hello");
+    }
+
+    #[test]
+    fn test_delete_forward_multibyte() {
+        let mut list = list_with("café", 3); // cursor before 'é' (2 bytes)
+        assert!(list.delete_forward());
+        assert_eq!(list.search, "caf");
+        assert_eq!(list.cursor, 3);
+    }
+
+    #[test]
+    fn test_delete_to_start_at_start() {
+        let mut list = list_with("hello", 0);
+        list.delete_to_start();
+        assert_eq!(list.search, "hello");
+        assert_eq!(list.cursor, 0);
+    }
+
+    #[test]
+    fn test_delete_to_end_at_end() {
+        let mut list = list_with("hello", 5);
+        list.delete_to_end();
+        assert_eq!(list.search, "hello");
     }
 }

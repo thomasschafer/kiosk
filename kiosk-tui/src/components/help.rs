@@ -71,7 +71,7 @@ fn build_help_content(keys: &KeysConfig, current_mode: &Mode) -> Vec<Line<'stati
         Mode::RepoSelect => ("Repository Selection:", &keys.repo_select),
         Mode::BranchSelect => ("Branch Selection:", &keys.branch_select),
         Mode::NewBranchBase => ("New Branch Base Selection:", &keys.new_branch_base),
-        Mode::ConfirmDelete(_) => ("Confirmation:", &keys.confirmation),
+        Mode::ConfirmDelete { .. } => ("Confirmation:", &keys.confirmation),
         Mode::Loading(_) => ("Loading:", &HashMap::new()), // No specific bindings
         Mode::Help { .. } => ("General:", &keys.general),  // Shouldn't happen, but fallback
     };

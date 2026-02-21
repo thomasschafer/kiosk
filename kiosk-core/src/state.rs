@@ -147,7 +147,10 @@ pub enum Mode {
     /// Blocking loading state — shows spinner, no input except Ctrl+C
     Loading(String),
     /// Confirmation dialog for worktree deletion
-    ConfirmDelete(String),
+    ConfirmDelete {
+        branch_name: String,
+        has_session: bool,
+    },
     /// Help overlay showing key bindings
     Help {
         previous: Box<Mode>,

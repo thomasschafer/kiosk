@@ -148,7 +148,7 @@ fn draw(
             components::branch_picker::draw(f, main_area, state, theme, keys);
             components::new_branch::draw(f, state, theme);
         }
-        Mode::ConfirmDelete(_) => {
+        Mode::ConfirmDelete { .. } => {
             components::branch_picker::draw(f, main_area, state, theme, keys);
             draw_confirm_delete_dialog(f, main_area, state, theme);
         }
@@ -165,7 +165,7 @@ fn draw(
                     components::branch_picker::draw(f, main_area, state, theme, keys);
                     components::new_branch::draw(f, state, theme);
                 }
-                Mode::ConfirmDelete(_) => {
+                Mode::ConfirmDelete { .. } => {
                     components::branch_picker::draw(f, main_area, state, theme, keys);
                     draw_confirm_delete_dialog(f, main_area, state, theme);
                 }
@@ -234,10 +234,19 @@ fn draw_confirm_delete_dialog(
     state: &AppState,
     theme: &crate::theme::Theme,
 ) {
-    if let Mode::ConfirmDelete(branch_name) = &state.mode {
+    if let Mode::ConfirmDelete {
+        branch_name,
+        has_session,
+    } = &state.mode
+    {
+        let action_text = if *has_session {
+            "Delete worktree and kill tmux session for branch "
+        } else {
+            "Delete worktree for branch "
+        };
         let text = vec![
             Line::from(vec![
-                Span::raw("Delete worktree for branch "),
+                Span::raw(action_text),
                 Span::styled(
                     format!("\"{branch_name}\""),
                     Style::default()
@@ -527,7 +536,7 @@ fn process_action(
         Action::SearchPop => handle_search_pop(state, matcher),
 
         Action::DeleteWorktree => handle_delete_worktree(state),
-        Action::ConfirmDeleteWorktree => handle_confirm_delete(state, git, sender),
+        Action::ConfirmDeleteWorktree => handle_confirm_delete(state, git, tmux, sender),
 
         Action::SearchDeleteWord => handle_search_delete_word(state, matcher),
 
@@ -563,7 +572,7 @@ fn handle_go_back(state: &mut AppState) {
             state.new_branch_base = None;
             state.mode = Mode::BranchSelect;
         }
-        Mode::ConfirmDelete(_) => {
+        Mode::ConfirmDelete { .. } => {
             state.mode = Mode::BranchSelect;
         }
         Mode::Help { previous } => {
@@ -616,17 +625,37 @@ fn handle_delete_worktree(state: &mut AppState) {
         } else if branch.is_current {
             state.error = Some("Cannot delete the current branch's worktree".to_string());
         } else {
-            state.mode = Mode::ConfirmDelete(branch.name.clone());
+            state.mode = Mode::ConfirmDelete {
+                branch_name: branch.name.clone(),
+                has_session: branch.has_session,
+            };
         }
     }
 }
 
-fn handle_confirm_delete(state: &mut AppState, git: &Arc<dyn GitProvider>, sender: &EventSender) {
-    if let Mode::ConfirmDelete(branch_name) = &state.mode {
+fn handle_confirm_delete(
+    state: &mut AppState,
+    git: &Arc<dyn GitProvider>,
+    tmux: &dyn TmuxProvider,
+    sender: &EventSender,
+) {
+    if let Mode::ConfirmDelete {
+        branch_name,
+        has_session,
+    } = &state.mode
+    {
         let branch_name = branch_name.clone();
+        let has_session = *has_session;
         if let Some(branch) = state.branches.iter().find(|b| b.name == branch_name)
             && let Some(worktree_path) = &branch.worktree_path
         {
+            // Kill the tmux session first if it exists
+            if has_session && let Some(repo_idx) = state.selected_repo_idx {
+                let repo = &state.repos[repo_idx];
+                let session_name = repo.tmux_session_name(worktree_path);
+                tmux.kill_session(&session_name);
+            }
+
             let worktree_path = worktree_path.clone();
             state.mode = Mode::Loading(format!("Removing worktree for {branch_name}..."));
             spawn_worktree_removal(git, sender, worktree_path, branch_name);
@@ -709,7 +738,7 @@ fn handle_open_branch(
                 }
             }
         }
-        Mode::RepoSelect | Mode::ConfirmDelete(_) | Mode::Loading(_) | Mode::Help { .. } => {}
+        Mode::RepoSelect | Mode::ConfirmDelete { .. } | Mode::Loading(_) | Mode::Help { .. } => {}
     }
     None
 }
@@ -1255,7 +1284,13 @@ mod tests {
             &sender,
         );
 
-        assert_eq!(state.mode, Mode::ConfirmDelete("dev".to_string()));
+        assert_eq!(
+            state.mode,
+            Mode::ConfirmDelete {
+                branch_name: "dev".to_string(),
+                has_session: false,
+            }
+        );
         assert!(state.error.is_none());
     }
 

@@ -25,7 +25,7 @@ pub fn resolve_action(
         Mode::RepoSelect => &keys.repo_select,
         Mode::BranchSelect => &keys.branch_select,
         Mode::NewBranchBase => &keys.new_branch_base,
-        Mode::ConfirmDelete(_) => &keys.confirmation,
+        Mode::ConfirmDelete { .. } => &keys.confirmation,
         Mode::Help { .. } => {
             // Help can be dismissed with C-h (ShowHelp toggle) or Esc
             if our_key == KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE) {
@@ -96,11 +96,11 @@ fn command_to_action(command: &Command, state: &AppState) -> Option<Action> {
         Command::CursorStart => Some(Action::CursorStart),
         Command::CursorEnd => Some(Action::CursorEnd),
         Command::Confirm => match state.mode {
-            Mode::ConfirmDelete(_) => Some(Action::ConfirmDeleteWorktree),
+            Mode::ConfirmDelete { .. } => Some(Action::ConfirmDeleteWorktree),
             _ => None,
         },
         Command::Cancel => match state.mode {
-            Mode::ConfirmDelete(_) => Some(Action::CancelDeleteWorktree),
+            Mode::ConfirmDelete { .. } => Some(Action::CancelDeleteWorktree),
             _ => None,
         },
     }

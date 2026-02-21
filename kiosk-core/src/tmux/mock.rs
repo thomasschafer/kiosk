@@ -19,6 +19,7 @@ impl TmuxProvider for MockTmuxProvider {
     fn create_session(&self, _name: &str, _dir: &Path, _split_command: Option<&str>) {}
 
     fn switch_to_session(&self, _name: &str) {}
+    fn kill_session(&self, _name: &str) {}
 
     fn is_inside_tmux(&self) -> bool {
         self.inside_tmux

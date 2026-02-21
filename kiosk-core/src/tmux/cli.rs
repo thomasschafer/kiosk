@@ -62,6 +62,12 @@ impl TmuxProvider for CliTmuxProvider {
         }
     }
 
+    fn kill_session(&self, name: &str) {
+        let _ = Command::new("tmux")
+            .args(["kill-session", "-t", &format!("={name}")])
+            .status();
+    }
+
     fn is_inside_tmux(&self) -> bool {
         std::env::var("TMUX").is_ok()
     }

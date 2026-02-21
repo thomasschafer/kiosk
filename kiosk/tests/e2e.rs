@@ -437,7 +437,13 @@ split_command = "sleep 30"
     }
 
     let output = Command::new("tmux")
-        .args(["list-panes", "-t", session_name, "-F", "#{pane_current_command}"])
+        .args([
+            "list-panes",
+            "-t",
+            session_name,
+            "-F",
+            "#{pane_current_command}",
+        ])
         .output()
         .unwrap();
     let pane_commands = String::from_utf8_lossy(&output.stdout).to_string();

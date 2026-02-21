@@ -13,5 +13,5 @@ pub use config::Config;
 pub use event::AppEvent;
 pub use git::{GitProvider, Repo, Worktree};
 pub use keyboard::KeyEvent;
-pub use state::{AppState, Mode, BranchEntry};
+pub use state::{AppState, BranchEntry, Mode};
 pub use tmux::TmuxProvider;

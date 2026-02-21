@@ -82,7 +82,7 @@ jobs:
           - os: ubuntu-latest
             target: aarch64-unknown-linux-musl
             use-cross: true
-          - os: macos-15-intel
+          - os: macos-13
             target: x86_64-apple-darwin
             use-cross: false
           - os: macos-latest

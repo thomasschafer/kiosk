@@ -1,6 +1,4 @@
-use ratatui::{
-    layout::{Constraint, Layout, Rect},
-};
+use ratatui::layout::{Constraint, Layout, Rect};
 
 pub mod branch_picker;
 pub mod error_bar;

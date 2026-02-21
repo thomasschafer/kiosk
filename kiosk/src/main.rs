@@ -210,8 +210,8 @@ fn find_main_repo_path(gitdir: &Path) -> Option<std::path::PathBuf> {
     gitdir
         .parent()? // Remove "worktrees/branch"
         .parent()? // Remove ".git"
-        .parent()  // Get the repo root
-        .map(|p| p.to_path_buf())
+        .parent() // Get the repo root
+        .map(std::path::Path::to_path_buf)
 }
 
 /// Check if a worktree path is known to git in the main repository
@@ -230,14 +230,14 @@ fn is_worktree_known_to_git(main_repo_path: &Path, worktree_path: &Path) -> bool
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    
+
     // Parse porcelain output to find worktree paths
     // Format: "worktree /path/to/worktree\nHEAD <sha>\nbranch <branch>\n\n"
     for line in stdout.lines() {
-        if let Some(listed_path) = line.strip_prefix("worktree ") {
-            if Path::new(listed_path) == worktree_path {
-                return true; // Found the worktree in git's list
-            }
+        if let Some(listed_path) = line.strip_prefix("worktree ")
+            && Path::new(listed_path) == worktree_path
+        {
+            return true; // Found the worktree in git's list
         }
     }
 

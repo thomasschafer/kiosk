@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use kiosk_core::config::keys::{Command, KeyMap, KeysConfig};
 use quote::ToTokens;
 use std::collections::HashMap;
 use std::fmt::Write;
@@ -8,6 +9,8 @@ use syn::{Attribute, Field, Fields, Item, ItemStruct, Meta, parse_file};
 
 const CONFIG_START_MARKER: &str = "<!-- CONFIG START -->";
 const CONFIG_END_MARKER: &str = "<!-- CONFIG END -->";
+const KEYS_START_MARKER: &str = "<!-- KEYS START -->";
+const KEYS_END_MARKER: &str = "<!-- KEYS END -->";
 
 pub fn generate_readme(readme_path: &Path, config_path: &Path, check_only: bool) -> Result<()> {
     println!("Processing README file: {}", readme_path.display());
@@ -22,7 +25,8 @@ pub fn generate_readme(readme_path: &Path, config_path: &Path, check_only: bool)
         std::process::exit(1);
     }
 
-    let updated_content = generate_config_docs(&readme_content, config_path)?;
+    let mut updated_content = generate_config_docs(&readme_content, config_path)?;
+    updated_content = generate_keybindings_docs(&updated_content);
 
     if updated_content == readme_content {
         println!("README file is already up to date");
@@ -149,6 +153,57 @@ fn parse_config_structs(config_path: &Path) -> Result<HashMap<String, ItemStruct
     }
 
     Ok(structs)
+}
+
+fn generate_keybindings_docs(content: &str) -> String {
+    println!("Generating keybindings documentation...");
+
+    let keys_config = KeysConfig::default();
+    let mut docs = String::new();
+
+    // Generate tables for each mode
+    generate_keymap_table(&mut docs, "General", &keys_config.general);
+    generate_keymap_table(&mut docs, "Repository Selection", &keys_config.repo_select);
+    generate_keymap_table(&mut docs, "Branch Selection", &keys_config.branch_select);
+    generate_keymap_table(
+        &mut docs,
+        "New Branch Base Selection",
+        &keys_config.new_branch_base,
+    );
+    generate_keymap_table(&mut docs, "Confirmation", &keys_config.confirmation);
+
+    // Add note about search functionality
+    docs.push_str("\n### Search\n\n");
+    docs.push_str("In list modes (Repository/Branch Selection), any printable character will start or continue search filtering.\n");
+
+    replace_section_content(content, KEYS_START_MARKER, KEYS_END_MARKER, &docs)
+}
+
+fn generate_keymap_table(docs: &mut String, mode_name: &str, keymap: &KeyMap) {
+    use std::fmt::Write as _;
+
+    if keymap.is_empty() {
+        return;
+    }
+
+    let _ = write!(docs, "### {mode_name}\n\n");
+    docs.push_str("| Key | Action |\n");
+    docs.push_str("|-----|--------|\n");
+
+    // Convert to vector and sort by key display for consistent ordering
+    let mut bindings: Vec<_> = keymap.iter().collect();
+    bindings.sort_by(|a, b| a.0.to_string().cmp(&b.0.to_string()));
+
+    for (key_event, command) in bindings {
+        if *command == Command::Noop {
+            continue; // Skip unbound keys
+        }
+        let key_str = key_event.to_string();
+        let description = command.description();
+        let _ = writeln!(docs, "| {key_str} | {description} |");
+    }
+
+    docs.push('\n');
 }
 
 fn replace_section_content(

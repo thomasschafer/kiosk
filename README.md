@@ -100,7 +100,7 @@ Success/positive color (default: "green").
 
 Key binding configuration.
 
-Defaults shown below are generated from `KeysConfig::default()`.
+Defaults are shown below:.
 
 ```toml
 [keys.general]

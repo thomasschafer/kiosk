@@ -524,6 +524,40 @@ mod tests {
     }
 
     #[test]
+    fn test_find_key_reverse_lookup() {
+        let config = KeysConfig::default();
+        let key = KeysConfig::find_key(&config.general, &Command::Quit);
+        assert_eq!(
+            key,
+            Some(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL))
+        );
+    }
+
+    #[test]
+    fn test_find_key_not_found() {
+        let config = KeysConfig::default();
+        let key = KeysConfig::find_key(&config.general, &Command::OpenRepo);
+        assert_eq!(key, None);
+    }
+
+    #[test]
+    fn test_default_cursor_bindings() {
+        let config = KeysConfig::default();
+        let left = KeyEvent::new(KeyCode::Left, KeyModifiers::NONE);
+        let right = KeyEvent::new(KeyCode::Right, KeyModifiers::NONE);
+        let home = KeyEvent::new(KeyCode::Home, KeyModifiers::NONE);
+        let end = KeyEvent::new(KeyCode::End, KeyModifiers::NONE);
+
+        assert_eq!(config.repo_select.get(&left), Some(&Command::CursorLeft));
+        assert_eq!(config.repo_select.get(&right), Some(&Command::CursorRight));
+        assert_eq!(config.repo_select.get(&home), Some(&Command::CursorStart));
+        assert_eq!(config.repo_select.get(&end), Some(&Command::CursorEnd));
+
+        // Same for branch_select
+        assert_eq!(config.branch_select.get(&left), Some(&Command::CursorLeft));
+    }
+
+    #[test]
     fn test_noop_aliases() {
         assert_eq!(Command::from_str("noop").unwrap(), Command::Noop);
         assert_eq!(Command::from_str("none").unwrap(), Command::Noop);

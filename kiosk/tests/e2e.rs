@@ -538,3 +538,123 @@ tab = "noop"
         "F1 should enter repo (custom binding): {screen}"
     );
 }
+
+#[test]
+fn test_e2e_help_esc_dismiss() {
+    let env = TestEnv::new("help-esc");
+    let search_dir = env.search_dir();
+
+    let repo = search_dir.join("help-repo");
+    fs::create_dir_all(&repo).unwrap();
+    init_test_repo(&repo);
+
+    env.write_config(&search_dir);
+    env.launch_kiosk();
+
+    // Open help
+    env.send_special("C-h");
+    let screen = env.capture();
+    assert!(
+        screen.contains("Help") && screen.contains("Keybindings"),
+        "Help overlay should be visible: {screen}"
+    );
+
+    // Dismiss with Esc
+    env.send_special("Escape");
+    let screen = env.capture();
+    assert!(
+        screen.contains("select repo") && !screen.contains("Keybindings"),
+        "Help should be dismissed by Esc: {screen}"
+    );
+}
+
+#[test]
+fn test_e2e_delete_no_worktree_error() {
+    let env = TestEnv::new("delete-no-wt");
+    let search_dir = env.search_dir();
+
+    let repo = search_dir.join("no-wt-repo");
+    fs::create_dir_all(&repo).unwrap();
+    init_test_repo(&repo);
+
+    // Create a branch without a worktree
+    run_git(&repo, &["branch", "feat/no-worktree"]);
+
+    env.write_config(&search_dir);
+    env.launch_kiosk();
+
+    // Enter the repo
+    env.send_special("Tab");
+    wait_ms(300);
+
+    // Navigate to the branch without a worktree
+    env.send("feat/no-worktree");
+    wait_ms(200);
+
+    // Try to delete
+    env.send_special("C-x");
+    let screen = env.capture();
+    assert!(
+        screen.contains("No worktree"),
+        "Should show error for branch without worktree: {screen}"
+    );
+}
+
+#[test]
+fn test_e2e_empty_branch_name_error() {
+    let env = TestEnv::new("empty-branch");
+    let search_dir = env.search_dir();
+
+    let repo = search_dir.join("empty-name-repo");
+    fs::create_dir_all(&repo).unwrap();
+    init_test_repo(&repo);
+
+    env.write_config(&search_dir);
+    env.launch_kiosk();
+
+    // Enter the repo
+    env.send_special("Tab");
+    wait_ms(300);
+
+    // Try new branch with empty search
+    env.send_special("C-o");
+    let screen = env.capture();
+    assert!(
+        screen.contains("branch name"),
+        "Should show error for empty branch name: {screen}"
+    );
+
+    // Should still be in branch select, not new branch base
+    assert!(
+        screen.contains("select branch"),
+        "Should stay in branch select mode: {screen}"
+    );
+}
+
+#[test]
+fn test_e2e_dynamic_hints() {
+    let env = TestEnv::new("dynamic-hints");
+    let search_dir = env.search_dir();
+
+    let repo = search_dir.join("hints-repo");
+    fs::create_dir_all(&repo).unwrap();
+    init_test_repo(&repo);
+
+    env.write_config(&search_dir);
+    env.launch_kiosk();
+
+    // Check repo hints show actual keybindings
+    let screen = env.capture();
+    assert!(
+        screen.contains("enter: open") && screen.contains("tab: branches"),
+        "Repo hints should show dynamic bindings: {screen}"
+    );
+
+    // Enter branch view and check hints
+    env.send_special("Tab");
+    let screen = env.capture();
+    assert!(
+        screen.contains("C-o: new branch") && screen.contains("C-x: delete worktree"),
+        "Branch hints should show dynamic bindings: {screen}"
+    );
+}

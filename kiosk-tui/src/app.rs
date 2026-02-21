@@ -1351,4 +1351,226 @@ mod tests {
             _ => panic!("Expected OpenAction::Open"),
         }
     }
+
+    #[test]
+    fn test_new_branch_empty_name_shows_error() {
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+        state.mode = Mode::BranchSelect;
+        state.selected_repo_idx = Some(0);
+        state.branch_search = String::new(); // empty
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider {
+            branches: vec!["main".into()],
+            ..Default::default()
+        });
+        let tmux = MockTmuxProvider::default();
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+
+        process_action(
+            Action::StartNewBranchFlow,
+            &mut state,
+            &git,
+            &tmux,
+            &matcher,
+            &sender,
+        );
+
+        assert_eq!(
+            state.mode,
+            Mode::BranchSelect,
+            "Should stay in BranchSelect"
+        );
+        assert!(
+            state.error.is_some(),
+            "Should show an error for empty branch name"
+        );
+        assert!(state.error.unwrap().contains("branch name"));
+    }
+
+    #[test]
+    fn test_new_branch_with_name_enters_flow() {
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+        state.mode = Mode::BranchSelect;
+        state.selected_repo_idx = Some(0);
+        state.branch_search = "feat/new".to_string();
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider {
+            branches: vec!["main".into()],
+            ..Default::default()
+        });
+        let tmux = MockTmuxProvider::default();
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+
+        process_action(
+            Action::StartNewBranchFlow,
+            &mut state,
+            &git,
+            &tmux,
+            &matcher,
+            &sender,
+        );
+
+        assert_eq!(state.mode, Mode::NewBranchBase);
+        assert!(state.new_branch_base.is_some());
+        assert_eq!(state.new_branch_base.unwrap().new_name, "feat/new");
+    }
+
+    #[test]
+    fn test_delete_worktree_no_worktree_shows_error() {
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+        state.mode = Mode::BranchSelect;
+        state.branches = vec![BranchEntry {
+            name: "dev".to_string(),
+            worktree_path: None,
+            has_session: false,
+            is_current: false,
+        }];
+        state.filtered_branches = vec![(0, 0)];
+        state.branch_selected = Some(0);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux = MockTmuxProvider::default();
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+
+        process_action(
+            Action::DeleteWorktree,
+            &mut state,
+            &git,
+            &tmux,
+            &matcher,
+            &sender,
+        );
+
+        assert_eq!(state.mode, Mode::BranchSelect);
+        assert!(state.error.is_some());
+        assert!(state.error.unwrap().contains("No worktree"));
+    }
+
+    #[test]
+    fn test_delete_worktree_current_branch_shows_error() {
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+        state.mode = Mode::BranchSelect;
+        state.branches = vec![BranchEntry {
+            name: "main".to_string(),
+            worktree_path: Some(PathBuf::from("/tmp/alpha")),
+            has_session: false,
+            is_current: true,
+        }];
+        state.filtered_branches = vec![(0, 0)];
+        state.branch_selected = Some(0);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux = MockTmuxProvider::default();
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+
+        process_action(
+            Action::DeleteWorktree,
+            &mut state,
+            &git,
+            &tmux,
+            &matcher,
+            &sender,
+        );
+
+        assert_eq!(state.mode, Mode::BranchSelect);
+        assert!(state.error.is_some());
+        assert!(state.error.unwrap().contains("current branch"));
+    }
+
+    #[test]
+    fn test_delete_worktree_valid_shows_confirm() {
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+        state.mode = Mode::BranchSelect;
+        state.branches = vec![BranchEntry {
+            name: "dev".to_string(),
+            worktree_path: Some(PathBuf::from("/tmp/alpha-dev")),
+            has_session: false,
+            is_current: false,
+        }];
+        state.filtered_branches = vec![(0, 0)];
+        state.branch_selected = Some(0);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux = MockTmuxProvider::default();
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+
+        process_action(
+            Action::DeleteWorktree,
+            &mut state,
+            &git,
+            &tmux,
+            &matcher,
+            &sender,
+        );
+
+        assert_eq!(state.mode, Mode::ConfirmDelete("dev".to_string()));
+        assert!(state.error.is_none());
+    }
+
+    #[test]
+    fn test_cursor_movement_in_search() {
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+        state.repo_search = "hello".to_string();
+        state.repo_cursor = 5; // at end
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux = MockTmuxProvider::default();
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+
+        // Move cursor left
+        process_action(
+            Action::CursorLeft,
+            &mut state,
+            &git,
+            &tmux,
+            &matcher,
+            &sender,
+        );
+        assert_eq!(state.repo_cursor, 4);
+
+        // Move cursor to start
+        process_action(
+            Action::CursorStart,
+            &mut state,
+            &git,
+            &tmux,
+            &matcher,
+            &sender,
+        );
+        assert_eq!(state.repo_cursor, 0);
+
+        // Move cursor to end
+        process_action(
+            Action::CursorEnd,
+            &mut state,
+            &git,
+            &tmux,
+            &matcher,
+            &sender,
+        );
+        assert_eq!(state.repo_cursor, 5);
+
+        // Move cursor right at end stays at end
+        process_action(
+            Action::CursorRight,
+            &mut state,
+            &git,
+            &tmux,
+            &matcher,
+            &sender,
+        );
+        assert_eq!(state.repo_cursor, 5);
+    }
 }

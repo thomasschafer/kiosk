@@ -53,7 +53,7 @@ fn build_help_content(keys: &KeysConfig, current_mode: &Mode) -> Vec<Line<'stati
 
     // Instructions
     lines.push(Line::from(Span::styled(
-        "Press C-h or Esc to close this help",
+        "Press C-h or Esc to close",
         Style::default().add_modifier(Modifier::ITALIC),
     )));
     lines.push(Line::from(""));
@@ -82,7 +82,7 @@ fn build_help_content(keys: &KeysConfig, current_mode: &Mode) -> Vec<Line<'stati
     )));
     lines.extend(format_key_section(mode_keymap));
 
-    // Add search help for search-enabled modes
+    // Add search hint for search-enabled modes
     if matches!(
         current_mode,
         Mode::RepoSelect | Mode::BranchSelect | Mode::NewBranchBase
@@ -94,12 +94,6 @@ fn build_help_content(keys: &KeysConfig, current_mode: &Mode) -> Vec<Line<'stati
         )));
         lines.push(Line::from(
             "  Any printable character  Start/continue search",
-        ));
-        lines.push(Line::from(
-            "  Backspace                Delete last character",
-        ));
-        lines.push(Line::from(
-            "  C-w                      Delete word backwards",
         ));
     }
 
@@ -120,6 +114,9 @@ fn format_key_section(keymap: &HashMap<KeyEvent, Command>) -> Vec<Line<'static>>
     bindings.sort_by(|a, b| a.0.to_string().cmp(&b.0.to_string()));
 
     for (key_event, command) in bindings {
+        if *command == Command::Noop {
+            continue;
+        }
         let key_str = key_event.to_string();
         let description = command.description();
 

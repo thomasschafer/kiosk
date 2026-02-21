@@ -26,8 +26,14 @@ pub fn resolve_action(
         Mode::BranchSelect => &keys.branch_select,
         Mode::NewBranchBase => &keys.new_branch_base,
         Mode::ConfirmDelete(_) => &keys.confirmation,
-        Mode::Help { .. } => &keys.general, // Help can be dismissed with general keys like C-h
-        Mode::Loading(_) => return None,    // Only general bindings work in loading mode
+        Mode::Help { .. } => {
+            // Help can be dismissed with C-h (ShowHelp toggle) or Esc
+            if our_key == KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE) {
+                return Some(Action::ShowHelp);
+            }
+            &keys.general
+        }
+        Mode::Loading(_) => return None, // Only general bindings work in loading mode
     };
 
     if let Some(command) = mode_keymap.get(&our_key)
@@ -50,6 +56,7 @@ pub fn resolve_action(
 /// Convert a Command to an Action, taking into account the current state
 fn command_to_action(command: &Command, state: &AppState) -> Option<Action> {
     match command {
+        Command::Noop => None,
         Command::Quit => Some(Action::Quit),
         Command::ShowHelp => Some(Action::ShowHelp),
         Command::OpenRepo => Some(Action::OpenRepo),

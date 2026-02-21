@@ -101,9 +101,17 @@ impl TestEnv {
     }
 
     fn write_config(&self, search_dir: &Path) {
+        self.write_config_with_extra(search_dir, "");
+    }
+
+    fn write_config_with_extra(&self, search_dir: &Path, extra: &str) {
         let kiosk_config_dir = self.config_dir.join("kiosk");
         fs::create_dir_all(&kiosk_config_dir).unwrap();
-        let config = format!(r#"search_dirs = ["{}"]"#, search_dir.to_string_lossy());
+        let config = format!(
+            "search_dirs = [\"{}\"]\n{}",
+            search_dir.to_string_lossy(),
+            extra
+        );
         fs::write(kiosk_config_dir.join("config.toml"), config).unwrap();
     }
 
@@ -377,8 +385,8 @@ fn test_e2e_ctrl_n_new_branch() {
     env.send_special("Tab");
     wait_ms(200);
 
-    // Press Ctrl+N to trigger new branch flow
-    env.send_special("C-n");
+    // Press Ctrl+O to trigger new branch flow
+    env.send_special("C-o");
     wait_ms(300);
 
     let screen = env.capture();
@@ -426,8 +434,8 @@ fn test_e2e_delete_worktree() {
     env.send("feat/to-delete");
     wait_ms(200);
 
-    // Press 'd' to trigger delete
-    env.send("d");
+    // Press Ctrl+X to trigger delete
+    env.send_special("C-x");
     wait_ms(500);
 
     let screen = env.capture();
@@ -491,5 +499,40 @@ fn test_e2e_clean_dry_run() {
         fake_worktree.exists(),
         "Dry-run should not remove the directory: {}",
         fake_worktree.display()
+    );
+}
+
+#[test]
+fn test_e2e_custom_keybindings() {
+    let env = TestEnv::new("custom-keys");
+    let search_dir = env.search_dir();
+
+    let repo = search_dir.join("keys-repo");
+    fs::create_dir_all(&repo).unwrap();
+    init_test_repo(&repo);
+
+    // Remap Tab (enter repo) to F1
+    let extra = r#"
+[keys.repo_select]
+F1 = "enter_repo"
+tab = "noop"
+"#;
+    env.write_config_with_extra(&search_dir, extra);
+    env.launch_kiosk();
+
+    // Tab should NOT enter the repo (unbound)
+    env.send_special("Tab");
+    let screen = env.capture();
+    assert!(
+        screen.contains("select repo"),
+        "Tab should be unbound, still on repo list: {screen}"
+    );
+
+    // F1 should enter the repo
+    env.send_special("F1");
+    let screen = env.capture();
+    assert!(
+        screen.contains("select branch"),
+        "F1 should enter repo (custom binding): {screen}"
     );
 }

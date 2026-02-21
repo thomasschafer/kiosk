@@ -6,6 +6,9 @@ use std::str::FromStr;
 /// Commands that can be bound to keys
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Command {
+    /// No-op: explicitly unbinds a key (removes the default binding)
+    Noop,
+
     // General commands
     Quit,
     ShowHelp,
@@ -46,6 +49,7 @@ impl FromStr for Command {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
+            "noop" | "none" | "unbound" => Ok(Command::Noop),
             "quit" => Ok(Command::Quit),
             "show_help" => Ok(Command::ShowHelp),
             "open_repo" => Ok(Command::OpenRepo),
@@ -78,6 +82,7 @@ impl FromStr for Command {
 impl std::fmt::Display for Command {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self {
+            Command::Noop => "noop",
             Command::Quit => "quit",
             Command::ShowHelp => "show_help",
             Command::OpenRepo => "open_repo",
@@ -111,6 +116,7 @@ impl Command {
     /// Get a human-readable description of the command for help display
     pub fn description(&self) -> &'static str {
         match self {
+            Command::Noop => "Unbound",
             Command::Quit => "Quit the application",
             Command::ShowHelp => "Show help",
             Command::OpenRepo => "Open repository",
@@ -184,33 +190,9 @@ impl KeysConfig {
         }
     }
 
-    fn default_general() -> KeyMap {
+    /// Common movement + search bindings shared across list modes
+    fn common_list_bindings() -> KeyMap {
         let mut map = KeyMap::new();
-        map.insert(
-            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
-            Command::Quit,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL),
-            Command::ShowHelp,
-        );
-        map
-    }
-
-    fn default_repo_select() -> KeyMap {
-        let mut map = KeyMap::new();
-        map.insert(
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            Command::OpenRepo,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
-            Command::EnterRepo,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-            Command::Quit,
-        );
         map.insert(
             KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
             Command::MoveUp,
@@ -254,8 +236,38 @@ impl KeysConfig {
         map
     }
 
-    fn default_branch_select() -> KeyMap {
+    fn default_general() -> KeyMap {
         let mut map = KeyMap::new();
+        map.insert(
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            Command::Quit,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL),
+            Command::ShowHelp,
+        );
+        map
+    }
+
+    fn default_repo_select() -> KeyMap {
+        let mut map = Self::common_list_bindings();
+        map.insert(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            Command::OpenRepo,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+            Command::EnterRepo,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            Command::Quit,
+        );
+        map
+    }
+
+    fn default_branch_select() -> KeyMap {
+        let mut map = Self::common_list_bindings();
         map.insert(
             KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
             Command::OpenBranch,
@@ -272,51 +284,11 @@ impl KeysConfig {
             KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
             Command::DeleteWorktree,
         );
-        map.insert(
-            KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
-            Command::MoveUp,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
-            Command::MoveDown,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
-            Command::MoveUp,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
-            Command::MoveDown,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
-            Command::HalfPageDown,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
-            Command::HalfPageUp,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE),
-            Command::PageUp,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
-            Command::PageDown,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
-            Command::SearchPop,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
-            Command::SearchDeleteWord,
-        );
         map
     }
 
     fn default_new_branch_base() -> KeyMap {
-        let mut map = KeyMap::new();
+        let mut map = Self::common_list_bindings();
         map.insert(
             KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
             Command::OpenBranch,
@@ -324,46 +296,6 @@ impl KeysConfig {
         map.insert(
             KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
             Command::GoBack,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
-            Command::MoveUp,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
-            Command::MoveDown,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
-            Command::MoveUp,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
-            Command::MoveDown,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
-            Command::HalfPageDown,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
-            Command::HalfPageUp,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE),
-            Command::PageUp,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
-            Command::PageDown,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
-            Command::SearchPop,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
-            Command::SearchDeleteWord,
         );
         map
     }
@@ -406,30 +338,33 @@ impl KeysConfig {
         Ok(keymap)
     }
 
+    /// Merge user overrides into a keymap, then strip any Noop entries (unbinds)
+    fn merge_and_strip(base: &mut KeyMap, overrides: KeyMap) {
+        base.extend(overrides);
+        base.retain(|_, cmd| *cmd != Command::Noop);
+    }
+
     /// Merge user configuration with defaults
-    #[allow(private_interfaces)]
-    pub fn from_raw(raw: &KeysConfigRaw) -> Result<Self, String> {
+    fn from_raw(raw: &KeysConfigRaw) -> Result<Self, String> {
         let mut config = Self::default();
 
-        // Merge general bindings
-        let general_keymap = Self::parse_keymap(&raw.general)?;
-        config.general.extend(general_keymap);
-
-        // Merge repo_select bindings
-        let repo_select_keymap = Self::parse_keymap(&raw.repo_select)?;
-        config.repo_select.extend(repo_select_keymap);
-
-        // Merge branch_select bindings
-        let branch_select_keymap = Self::parse_keymap(&raw.branch_select)?;
-        config.branch_select.extend(branch_select_keymap);
-
-        // Merge new_branch_base bindings
-        let new_branch_base_keymap = Self::parse_keymap(&raw.new_branch_base)?;
-        config.new_branch_base.extend(new_branch_base_keymap);
-
-        // Merge confirmation bindings
-        let confirmation_keymap = Self::parse_keymap(&raw.confirmation)?;
-        config.confirmation.extend(confirmation_keymap);
+        Self::merge_and_strip(&mut config.general, Self::parse_keymap(&raw.general)?);
+        Self::merge_and_strip(
+            &mut config.repo_select,
+            Self::parse_keymap(&raw.repo_select)?,
+        );
+        Self::merge_and_strip(
+            &mut config.branch_select,
+            Self::parse_keymap(&raw.branch_select)?,
+        );
+        Self::merge_and_strip(
+            &mut config.new_branch_base,
+            Self::parse_keymap(&raw.new_branch_base)?,
+        );
+        Self::merge_and_strip(
+            &mut config.confirmation,
+            Self::parse_keymap(&raw.confirmation)?,
+        );
 
         Ok(config)
     }
@@ -532,5 +467,33 @@ mod tests {
         assert!(config.general.len() >= 2);
         let f1_key = KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE);
         assert_eq!(config.general.get(&f1_key), Some(&Command::ShowHelp));
+    }
+
+    #[test]
+    fn test_noop_unbinds_default() {
+        let raw = KeysConfigRaw {
+            general: {
+                let mut map = HashMap::new();
+                // Unbind the default C-h -> show_help
+                map.insert("C-h".to_string(), "noop".to_string());
+                map
+            },
+            repo_select: HashMap::new(),
+            branch_select: HashMap::new(),
+            new_branch_base: HashMap::new(),
+            confirmation: HashMap::new(),
+        };
+
+        let config = KeysConfig::from_raw(&raw).unwrap();
+
+        let ctrl_h = KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL);
+        assert_eq!(config.general.get(&ctrl_h), None, "C-h should be unbound");
+    }
+
+    #[test]
+    fn test_noop_aliases() {
+        assert_eq!(Command::from_str("noop").unwrap(), Command::Noop);
+        assert_eq!(Command::from_str("none").unwrap(), Command::Noop);
+        assert_eq!(Command::from_str("unbound").unwrap(), Command::Noop);
     }
 }

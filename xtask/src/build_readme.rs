@@ -173,15 +173,20 @@ fn generate_keybindings_docs(content: &str) -> String {
     generate_keymap_table(&mut docs, "Confirmation", &keys_config.confirmation);
 
     // Add note about search functionality
-    docs.push_str("\n### Search\n\n");
+    docs.push_str("### Search\n\n");
     docs.push_str("In list modes (Repository, Branch, and New Branch Base Selection), any printable character will start or continue search filtering.\n");
+
+    if !content.contains(KEYS_START_MARKER) || !content.contains(KEYS_END_MARKER) {
+        eprintln!(
+            "Error: keybindings markers ({KEYS_START_MARKER} / {KEYS_END_MARKER}) not found in README"
+        );
+        std::process::exit(1);
+    }
 
     replace_section_content(content, KEYS_START_MARKER, KEYS_END_MARKER, &docs)
 }
 
 fn generate_keymap_table(docs: &mut String, mode_name: &str, keymap: &KeyMap) {
-    use std::fmt::Write as _;
-
     if keymap.is_empty() {
         return;
     }

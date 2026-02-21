@@ -231,9 +231,10 @@ fn is_worktree_known_to_git(main_repo_path: &Path, worktree_path: &Path) -> Opti
         return None;
     }
 
-    // Canonicalize our path so we match git's absolute paths even through symlinks
+    // Canonicalize our path so we match git's absolute paths even through symlinks.
+    // dunce avoids Windows UNC prefix (\\?\) that git's output won't contain.
     let canonical =
-        std::fs::canonicalize(worktree_path).unwrap_or_else(|_| worktree_path.to_path_buf());
+        dunce::canonicalize(worktree_path).unwrap_or_else(|_| worktree_path.to_path_buf());
 
     let stdout = String::from_utf8_lossy(&output.stdout);
 

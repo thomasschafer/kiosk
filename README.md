@@ -195,7 +195,6 @@ Key binding configuration.
 | n | Cancel |
 | y | Confirm |
 
-
 ### Search
 
 In list modes (Repository, Branch, and New Branch Base Selection), any printable character will start or continue search filtering.

@@ -361,13 +361,11 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             } else {
                 state.clear_pending_worktree_delete_by_path(&worktree_path);
             }
+            let mut error_message = format!("Failed to remove worktree for {branch_name}: {error}");
             if let Err(e) = save_pending_worktree_deletes(&state.pending_worktree_deletes) {
-                state.error = Some(format!("Failed to persist pending deletes: {e}"));
-            } else {
-                state.error = Some(format!(
-                    "Failed to remove worktree for {branch_name}: {error}"
-                ));
+                error_message.push_str(&format!(" (also failed to persist pending deletes: {e})"));
             }
+            state.error = Some(error_message);
             state.loading_branches = false;
             state.mode = Mode::BranchSelect;
         }

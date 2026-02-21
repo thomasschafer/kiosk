@@ -973,21 +973,27 @@ fn handle_search_push(state: &mut AppState, matcher: &SkimMatcherV2, c: char) {
     }
 }
 
-/// Handle search character pop action  
+/// Handle search character pop action
+/// Remove the character before the cursor (handles multi-byte chars)
+fn remove_char_before(text: &mut String, cursor: &mut usize) {
+    if *cursor > 0 {
+        let prev_boundary = text[..*cursor]
+            .char_indices()
+            .next_back()
+            .map_or(0, |(i, _)| i);
+        text.drain(prev_boundary..*cursor);
+        *cursor = prev_boundary;
+    }
+}
+
 fn handle_search_pop(state: &mut AppState, matcher: &SkimMatcherV2) {
     match state.mode {
         Mode::RepoSelect => {
-            if state.repo_cursor > 0 {
-                state.repo_search.remove(state.repo_cursor - 1);
-                state.repo_cursor -= 1;
-            }
+            remove_char_before(&mut state.repo_search, &mut state.repo_cursor);
             update_repo_filter(state, matcher);
         }
         Mode::BranchSelect => {
-            if state.branch_cursor > 0 {
-                state.branch_search.remove(state.branch_cursor - 1);
-                state.branch_cursor -= 1;
-            }
+            remove_char_before(&mut state.branch_search, &mut state.branch_cursor);
             update_branch_filter(state, matcher);
         }
         Mode::NewBranchBase => {
@@ -1074,13 +1080,19 @@ fn handle_cursor_movement(state: &mut AppState, movement: CursorMove) {
 fn move_cursor(text: &str, cursor: &mut usize, movement: CursorMove) {
     match movement {
         CursorMove::Left => {
-            if *cursor > 0 {
-                *cursor -= 1;
-            }
+            // Move to the previous char boundary
+            *cursor = text[..*cursor]
+                .char_indices()
+                .next_back()
+                .map_or(0, |(i, _)| i);
         }
         CursorMove::Right => {
+            // Move to the next char boundary
             if *cursor < text.len() {
-                *cursor += 1;
+                *cursor = text[*cursor..]
+                    .char_indices()
+                    .nth(1)
+                    .map_or(text.len(), |(i, _)| *cursor + i);
             }
         }
         CursorMove::Start => {
@@ -1515,6 +1527,89 @@ mod tests {
 
         assert_eq!(state.mode, Mode::ConfirmDelete("dev".to_string()));
         assert!(state.error.is_none());
+    }
+
+    #[test]
+    fn test_cursor_movement_multibyte() {
+        // "café" = 5 bytes: c(1) a(1) f(1) é(2)
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+        state.repo_search = "café".to_string();
+        state.repo_cursor = state.repo_search.len(); // 5 (byte len)
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux = MockTmuxProvider::default();
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+
+        // Move left from end should skip over the 2-byte 'é'
+        process_action(
+            Action::CursorLeft,
+            &mut state,
+            &git,
+            &tmux,
+            &matcher,
+            &sender,
+        );
+        assert_eq!(state.repo_cursor, 3); // before 'é' (byte offset of 'é')
+
+        // Move left again should land before 'f'
+        process_action(
+            Action::CursorLeft,
+            &mut state,
+            &git,
+            &tmux,
+            &matcher,
+            &sender,
+        );
+        assert_eq!(state.repo_cursor, 2);
+
+        // Move right should skip over 'f' (1 byte)
+        process_action(
+            Action::CursorRight,
+            &mut state,
+            &git,
+            &tmux,
+            &matcher,
+            &sender,
+        );
+        assert_eq!(state.repo_cursor, 3);
+
+        // Move right should skip over 'é' (2 bytes)
+        process_action(
+            Action::CursorRight,
+            &mut state,
+            &git,
+            &tmux,
+            &matcher,
+            &sender,
+        );
+        assert_eq!(state.repo_cursor, 5);
+    }
+
+    #[test]
+    fn test_backspace_multibyte() {
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+        state.repo_search = "café".to_string();
+        state.repo_cursor = state.repo_search.len(); // 5
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux = MockTmuxProvider::default();
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+
+        // Backspace should remove 'é' (2 bytes)
+        process_action(
+            Action::SearchPop,
+            &mut state,
+            &git,
+            &tmux,
+            &matcher,
+            &sender,
+        );
+        assert_eq!(state.repo_search, "caf");
+        assert_eq!(state.repo_cursor, 3);
     }
 
     #[test]

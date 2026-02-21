@@ -1,3 +1,4 @@
+use super::layout::centered_rect;
 use kiosk_core::config::{Command, KeysConfig};
 use kiosk_core::keyboard::KeyEvent;
 use kiosk_core::state::{AppState, Mode};

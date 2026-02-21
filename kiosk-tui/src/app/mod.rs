@@ -136,7 +136,7 @@ pub fn run(
 
 fn draw(
     f: &mut Frame,
-    state: &AppState,
+    state: &mut AppState,
     theme: &crate::theme::Theme,
     keys: &kiosk_core::config::KeysConfig,
     spinner_start: &Instant,
@@ -153,6 +153,9 @@ fn draw(
     } else {
         (f.area(), None)
     };
+
+    let page_rows = active_list_page_rows(f.area(), main_area, &state.mode);
+    state.set_active_list_page_rows(page_rows);
 
     match &state.mode {
         Mode::RepoSelect => components::repo_list::draw(f, main_area, state, theme, keys),
@@ -192,6 +195,27 @@ fn draw(
 
     if let Some(area) = error_area {
         components::error_bar::draw(f, area, state);
+    }
+}
+
+fn list_rows_from_list_area(list_area: Rect) -> usize {
+    usize::from(list_area.height.saturating_sub(2)).max(1)
+}
+
+fn active_list_page_rows(full_area: Rect, main_area: Rect, mode: &Mode) -> usize {
+    match mode {
+        Mode::RepoSelect | Mode::BranchSelect | Mode::ConfirmDelete { .. } => {
+            let chunks =
+                Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(main_area);
+            list_rows_from_list_area(chunks[1])
+        }
+        Mode::NewBranchBase => {
+            let popup = components::layout::centered_rect(60, 60, full_area);
+            let chunks = Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(popup);
+            list_rows_from_list_area(chunks[1])
+        }
+        Mode::Help { previous } => active_list_page_rows(full_area, main_area, previous),
+        Mode::Loading(_) => 1,
     }
 }
 
@@ -456,15 +480,20 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
 }
 
 fn handle_movement_actions(action: &Action, state: &mut AppState) -> bool {
+    let page_rows: i32 = state.active_list_page_rows().try_into().unwrap_or(i32::MAX);
+    let page_step_floor = page_rows.max(1);
+
     let Some(list) = state.active_list_mut() else {
         return false;
     };
     let list_len: i32 = list.filtered.len().try_into().unwrap_or(i32::MAX);
+    let page_step = page_step_floor.min(list_len.max(1));
+    let half_page_step = (page_step / 2).max(1);
     match action {
-        Action::HalfPageUp => list.move_selection(-list_len.min(10)),
-        Action::HalfPageDown => list.move_selection(list_len.min(10)),
-        Action::PageUp => list.move_selection(-list_len.min(25)),
-        Action::PageDown => list.move_selection(list_len.min(25)),
+        Action::HalfPageUp => list.move_selection(-half_page_step),
+        Action::HalfPageDown => list.move_selection(half_page_step),
+        Action::PageUp => list.move_selection(-page_step),
+        Action::PageDown => list.move_selection(page_step),
         Action::MoveTop => list.move_to_top(),
         Action::MoveBottom => list.move_to_bottom(),
         _ => return false,
@@ -959,6 +988,73 @@ mod tests {
             &sender,
         );
         assert_eq!(state.repo_list.selected, Some(2));
+    }
+
+    #[test]
+    fn test_page_movement_uses_active_list_page_rows() {
+        let repos: Vec<_> = (0..20).map(|i| make_repo(&format!("repo-{i}"))).collect();
+        let mut state = AppState::new(repos, None);
+        state.set_active_list_page_rows(8);
+        assert_eq!(state.repo_list.selected, Some(0));
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+
+        process_action(
+            Action::HalfPageDown,
+            &mut state,
+            &git,
+            &tmux,
+            &matcher,
+            &sender,
+        );
+        assert_eq!(state.repo_list.selected, Some(4));
+
+        process_action(Action::PageDown, &mut state, &git, &tmux, &matcher, &sender);
+        assert_eq!(state.repo_list.selected, Some(12));
+
+        process_action(Action::PageUp, &mut state, &git, &tmux, &matcher, &sender);
+        assert_eq!(state.repo_list.selected, Some(4));
+    }
+
+    #[test]
+    fn test_page_movement_clamps_to_bounds() {
+        let repos: Vec<_> = (0..6).map(|i| make_repo(&format!("repo-{i}"))).collect();
+        let mut state = AppState::new(repos, None);
+        state.set_active_list_page_rows(20);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+
+        process_action(Action::PageDown, &mut state, &git, &tmux, &matcher, &sender);
+        assert_eq!(state.repo_list.selected, Some(5));
+
+        process_action(
+            Action::HalfPageDown,
+            &mut state,
+            &git,
+            &tmux,
+            &matcher,
+            &sender,
+        );
+        assert_eq!(state.repo_list.selected, Some(5));
+
+        process_action(Action::PageUp, &mut state, &git, &tmux, &matcher, &sender);
+        assert_eq!(state.repo_list.selected, Some(0));
+
+        process_action(
+            Action::HalfPageUp,
+            &mut state,
+            &git,
+            &tmux,
+            &matcher,
+            &sender,
+        );
+        assert_eq!(state.repo_list.selected, Some(0));
     }
 
     #[test]

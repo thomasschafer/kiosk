@@ -245,6 +245,10 @@ impl KeysConfig {
             Command::SearchDeleteForward,
         );
         map.insert(
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+            Command::SearchDeleteForward,
+        );
+        map.insert(
             KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
             Command::SearchDeleteWord,
         );
@@ -330,11 +334,11 @@ impl KeysConfig {
             Command::MoveDown,
         );
         map.insert(
-            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL),
             Command::HalfPageDown,
         );
         map.insert(
-            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL),
             Command::HalfPageUp,
         );
         map.insert(
@@ -642,6 +646,29 @@ mod tests {
 
         // Same for branch_select
         assert_eq!(config.branch_select.get(&left), Some(&Command::CursorLeft));
+    }
+
+    #[test]
+    fn test_default_search_bindings_take_priority() {
+        let config = KeysConfig::default();
+        let ctrl_u = KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL);
+        let ctrl_d = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL);
+        let ctrl_f = KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL);
+        let ctrl_b = KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL);
+
+        assert_eq!(
+            config.repo_select.get(&ctrl_u),
+            Some(&Command::SearchDeleteToStart)
+        );
+        assert_eq!(
+            config.repo_select.get(&ctrl_d),
+            Some(&Command::SearchDeleteForward)
+        );
+        assert_eq!(
+            config.repo_select.get(&ctrl_f),
+            Some(&Command::HalfPageDown)
+        );
+        assert_eq!(config.repo_select.get(&ctrl_b), Some(&Command::HalfPageUp));
     }
 
     #[test]

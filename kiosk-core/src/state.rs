@@ -339,6 +339,9 @@ pub struct AppState {
     pub mode: Mode,
     pub loading_branches: bool,
     pub error: Option<String>,
+    /// Number of visible rows in the currently active list viewport.
+    /// Updated by the TUI draw loop and used for page-wise movement.
+    active_list_page_rows: usize,
     pub pending_worktree_deletes: Vec<PendingWorktreeDelete>,
 }
 
@@ -357,6 +360,7 @@ impl AppState {
             mode: Mode::RepoSelect,
             loading_branches: false,
             error: None,
+            active_list_page_rows: 10,
             pending_worktree_deletes: Vec::new(),
         }
     }
@@ -374,6 +378,7 @@ impl AppState {
             mode: Mode::Loading(loading_message.to_string()),
             loading_branches: false,
             error: None,
+            active_list_page_rows: 10,
             pending_worktree_deletes: Vec::new(),
         }
     }
@@ -402,6 +407,16 @@ impl AppState {
         self.pending_worktree_deletes
             .iter()
             .any(|pending| pending.repo_path == repo_path && pending.branch_name == branch_name)
+    }
+
+    /// Set the active list page size in rows (clamped to at least 1).
+    pub fn set_active_list_page_rows(&mut self, rows: usize) {
+        self.active_list_page_rows = rows.max(1);
+    }
+
+    /// Current active list page size in rows.
+    pub fn active_list_page_rows(&self) -> usize {
+        self.active_list_page_rows.max(1)
     }
 
     pub fn mark_pending_worktree_delete(&mut self, pending: PendingWorktreeDelete) {

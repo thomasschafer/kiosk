@@ -1,3 +1,4 @@
+use super::layout::centered_rect;
 use crate::theme::Theme;
 use kiosk_core::state::AppState;
 use ratatui::{

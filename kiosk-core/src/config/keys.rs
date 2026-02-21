@@ -1,4 +1,4 @@
-use crate::keyboard::{KeyEvent, KeyModifiers, KeyCode};
+use crate::keyboard::{KeyCode, KeyEvent, KeyModifiers};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -9,7 +9,7 @@ pub enum Command {
     // General commands
     Quit,
     ShowHelp,
-    
+
     // Navigation commands
     OpenRepo,
     EnterRepo,
@@ -17,7 +17,7 @@ pub enum Command {
     GoBack,
     NewBranch,
     DeleteWorktree,
-    
+
     // Movement commands
     MoveUp,
     MoveDown,
@@ -27,7 +27,7 @@ pub enum Command {
     PageDown,
     MoveTop,
     MoveBottom,
-    
+
     // Search commands
     SearchPop,
     SearchDeleteWord,
@@ -35,7 +35,7 @@ pub enum Command {
     CursorRight,
     CursorStart,
     CursorEnd,
-    
+
     // Confirmation commands
     Confirm,
     Cancel,
@@ -186,72 +186,210 @@ impl KeysConfig {
 
     fn default_general() -> KeyMap {
         let mut map = KeyMap::new();
-        map.insert(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL), Command::Quit);
-        map.insert(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL), Command::ShowHelp);
+        map.insert(
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            Command::Quit,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL),
+            Command::ShowHelp,
+        );
         map
     }
 
     fn default_repo_select() -> KeyMap {
         let mut map = KeyMap::new();
-        map.insert(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), Command::OpenRepo);
-        map.insert(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), Command::EnterRepo);
-        map.insert(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), Command::Quit);
-        map.insert(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), Command::MoveUp);
-        map.insert(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), Command::MoveDown);
-        map.insert(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL), Command::MoveUp);
-        map.insert(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL), Command::MoveDown);
-        map.insert(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL), Command::HalfPageDown);
-        map.insert(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL), Command::HalfPageUp);
-        map.insert(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE), Command::PageUp);
-        map.insert(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE), Command::PageDown);
-        map.insert(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE), Command::SearchPop);
-        map.insert(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL), Command::SearchDeleteWord);
+        map.insert(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            Command::OpenRepo,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+            Command::EnterRepo,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            Command::Quit,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+            Command::MoveUp,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            Command::MoveDown,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
+            Command::MoveUp,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
+            Command::MoveDown,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+            Command::HalfPageDown,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+            Command::HalfPageUp,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE),
+            Command::PageUp,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
+            Command::PageDown,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+            Command::SearchPop,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
+            Command::SearchDeleteWord,
+        );
         map
     }
 
     fn default_branch_select() -> KeyMap {
         let mut map = KeyMap::new();
-        map.insert(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), Command::OpenBranch);
-        map.insert(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), Command::GoBack);
-        map.insert(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL), Command::NewBranch);
-        map.insert(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL), Command::DeleteWorktree);
-        map.insert(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), Command::MoveUp);
-        map.insert(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), Command::MoveDown);
-        map.insert(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL), Command::MoveUp);
-        map.insert(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL), Command::MoveDown);
-        map.insert(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL), Command::HalfPageDown);
-        map.insert(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL), Command::HalfPageUp);
-        map.insert(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE), Command::PageUp);
-        map.insert(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE), Command::PageDown);
-        map.insert(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE), Command::SearchPop);
-        map.insert(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL), Command::SearchDeleteWord);
+        map.insert(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            Command::OpenBranch,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            Command::GoBack,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
+            Command::NewBranch,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
+            Command::DeleteWorktree,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+            Command::MoveUp,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            Command::MoveDown,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
+            Command::MoveUp,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
+            Command::MoveDown,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+            Command::HalfPageDown,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+            Command::HalfPageUp,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE),
+            Command::PageUp,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
+            Command::PageDown,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+            Command::SearchPop,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
+            Command::SearchDeleteWord,
+        );
         map
     }
 
     fn default_new_branch_base() -> KeyMap {
         let mut map = KeyMap::new();
-        map.insert(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), Command::OpenBranch);
-        map.insert(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), Command::GoBack);
-        map.insert(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), Command::MoveUp);
-        map.insert(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), Command::MoveDown);
-        map.insert(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL), Command::MoveUp);
-        map.insert(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL), Command::MoveDown);
-        map.insert(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL), Command::HalfPageDown);
-        map.insert(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL), Command::HalfPageUp);
-        map.insert(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE), Command::PageUp);
-        map.insert(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE), Command::PageDown);
-        map.insert(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE), Command::SearchPop);
-        map.insert(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL), Command::SearchDeleteWord);
+        map.insert(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            Command::OpenBranch,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            Command::GoBack,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+            Command::MoveUp,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            Command::MoveDown,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
+            Command::MoveUp,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
+            Command::MoveDown,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+            Command::HalfPageDown,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+            Command::HalfPageUp,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE),
+            Command::PageUp,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
+            Command::PageDown,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+            Command::SearchPop,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
+            Command::SearchDeleteWord,
+        );
         map
     }
 
     fn default_confirmation() -> KeyMap {
         let mut map = KeyMap::new();
-        map.insert(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE), Command::Confirm);
-        map.insert(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), Command::Confirm);
-        map.insert(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE), Command::Cancel);
-        map.insert(KeyEvent::new(KeyCode::Char('N'), KeyModifiers::NONE), Command::Cancel);
-        map.insert(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), Command::Cancel);
+        map.insert(
+            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
+            Command::Confirm,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            Command::Confirm,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
+            Command::Cancel,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Char('N'), KeyModifiers::NONE),
+            Command::Cancel,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            Command::Cancel,
+        );
         map
     }
 
@@ -259,8 +397,8 @@ impl KeysConfig {
     fn parse_keymap(raw_map: &HashMap<String, String>) -> Result<KeyMap, String> {
         let mut keymap = KeyMap::new();
         for (key_str, command_str) in raw_map {
-            let key_event = KeyEvent::from_str(key_str)
-                .map_err(|e| format!("Invalid key '{key_str}': {e}"))?;
+            let key_event =
+                KeyEvent::from_str(key_str).map_err(|e| format!("Invalid key '{key_str}': {e}"))?;
             let command = Command::from_str(command_str)
                 .map_err(|e| format!("Invalid command '{command_str}': {e}"))?;
             keymap.insert(key_event, command);
@@ -272,7 +410,7 @@ impl KeysConfig {
     #[allow(private_interfaces)]
     pub fn from_raw(raw: &KeysConfigRaw) -> Result<Self, String> {
         let mut config = Self::default();
-        
+
         // Merge general bindings
         let general_keymap = Self::parse_keymap(&raw.general)?;
         config.general.extend(general_keymap);
@@ -348,10 +486,10 @@ mod tests {
 
         let keymap = KeysConfig::parse_keymap(&raw_map).unwrap();
         assert_eq!(keymap.len(), 2);
-        
+
         let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
         assert_eq!(keymap.get(&ctrl_c), Some(&Command::Quit));
-        
+
         let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(keymap.get(&enter), Some(&Command::Confirm));
     }
@@ -374,7 +512,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[test] 
+    #[test]
     fn test_from_raw_merge() {
         let raw = KeysConfigRaw {
             general: {
@@ -388,8 +526,8 @@ mod tests {
             confirmation: HashMap::new(),
         };
 
-        let config = KeysConfig::from_raw(raw).unwrap();
-        
+        let config = KeysConfig::from_raw(&raw).unwrap();
+
         // Should have default C-h -> show_help plus new F1 -> show_help
         assert!(config.general.len() >= 2);
         let f1_key = KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE);

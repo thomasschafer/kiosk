@@ -22,7 +22,9 @@ pub enum Mode {
     /// Confirmation dialog for worktree deletion
     ConfirmDelete(String),
     /// Help overlay showing key bindings
-    Help { previous: Box<Mode> },
+    Help {
+        previous: Box<Mode>,
+    },
 }
 
 /// The new-branch flow state

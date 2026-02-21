@@ -121,7 +121,13 @@ pub fn run(
     }
 }
 
-fn draw(f: &mut Frame, state: &AppState, theme: &crate::theme::Theme, keys: &kiosk_core::config::KeysConfig, spinner_start: &Instant) {
+fn draw(
+    f: &mut Frame,
+    state: &AppState,
+    theme: &crate::theme::Theme,
+    keys: &kiosk_core::config::KeysConfig,
+    spinner_start: &Instant,
+) {
     // Loading mode: full-screen spinner
     if let Mode::Loading(ref msg) = state.mode {
         draw_loading(f, f.area(), msg, theme, spinner_start);
@@ -413,6 +419,127 @@ fn spawn_branch_and_worktree_creation(
     });
 }
 
+/// Get the current list length based on mode
+fn get_list_length(state: &AppState) -> usize {
+    match state.mode {
+        Mode::RepoSelect => state.filtered_repos.len(),
+        Mode::BranchSelect => state.filtered_branches.len(),
+        Mode::NewBranchBase => state
+            .new_branch_base
+            .as_ref()
+            .map_or(0, |f| f.filtered.len()),
+        _ => 0,
+    }
+}
+
+/// Handle page movement actions
+fn handle_page_movement(action: &Action, state: &mut AppState) -> bool {
+    let list_len = get_list_length(state);
+    let delta = match action {
+        Action::HalfPageUp => -(list_len.try_into().unwrap_or(i32::MAX)).min(10),
+        Action::HalfPageDown => (list_len.try_into().unwrap_or(i32::MAX)).min(10),
+        Action::PageUp => -(list_len.try_into().unwrap_or(i32::MAX)).min(25),
+        Action::PageDown => (list_len.try_into().unwrap_or(i32::MAX)).min(25),
+        _ => return false,
+    };
+    handle_move_selection_action(state, delta);
+    true
+}
+
+/// Handle top/bottom movement actions
+fn handle_boundary_movement(action: &Action, state: &mut AppState) -> bool {
+    match action {
+        Action::MoveTop => {
+            match state.mode {
+                Mode::RepoSelect => {
+                    if !state.filtered_repos.is_empty() {
+                        state.repo_selected = Some(0);
+                    }
+                }
+                Mode::BranchSelect => {
+                    if !state.filtered_branches.is_empty() {
+                        state.branch_selected = Some(0);
+                    }
+                }
+                Mode::NewBranchBase => {
+                    if let Some(flow) = &mut state.new_branch_base
+                        && !flow.filtered.is_empty()
+                    {
+                        flow.selected = Some(0);
+                    }
+                }
+                _ => {}
+            }
+            true
+        }
+        Action::MoveBottom => {
+            match state.mode {
+                Mode::RepoSelect => {
+                    if !state.filtered_repos.is_empty() {
+                        state.repo_selected = Some(state.filtered_repos.len() - 1);
+                    }
+                }
+                Mode::BranchSelect => {
+                    if !state.filtered_branches.is_empty() {
+                        state.branch_selected = Some(state.filtered_branches.len() - 1);
+                    }
+                }
+                Mode::NewBranchBase => {
+                    if let Some(flow) = &mut state.new_branch_base
+                        && !flow.filtered.is_empty()
+                    {
+                        flow.selected = Some(flow.filtered.len() - 1);
+                    }
+                }
+                _ => {}
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Handle movement-related actions (`HalfPageUp`, `HalfPageDown`, `PageUp`, `PageDown`, `MoveTop`, `MoveBottom`)
+fn handle_movement_actions(action: &Action, state: &mut AppState) -> bool {
+    handle_page_movement(action, state) || handle_boundary_movement(action, state)
+}
+
+/// Handle simple cursor and error actions
+fn handle_simple_actions(action: &Action, state: &mut AppState) -> bool {
+    match action {
+        Action::CursorLeft => {
+            handle_cursor_movement(state, CursorMove::Left);
+            true
+        }
+        Action::CursorRight => {
+            handle_cursor_movement(state, CursorMove::Right);
+            true
+        }
+        Action::CursorStart => {
+            handle_cursor_movement(state, CursorMove::Start);
+            true
+        }
+        Action::CursorEnd => {
+            handle_cursor_movement(state, CursorMove::End);
+            true
+        }
+        Action::ShowError(msg) => {
+            state.error = Some(msg.clone());
+            true
+        }
+        Action::ClearError => {
+            state.error = None;
+            true
+        }
+        Action::CancelDeleteWorktree => {
+            state.mode = Mode::BranchSelect;
+            true
+        }
+        _ => false,
+    }
+}
+
+#[allow(clippy::needless_pass_by_value)]
 fn process_action(
     action: Action,
     state: &mut AppState,
@@ -421,6 +548,11 @@ fn process_action(
     matcher: &SkimMatcherV2,
     sender: &EventSender,
 ) -> Option<OpenAction> {
+    // Handle movement and simple actions first
+    if handle_movement_actions(&action, state) || handle_simple_actions(&action, state) {
+        return None;
+    }
+
     match action {
         Action::Quit => return Some(OpenAction::Quit),
 
@@ -446,24 +578,7 @@ fn process_action(
             }
         }
 
-        Action::GoBack => match state.mode.clone() {
-            Mode::BranchSelect => {
-                state.mode = Mode::RepoSelect;
-                state.branch_search.clear();
-                state.branch_cursor = 0;
-            }
-            Mode::NewBranchBase => {
-                state.new_branch_base = None;
-                state.mode = Mode::BranchSelect;
-            }
-            Mode::ConfirmDelete(_) => {
-                state.mode = Mode::BranchSelect;
-            }
-            Mode::Help { previous } => {
-                state.mode = *previous;
-            }
-            Mode::RepoSelect | Mode::Loading(_) => {}
-        },
+        Action::GoBack => handle_go_back(state),
 
         Action::OpenBranch => {
             if let Some(result) = handle_open_branch(state, git, sender) {
@@ -475,155 +590,71 @@ fn process_action(
             handle_start_new_branch(state, git);
         }
 
-        Action::MoveSelection(delta) => match state.mode {
-            Mode::RepoSelect => {
-                move_selection(&mut state.repo_selected, state.filtered_repos.len(), delta);
-            }
-            Mode::BranchSelect => {
-                move_selection(
-                    &mut state.branch_selected,
-                    state.filtered_branches.len(),
-                    delta,
-                );
-            }
-            Mode::NewBranchBase => {
-                if let Some(flow) = &mut state.new_branch_base {
-                    move_selection(&mut flow.selected, flow.filtered.len(), delta);
-                }
-            }
-            Mode::ConfirmDelete(_) | Mode::Loading(_) | Mode::Help { .. } => {}
-        },
+        Action::MoveSelection(delta) => handle_move_selection_action(state, delta),
 
         Action::SearchPush(c) => handle_search_push(state, matcher, c),
         Action::SearchPop => handle_search_pop(state, matcher),
 
         Action::DeleteWorktree => handle_delete_worktree(state),
         Action::ConfirmDeleteWorktree => handle_confirm_delete(state, git, sender),
-        Action::CancelDeleteWorktree => {
-            state.mode = Mode::BranchSelect;
-        }
-
-        Action::ShowError(msg) => {
-            state.error = Some(msg);
-        }
-        Action::ClearError => {
-            state.error = None;
-        }
 
         Action::SearchDeleteWord => handle_search_delete_word(state, matcher),
-        
-        Action::HalfPageUp => {
-            let list_len = match state.mode {
-                Mode::RepoSelect => state.filtered_repos.len(),
-                Mode::BranchSelect => state.filtered_branches.len(),
-                Mode::NewBranchBase => state.new_branch_base.as_ref().map(|f| f.filtered.len()).unwrap_or(0),
-                _ => 0,
-            };
-            let delta = -(list_len as i32).min(10);
-            handle_move_selection_action(state, delta);
-        }
-        
-        Action::HalfPageDown => {
-            let list_len = match state.mode {
-                Mode::RepoSelect => state.filtered_repos.len(),
-                Mode::BranchSelect => state.filtered_branches.len(),
-                Mode::NewBranchBase => state.new_branch_base.as_ref().map(|f| f.filtered.len()).unwrap_or(0),
-                _ => 0,
-            };
-            let delta = (list_len as i32).min(10);
-            handle_move_selection_action(state, delta);
-        }
-        
-        Action::PageUp => {
-            let list_len = match state.mode {
-                Mode::RepoSelect => state.filtered_repos.len(),
-                Mode::BranchSelect => state.filtered_branches.len(),
-                Mode::NewBranchBase => state.new_branch_base.as_ref().map(|f| f.filtered.len()).unwrap_or(0),
-                _ => 0,
-            };
-            let delta = -(list_len as i32).min(25);
-            handle_move_selection_action(state, delta);
-        }
-        
-        Action::PageDown => {
-            let list_len = match state.mode {
-                Mode::RepoSelect => state.filtered_repos.len(),
-                Mode::BranchSelect => state.filtered_branches.len(),
-                Mode::NewBranchBase => state.new_branch_base.as_ref().map(|f| f.filtered.len()).unwrap_or(0),
-                _ => 0,
-            };
-            let delta = (list_len as i32).min(25);
-            handle_move_selection_action(state, delta);
-        }
-        
-        Action::MoveTop => {
-            match state.mode {
-                Mode::RepoSelect => {
-                    if !state.filtered_repos.is_empty() {
-                        state.repo_selected = Some(0);
-                    }
-                }
-                Mode::BranchSelect => {
-                    if !state.filtered_branches.is_empty() {
-                        state.branch_selected = Some(0);
-                    }
-                }
-                Mode::NewBranchBase => {
-                    if let Some(flow) = &mut state.new_branch_base {
-                        if !flow.filtered.is_empty() {
-                            flow.selected = Some(0);
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-        
-        Action::MoveBottom => {
-            match state.mode {
-                Mode::RepoSelect => {
-                    if !state.filtered_repos.is_empty() {
-                        state.repo_selected = Some(state.filtered_repos.len() - 1);
-                    }
-                }
-                Mode::BranchSelect => {
-                    if !state.filtered_branches.is_empty() {
-                        state.branch_selected = Some(state.filtered_branches.len() - 1);
-                    }
-                }
-                Mode::NewBranchBase => {
-                    if let Some(flow) = &mut state.new_branch_base {
-                        if !flow.filtered.is_empty() {
-                            flow.selected = Some(flow.filtered.len() - 1);
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-        
-        Action::CursorLeft => handle_cursor_movement(state, CursorMove::Left),
-        Action::CursorRight => handle_cursor_movement(state, CursorMove::Right),
-        Action::CursorStart => handle_cursor_movement(state, CursorMove::Start),
-        Action::CursorEnd => handle_cursor_movement(state, CursorMove::End),
-        
-        Action::ShowHelp => {
-            match state.mode.clone() {
-                Mode::Help { previous } => {
-                    // Toggle help off - restore previous mode
-                    state.mode = *previous;
-                }
-                _ => {
-                    // Toggle help on - save current mode
-                    state.mode = Mode::Help {
-                        previous: Box::new(state.mode.clone()),
-                    };
-                }
-            }
+
+        Action::ShowHelp => handle_show_help(state),
+
+        // Actions handled before the match statement
+        Action::HalfPageUp
+        | Action::HalfPageDown
+        | Action::PageUp
+        | Action::PageDown
+        | Action::MoveTop
+        | Action::MoveBottom
+        | Action::CursorLeft
+        | Action::CursorRight
+        | Action::CursorStart
+        | Action::CursorEnd
+        | Action::ShowError(_)
+        | Action::ClearError
+        | Action::CancelDeleteWorktree => {
+            // These are handled by helper functions before this match
         }
     }
 
     None
+}
+
+fn handle_go_back(state: &mut AppState) {
+    match state.mode.clone() {
+        Mode::BranchSelect => {
+            state.mode = Mode::RepoSelect;
+            state.branch_search.clear();
+            state.branch_cursor = 0;
+        }
+        Mode::NewBranchBase => {
+            state.new_branch_base = None;
+            state.mode = Mode::BranchSelect;
+        }
+        Mode::ConfirmDelete(_) => {
+            state.mode = Mode::BranchSelect;
+        }
+        Mode::Help { previous } => {
+            state.mode = *previous;
+        }
+        Mode::RepoSelect | Mode::Loading(_) => {}
+    }
+}
+
+fn handle_show_help(state: &mut AppState) {
+    match state.mode.clone() {
+        Mode::Help { previous } => {
+            state.mode = *previous;
+        }
+        _ => {
+            state.mode = Mode::Help {
+                previous: Box::new(state.mode.clone()),
+            };
+        }
+    }
 }
 
 fn handle_start_new_branch(state: &mut AppState, git: &Arc<dyn GitProvider>) {
@@ -668,7 +699,6 @@ fn handle_confirm_delete(state: &mut AppState, git: &Arc<dyn GitProvider>, sende
         }
     }
 }
-
 
 fn handle_open_branch(
     state: &mut AppState,
@@ -989,17 +1019,17 @@ fn delete_word(text: &mut String, cursor: &mut usize) {
 
     let bytes = text.as_bytes();
     let mut new_cursor = (*cursor).min(bytes.len());
-    
+
     // Skip any whitespace at cursor
     while new_cursor > 0 && bytes[new_cursor - 1].is_ascii_whitespace() {
         new_cursor -= 1;
     }
-    
+
     // Delete non-whitespace characters
     while new_cursor > 0 && !bytes[new_cursor - 1].is_ascii_whitespace() {
         new_cursor -= 1;
     }
-    
+
     text.drain(new_cursor..*cursor);
     *cursor = new_cursor;
 }
@@ -1022,10 +1052,9 @@ fn handle_cursor_movement(state: &mut AppState, movement: CursorMove) {
         Mode::BranchSelect => {
             move_cursor(&state.branch_search, &mut state.branch_cursor, movement);
         }
-        Mode::NewBranchBase => {
+        _ => {
             // NewBranchFlow doesn't have cursor support, but we could add it later
         }
-        _ => {}
     }
 }
 
@@ -1049,24 +1078,6 @@ fn move_cursor(text: &str, cursor: &mut usize, movement: CursorMove) {
             *cursor = text.len();
         }
     }
-}
-
-
-/// Helper function to center a rect within another rect  
-fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
-    let popup_layout = Layout::vertical([
-        Constraint::Percentage((100 - percent_y) / 2),
-        Constraint::Percentage(percent_y),
-        Constraint::Percentage((100 - percent_y) / 2),
-    ])
-    .split(r);
-
-    Layout::horizontal([
-        Constraint::Percentage((100 - percent_x) / 2),
-        Constraint::Percentage(percent_x),
-        Constraint::Percentage((100 - percent_x) / 2),
-    ])
-    .split(popup_layout[1])[1]
 }
 
 #[cfg(test)]

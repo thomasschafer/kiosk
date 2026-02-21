@@ -58,7 +58,15 @@ fn run_tui(config: &config::Config) -> Result<()> {
     let theme = Theme::from_config(&config.theme);
 
     let mut terminal = ratatui::init();
-    let result = kiosk_tui::run(&mut terminal, &mut state, &git, &tmux, &theme, &config.keys, search_dirs);
+    let result = kiosk_tui::run(
+        &mut terminal,
+        &mut state,
+        &git,
+        &tmux,
+        &theme,
+        &config.keys,
+        search_dirs,
+    );
     ratatui::restore();
 
     match result? {

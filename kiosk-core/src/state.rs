@@ -138,6 +138,54 @@ pub struct BranchEntry {
     pub is_current: bool,
 }
 
+impl BranchEntry {
+    /// Build sorted branch entries from a repo's branches, worktrees, and active tmux sessions.
+    ///
+    /// Sorted by: sessions first, then worktrees, then alphabetical.
+    pub fn build_sorted(
+        repo: &crate::git::Repo,
+        branch_names: &[String],
+        active_sessions: &[String],
+    ) -> Vec<Self> {
+        use std::collections::HashMap;
+
+        let wt_by_branch: HashMap<&str, &crate::git::Worktree> = repo
+            .worktrees
+            .iter()
+            .filter_map(|wt| wt.branch.as_deref().map(|b| (b, wt)))
+            .collect();
+
+        let current_branch = repo.worktrees.first().and_then(|wt| wt.branch.as_deref());
+
+        let mut entries: Vec<Self> = branch_names
+            .iter()
+            .map(|name| {
+                let worktree_path = wt_by_branch.get(name.as_str()).map(|wt| wt.path.clone());
+                let has_session = worktree_path
+                    .as_ref()
+                    .is_some_and(|p| active_sessions.contains(&repo.tmux_session_name(p)));
+                let is_current = current_branch == Some(name.as_str());
+
+                Self {
+                    name: name.clone(),
+                    worktree_path,
+                    has_session,
+                    is_current,
+                }
+            })
+            .collect();
+
+        entries.sort_by(|a, b| {
+            b.has_session
+                .cmp(&a.has_session)
+                .then(b.worktree_path.is_some().cmp(&a.worktree_path.is_some()))
+                .then(a.name.cmp(&b.name))
+        });
+
+        entries
+    }
+}
+
 /// What mode the app is in
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Mode {
@@ -263,7 +311,7 @@ pub fn worktree_dir(repo: &Repo, branch: &str) -> anyhow::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::git::Repo;
+    use crate::git::{Repo, Worktree};
     use std::fs;
     use tempfile::tempdir;
 
@@ -334,5 +382,47 @@ mod tests {
         let repo = make_repo(tmp.path(), "myrepo");
         let result = worktree_dir(&repo, "dev").unwrap();
         assert!(result.to_string_lossy().contains(".kiosk_worktrees"));
+    }
+
+    #[test]
+    fn test_build_sorted_basic() {
+        let repo = Repo {
+            name: "myrepo".to_string(),
+            session_name: "myrepo".to_string(),
+            path: PathBuf::from("/tmp/myrepo"),
+            worktrees: vec![
+                Worktree {
+                    path: PathBuf::from("/tmp/myrepo"),
+                    branch: Some("main".to_string()),
+                    is_main: true,
+                },
+                Worktree {
+                    path: PathBuf::from("/tmp/myrepo-dev"),
+                    branch: Some("dev".to_string()),
+                    is_main: false,
+                },
+            ],
+        };
+
+        let branches = vec!["main".into(), "dev".into(), "feature".into()];
+        let sessions = vec!["myrepo-dev".to_string()];
+
+        let entries = BranchEntry::build_sorted(&repo, &branches, &sessions);
+
+        // dev has session → first
+        assert_eq!(entries[0].name, "dev");
+        assert!(entries[0].has_session);
+        assert!(entries[0].worktree_path.is_some());
+
+        // main has worktree but no session → second
+        assert_eq!(entries[1].name, "main");
+        assert!(!entries[1].has_session);
+        assert!(entries[1].worktree_path.is_some());
+        assert!(entries[1].is_current);
+
+        // feature has nothing → last
+        assert_eq!(entries[2].name, "feature");
+        assert!(!entries[2].has_session);
+        assert!(entries[2].worktree_path.is_none());
     }
 }

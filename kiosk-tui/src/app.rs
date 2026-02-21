@@ -759,44 +759,10 @@ fn enter_branch_select(
     state.mode = Mode::BranchSelect;
 
     let repo = &state.repos[repo_idx];
+    let branches = git.list_branches(&repo.path);
     let sessions = tmux.list_sessions();
-    let all_branches = git.list_branches(&repo.path);
 
-    let wt_by_branch: std::collections::HashMap<&str, &kiosk_core::git::Worktree> = repo
-        .worktrees
-        .iter()
-        .filter_map(|wt| wt.branch.as_deref().map(|b| (b, wt)))
-        .collect();
-
-    state.branches = all_branches
-        .iter()
-        .map(|branch_name| {
-            let worktree_path = wt_by_branch
-                .get(branch_name.as_str())
-                .map(|wt| wt.path.clone());
-            let has_session = worktree_path
-                .as_ref()
-                .is_some_and(|p| sessions.contains(&repo.tmux_session_name(p)));
-            let is_current = repo.worktrees.first().and_then(|wt| wt.branch.as_deref())
-                == Some(branch_name.as_str());
-
-            BranchEntry {
-                name: branch_name.clone(),
-                worktree_path,
-                has_session,
-                is_current,
-            }
-        })
-        .collect();
-
-    // Sort: branches with sessions first, then with worktrees, then alphabetical
-    state.branches.sort_by(|a, b| {
-        b.has_session
-            .cmp(&a.has_session)
-            .then(b.worktree_path.is_some().cmp(&a.worktree_path.is_some()))
-            .then(a.name.cmp(&b.name))
-    });
-
+    state.branches = BranchEntry::build_sorted(repo, &branches, &sessions);
     state.branch_list.reset(state.branches.len());
 }
 

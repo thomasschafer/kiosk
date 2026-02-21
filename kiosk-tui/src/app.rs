@@ -58,6 +58,7 @@ pub fn run(
     git: &Arc<dyn GitProvider>,
     tmux: &dyn TmuxProvider,
     theme: &crate::theme::Theme,
+    keys: &kiosk_core::config::KeysConfig,
     search_dirs: Vec<(std::path::PathBuf, u16)>,
 ) -> anyhow::Result<Option<OpenAction>> {
     let matcher = SkimMatcherV2::default();
@@ -110,7 +111,7 @@ pub fn run(
             // Clear error on any keypress
             state.error = None;
 
-            if let Some(action) = keymap::resolve_action(key, state)
+            if let Some(action) = keymap::resolve_action(key, state, keys)
                 && let Some(result) =
                     process_action(action, state, git, tmux, &matcher, &event_sender)
             {
@@ -134,7 +135,7 @@ fn draw(f: &mut Frame, state: &AppState, theme: &crate::theme::Theme, spinner_st
         (f.area(), None)
     };
 
-    match state.mode {
+    match &state.mode {
         Mode::RepoSelect => components::repo_list::draw(f, main_area, state, theme),
         Mode::BranchSelect => components::branch_picker::draw(f, main_area, state, theme),
         Mode::NewBranchBase => {
@@ -144,6 +145,25 @@ fn draw(f: &mut Frame, state: &AppState, theme: &crate::theme::Theme, spinner_st
         Mode::ConfirmDelete(_) => {
             components::branch_picker::draw(f, main_area, state, theme);
             draw_confirm_delete_dialog(f, main_area, state, theme);
+        }
+        Mode::Help { previous } => {
+            // Draw the previous mode as background
+            match previous.as_ref() {
+                Mode::RepoSelect => components::repo_list::draw(f, main_area, state, theme),
+                Mode::BranchSelect => components::branch_picker::draw(f, main_area, state, theme),
+                Mode::NewBranchBase => {
+                    components::branch_picker::draw(f, main_area, state, theme);
+                    components::new_branch::draw(f, state, theme);
+                }
+                Mode::ConfirmDelete(_) => {
+                    components::branch_picker::draw(f, main_area, state, theme);
+                    draw_confirm_delete_dialog(f, main_area, state, theme);
+                }
+                _ => {}
+            }
+            // Draw help overlay on top
+            // TODO: Implement help component
+            draw_help_placeholder(f, main_area, theme);
         }
         Mode::Loading(_) => unreachable!(),
     }
@@ -427,10 +447,11 @@ fn process_action(
             }
         }
 
-        Action::GoBack => match state.mode {
+        Action::GoBack => match state.mode.clone() {
             Mode::BranchSelect => {
                 state.mode = Mode::RepoSelect;
                 state.branch_search.clear();
+                state.branch_cursor = 0;
             }
             Mode::NewBranchBase => {
                 state.new_branch_base = None;
@@ -438,6 +459,9 @@ fn process_action(
             }
             Mode::ConfirmDelete(_) => {
                 state.mode = Mode::BranchSelect;
+            }
+            Mode::Help { previous } => {
+                state.mode = *previous;
             }
             Mode::RepoSelect | Mode::Loading(_) => {}
         },
@@ -468,13 +492,11 @@ fn process_action(
                     move_selection(&mut flow.selected, flow.filtered.len(), delta);
                 }
             }
-            Mode::ConfirmDelete(_) | Mode::Loading(_) => {}
+            Mode::ConfirmDelete(_) | Mode::Loading(_) | Mode::Help { .. } => {}
         },
 
-        Action::SearchPush(c) => handle_search_update(state, matcher, |s| s.push(c)),
-        Action::SearchPop => handle_search_update(state, matcher, |s| {
-            s.pop();
-        }),
+        Action::SearchPush(c) => handle_search_push(state, matcher, c),
+        Action::SearchPop => handle_search_pop(state, matcher),
 
         Action::DeleteWorktree => handle_delete_worktree(state),
         Action::ConfirmDeleteWorktree => handle_confirm_delete(state, git, sender),
@@ -487,6 +509,118 @@ fn process_action(
         }
         Action::ClearError => {
             state.error = None;
+        }
+
+        Action::SearchDeleteWord => handle_search_delete_word(state, matcher),
+        
+        Action::HalfPageUp => {
+            let list_len = match state.mode {
+                Mode::RepoSelect => state.filtered_repos.len(),
+                Mode::BranchSelect => state.filtered_branches.len(),
+                Mode::NewBranchBase => state.new_branch_base.as_ref().map(|f| f.filtered.len()).unwrap_or(0),
+                _ => 0,
+            };
+            let delta = -(list_len as i32).min(10);
+            handle_move_selection_action(state, delta);
+        }
+        
+        Action::HalfPageDown => {
+            let list_len = match state.mode {
+                Mode::RepoSelect => state.filtered_repos.len(),
+                Mode::BranchSelect => state.filtered_branches.len(),
+                Mode::NewBranchBase => state.new_branch_base.as_ref().map(|f| f.filtered.len()).unwrap_or(0),
+                _ => 0,
+            };
+            let delta = (list_len as i32).min(10);
+            handle_move_selection_action(state, delta);
+        }
+        
+        Action::PageUp => {
+            let list_len = match state.mode {
+                Mode::RepoSelect => state.filtered_repos.len(),
+                Mode::BranchSelect => state.filtered_branches.len(),
+                Mode::NewBranchBase => state.new_branch_base.as_ref().map(|f| f.filtered.len()).unwrap_or(0),
+                _ => 0,
+            };
+            let delta = -(list_len as i32).min(25);
+            handle_move_selection_action(state, delta);
+        }
+        
+        Action::PageDown => {
+            let list_len = match state.mode {
+                Mode::RepoSelect => state.filtered_repos.len(),
+                Mode::BranchSelect => state.filtered_branches.len(),
+                Mode::NewBranchBase => state.new_branch_base.as_ref().map(|f| f.filtered.len()).unwrap_or(0),
+                _ => 0,
+            };
+            let delta = (list_len as i32).min(25);
+            handle_move_selection_action(state, delta);
+        }
+        
+        Action::MoveTop => {
+            match state.mode {
+                Mode::RepoSelect => {
+                    if !state.filtered_repos.is_empty() {
+                        state.repo_selected = Some(0);
+                    }
+                }
+                Mode::BranchSelect => {
+                    if !state.filtered_branches.is_empty() {
+                        state.branch_selected = Some(0);
+                    }
+                }
+                Mode::NewBranchBase => {
+                    if let Some(flow) = &mut state.new_branch_base {
+                        if !flow.filtered.is_empty() {
+                            flow.selected = Some(0);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        
+        Action::MoveBottom => {
+            match state.mode {
+                Mode::RepoSelect => {
+                    if !state.filtered_repos.is_empty() {
+                        state.repo_selected = Some(state.filtered_repos.len() - 1);
+                    }
+                }
+                Mode::BranchSelect => {
+                    if !state.filtered_branches.is_empty() {
+                        state.branch_selected = Some(state.filtered_branches.len() - 1);
+                    }
+                }
+                Mode::NewBranchBase => {
+                    if let Some(flow) = &mut state.new_branch_base {
+                        if !flow.filtered.is_empty() {
+                            flow.selected = Some(flow.filtered.len() - 1);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        
+        Action::CursorLeft => handle_cursor_movement(state, CursorMove::Left),
+        Action::CursorRight => handle_cursor_movement(state, CursorMove::Right),
+        Action::CursorStart => handle_cursor_movement(state, CursorMove::Start),
+        Action::CursorEnd => handle_cursor_movement(state, CursorMove::End),
+        
+        Action::ShowHelp => {
+            match state.mode.clone() {
+                Mode::Help { previous } => {
+                    // Toggle help off - restore previous mode
+                    state.mode = *previous;
+                }
+                _ => {
+                    // Toggle help on - save current mode
+                    state.mode = Mode::Help {
+                        previous: Box::new(state.mode.clone()),
+                    };
+                }
+            }
         }
     }
 
@@ -556,7 +690,7 @@ fn handle_search_update(
                 update_flow_filter(flow, matcher);
             }
         }
-        Mode::ConfirmDelete(_) | Mode::Loading(_) => {}
+        Mode::ConfirmDelete(_) | Mode::Loading(_) | Mode::Help { .. } => {}
     }
 }
 
@@ -635,7 +769,7 @@ fn handle_open_branch(
                 }
             }
         }
-        Mode::RepoSelect | Mode::ConfirmDelete(_) | Mode::Loading(_) => {}
+        Mode::RepoSelect | Mode::ConfirmDelete(_) | Mode::Loading(_) | Mode::Help { .. } => {}
     }
     None
 }
@@ -774,6 +908,219 @@ fn update_fuzzy_filter(
     } else {
         *selected = Some(0);
     }
+}
+
+/// Handle move selection action for different modes
+fn handle_move_selection_action(state: &mut AppState, delta: i32) {
+    match state.mode {
+        Mode::RepoSelect => {
+            move_selection(&mut state.repo_selected, state.filtered_repos.len(), delta);
+        }
+        Mode::BranchSelect => {
+            move_selection(
+                &mut state.branch_selected,
+                state.filtered_branches.len(),
+                delta,
+            );
+        }
+        Mode::NewBranchBase => {
+            if let Some(flow) = &mut state.new_branch_base {
+                move_selection(&mut flow.selected, flow.filtered.len(), delta);
+            }
+        }
+        Mode::ConfirmDelete(_) | Mode::Loading(_) | Mode::Help { .. } => {}
+    }
+}
+
+/// Handle search character push action
+fn handle_search_push(state: &mut AppState, matcher: &SkimMatcherV2, c: char) {
+    match state.mode {
+        Mode::RepoSelect => {
+            state.repo_search.insert(state.repo_cursor, c);
+            state.repo_cursor += c.len_utf8();
+            update_repo_filter(state, matcher);
+        }
+        Mode::BranchSelect => {
+            state.branch_search.insert(state.branch_cursor, c);
+            state.branch_cursor += c.len_utf8();
+            update_branch_filter(state, matcher);
+        }
+        Mode::NewBranchBase => {
+            if let Some(flow) = &mut state.new_branch_base {
+                flow.search.push(c);
+                update_flow_filter(flow, matcher);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Handle search character pop action  
+fn handle_search_pop(state: &mut AppState, matcher: &SkimMatcherV2) {
+    match state.mode {
+        Mode::RepoSelect => {
+            if state.repo_cursor > 0 {
+                state.repo_search.remove(state.repo_cursor - 1);
+                state.repo_cursor -= 1;
+            }
+            update_repo_filter(state, matcher);
+        }
+        Mode::BranchSelect => {
+            if state.branch_cursor > 0 {
+                state.branch_search.remove(state.branch_cursor - 1);
+                state.branch_cursor -= 1;
+            }
+            update_branch_filter(state, matcher);
+        }
+        Mode::NewBranchBase => {
+            if let Some(flow) = &mut state.new_branch_base {
+                flow.search.pop();
+                update_flow_filter(flow, matcher);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Handle search delete word action
+fn handle_search_delete_word(state: &mut AppState, matcher: &SkimMatcherV2) {
+    match state.mode {
+        Mode::RepoSelect => {
+            delete_word(&mut state.repo_search, &mut state.repo_cursor);
+            update_repo_filter(state, matcher);
+        }
+        Mode::BranchSelect => {
+            delete_word(&mut state.branch_search, &mut state.branch_cursor);
+            update_branch_filter(state, matcher);
+        }
+        Mode::NewBranchBase => {
+            if let Some(flow) = &mut state.new_branch_base {
+                // NewBranchFlow doesn't have a cursor field, but we can simulate it
+                let mut temp_cursor = flow.search.len();
+                delete_word(&mut flow.search, &mut temp_cursor);
+                update_flow_filter(flow, matcher);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Delete word backwards in a string at cursor position
+fn delete_word(text: &mut String, cursor: &mut usize) {
+    if text.is_empty() || *cursor == 0 {
+        return;
+    }
+
+    let bytes = text.as_bytes();
+    let mut new_cursor = (*cursor).min(bytes.len());
+    
+    // Skip any whitespace at cursor
+    while new_cursor > 0 && bytes[new_cursor - 1].is_ascii_whitespace() {
+        new_cursor -= 1;
+    }
+    
+    // Delete non-whitespace characters
+    while new_cursor > 0 && !bytes[new_cursor - 1].is_ascii_whitespace() {
+        new_cursor -= 1;
+    }
+    
+    text.drain(new_cursor..*cursor);
+    *cursor = new_cursor;
+}
+
+/// Cursor movement direction
+#[derive(Debug, Clone, Copy)]
+enum CursorMove {
+    Left,
+    Right,
+    Start,
+    End,
+}
+
+/// Handle cursor movement in search fields
+fn handle_cursor_movement(state: &mut AppState, movement: CursorMove) {
+    match state.mode {
+        Mode::RepoSelect => {
+            move_cursor(&state.repo_search, &mut state.repo_cursor, movement);
+        }
+        Mode::BranchSelect => {
+            move_cursor(&state.branch_search, &mut state.branch_cursor, movement);
+        }
+        Mode::NewBranchBase => {
+            // NewBranchFlow doesn't have cursor support, but we could add it later
+        }
+        _ => {}
+    }
+}
+
+/// Move cursor in text
+fn move_cursor(text: &str, cursor: &mut usize, movement: CursorMove) {
+    match movement {
+        CursorMove::Left => {
+            if *cursor > 0 {
+                *cursor -= 1;
+            }
+        }
+        CursorMove::Right => {
+            if *cursor < text.len() {
+                *cursor += 1;
+            }
+        }
+        CursorMove::Start => {
+            *cursor = 0;
+        }
+        CursorMove::End => {
+            *cursor = text.len();
+        }
+    }
+}
+
+/// Placeholder help overlay until we implement the full help component
+fn draw_help_placeholder(f: &mut Frame, area: Rect, theme: &crate::theme::Theme) {
+    let block = Block::default()
+        .title("Help — Keybindings")
+        .borders(Borders::ALL)
+        .border_style(theme.accent);
+
+    let help_text = vec![
+        Line::from("Press C-h again to close help"),
+        Line::from(""),
+        Line::from("General:"),
+        Line::from("  C-c     Quit"),
+        Line::from("  C-h     Show/hide help"),
+        Line::from(""),
+        Line::from("Navigation:"),
+        Line::from("  ↑/↓     Move up/down"),
+        Line::from("  C-u/d   Half page up/down"),
+        Line::from("  PgUp/Dn Page up/down"),
+        Line::from("  Enter   Open/select"),
+        Line::from("  Tab     Enter repo"),
+        Line::from("  Esc     Go back/quit"),
+    ];
+
+    let paragraph = Paragraph::new(help_text)
+        .block(block);
+
+    // Center the help dialog
+    let popup_area = centered_rect(60, 70, area);
+    f.render_widget(paragraph, popup_area);
+}
+
+/// Helper function to center a rect within another rect  
+fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    let popup_layout = Layout::vertical([
+        Constraint::Percentage((100 - percent_y) / 2),
+        Constraint::Percentage(percent_y),
+        Constraint::Percentage((100 - percent_y) / 2),
+    ])
+    .split(r);
+
+    Layout::horizontal([
+        Constraint::Percentage((100 - percent_x) / 2),
+        Constraint::Percentage(percent_x),
+        Constraint::Percentage((100 - percent_x) / 2),
+    ])
+    .split(popup_layout[1])[1]
 }
 
 #[cfg(test)]

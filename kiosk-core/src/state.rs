@@ -21,6 +21,8 @@ pub enum Mode {
     Loading(String),
     /// Confirmation dialog for worktree deletion
     ConfirmDelete(String),
+    /// Help overlay showing key bindings
+    Help { previous: Box<Mode> },
 }
 
 /// The new-branch flow state
@@ -42,12 +44,14 @@ pub struct AppState {
     pub filtered_repos: Vec<(usize, i64)>,
     pub repo_selected: Option<usize>,
     pub repo_search: String,
+    pub repo_cursor: usize,
 
     pub selected_repo_idx: Option<usize>,
     pub branches: Vec<BranchEntry>,
     pub filtered_branches: Vec<(usize, i64)>,
     pub branch_selected: Option<usize>,
     pub branch_search: String,
+    pub branch_cursor: usize,
 
     pub new_branch_base: Option<NewBranchFlow>,
 
@@ -71,11 +75,13 @@ impl AppState {
             filtered_repos,
             repo_selected,
             repo_search: String::new(),
+            repo_cursor: 0,
             selected_repo_idx: None,
             branches: Vec::new(),
             filtered_branches: Vec::new(),
             branch_selected: None,
             branch_search: String::new(),
+            branch_cursor: 0,
             new_branch_base: None,
             split_command,
             mode: Mode::RepoSelect,
@@ -89,11 +95,13 @@ impl AppState {
             filtered_repos: Vec::new(),
             repo_selected: None,
             repo_search: String::new(),
+            repo_cursor: 0,
             selected_repo_idx: None,
             branches: Vec::new(),
             filtered_branches: Vec::new(),
             branch_selected: None,
             branch_search: String::new(),
+            branch_cursor: 0,
             new_branch_base: None,
             split_command,
             mode: Mode::Loading(loading_message.to_string()),

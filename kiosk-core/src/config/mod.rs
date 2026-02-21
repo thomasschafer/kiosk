@@ -1,9 +1,13 @@
+pub mod keys;
+
 use anyhow::Result;
 use serde::Deserialize;
 use std::{
     fs,
     path::{Path, PathBuf},
 };
+
+pub use keys::{Command, KeysConfig};
 
 pub const APP_NAME: &str = "kiosk";
 
@@ -59,6 +63,10 @@ pub struct Config {
     /// Color theme configuration.
     #[serde(default)]
     pub theme: ThemeConfig,
+
+    /// Key binding configuration.
+    #[serde(default)]
+    pub keys: KeysConfig,
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]

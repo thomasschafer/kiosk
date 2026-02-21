@@ -11,13 +11,29 @@ pub enum Action {
     // Search
     SearchPush(char),
     SearchPop,
+    SearchDeleteWord,
+
+    // Movement
     MoveSelection(i32),
+    HalfPageUp,
+    HalfPageDown,
+    PageUp,
+    PageDown,
+    MoveTop,
+    MoveBottom,
+
+    // Cursor movement (for search input)
+    CursorLeft,
+    CursorRight,
+    CursorStart,
+    CursorEnd,
 
     // UI
     StartNewBranchFlow,
     DeleteWorktree,
     ConfirmDeleteWorktree,
     CancelDeleteWorktree,
+    ShowHelp,
     ShowError(String),
     ClearError,
 }

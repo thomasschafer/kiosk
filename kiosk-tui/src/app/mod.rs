@@ -572,7 +572,9 @@ fn process_action<T: TmuxProvider + ?Sized + 'static>(
 
         Action::ShowHelp => handle_show_help(state),
 
-        // Actions handled before the match statement
+        // Movement, cursor, and cancel actions are handled by helper functions above.
+        // If we reach here, it means the action wasn't applicable in the current mode
+        // (e.g., movement action in a mode with no active list). This is safe to ignore.
         Action::HalfPageUp
         | Action::HalfPageDown
         | Action::PageUp
@@ -583,9 +585,7 @@ fn process_action<T: TmuxProvider + ?Sized + 'static>(
         | Action::CursorRight
         | Action::CursorStart
         | Action::CursorEnd
-        | Action::CancelDeleteWorktree => {
-            // These are handled by helper functions before this match
-        }
+        | Action::CancelDeleteWorktree => {}
     }
 
     None

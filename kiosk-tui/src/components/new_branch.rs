@@ -2,7 +2,7 @@ use crate::theme::Theme;
 use kiosk_core::state::AppState;
 use ratatui::{
     Frame,
-    layout::{Constraint, Layout, Rect},
+    layout::{Constraint, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
@@ -13,7 +13,7 @@ pub fn draw(f: &mut Frame, state: &AppState, theme: &Theme) {
         return;
     };
 
-    let area = centered_rect(60, 60, f.area());
+    let area = super::centered_rect(60, 60, f.area());
     f.render_widget(Clear, area);
 
     let chunks = Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(area);
@@ -57,20 +57,4 @@ pub fn draw(f: &mut Frame, state: &AppState, theme: &Theme) {
     let mut list_state = ListState::default();
     list_state.select(flow.list.selected);
     f.render_stateful_widget(list, chunks[1], &mut list_state);
-}
-
-fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
-    let popup_layout = Layout::vertical([
-        Constraint::Percentage((100 - percent_y) / 2),
-        Constraint::Percentage(percent_y),
-        Constraint::Percentage((100 - percent_y) / 2),
-    ])
-    .split(r);
-
-    Layout::horizontal([
-        Constraint::Percentage((100 - percent_x) / 2),
-        Constraint::Percentage(percent_x),
-        Constraint::Percentage((100 - percent_x) / 2),
-    ])
-    .split(popup_layout[1])[1]
 }

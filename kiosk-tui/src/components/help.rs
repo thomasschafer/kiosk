@@ -3,7 +3,6 @@ use kiosk_core::keyboard::KeyEvent;
 use kiosk_core::state::{AppState, Mode};
 use ratatui::{
     Frame,
-    layout::{Constraint, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
@@ -23,7 +22,7 @@ pub fn draw(f: &mut Frame, state: &AppState, theme: &crate::theme::Theme, keys: 
 
     // Calculate popup size and position
     let area = f.area();
-    let popup_area = centered_rect(80, 85, area);
+    let popup_area = super::centered_rect(80, 85, area);
 
     // Clear the area behind the popup
     f.render_widget(Clear, popup_area);
@@ -126,21 +125,4 @@ fn format_key_section(keymap: &HashMap<KeyEvent, Command>) -> Vec<Line<'static>>
     }
 
     lines
-}
-
-/// Helper function to center a rect within another rect
-fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
-    let popup_layout = Layout::vertical([
-        Constraint::Percentage((100 - percent_y) / 2),
-        Constraint::Percentage(percent_y),
-        Constraint::Percentage((100 - percent_y) / 2),
-    ])
-    .split(r);
-
-    Layout::horizontal([
-        Constraint::Percentage((100 - percent_x) / 2),
-        Constraint::Percentage(percent_x),
-        Constraint::Percentage((100 - percent_x) / 2),
-    ])
-    .split(popup_layout[1])[1]
 }

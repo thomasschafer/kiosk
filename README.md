@@ -105,9 +105,97 @@ Key binding configuration.
 
 ## Keybindings
 
+<!-- KEYS START -->
+### General
+
 | Key | Action |
 |-----|--------|
-| Type | Filter repos/branches |
-| Enter | Select repo / open session |
-| Tab | Enter branch picker |
-| Esc | Back / quit |
+| C-c | Quit the application |
+| C-h | Show help |
+
+### Repository Selection
+
+| Key | Action |
+|-----|--------|
+| A-G | Move to bottom |
+| A-g | Move to top |
+| C-d | Half page down |
+| C-n | Move down |
+| C-p | Move up |
+| C-u | Half page up |
+| C-w | Delete word |
+| backspace | Delete search character |
+| down | Move down |
+| end | Cursor to end |
+| enter | Open repository in tmux |
+| esc | Quit the application |
+| home | Cursor to start |
+| left | Cursor left |
+| pagedown | Page down |
+| pageup | Page up |
+| right | Cursor right |
+| tab | Browse branches |
+| up | Move up |
+
+### Branch Selection
+
+| Key | Action |
+|-----|--------|
+| A-G | Move to bottom |
+| A-g | Move to top |
+| C-d | Half page down |
+| C-n | Move down |
+| C-o | New branch |
+| C-p | Move up |
+| C-u | Half page up |
+| C-w | Delete word |
+| C-x | Delete worktree |
+| backspace | Delete search character |
+| down | Move down |
+| end | Cursor to end |
+| enter | Open branch in tmux |
+| esc | Go back |
+| home | Cursor to start |
+| left | Cursor left |
+| pagedown | Page down |
+| pageup | Page up |
+| right | Cursor right |
+| up | Move up |
+
+### New Branch Base Selection
+
+| Key | Action |
+|-----|--------|
+| A-G | Move to bottom |
+| A-g | Move to top |
+| C-d | Half page down |
+| C-n | Move down |
+| C-p | Move up |
+| C-u | Half page up |
+| C-w | Delete word |
+| backspace | Delete search character |
+| down | Move down |
+| end | Cursor to end |
+| enter | Open branch in tmux |
+| esc | Go back |
+| home | Cursor to start |
+| left | Cursor left |
+| pagedown | Page down |
+| pageup | Page up |
+| right | Cursor right |
+| up | Move up |
+
+### Confirmation
+
+| Key | Action |
+|-----|--------|
+| N | Cancel |
+| enter | Confirm |
+| esc | Cancel |
+| n | Cancel |
+| y | Confirm |
+
+### Search
+
+In list modes (Repository, Branch, and New Branch Base Selection), any printable character will start or continue search filtering.
+<!-- KEYS END -->

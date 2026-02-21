@@ -181,15 +181,74 @@ fn is_orphaned_worktree(path: &Path) -> bool {
         return true; // Referenced git directory doesn't exist
     }
 
-    // Check if there's a valid worktree entry in the main repo
-    if let Some(main_git_dir) = gitdir.parent()
-        && let Some(worktrees_dir) = main_git_dir.parent()
-        && worktrees_dir.join("HEAD").exists()
+    // First check: basic validation of the worktree structure
+    let is_structurally_valid = if let Some(worktrees_dir) = gitdir.parent()
+        && let Some(git_dir) = worktrees_dir.parent()
+        && git_dir.join("HEAD").exists()
     {
-        return false; // This appears to be a valid worktree
+        true // This appears to be a valid worktree
+    } else {
+        false
+    };
+
+    if !is_structurally_valid {
+        return true; // Structurally invalid, definitely orphaned
     }
 
-    true // Couldn't validate the worktree, treat as orphaned
+    // Second check: cross-reference with git worktree list output when possible.
+    // If git fails (binary missing, non-zero exit), fall through to structural validation
+    // rather than incorrectly classifying valid worktrees as orphaned.
+    if let Some(main_repo_path) = find_main_repo_path(gitdir)
+        && let Some(known) = is_worktree_known_to_git(&main_repo_path, path)
+    {
+        return !known;
+    }
+
+    // Fallback: if we can't determine via git, trust the structural validation
+    false
+}
+
+/// Extract the main repository path from the gitdir path
+/// e.g. "/repo/.git/worktrees/branch" -> "/repo"
+fn find_main_repo_path(gitdir: &Path) -> Option<std::path::PathBuf> {
+    gitdir
+        .parent()? // /repo/.git/worktrees/branch-name -> /repo/.git/worktrees
+        .parent()? // /repo/.git/worktrees -> /repo/.git
+        .parent() // /repo/.git -> /repo
+        .map(std::path::Path::to_path_buf)
+}
+
+/// Check if a worktree path is known to git in the main repository.
+/// Returns `Some(true)` if found, `Some(false)` if not found, `None` if git failed.
+fn is_worktree_known_to_git(main_repo_path: &Path, worktree_path: &Path) -> Option<bool> {
+    let output = Command::new("git")
+        .args(["worktree", "list", "--porcelain"])
+        .current_dir(main_repo_path)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    // Canonicalize our path so we match git's absolute paths even through symlinks.
+    // dunce avoids Windows UNC prefix (\\?\) that git's output won't contain.
+    let canonical =
+        dunce::canonicalize(worktree_path).unwrap_or_else(|_| worktree_path.to_path_buf());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Parse porcelain output to find worktree paths
+    // Format: "worktree /path/to/worktree\nHEAD <sha>\nbranch <branch>\n\n"
+    for line in stdout.lines() {
+        if let Some(listed_path) = line.strip_prefix("worktree ")
+            && Path::new(listed_path) == canonical
+        {
+            return Some(true);
+        }
+    }
+
+    Some(false)
 }
 
 fn remove_worktree(path: &Path) -> Result<()> {

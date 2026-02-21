@@ -119,9 +119,9 @@ impl Command {
             Command::Noop => "Unbound",
             Command::Quit => "Quit the application",
             Command::ShowHelp => "Show help",
-            Command::OpenRepo => "Open repository",
-            Command::EnterRepo => "Enter repository",
-            Command::OpenBranch => "Open branch",
+            Command::OpenRepo => "Open repository in tmux",
+            Command::EnterRepo => "Browse branches",
+            Command::OpenBranch => "Open branch in tmux",
             Command::GoBack => "Go back",
             Command::NewBranch => "New branch",
             Command::DeleteWorktree => "Delete worktree",
@@ -265,6 +265,14 @@ impl KeysConfig {
         map.insert(
             KeyEvent::new(KeyCode::End, KeyModifiers::NONE),
             Command::CursorEnd,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Char('g'), KeyModifiers::ALT),
+            Command::MoveTop,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Char('G'), KeyModifiers::ALT),
+            Command::MoveBottom,
         );
         map
     }

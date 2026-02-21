@@ -14,6 +14,7 @@ categories = ["command-line-utilities"]
 [dependencies]
 anyhow.workspace = true
 clap = { workspace = true }
+dunce = "1.0.5"
 kiosk-core.workspace = true
 kiosk-tui.workspace = true
 ratatui = "0.30"

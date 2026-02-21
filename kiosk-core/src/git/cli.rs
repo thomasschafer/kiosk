@@ -3,8 +3,8 @@ use super::{
     provider::GitProvider,
     repo::{Repo, Worktree},
 };
-use anyhow::Result;
 use crate::constants::GIT_DIR_ENTRY;
+use anyhow::Result;
 use std::{
     path::{Path, PathBuf},
     process::Command,

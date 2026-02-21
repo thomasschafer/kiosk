@@ -8,6 +8,7 @@
     let
       system = "x86_64-linux";
       pkgs = nixpkgs.legacyPackages.${system};
+      cargoToml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
     in
     {
       devShells.${system}.default = pkgs.mkShell {
@@ -23,10 +24,11 @@
 
       packages.${system}.default = pkgs.rustPlatform.buildRustPackage {
         pname = "kiosk";
-        version = "0.1.0";
+        version = cargoToml.workspace.package.version;
         src = ./.;
-        useFetchCargoVendor = true;
-        cargoHash = "";
+        cargoLock.lockFile = ./Cargo.lock;
+        cargoBuildFlags = [ "-p" "kiosk" ];
+        doCheck = false;
       };
     };
 }

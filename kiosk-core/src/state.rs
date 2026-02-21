@@ -412,9 +412,12 @@ mod tests {
         }
         let result = worktree_dir(&repo, "main");
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains(&format!(
-            "{WORKTREE_DIR_DEDUP_MAX_ATTEMPTS} attempts"
-        )));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains(&format!("{WORKTREE_DIR_DEDUP_MAX_ATTEMPTS} attempts"))
+        );
     }
 
     #[test]

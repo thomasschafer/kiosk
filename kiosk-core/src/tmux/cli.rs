@@ -1,9 +1,14 @@
 use super::provider::TmuxProvider;
+use anyhow::{Context, Result, bail};
 use std::{path::Path, process::Command};
 
 pub struct CliTmuxProvider;
 
-fn create_session_commands(name: &str, dir_str: &str, split_command: Option<&str>) -> Vec<Vec<String>> {
+fn create_session_commands(
+    name: &str,
+    dir_str: &str,
+    split_command: Option<&str>,
+) -> Vec<Vec<String>> {
     let mut commands = vec![vec![
         "new-session".to_string(),
         "-ds".to_string(),
@@ -17,7 +22,7 @@ fn create_session_commands(name: &str, dir_str: &str, split_command: Option<&str
             "split-window".to_string(),
             "-h".to_string(),
             "-t".to_string(),
-            format!("={name}"),
+            format!("={name}:0"),
             "-c".to_string(),
             dir_str.to_string(),
             cmd.to_string(),
@@ -50,12 +55,21 @@ impl TmuxProvider for CliTmuxProvider {
             .is_ok_and(|o| o.status.success())
     }
 
-    fn create_session(&self, name: &str, dir: &Path, split_command: Option<&str>) {
+    fn create_session(&self, name: &str, dir: &Path, split_command: Option<&str>) -> Result<()> {
         let dir_str = dir.to_string_lossy();
 
         for args in create_session_commands(name, &dir_str, split_command) {
-            let _ = Command::new("tmux").args(args).status();
+            let output = Command::new("tmux")
+                .args(&args)
+                .output()
+                .with_context(|| format!("failed to execute tmux {}", args.join(" ")))?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                bail!("tmux {} failed: {}", args.join(" "), stderr.trim());
+            }
         }
+
+        Ok(())
     }
 
     fn switch_to_session(&self, name: &str) {
@@ -106,7 +120,7 @@ mod tests {
                 "split-window".to_string(),
                 "-h".to_string(),
                 "-t".to_string(),
-                "=demo".to_string(),
+                "=demo:0".to_string(),
                 "-c".to_string(),
                 "/tmp/demo".to_string(),
                 "hx".to_string(),

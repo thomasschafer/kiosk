@@ -18,7 +18,14 @@ impl TmuxProvider for MockTmuxProvider {
         self.sessions.contains(&name.to_string())
     }
 
-    fn create_session(&self, _name: &str, _dir: &Path, _split_command: Option<&str>) {}
+    fn create_session(
+        &self,
+        _name: &str,
+        _dir: &Path,
+        _split_command: Option<&str>,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
 
     fn switch_to_session(&self, _name: &str) {}
 

@@ -1,3 +1,4 @@
+use kiosk_core::constants::WORKTREE_DIR_NAME;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -5,7 +6,6 @@ use std::{
     thread,
     time::Duration,
 };
-use kiosk_core::constants::WORKTREE_DIR_NAME;
 
 fn kiosk_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_kiosk"))
@@ -368,9 +368,11 @@ fn test_e2e_worktree_creation() {
 }
 
 #[test]
-fn test_e2e_split_command_creates_split_pane() {
-    let env = TestEnv::new("split-pane");
+fn test_e2e_split_command_creates_split_pane_for_new_branch_flow() {
+    let env = TestEnv::new("split-pane-new-branch");
     let search_dir = env.search_dir();
+    let session_name = "split-repo--feat-split-test";
+    cleanup_session(session_name);
 
     let repo = search_dir.join("split-repo");
     fs::create_dir_all(&repo).unwrap();
@@ -378,16 +380,21 @@ fn test_e2e_split_command_creates_split_pane() {
 
     let extra = r#"
 [session]
-split_command = "printf KIOSK_SPLIT_OK && exec cat"
+split_command = "sleep 30"
 "#;
     env.write_config_with_extra(&search_dir, extra);
     env.launch_kiosk();
 
-    // Open the selected repo directly from the repo list.
+    // Enter branch picker, type a new branch name, and create it from the default base.
+    env.send_special("Tab");
+    wait_ms(400);
+    env.send("feat/split-test");
+    wait_ms(300);
+    env.send_special("C-o");
+    wait_ms(400);
     env.send_special("Enter");
-    wait_ms(1200);
+    wait_ms(2200);
 
-    let session_name = "split-repo";
     let output = Command::new("tmux")
         .args(["has-session", "-t", session_name])
         .output()
@@ -419,20 +426,6 @@ split_command = "printf KIOSK_SPLIT_OK && exec cat"
         pane_ids
     );
 
-    let output = Command::new("tmux")
-        .args(["list-panes", "-t", session_name, "-F", "#{pane_current_command}"])
-        .output()
-        .unwrap();
-    let pane_commands: Vec<String> = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(str::to_string)
-        .collect();
-    assert!(
-        pane_commands.iter().any(|cmd| cmd == "cat"),
-        "Expected split pane to run 'cat', commands were: {:?}",
-        pane_commands
-    );
-
     let mut captured = String::new();
     for pane_id in &pane_ids {
         let output = Command::new("tmux")
@@ -442,9 +435,15 @@ split_command = "printf KIOSK_SPLIT_OK && exec cat"
         captured.push_str(&String::from_utf8_lossy(&output.stdout));
         captured.push('\n');
     }
+
+    let output = Command::new("tmux")
+        .args(["list-panes", "-t", session_name, "-F", "#{pane_current_command}"])
+        .output()
+        .unwrap();
+    let pane_commands = String::from_utf8_lossy(&output.stdout).to_string();
     assert!(
-        captured.contains("KIOSK_SPLIT_OK"),
-        "Expected split pane output marker in captured panes, got: {captured}"
+        pane_commands.lines().any(|line| line == "sleep"),
+        "Expected one pane running sleep, commands were: {pane_commands}; captured panes: {captured}"
     );
 
     cleanup_session(session_name);

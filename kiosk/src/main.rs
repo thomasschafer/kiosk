@@ -2,7 +2,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use kiosk_core::{
     config,
-    constants::{GITDIR_FILE_PREFIX, GIT_DIR_ENTRY, WORKTREE_DIR_NAME},
+    constants::{GIT_DIR_ENTRY, GITDIR_FILE_PREFIX, WORKTREE_DIR_NAME},
     git::{CliGitProvider, GitProvider},
     state::AppState,
     tmux::CliTmuxProvider,
@@ -79,7 +79,7 @@ fn run_tui(config: &config::Config) -> Result<()> {
             use kiosk_core::tmux::TmuxProvider;
 
             if !tmux.session_exists(&session_name) {
-                tmux.create_session(&session_name, &path, split_command.as_deref());
+                tmux.create_session(&session_name, &path, split_command.as_deref())?;
             }
 
             tmux.switch_to_session(&session_name);

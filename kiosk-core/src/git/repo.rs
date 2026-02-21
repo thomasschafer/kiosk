@@ -68,9 +68,9 @@ mod tests {
     #[test]
     fn test_tmux_session_name_branch_worktree() {
         let repo = make_repo("kiosk", "kiosk");
-        let name = repo.tmux_session_name(&PathBuf::from(
-            format!("/home/user/{WORKTREE_DIR_NAME}/kiosk--feat-awesome"),
-        ));
+        let name = repo.tmux_session_name(&PathBuf::from(format!(
+            "/home/user/{WORKTREE_DIR_NAME}/kiosk--feat-awesome"
+        )));
         assert_eq!(name, "kiosk--feat-awesome");
     }
 
@@ -84,9 +84,9 @@ mod tests {
     #[test]
     fn test_tmux_session_name_disambiguated_worktree() {
         let repo = make_repo("api", "api--(Work)");
-        let name = repo.tmux_session_name(&PathBuf::from(
-            format!("/home/user/{WORKTREE_DIR_NAME}/api--feat-thing"),
-        ));
+        let name = repo.tmux_session_name(&PathBuf::from(format!(
+            "/home/user/{WORKTREE_DIR_NAME}/api--feat-thing"
+        )));
         assert_eq!(name, "api--(Work)--feat-thing");
     }
 }

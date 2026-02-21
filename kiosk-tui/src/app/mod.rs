@@ -27,6 +27,7 @@ use ratatui::{
 };
 use spawn::spawn_repo_discovery;
 use std::{
+    fmt::Write as _,
     path::PathBuf,
     sync::{
         Arc,
@@ -363,7 +364,10 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             }
             let mut error_message = format!("Failed to remove worktree for {branch_name}: {error}");
             if let Err(e) = save_pending_worktree_deletes(&state.pending_worktree_deletes) {
-                error_message.push_str(&format!(" (also failed to persist pending deletes: {e})"));
+                let _ = write!(
+                    error_message,
+                    " (also failed to persist pending deletes: {e})"
+                );
             }
             state.error = Some(error_message);
             state.loading_branches = false;

@@ -73,7 +73,7 @@ fn process_struct(
     toml_prefix: &str,
 ) {
     if struct_item.ident == "KeysConfig" && toml_prefix == "keys" {
-        docs.push_str("Defaults shown below are generated from `KeysConfig::default()`.\n\n");
+        docs.push_str("Defaults are shown below:.\n\n");
         docs.push_str("```toml\n");
         docs.push_str(&generate_default_keys_toml());
         docs.push_str("```\n\n");

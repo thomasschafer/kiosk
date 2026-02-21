@@ -6,26 +6,22 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, List, ListItem, ListState},
 };
 
 pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, keys: &KeysConfig) {
     let chunks = Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(area);
 
     // Search bar
-    let search_text = if state.repo_search.is_empty() {
-        Line::from(Span::styled(
-            "Type to search repos...",
-            Style::default().fg(Color::DarkGray),
-        ))
-    } else {
-        Line::from(state.repo_search.as_str())
-    };
-    let search_block = Block::default()
-        .borders(Borders::ALL)
-        .title(" kiosk — select repo ")
-        .border_style(Style::default().fg(theme.accent));
-    f.render_widget(Paragraph::new(search_text).block(search_block), chunks[0]);
+    super::search_bar::draw(
+        f,
+        chunks[0],
+        "kiosk — select repo",
+        &state.repo_search,
+        state.repo_cursor,
+        "Type to search repos...",
+        theme.accent,
+    );
 
     // Repo list
     let items: Vec<ListItem> = state

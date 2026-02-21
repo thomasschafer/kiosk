@@ -10,7 +10,6 @@ clap = { version = "4", features = ["derive"] }
 kiosk-core = { workspace = true }
 syn = { version = "2", features = ["full", "parsing"] }
 quote = "1"
-kiosk-core = { path = "../kiosk-core" }
 
 [lints]
 workspace = true

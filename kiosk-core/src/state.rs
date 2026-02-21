@@ -136,6 +136,8 @@ pub struct BranchEntry {
     pub worktree_path: Option<PathBuf>,
     pub has_session: bool,
     pub is_current: bool,
+    /// Remote-only branch (no local tracking branch)
+    pub is_remote: bool,
 }
 
 impl BranchEntry {
@@ -171,18 +173,42 @@ impl BranchEntry {
                     worktree_path,
                     has_session,
                     is_current,
+                    is_remote: false,
                 }
             })
             .collect();
 
+        Self::sort_entries(&mut entries);
+        entries
+    }
+
+    /// Build remote-only branch entries, skipping branches that already exist locally.
+    pub fn build_remote(remote_names: &[String], local_names: &[String]) -> Vec<Self> {
+        let local_set: std::collections::HashSet<&str> =
+            local_names.iter().map(String::as_str).collect();
+
+        remote_names
+            .iter()
+            .filter(|name| !local_set.contains(name.as_str()))
+            .map(|name| Self {
+                name: name.clone(),
+                worktree_path: None,
+                has_session: false,
+                is_current: false,
+                is_remote: true,
+            })
+            .collect()
+    }
+
+    pub(crate) fn sort_entries(entries: &mut [Self]) {
         entries.sort_by(|a, b| {
-            b.has_session
-                .cmp(&a.has_session)
+            // Remote branches always sort after local
+            a.is_remote
+                .cmp(&b.is_remote)
+                .then(b.has_session.cmp(&a.has_session))
                 .then(b.worktree_path.is_some().cmp(&a.worktree_path.is_some()))
                 .then(a.name.cmp(&b.name))
         });
-
-        entries
     }
 }
 
@@ -424,5 +450,56 @@ mod tests {
         assert_eq!(entries[2].name, "feature");
         assert!(!entries[2].has_session);
         assert!(entries[2].worktree_path.is_none());
+    }
+
+    #[test]
+    fn test_build_remote_deduplication() {
+        let remote = vec!["main".into(), "dev".into(), "remote-only".into()];
+        let local = vec!["main".into(), "dev".into()];
+
+        let entries = BranchEntry::build_remote(&remote, &local);
+
+        // Only "remote-only" should appear (main and dev are local)
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "remote-only");
+        assert!(entries[0].is_remote);
+    }
+
+    #[test]
+    fn test_build_remote_empty_when_all_local() {
+        let remote = vec!["main".into(), "dev".into()];
+        let local = vec!["main".into(), "dev".into()];
+
+        let entries = BranchEntry::build_remote(&remote, &local);
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn test_sort_remote_after_local() {
+        let repo = Repo {
+            name: "myrepo".to_string(),
+            session_name: "myrepo".to_string(),
+            path: PathBuf::from("/tmp/myrepo"),
+            worktrees: vec![Worktree {
+                path: PathBuf::from("/tmp/myrepo"),
+                branch: Some("main".to_string()),
+                is_main: true,
+            }],
+        };
+
+        let local_names = vec!["main".into(), "dev".into()];
+        let mut entries = BranchEntry::build_sorted(&repo, &local_names, &[]);
+
+        // Add remote branches
+        let remote_names = vec!["feature-a".into(), "feature-b".into()];
+        let remote = BranchEntry::build_remote(&remote_names, &local_names);
+        entries.extend(remote);
+        BranchEntry::sort_entries(&mut entries);
+
+        // Local branches should come before remote
+        assert!(!entries[0].is_remote); // dev or main
+        assert!(!entries[1].is_remote);
+        assert!(entries[2].is_remote); // feature-a
+        assert!(entries[3].is_remote); // feature-b
     }
 }

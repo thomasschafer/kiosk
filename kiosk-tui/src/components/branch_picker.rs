@@ -34,6 +34,22 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, keys: &K
         .iter()
         .map(|(idx, _)| {
             let branch = &state.branches[*idx];
+
+            if branch.is_remote {
+                // Remote branches rendered with muted style
+                let mut spans = vec![Span::styled(
+                    &branch.name,
+                    Style::default().fg(Color::DarkGray),
+                )];
+                spans.push(Span::styled(
+                    " (remote)",
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::ITALIC),
+                ));
+                return ListItem::new(Line::from(spans));
+            }
+
             let mut spans = vec![Span::raw(&branch.name)];
 
             if branch.has_session {

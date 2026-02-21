@@ -1,13 +1,14 @@
 use fuzzy_matcher::{FuzzyMatcher, skim::SkimMatcherV2};
 use kiosk_core::{
     git::GitProvider,
-    state::{AppState, BranchEntry, Mode, NewBranchFlow, SearchableList, worktree_dir},
+    state::{AppState, Mode, NewBranchFlow, SearchableList, worktree_dir},
     tmux::TmuxProvider,
 };
 use std::sync::Arc;
 
 use super::spawn::{
-    spawn_branch_and_worktree_creation, spawn_worktree_creation, spawn_worktree_removal,
+    spawn_branch_and_worktree_creation, spawn_branch_loading, spawn_tracking_worktree_creation,
+    spawn_worktree_creation, spawn_worktree_removal,
 };
 use super::{EventSender, OpenAction};
 
@@ -135,20 +136,35 @@ pub(super) fn handle_open_branch(
                         split_command: state.split_command.clone(),
                     });
                 }
+                let is_remote = branch.is_remote;
                 match worktree_dir(repo, &branch.name) {
                     Ok(wt_path) => {
                         let branch_name = branch.name.clone();
                         let session_name = repo.tmux_session_name(&wt_path);
-                        state.mode =
-                            Mode::Loading(format!("Creating worktree for {branch_name}..."));
-                        spawn_worktree_creation(
-                            git,
-                            sender,
-                            repo.path.clone(),
-                            branch_name,
-                            wt_path,
-                            session_name,
-                        );
+                        if is_remote {
+                            state.mode = Mode::Loading(format!(
+                                "Checking out remote branch {branch_name}..."
+                            ));
+                            spawn_tracking_worktree_creation(
+                                git,
+                                sender,
+                                repo.path.clone(),
+                                branch_name,
+                                wt_path,
+                                session_name,
+                            );
+                        } else {
+                            state.mode =
+                                Mode::Loading(format!("Creating worktree for {branch_name}..."));
+                            spawn_worktree_creation(
+                                git,
+                                sender,
+                                repo.path.clone(),
+                                branch_name,
+                                wt_path,
+                                session_name,
+                            );
+                        }
                     }
                     Err(e) => {
                         state.error = Some(format!("Failed to determine worktree path: {e}"));
@@ -196,18 +212,15 @@ pub(super) fn handle_open_branch(
 pub(super) fn enter_branch_select(
     state: &mut AppState,
     repo_idx: usize,
-    git: &dyn GitProvider,
+    git: &Arc<dyn GitProvider>,
     tmux: &dyn TmuxProvider,
+    sender: &EventSender,
 ) {
     state.selected_repo_idx = Some(repo_idx);
-    state.mode = Mode::BranchSelect;
-
-    let repo = &state.repos[repo_idx];
-    let branches = git.list_branches(&repo.path);
+    let repo = state.repos[repo_idx].clone();
     let sessions = tmux.list_sessions();
-
-    state.branches = BranchEntry::build_sorted(repo, &branches, &sessions);
-    state.branch_list.reset(state.branches.len());
+    state.mode = Mode::Loading(format!("Loading branches for {}...", repo.name));
+    spawn_branch_loading(git, sender, repo, sessions);
 }
 
 pub(super) fn handle_search_push(state: &mut AppState, matcher: &SkimMatcherV2, c: char) {

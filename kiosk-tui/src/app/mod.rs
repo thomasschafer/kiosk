@@ -8,7 +8,7 @@ use actions::{
     handle_show_help, handle_start_new_branch,
 };
 use crossterm::event::{self, Event, KeyEventKind};
-use fuzzy_matcher::skim::SkimMatcherV2;
+use fuzzy_matcher::{FuzzyMatcher, skim::SkimMatcherV2};
 use kiosk_core::{
     action::Action,
     config::{KeysConfig, keys::Command},
@@ -89,7 +89,7 @@ pub fn run(
 
         // Check background channel (non-blocking)
         if let Ok(app_event) = rx.try_recv() {
-            if let Some(result) = process_app_event(app_event, state, git.as_ref(), tmux) {
+            if let Some(result) = process_app_event(app_event, state, git, tmux, &event_sender) {
                 return Ok(Some(result));
             }
             continue;
@@ -310,8 +310,9 @@ fn draw_confirm_delete_dialog(
 fn process_app_event(
     event: AppEvent,
     state: &mut AppState,
-    git: &dyn GitProvider,
+    git: &Arc<dyn GitProvider>,
     tmux: &dyn TmuxProvider,
+    sender: &EventSender,
 ) -> Option<OpenAction> {
     match event {
         AppEvent::ReposDiscovered { repos } => {
@@ -329,9 +330,68 @@ fn process_app_event(
         AppEvent::WorktreeRemoved { branch_name: _ } => {
             // Return to branch select and refresh the branch list
             if let Some(repo_idx) = state.selected_repo_idx {
-                enter_branch_select(state, repo_idx, git, tmux);
+                enter_branch_select(state, repo_idx, git, tmux, sender);
             } else {
                 state.mode = Mode::BranchSelect;
+            }
+        }
+        AppEvent::BranchesLoaded {
+            branches,
+            local_names,
+        } => {
+            state.branches = branches;
+            state.branch_list.reset(state.branches.len());
+            state.mode = Mode::BranchSelect;
+
+            // Kick off remote branch loading
+            if let Some(repo_idx) = state.selected_repo_idx {
+                let repo_path = state.repos[repo_idx].path.clone();
+                spawn::spawn_remote_branch_loading(git, sender, repo_path, local_names);
+            }
+        }
+        AppEvent::RemoteBranchesLoaded { branches } => {
+            if state.mode == Mode::BranchSelect {
+                // Preserve current search/selection state
+                let prev_search = state.branch_list.search.clone();
+                let prev_cursor = state.branch_list.cursor;
+
+                state.branches.extend(branches);
+                // Re-apply filter with the expanded branch list
+                if prev_search.is_empty() {
+                    state.branch_list.filtered = state
+                        .branches
+                        .iter()
+                        .enumerate()
+                        .map(|(i, _)| (i, 0))
+                        .collect();
+                } else {
+                    // Re-run fuzzy filter
+                    let names: Vec<String> =
+                        state.branches.iter().map(|b| b.name.clone()).collect();
+                    let matcher = SkimMatcherV2::default();
+                    let mut scored: Vec<(usize, i64)> = names
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(i, item)| {
+                            matcher
+                                .fuzzy_match(item, &prev_search)
+                                .map(|score| (i, score))
+                        })
+                        .collect();
+                    scored.sort_by(|a, b| b.1.cmp(&a.1));
+                    state.branch_list.filtered = scored;
+                }
+                state.branch_list.cursor = prev_cursor;
+                // Keep selection if valid, otherwise reset
+                if let Some(sel) = state.branch_list.selected
+                    && sel >= state.branch_list.filtered.len()
+                {
+                    state.branch_list.selected = if state.branch_list.filtered.is_empty() {
+                        None
+                    } else {
+                        Some(0)
+                    };
+                }
             }
         }
         AppEvent::GitError(msg) => {
@@ -435,7 +495,7 @@ fn process_action(
             if let Some(sel) = state.repo_list.selected
                 && let Some(&(idx, _)) = state.repo_list.filtered.get(sel)
             {
-                enter_branch_select(state, idx, git.as_ref(), tmux);
+                enter_branch_select(state, idx, git, tmux, sender);
             }
         }
 
@@ -527,7 +587,11 @@ mod tests {
         });
         let tmux = MockTmuxProvider::default();
         let matcher = SkimMatcherV2::default();
-        let sender = make_sender();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let sender = EventSender {
+            tx,
+            cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        };
 
         let result = process_action(
             Action::EnterRepo,
@@ -538,8 +602,118 @@ mod tests {
             &sender,
         );
         assert!(result.is_none());
+        assert!(matches!(state.mode, Mode::Loading(_)));
+
+        // Wait for the background thread to send the event
+        let event = rx.recv_timeout(std::time::Duration::from_secs(1)).unwrap();
+        process_app_event(event, &mut state, &git, &tmux, &sender);
         assert_eq!(state.mode, Mode::BranchSelect);
         assert_eq!(state.branches.len(), 2);
+    }
+
+    #[test]
+    fn test_remote_branches_appended() {
+        use kiosk_core::state::BranchEntry;
+
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+        state.selected_repo_idx = Some(0);
+        state.mode = Mode::BranchSelect;
+        state.branches = vec![BranchEntry {
+            name: "main".to_string(),
+            worktree_path: None,
+            has_session: false,
+            is_current: true,
+            is_remote: false,
+        }];
+        state.branch_list.reset(1);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux = MockTmuxProvider::default();
+        let sender = make_sender();
+
+        // Simulate remote branches arriving
+        let remote_branches = vec![
+            BranchEntry {
+                name: "feature-x".to_string(),
+                worktree_path: None,
+                has_session: false,
+                is_current: false,
+                is_remote: true,
+            },
+            BranchEntry {
+                name: "feature-y".to_string(),
+                worktree_path: None,
+                has_session: false,
+                is_current: false,
+                is_remote: true,
+            },
+        ];
+
+        process_app_event(
+            AppEvent::RemoteBranchesLoaded {
+                branches: remote_branches,
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+        );
+
+        assert_eq!(state.branches.len(), 3);
+        assert_eq!(state.branch_list.filtered.len(), 3);
+        assert!(!state.branches[0].is_remote); // main stays first
+        assert!(state.branches[1].is_remote); // feature-x
+        assert!(state.branches[2].is_remote); // feature-y
+    }
+
+    #[test]
+    fn test_remote_branches_filtered_with_search() {
+        use kiosk_core::state::BranchEntry;
+
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+        state.selected_repo_idx = Some(0);
+        state.mode = Mode::BranchSelect;
+        state.branches = vec![BranchEntry {
+            name: "main".to_string(),
+            worktree_path: None,
+            has_session: false,
+            is_current: true,
+            is_remote: false,
+        }];
+        state.branch_list.reset(1);
+        state.branch_list.search = "feat".to_string();
+        state.branch_list.cursor = 4;
+        // With search "feat", main shouldn't match
+        state.branch_list.filtered = vec![];
+        state.branch_list.selected = None;
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux = MockTmuxProvider::default();
+        let sender = make_sender();
+
+        process_app_event(
+            AppEvent::RemoteBranchesLoaded {
+                branches: vec![BranchEntry {
+                    name: "feature-x".to_string(),
+                    worktree_path: None,
+                    has_session: false,
+                    is_current: false,
+                    is_remote: true,
+                }],
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+        );
+
+        // "feat" should match "feature-x" but not "main"
+        assert_eq!(state.branches.len(), 2);
+        assert_eq!(state.branch_list.filtered.len(), 1);
+        let matched_idx = state.branch_list.filtered[0].0;
+        assert_eq!(state.branches[matched_idx].name, "feature-x");
     }
 
     #[test]
@@ -589,6 +763,7 @@ mod tests {
             worktree_path: Some(PathBuf::from("/tmp/alpha")),
             has_session: false,
             is_current: true,
+            is_remote: false,
         }];
         state.branch_list.filtered = vec![(0, 0)];
         state.branch_list.selected = Some(0);
@@ -629,6 +804,7 @@ mod tests {
             worktree_path: None,
             has_session: false,
             is_current: false,
+            is_remote: false,
         }];
         state.branch_list.filtered = vec![(0, 0)];
         state.branch_list.selected = Some(0);
@@ -821,6 +997,7 @@ mod tests {
             worktree_path: None,
             has_session: false,
             is_current: false,
+            is_remote: false,
         }];
         state.branch_list.filtered = vec![(0, 0)];
         state.branch_list.selected = Some(0);
@@ -854,6 +1031,7 @@ mod tests {
             worktree_path: Some(PathBuf::from("/tmp/alpha")),
             has_session: false,
             is_current: true,
+            is_remote: false,
         }];
         state.branch_list.filtered = vec![(0, 0)];
         state.branch_list.selected = Some(0);
@@ -887,6 +1065,7 @@ mod tests {
             worktree_path: Some(PathBuf::from("/tmp/alpha-dev")),
             has_session: false,
             is_current: false,
+            is_remote: false,
         }];
         state.branch_list.filtered = vec![(0, 0)];
         state.branch_list.selected = Some(0);
@@ -925,6 +1104,7 @@ mod tests {
             worktree_path: Some(PathBuf::from("/tmp/alpha-dev")),
             has_session: true,
             is_current: false,
+            is_remote: false,
         }];
         state.branch_list.filtered = vec![(0, 0)];
         state.branch_list.selected = Some(0);
@@ -971,6 +1151,7 @@ mod tests {
             worktree_path: Some(PathBuf::from("/tmp/alpha-dev")),
             has_session: true,
             is_current: false,
+            is_remote: false,
         }];
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
@@ -1011,6 +1192,7 @@ mod tests {
             worktree_path: Some(PathBuf::from("/tmp/alpha-dev")),
             has_session: false,
             is_current: false,
+            is_remote: false,
         }];
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());

@@ -710,3 +710,98 @@ fn test_e2e_delete_confirm_dialog_text() {
         "Should NOT mention tmux session when none exists: {screen}"
     );
 }
+
+#[test]
+fn test_e2e_remote_branches_shown() {
+    let env = TestEnv::new("remote-branches");
+    let search_dir = env.search_dir();
+
+    // Create a "remote" repo with extra branches
+    let remote_repo = search_dir.join("remote-origin");
+    fs::create_dir_all(&remote_repo).unwrap();
+    init_test_repo(&remote_repo);
+    run_git(&remote_repo, &["branch", "feature-alpha"]);
+    run_git(&remote_repo, &["branch", "feature-beta"]);
+
+    // Clone it to create a repo with a real remote
+    let repo = search_dir.join("cloned-repo");
+    Command::new("git")
+        .args([
+            "clone",
+            &remote_repo.to_string_lossy(),
+            &repo.to_string_lossy(),
+        ])
+        .output()
+        .unwrap();
+
+    env.write_config(&search_dir);
+    env.launch_kiosk();
+
+    // Enter the cloned repo
+    env.send("cloned");
+    wait_ms(200);
+    env.send_special("Tab");
+    wait_ms(1500); // Extra time for remote branch loading
+
+    let screen = env.capture();
+
+    // Should show local branch
+    assert!(
+        screen.contains("main"),
+        "Should show local main branch: {screen}"
+    );
+
+    // Should show remote branches with (remote) indicator
+    assert!(
+        screen.contains("feature-alpha") && screen.contains("(remote)"),
+        "Should show remote branches with (remote) tag: {screen}"
+    );
+    assert!(
+        screen.contains("feature-beta"),
+        "Should show feature-beta remote branch: {screen}"
+    );
+}
+
+#[test]
+fn test_e2e_remote_branches_searchable() {
+    let env = TestEnv::new("remote-search");
+    let search_dir = env.search_dir();
+
+    let remote_repo = search_dir.join("remote-origin");
+    fs::create_dir_all(&remote_repo).unwrap();
+    init_test_repo(&remote_repo);
+    run_git(&remote_repo, &["branch", "feat-search-target"]);
+
+    let repo = search_dir.join("search-repo");
+    Command::new("git")
+        .args([
+            "clone",
+            &remote_repo.to_string_lossy(),
+            &repo.to_string_lossy(),
+        ])
+        .output()
+        .unwrap();
+
+    env.write_config(&search_dir);
+    env.launch_kiosk();
+
+    env.send("search-repo");
+    wait_ms(200);
+    env.send_special("Tab");
+    wait_ms(1500);
+
+    // Search for the remote branch
+    env.send("search-target");
+    wait_ms(300);
+
+    let screen = env.capture();
+    assert!(
+        screen.contains("feat-search-target") && screen.contains("(remote)"),
+        "Should find remote branch via search: {screen}"
+    );
+    // "main" should be filtered out
+    assert!(
+        !screen.contains("▸ main") && !screen.contains("  main"),
+        "Local 'main' should be filtered out by search: {screen}"
+    );
+}

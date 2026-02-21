@@ -15,6 +15,18 @@ pub enum AppEvent {
     /// A worktree was successfully removed
     WorktreeRemoved { branch_name: String },
 
+    /// Local branches loaded
+    BranchesLoaded {
+        branches: Vec<crate::state::BranchEntry>,
+        /// Local branch names, needed to spawn remote branch loading
+        local_names: Vec<String>,
+    },
+
+    /// Remote branches loaded (appended after local)
+    RemoteBranchesLoaded {
+        branches: Vec<crate::state::BranchEntry>,
+    },
+
     /// A background git operation failed
     GitError(String),
 }

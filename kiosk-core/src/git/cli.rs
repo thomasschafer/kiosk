@@ -60,6 +60,30 @@ impl GitProvider for CliGitProvider {
             .collect()
     }
 
+    fn list_remote_branches(&self, repo_path: &Path) -> Vec<String> {
+        let output = Command::new("git")
+            .args(["branch", "-r", "--format=%(refname:short)"])
+            .current_dir(repo_path)
+            .output();
+
+        let Ok(output) = output else {
+            return Vec::new();
+        };
+
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| {
+                let line = line.trim();
+                // Skip HEAD pointer (e.g. "origin/HEAD -> origin/main")
+                if line.contains("->") {
+                    return None;
+                }
+                // Strip the remote prefix (e.g. "origin/feature" -> "feature")
+                line.split_once('/').map(|(_, branch)| branch.to_string())
+            })
+            .collect()
+    }
+
     fn list_worktrees(&self, repo_path: &Path) -> Vec<Worktree> {
         let output = Command::new("git")
             .args(["worktree", "list", "--porcelain"])
@@ -129,6 +153,34 @@ impl GitProvider for CliGitProvider {
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             anyhow::bail!("git worktree remove failed: {stderr}");
+        }
+
+        Ok(())
+    }
+
+    fn create_tracking_branch_and_worktree(
+        &self,
+        repo_path: &Path,
+        branch: &str,
+        worktree_path: &Path,
+    ) -> Result<()> {
+        // git worktree add <path> -b <branch> --track origin/<branch>
+        let output = Command::new("git")
+            .args([
+                "worktree",
+                "add",
+                &worktree_path.to_string_lossy(),
+                "-b",
+                branch,
+                "--track",
+                &format!("origin/{branch}"),
+            ])
+            .current_dir(repo_path)
+            .output()?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("git worktree add (tracking) failed: {stderr}");
         }
 
         Ok(())

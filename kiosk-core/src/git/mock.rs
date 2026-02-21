@@ -12,6 +12,7 @@ use std::{
 pub struct MockGitProvider {
     pub repos: Vec<Repo>,
     pub branches: Vec<String>,
+    pub remote_branches: Vec<String>,
     pub worktrees: Vec<Worktree>,
     pub add_worktree_result: Mutex<Option<Result<()>>>,
     pub create_branch_result: Mutex<Option<Result<()>>>,
@@ -25,6 +26,10 @@ impl GitProvider for MockGitProvider {
 
     fn list_branches(&self, _repo_path: &Path) -> Vec<String> {
         self.branches.clone()
+    }
+
+    fn list_remote_branches(&self, _repo_path: &Path) -> Vec<String> {
+        self.remote_branches.clone()
     }
 
     fn list_worktrees(&self, _repo_path: &Path) -> Vec<Worktree> {
@@ -55,6 +60,19 @@ impl GitProvider for MockGitProvider {
 
     fn remove_worktree(&self, _worktree_path: &Path) -> Result<()> {
         self.remove_worktree_result
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap_or(Ok(()))
+    }
+
+    fn create_tracking_branch_and_worktree(
+        &self,
+        _repo_path: &Path,
+        _branch: &str,
+        _worktree_path: &Path,
+    ) -> Result<()> {
+        self.create_branch_result
             .lock()
             .unwrap()
             .take()

@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 pub trait GitProvider: Send + Sync {
     fn discover_repos(&self, dirs: &[(PathBuf, u16)]) -> Vec<Repo>;
     fn list_branches(&self, repo_path: &Path) -> Vec<String>;
+    fn list_remote_branches(&self, repo_path: &Path) -> Vec<String>;
     fn list_worktrees(&self, repo_path: &Path) -> Vec<Worktree>;
     fn add_worktree(&self, repo_path: &Path, branch: &str, worktree_path: &Path) -> Result<()>;
     fn create_branch_and_worktree(
@@ -15,4 +16,11 @@ pub trait GitProvider: Send + Sync {
         worktree_path: &Path,
     ) -> Result<()>;
     fn remove_worktree(&self, worktree_path: &Path) -> Result<()>;
+    /// Create a local tracking branch from a remote branch and add a worktree for it
+    fn create_tracking_branch_and_worktree(
+        &self,
+        repo_path: &Path,
+        branch: &str,
+        worktree_path: &Path,
+    ) -> Result<()>;
 }

@@ -76,7 +76,7 @@ pub fn run(
     }
 
     loop {
-        terminal.draw(|f| draw(f, state, theme, &spinner_start))?;
+        terminal.draw(|f| draw(f, state, theme, keys, &spinner_start))?;
 
         // Check background channel (non-blocking)
         if let Ok(app_event) = rx.try_recv() {
@@ -121,7 +121,7 @@ pub fn run(
     }
 }
 
-fn draw(f: &mut Frame, state: &AppState, theme: &crate::theme::Theme, spinner_start: &Instant) {
+fn draw(f: &mut Frame, state: &AppState, theme: &crate::theme::Theme, keys: &kiosk_core::config::KeysConfig, spinner_start: &Instant) {
     // Loading mode: full-screen spinner
     if let Mode::Loading(ref msg) = state.mode {
         draw_loading(f, f.area(), msg, theme, spinner_start);
@@ -162,8 +162,7 @@ fn draw(f: &mut Frame, state: &AppState, theme: &crate::theme::Theme, spinner_st
                 _ => {}
             }
             // Draw help overlay on top
-            // TODO: Implement help component
-            draw_help_placeholder(f, main_area, theme);
+            components::help::draw(f, state, theme, keys);
         }
         Mode::Loading(_) => unreachable!(),
     }
@@ -670,29 +669,6 @@ fn handle_confirm_delete(state: &mut AppState, git: &Arc<dyn GitProvider>, sende
     }
 }
 
-fn handle_search_update(
-    state: &mut AppState,
-    matcher: &SkimMatcherV2,
-    mutate: impl FnOnce(&mut String),
-) {
-    match state.mode {
-        Mode::RepoSelect => {
-            mutate(&mut state.repo_search);
-            update_repo_filter(state, matcher);
-        }
-        Mode::BranchSelect => {
-            mutate(&mut state.branch_search);
-            update_branch_filter(state, matcher);
-        }
-        Mode::NewBranchBase => {
-            if let Some(flow) = &mut state.new_branch_base {
-                mutate(&mut flow.search);
-                update_flow_filter(flow, matcher);
-            }
-        }
-        Mode::ConfirmDelete(_) | Mode::Loading(_) | Mode::Help { .. } => {}
-    }
-}
 
 fn handle_open_branch(
     state: &mut AppState,
@@ -1075,36 +1051,6 @@ fn move_cursor(text: &str, cursor: &mut usize, movement: CursorMove) {
     }
 }
 
-/// Placeholder help overlay until we implement the full help component
-fn draw_help_placeholder(f: &mut Frame, area: Rect, theme: &crate::theme::Theme) {
-    let block = Block::default()
-        .title("Help — Keybindings")
-        .borders(Borders::ALL)
-        .border_style(theme.accent);
-
-    let help_text = vec![
-        Line::from("Press C-h again to close help"),
-        Line::from(""),
-        Line::from("General:"),
-        Line::from("  C-c     Quit"),
-        Line::from("  C-h     Show/hide help"),
-        Line::from(""),
-        Line::from("Navigation:"),
-        Line::from("  ↑/↓     Move up/down"),
-        Line::from("  C-u/d   Half page up/down"),
-        Line::from("  PgUp/Dn Page up/down"),
-        Line::from("  Enter   Open/select"),
-        Line::from("  Tab     Enter repo"),
-        Line::from("  Esc     Go back/quit"),
-    ];
-
-    let paragraph = Paragraph::new(help_text)
-        .block(block);
-
-    // Center the help dialog
-    let popup_area = centered_rect(60, 70, area);
-    f.render_widget(paragraph, popup_area);
-}
 
 /// Helper function to center a rect within another rect  
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {

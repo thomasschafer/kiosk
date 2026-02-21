@@ -70,7 +70,7 @@ impl FromStr for Command {
             "cursor_end" => Ok(Command::CursorEnd),
             "confirm" => Ok(Command::Confirm),
             "cancel" => Ok(Command::Cancel),
-            _ => Err(format!("Unknown command: {}", s)),
+            _ => Err(format!("Unknown command: {s}")),
         }
     }
 }
@@ -103,7 +103,7 @@ impl std::fmt::Display for Command {
             Command::Confirm => "confirm",
             Command::Cancel => "cancel",
         };
-        write!(f, "{}", s)
+        write!(f, "{s}")
     }
 }
 
@@ -255,21 +255,22 @@ impl KeysConfig {
         map
     }
 
-    /// Parse a string representation of keybindings into a KeyMap
+    /// Parse a string representation of keybindings into a `KeyMap`
     fn parse_keymap(raw_map: &HashMap<String, String>) -> Result<KeyMap, String> {
         let mut keymap = KeyMap::new();
         for (key_str, command_str) in raw_map {
             let key_event = KeyEvent::from_str(key_str)
-                .map_err(|e| format!("Invalid key '{}': {}", key_str, e))?;
+                .map_err(|e| format!("Invalid key '{key_str}': {e}"))?;
             let command = Command::from_str(command_str)
-                .map_err(|e| format!("Invalid command '{}': {}", command_str, e))?;
+                .map_err(|e| format!("Invalid command '{command_str}': {e}"))?;
             keymap.insert(key_event, command);
         }
         Ok(keymap)
     }
 
     /// Merge user configuration with defaults
-    pub fn from_raw(raw: KeysConfigRaw) -> Result<Self, String> {
+    #[allow(private_interfaces)]
+    pub fn from_raw(raw: &KeysConfigRaw) -> Result<Self, String> {
         let mut config = Self::default();
         
         // Merge general bindings
@@ -303,7 +304,7 @@ impl<'de> Deserialize<'de> for KeysConfig {
         D: serde::Deserializer<'de>,
     {
         let raw = KeysConfigRaw::deserialize(deserializer)?;
-        KeysConfig::from_raw(raw).map_err(serde::de::Error::custom)
+        KeysConfig::from_raw(&raw).map_err(serde::de::Error::custom)
     }
 }
 

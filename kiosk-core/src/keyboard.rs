@@ -606,12 +606,11 @@ impl std::str::FromStr for KeyEvent {
                         code: KeyCode::Char('-'),
                         modifiers: KeyModifiers::empty(),
                     });
-                } else {
-                    let suggestion = format!("{}-{}", s.trim_end_matches('-'), keys::MINUS);
-                    return Err(anyhow!(
-                        "Key '-' cannot be used with modifiers, use '{suggestion}' instead",
-                    ));
                 }
+                let suggestion = format!("{}-{}", s.trim_end_matches('-'), keys::MINUS);
+                return Err(anyhow!(
+                    "Key '-' cannot be used with modifiers, use '{suggestion}' instead",
+                ));
             }
             invalid => return Err(anyhow!("Invalid key code '{invalid}'")),
         };

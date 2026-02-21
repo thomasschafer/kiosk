@@ -1,0 +1,136 @@
+use kiosk_core::config::{Command, KeysConfig};
+use kiosk_core::keyboard::KeyEvent;
+use kiosk_core::state::{AppState, Mode};
+use ratatui::{
+    layout::{Constraint, Layout, Rect},
+    style::{Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, Clear, Paragraph},
+    Frame,
+};
+use std::collections::HashMap;
+
+/// Help overlay showing keybindings
+pub fn draw(f: &mut Frame, state: &AppState, theme: &crate::theme::Theme, keys: &KeysConfig) {
+    // Get the current mode context for help
+    let current_mode = match &state.mode {
+        Mode::Help { previous } => previous.as_ref(),
+        _ => &state.mode,
+    };
+
+    // Create the help content
+    let help_content = build_help_content(keys, current_mode);
+    
+    // Calculate popup size and position
+    let area = f.area();
+    let popup_area = centered_rect(80, 85, area);
+    
+    // Clear the area behind the popup
+    f.render_widget(Clear, popup_area);
+    
+    // Create the main block
+    let block = Block::default()
+        .title("Help — Keybindings")
+        .title_style(Style::default().fg(theme.accent).add_modifier(Modifier::BOLD))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.accent));
+
+    // For now, just render without scrolling - we can add scrolling later if needed
+    let paragraph = Paragraph::new(help_content)
+        .block(block)
+        .wrap(ratatui::widgets::Wrap { trim: true });
+        
+    f.render_widget(paragraph, popup_area);
+}
+
+/// Build the help content based on the current mode
+fn build_help_content(keys: &KeysConfig, current_mode: &Mode) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    
+    // Instructions
+    lines.push(Line::from(Span::styled(
+        "Press C-h or Esc to close this help",
+        Style::default().add_modifier(Modifier::ITALIC),
+    )));
+    lines.push(Line::from(""));
+    
+    // General bindings section
+    lines.push(Line::from(Span::styled(
+        "General Commands:",
+        Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+    )));
+    lines.extend(format_key_section(&keys.general));
+    lines.push(Line::from(""));
+    
+    // Mode-specific bindings
+    let (mode_title, mode_keymap) = match current_mode {
+        Mode::RepoSelect => ("Repository Selection:", &keys.repo_select),
+        Mode::BranchSelect => ("Branch Selection:", &keys.branch_select),
+        Mode::NewBranchBase => ("New Branch Base Selection:", &keys.new_branch_base),
+        Mode::ConfirmDelete(_) => ("Confirmation:", &keys.confirmation),
+        Mode::Loading(_) => ("Loading:", &HashMap::new()), // No specific bindings
+        Mode::Help { .. } => ("General:", &keys.general), // Shouldn't happen, but fallback
+    };
+    
+    lines.push(Line::from(Span::styled(
+        mode_title,
+        Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+    )));
+    lines.extend(format_key_section(mode_keymap));
+    
+    // Add search help for search-enabled modes
+    if matches!(current_mode, Mode::RepoSelect | Mode::BranchSelect | Mode::NewBranchBase) {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "Search:",
+            Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        )));
+        lines.push(Line::from("  Any printable character  Start/continue search"));
+        lines.push(Line::from("  Backspace                Delete last character"));
+        lines.push(Line::from("  C-w                      Delete word backwards"));
+    }
+    
+    lines
+}
+
+/// Format a section of key bindings
+fn format_key_section(keymap: &HashMap<KeyEvent, Command>) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    
+    if keymap.is_empty() {
+        lines.push(Line::from("  (No specific bindings)"));
+        return lines;
+    }
+    
+    // Convert to vector and sort by key display representation for consistent ordering
+    let mut bindings: Vec<_> = keymap.iter().collect();
+    bindings.sort_by(|a, b| a.0.to_string().cmp(&b.0.to_string()));
+    
+    for (key_event, command) in bindings {
+        let key_str = key_event.to_string();
+        let description = command.description();
+        
+        // Format as "  Key           Description"
+        let line = format!("  {:<13} {}", key_str, description);
+        lines.push(Line::from(line));
+    }
+    
+    lines
+}
+
+/// Helper function to center a rect within another rect
+fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    let popup_layout = Layout::vertical([
+        Constraint::Percentage((100 - percent_y) / 2),
+        Constraint::Percentage(percent_y),
+        Constraint::Percentage((100 - percent_y) / 2),
+    ])
+    .split(r);
+
+    Layout::horizontal([
+        Constraint::Percentage((100 - percent_x) / 2),
+        Constraint::Percentage(percent_x),
+        Constraint::Percentage((100 - percent_x) / 2),
+    ])
+    .split(popup_layout[1])[1]
+}

@@ -527,7 +527,7 @@ fn process_action(
 
         Action::ShowHelp => handle_show_help(state),
 
-        // Actions handled before the match statement
+        // All other actions are handled by helper functions above or are not applicable
         Action::HalfPageUp
         | Action::HalfPageDown
         | Action::PageUp
@@ -539,7 +539,8 @@ fn process_action(
         | Action::CursorStart
         | Action::CursorEnd
         | Action::CancelDeleteWorktree => {
-            // These are handled by helper functions before this match
+            // These actions are already handled by helper functions before this match
+            unreachable!("These actions should have been handled by helper functions above")
         }
     }
 

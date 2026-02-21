@@ -430,13 +430,12 @@ impl CliGitProvider {
         depth: u16,
         repos: &mut Vec<(Repo, &'a Path)>,
     ) {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            eprintln!(
-                "Warning: Failed to read directory {}: {}",
-                dir.display(),
-                std::fs::read_dir(dir).unwrap_err()
-            );
-            return;
+        let entries = match std::fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(err) => {
+                eprintln!("Warning: Failed to read directory {}: {err}", dir.display());
+                return;
+            }
         };
 
         for entry in entries.flatten() {

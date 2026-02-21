@@ -117,9 +117,9 @@ Key binding configuration.
 
 | Key | Action |
 |-----|--------|
-| C-G | Move to bottom |
+| A-G | Move to bottom |
+| A-g | Move to top |
 | C-d | Half page down |
-| C-g | Move to top |
 | C-n | Move down |
 | C-p | Move up |
 | C-u | Half page up |
@@ -141,9 +141,9 @@ Key binding configuration.
 
 | Key | Action |
 |-----|--------|
-| C-G | Move to bottom |
+| A-G | Move to bottom |
+| A-g | Move to top |
 | C-d | Half page down |
-| C-g | Move to top |
 | C-n | Move down |
 | C-o | New branch |
 | C-p | Move up |
@@ -166,9 +166,9 @@ Key binding configuration.
 
 | Key | Action |
 |-----|--------|
-| C-G | Move to bottom |
+| A-G | Move to bottom |
+| A-g | Move to top |
 | C-d | Half page down |
-| C-g | Move to top |
 | C-n | Move down |
 | C-p | Move up |
 | C-u | Half page up |

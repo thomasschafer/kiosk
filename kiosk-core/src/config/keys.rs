@@ -267,11 +267,11 @@ impl KeysConfig {
             Command::CursorEnd,
         );
         map.insert(
-            KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char('g'), KeyModifiers::ALT),
             Command::MoveTop,
         );
         map.insert(
-            KeyEvent::new(KeyCode::Char('G'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char('G'), KeyModifiers::ALT),
             Command::MoveBottom,
         );
         map

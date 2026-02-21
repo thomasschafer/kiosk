@@ -208,9 +208,9 @@ fn is_orphaned_worktree(path: &Path) -> bool {
 /// e.g. "/repo/.git/worktrees/branch" -> "/repo"
 fn find_main_repo_path(gitdir: &Path) -> Option<std::path::PathBuf> {
     gitdir
-        .parent()? // Remove "worktrees/branch"
-        .parent()? // Remove ".git"
-        .parent() // Get the repo root
+        .parent()? // /repo/.git/worktrees/branch-name -> /repo/.git/worktrees
+        .parent()? // /repo/.git/worktrees -> /repo/.git
+        .parent() // /repo/.git -> /repo
         .map(std::path::Path::to_path_buf)
 }
 

@@ -192,14 +192,14 @@ fn generate_keymap_table(docs: &mut String, mode_name: &str, keymap: &KeyMap) {
 
     // Convert to vector and sort by key display for consistent ordering
     let mut bindings: Vec<_> = keymap.iter().collect();
-    bindings.sort_by(|a, b| a.0.to_string().cmp(&b.0.to_string()));
+    bindings.sort_by_key(|(key, _)| key.to_string());
 
     for (key_event, command) in bindings {
         if *command == Command::Noop {
             continue; // Skip unbound keys
         }
-        let key_str = key_event.to_string();
-        let description = command.description();
+        let key_str = key_event.to_string().replace('|', "\\|");
+        let description = command.description().replace('|', "\\|");
         let _ = writeln!(docs, "| {key_str} | {description} |");
     }
 

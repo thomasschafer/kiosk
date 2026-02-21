@@ -82,7 +82,7 @@ jobs:
           - os: ubuntu-latest
             target: aarch64-unknown-linux-musl
             use-cross: true
-          - os: macos-13
+          - os: macos-13  # Intel runner for native x86_64 builds
             target: x86_64-apple-darwin
             use-cross: false
           - os: macos-latest

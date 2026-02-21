@@ -527,7 +527,9 @@ fn process_action(
 
         Action::ShowHelp => handle_show_help(state),
 
-        // All other actions are handled by helper functions above or are not applicable
+        // Movement, cursor, and cancel actions are handled by helper functions above.
+        // If we reach here, it means the action wasn't applicable in the current mode
+        // (e.g., movement action in a mode with no active list). This is safe to ignore.
         Action::HalfPageUp
         | Action::HalfPageDown
         | Action::PageUp
@@ -538,10 +540,7 @@ fn process_action(
         | Action::CursorRight
         | Action::CursorStart
         | Action::CursorEnd
-        | Action::CancelDeleteWorktree => {
-            // These actions are already handled by helper functions before this match
-            unreachable!("These actions should have been handled by helper functions above")
-        }
+        | Action::CancelDeleteWorktree => {}
     }
 
     None

@@ -1,4 +1,7 @@
-use crate::git::Repo;
+use crate::{
+    constants::{WORKTREE_DIR_DEDUP_MAX_ATTEMPTS, WORKTREE_DIR_NAME, WORKTREE_NAME_SEPARATOR},
+    git::Repo,
+};
 use std::path::PathBuf;
 
 /// Shared state for any searchable, filterable list.
@@ -318,20 +321,22 @@ impl AppState {
 /// ```
 pub fn worktree_dir(repo: &Repo, branch: &str) -> anyhow::Result<PathBuf> {
     let parent = repo.path.parent().unwrap_or(&repo.path);
-    let worktree_root = parent.join(".kiosk_worktrees");
+    let worktree_root = parent.join(WORKTREE_DIR_NAME);
     let safe_branch = branch.replace('/', "-");
-    let base = format!("{}--{safe_branch}", repo.name);
+    let base = format!("{}{WORKTREE_NAME_SEPARATOR}{safe_branch}", repo.name);
     let candidate = worktree_root.join(&base);
     if !candidate.exists() {
         return Ok(candidate);
     }
-    for i in 2..1000 {
+    for i in 2..WORKTREE_DIR_DEDUP_MAX_ATTEMPTS {
         let candidate = worktree_root.join(format!("{base}-{i}"));
         if !candidate.exists() {
             return Ok(candidate);
         }
     }
-    anyhow::bail!("Could not find an available worktree directory name after 1000 attempts")
+    anyhow::bail!(
+        "Could not find an available worktree directory name after {WORKTREE_DIR_DEDUP_MAX_ATTEMPTS} attempts"
+    )
 }
 
 #[cfg(test)]
@@ -357,7 +362,9 @@ mod tests {
         let result = worktree_dir(&repo, "main").unwrap();
         assert_eq!(
             result,
-            tmp.path().join(".kiosk_worktrees").join("myrepo--main")
+            tmp.path()
+                .join(WORKTREE_DIR_NAME)
+                .join(format!("myrepo{WORKTREE_NAME_SEPARATOR}main"))
         );
     }
 
@@ -369,8 +376,8 @@ mod tests {
         assert_eq!(
             result,
             tmp.path()
-                .join(".kiosk_worktrees")
-                .join("repo--feat-awesome")
+                .join(WORKTREE_DIR_NAME)
+                .join(format!("repo{WORKTREE_NAME_SEPARATOR}feat-awesome"))
         );
     }
 
@@ -378,12 +385,17 @@ mod tests {
     fn test_worktree_dir_dedup() {
         let tmp = tempdir().unwrap();
         let repo = make_repo(tmp.path(), "repo");
-        let first = tmp.path().join(".kiosk_worktrees").join("repo--main");
+        let first = tmp
+            .path()
+            .join(WORKTREE_DIR_NAME)
+            .join(format!("repo{WORKTREE_NAME_SEPARATOR}main"));
         fs::create_dir_all(&first).unwrap();
         let result = worktree_dir(&repo, "main").unwrap();
         assert_eq!(
             result,
-            tmp.path().join(".kiosk_worktrees").join("repo--main-2")
+            tmp.path()
+                .join(WORKTREE_DIR_NAME)
+                .join(format!("repo{WORKTREE_NAME_SEPARATOR}main-2"))
         );
     }
 
@@ -391,15 +403,18 @@ mod tests {
     fn test_worktree_dir_bounded_error() {
         let tmp = tempdir().unwrap();
         let repo = make_repo(tmp.path(), "repo");
-        let wt_root = tmp.path().join(".kiosk_worktrees");
+        let wt_root = tmp.path().join(WORKTREE_DIR_NAME);
         // Create the base and 2..999 suffixed dirs to exhaust the loop
-        fs::create_dir_all(wt_root.join("repo--main")).unwrap();
-        for i in 2..1000 {
-            fs::create_dir_all(wt_root.join(format!("repo--main-{i}"))).unwrap();
+        let base = format!("repo{WORKTREE_NAME_SEPARATOR}main");
+        fs::create_dir_all(wt_root.join(&base)).unwrap();
+        for i in 2..WORKTREE_DIR_DEDUP_MAX_ATTEMPTS {
+            fs::create_dir_all(wt_root.join(format!("{base}-{i}"))).unwrap();
         }
         let result = worktree_dir(&repo, "main");
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("1000 attempts"));
+        assert!(result.unwrap_err().to_string().contains(&format!(
+            "{WORKTREE_DIR_DEDUP_MAX_ATTEMPTS} attempts"
+        )));
     }
 
     #[test]
@@ -407,7 +422,7 @@ mod tests {
         let tmp = tempdir().unwrap();
         let repo = make_repo(tmp.path(), "myrepo");
         let result = worktree_dir(&repo, "dev").unwrap();
-        assert!(result.to_string_lossy().contains(".kiosk_worktrees"));
+        assert!(result.to_string_lossy().contains(WORKTREE_DIR_NAME));
     }
 
     #[test]

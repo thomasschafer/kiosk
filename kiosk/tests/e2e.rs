@@ -5,6 +5,7 @@ use std::{
     thread,
     time::Duration,
 };
+use kiosk_core::constants::WORKTREE_DIR_NAME;
 
 fn kiosk_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_kiosk"))
@@ -321,7 +322,7 @@ fn test_e2e_worktree_creation() {
     wait_ms(2000); // Wait for worktree creation + session
 
     // Verify the worktree was created in .kiosk_worktrees/ with -- separator
-    let wt_root = search_dir.join(".kiosk_worktrees");
+    let wt_root = search_dir.join(WORKTREE_DIR_NAME);
     let expected_wt = wt_root.join("wt-repo--feat-wt-test");
     assert!(
         expected_wt.exists(),
@@ -363,6 +364,89 @@ fn test_e2e_worktree_creation() {
     );
 
     // Cleanup the created session
+    cleanup_session(session_name);
+}
+
+#[test]
+fn test_e2e_split_command_creates_split_pane() {
+    let env = TestEnv::new("split-pane");
+    let search_dir = env.search_dir();
+
+    let repo = search_dir.join("split-repo");
+    fs::create_dir_all(&repo).unwrap();
+    init_test_repo(&repo);
+
+    let extra = r#"
+[session]
+split_command = "printf KIOSK_SPLIT_OK && exec cat"
+"#;
+    env.write_config_with_extra(&search_dir, extra);
+    env.launch_kiosk();
+
+    // Open the selected repo directly from the repo list.
+    env.send_special("Enter");
+    wait_ms(1200);
+
+    let session_name = "split-repo";
+    let output = Command::new("tmux")
+        .args(["has-session", "-t", session_name])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "tmux session '{}' should exist",
+        session_name
+    );
+
+    let output = Command::new("tmux")
+        .args(["list-panes", "-t", session_name, "-F", "#{pane_id}"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "list-panes should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let pane_ids: Vec<String> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect();
+    assert_eq!(
+        pane_ids.len(),
+        2,
+        "Expected 2 panes when split_command is set, got: {:?}",
+        pane_ids
+    );
+
+    let output = Command::new("tmux")
+        .args(["list-panes", "-t", session_name, "-F", "#{pane_current_command}"])
+        .output()
+        .unwrap();
+    let pane_commands: Vec<String> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect();
+    assert!(
+        pane_commands.iter().any(|cmd| cmd == "cat"),
+        "Expected split pane to run 'cat', commands were: {:?}",
+        pane_commands
+    );
+
+    let mut captured = String::new();
+    for pane_id in &pane_ids {
+        let output = Command::new("tmux")
+            .args(["capture-pane", "-t", pane_id, "-p"])
+            .output()
+            .unwrap();
+        captured.push_str(&String::from_utf8_lossy(&output.stdout));
+        captured.push('\n');
+    }
+    assert!(
+        captured.contains("KIOSK_SPLIT_OK"),
+        "Expected split pane output marker in captured panes, got: {captured}"
+    );
+
     cleanup_session(session_name);
 }
 
@@ -412,7 +496,7 @@ fn test_e2e_delete_worktree() {
     // Create a branch and worktree for it
     run_git(&repo, &["branch", "feat/to-delete"]);
     let wt_dir = search_dir
-        .join(".kiosk_worktrees")
+        .join(WORKTREE_DIR_NAME)
         .join("delete-repo--feat-to-delete");
     fs::create_dir_all(&wt_dir).unwrap();
     run_git(
@@ -464,7 +548,7 @@ fn test_e2e_clean_dry_run() {
     let search_dir = env.search_dir();
 
     // Create .kiosk_worktrees directory
-    let worktrees_dir = search_dir.join(".kiosk_worktrees");
+    let worktrees_dir = search_dir.join(WORKTREE_DIR_NAME);
     fs::create_dir_all(&worktrees_dir).unwrap();
 
     // Create a fake/broken worktree directory (just a regular dir, no valid .git file)
@@ -671,7 +755,7 @@ fn test_e2e_delete_confirm_dialog_text() {
     // Create a branch and worktree
     run_git(&repo, &["branch", "feat/dialog-test"]);
     let wt_dir = search_dir
-        .join(".kiosk_worktrees")
+        .join(WORKTREE_DIR_NAME)
         .join("dialog-repo--feat-dialog-test");
     fs::create_dir_all(&wt_dir).unwrap();
     run_git(

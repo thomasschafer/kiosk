@@ -40,6 +40,7 @@ impl Repo {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::constants::WORKTREE_DIR_NAME;
 
     fn make_repo(name: &str, session_name: &str) -> Repo {
         Repo {
@@ -68,7 +69,7 @@ mod tests {
     fn test_tmux_session_name_branch_worktree() {
         let repo = make_repo("kiosk", "kiosk");
         let name = repo.tmux_session_name(&PathBuf::from(
-            "/home/user/.kiosk_worktrees/kiosk--feat-awesome",
+            format!("/home/user/{WORKTREE_DIR_NAME}/kiosk--feat-awesome"),
         ));
         assert_eq!(name, "kiosk--feat-awesome");
     }
@@ -84,7 +85,7 @@ mod tests {
     fn test_tmux_session_name_disambiguated_worktree() {
         let repo = make_repo("api", "api--(Work)");
         let name = repo.tmux_session_name(&PathBuf::from(
-            "/home/user/.kiosk_worktrees/api--feat-thing",
+            format!("/home/user/{WORKTREE_DIR_NAME}/api--feat-thing"),
         ));
         assert_eq!(name, "api--(Work)--feat-thing");
     }

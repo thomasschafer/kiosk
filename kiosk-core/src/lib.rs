@@ -1,5 +1,6 @@
 pub mod action;
 pub mod config;
+pub mod constants;
 pub mod event;
 pub mod git;
 pub mod keyboard;

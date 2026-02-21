@@ -2,6 +2,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use kiosk_core::{
     config,
+    constants::{GITDIR_FILE_PREFIX, GIT_DIR_ENTRY, WORKTREE_DIR_NAME},
     git::{CliGitProvider, GitProvider},
     state::AppState,
     tmux::CliTmuxProvider,
@@ -97,7 +98,7 @@ fn clean_orphaned_worktrees(
 
     // Scan all search directories for .kiosk_worktrees directories
     for (search_dir, _) in search_dirs {
-        let worktrees_dir = search_dir.join(".kiosk_worktrees");
+        let worktrees_dir = search_dir.join(WORKTREE_DIR_NAME);
         if !worktrees_dir.exists() {
             continue;
         }
@@ -152,7 +153,7 @@ fn clean_orphaned_worktrees(
 }
 
 fn is_orphaned_worktree(path: &Path) -> bool {
-    let git_file = path.join(".git");
+    let git_file = path.join(GIT_DIR_ENTRY);
 
     // If there's no .git file, it's definitely orphaned
     if !git_file.exists() {
@@ -167,12 +168,12 @@ fn is_orphaned_worktree(path: &Path) -> bool {
     // .git file should contain "gitdir: /path/to/repo/.git/worktrees/name"
     let Some(gitdir_line) = git_content
         .lines()
-        .find(|line| line.starts_with("gitdir: "))
+        .find(|line| line.starts_with(GITDIR_FILE_PREFIX))
     else {
         return true; // Malformed .git file
     };
 
-    let gitdir_path = gitdir_line.strip_prefix("gitdir: ").unwrap_or("");
+    let gitdir_path = gitdir_line.strip_prefix(GITDIR_FILE_PREFIX).unwrap_or("");
     let gitdir = Path::new(gitdir_path);
 
     // Check if the gitdir path exists and is valid

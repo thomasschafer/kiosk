@@ -3,6 +3,30 @@ use std::{path::Path, process::Command};
 
 pub struct CliTmuxProvider;
 
+fn create_session_commands(name: &str, dir_str: &str, split_command: Option<&str>) -> Vec<Vec<String>> {
+    let mut commands = vec![vec![
+        "new-session".to_string(),
+        "-ds".to_string(),
+        name.to_string(),
+        "-c".to_string(),
+        dir_str.to_string(),
+    ]];
+
+    if let Some(cmd) = split_command.filter(|cmd| !cmd.trim().is_empty()) {
+        commands.push(vec![
+            "split-window".to_string(),
+            "-h".to_string(),
+            "-t".to_string(),
+            format!("={name}"),
+            "-c".to_string(),
+            dir_str.to_string(),
+            cmd.to_string(),
+        ]);
+    }
+
+    commands
+}
+
 impl TmuxProvider for CliTmuxProvider {
     fn list_sessions(&self) -> Vec<String> {
         let output = Command::new("tmux")
@@ -29,24 +53,8 @@ impl TmuxProvider for CliTmuxProvider {
     fn create_session(&self, name: &str, dir: &Path, split_command: Option<&str>) {
         let dir_str = dir.to_string_lossy();
 
-        let _ = Command::new("tmux")
-            .args(["new-session", "-ds", name, "-c", &dir_str])
-            .status();
-
-        if let Some(cmd) = split_command {
-            let _ = Command::new("tmux")
-                .args([
-                    "split-window",
-                    "-h",
-                    "-t",
-                    &format!("={name}"),
-                    "-c",
-                    &dir_str,
-                ])
-                .status();
-            let _ = Command::new("tmux")
-                .args(["send-keys", "-t", &format!("={name}:0.1"), cmd, "Enter"])
-                .status();
+        for args in create_session_commands(name, &dir_str, split_command) {
+            let _ = Command::new("tmux").args(args).status();
         }
     }
 
@@ -70,5 +78,45 @@ impl TmuxProvider for CliTmuxProvider {
 
     fn is_inside_tmux(&self) -> bool {
         std::env::var("TMUX").is_ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::create_session_commands;
+
+    #[test]
+    fn test_create_session_commands_with_split_command_uses_split_window_command_arg() {
+        let commands = create_session_commands("demo", "/tmp/demo", Some("hx"));
+        assert_eq!(commands.len(), 2);
+
+        assert_eq!(
+            commands[0],
+            vec![
+                "new-session".to_string(),
+                "-ds".to_string(),
+                "demo".to_string(),
+                "-c".to_string(),
+                "/tmp/demo".to_string(),
+            ]
+        );
+        assert_eq!(
+            commands[1],
+            vec![
+                "split-window".to_string(),
+                "-h".to_string(),
+                "-t".to_string(),
+                "=demo".to_string(),
+                "-c".to_string(),
+                "/tmp/demo".to_string(),
+                "hx".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_create_session_commands_without_split_command() {
+        let commands = create_session_commands("demo", "/tmp/demo", None);
+        assert_eq!(commands.len(), 1);
     }
 }

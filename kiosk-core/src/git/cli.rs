@@ -4,6 +4,7 @@ use super::{
     repo::{Repo, Worktree},
 };
 use anyhow::Result;
+use crate::constants::GIT_DIR_ENTRY;
 use std::{
     path::{Path, PathBuf},
     process::Command,
@@ -190,6 +191,7 @@ impl GitProvider for CliGitProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::constants::WORKTREE_NAME_SEPARATOR;
     use std::fs;
 
     fn init_test_repo(dir: &Path) {
@@ -291,7 +293,7 @@ mod tests {
         // Both should contain the repo name and parent dir somehow
         for repo in &repos {
             assert!(repo.session_name.contains("myrepo"));
-            assert!(repo.session_name.contains("--"));
+            assert!(repo.session_name.contains(WORKTREE_NAME_SEPARATOR));
         }
     }
 
@@ -439,7 +441,7 @@ impl CliGitProvider {
             }
 
             // If this directory is a git repo, add it
-            if path.join(".git").exists() {
+            if path.join(GIT_DIR_ENTRY).exists() {
                 if let Some(repo) = self.build_repo(&path) {
                     repos.push((repo, search_root));
                 }

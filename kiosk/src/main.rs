@@ -181,15 +181,67 @@ fn is_orphaned_worktree(path: &Path) -> bool {
         return true; // Referenced git directory doesn't exist
     }
 
-    // Check if there's a valid worktree entry in the main repo
-    if let Some(main_git_dir) = gitdir.parent()
+    // First check: basic validation of the worktree structure
+    let is_structurally_valid = if let Some(main_git_dir) = gitdir.parent()
         && let Some(worktrees_dir) = main_git_dir.parent()
         && worktrees_dir.join("HEAD").exists()
     {
-        return false; // This appears to be a valid worktree
+        true // This appears to be a valid worktree
+    } else {
+        false
+    };
+
+    if !is_structurally_valid {
+        return true; // Structurally invalid, definitely orphaned
     }
 
-    true // Couldn't validate the worktree, treat as orphaned
+    // Second check: cross-reference with git worktree list output when possible
+    if let Some(main_repo_path) = find_main_repo_path(gitdir) {
+        return !is_worktree_known_to_git(&main_repo_path, path);
+    }
+
+    // Fallback: if we can't determine the main repo path, trust the structural validation
+    false
+}
+
+/// Extract the main repository path from the gitdir path
+/// e.g. "/repo/.git/worktrees/branch" -> "/repo"
+fn find_main_repo_path(gitdir: &Path) -> Option<std::path::PathBuf> {
+    gitdir
+        .parent()? // Remove "worktrees/branch"
+        .parent()? // Remove ".git"
+        .parent()  // Get the repo root
+        .map(|p| p.to_path_buf())
+}
+
+/// Check if a worktree path is known to git in the main repository
+fn is_worktree_known_to_git(main_repo_path: &Path, worktree_path: &Path) -> bool {
+    let output = Command::new("git")
+        .args(["worktree", "list", "--porcelain"])
+        .current_dir(main_repo_path)
+        .output();
+
+    let Ok(output) = output else {
+        return false; // Can't run git command, assume unknown
+    };
+
+    if !output.status.success() {
+        return false; // Git command failed, assume unknown
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    
+    // Parse porcelain output to find worktree paths
+    // Format: "worktree /path/to/worktree\nHEAD <sha>\nbranch <branch>\n\n"
+    for line in stdout.lines() {
+        if let Some(listed_path) = line.strip_prefix("worktree ") {
+            if Path::new(listed_path) == worktree_path {
+                return true; // Found the worktree in git's list
+            }
+        }
+    }
+
+    false // Worktree not found in git's list
 }
 
 fn remove_worktree(path: &Path) -> Result<()> {

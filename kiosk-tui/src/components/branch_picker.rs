@@ -9,6 +9,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState},
 };
 
+#[allow(clippy::too_many_lines)]
 pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, keys: &KeysConfig) {
     let repo_name = state
         .selected_repo_idx
@@ -81,7 +82,12 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, keys: &K
         .collect();
 
     // If search doesn't match anything, show "create new branch" option
-    if state.branch_list.filtered.is_empty() && !state.branch_list.search.is_empty() {
+    if state.loading_branches && state.branch_list.filtered.is_empty() {
+        items.push(ListItem::new(Line::from(vec![Span::styled(
+            "Loading branches...",
+            Style::default().fg(Color::DarkGray),
+        )])));
+    } else if state.branch_list.filtered.is_empty() && !state.branch_list.search.is_empty() {
         items.push(ListItem::new(Line::from(vec![
             Span::styled("+ Create branch ", Style::default().fg(theme.success)),
             Span::styled(
@@ -99,11 +105,16 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, keys: &K
 
     let count = state.branch_list.filtered.len();
     let hints = build_branch_hints(keys);
+    let loading_suffix = if state.loading_branches {
+        " | loading..."
+    } else {
+        ""
+    };
     let list = List::new(items)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(format!(" {count} branches ({hints}) "))
+                .title(format!(" {count} branches ({hints}{loading_suffix}) "))
                 .border_style(Style::default().fg(Color::DarkGray)),
         )
         .highlight_style(

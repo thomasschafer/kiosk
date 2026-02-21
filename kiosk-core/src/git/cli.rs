@@ -189,6 +189,7 @@ impl GitProvider for CliGitProvider {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
     use crate::constants::WORKTREE_NAME_SEPARATOR;
@@ -275,23 +276,23 @@ mod tests {
         init_test_repo(&repo2);
 
         let provider = CliGitProvider;
-        let repos = provider.discover_repos(&[
+        let discovered = provider.discover_repos(&[
             (tmp1.path().to_path_buf(), 1),
             (tmp2.path().to_path_buf(), 1),
         ]);
-        assert_eq!(repos.len(), 2);
+        assert_eq!(discovered.len(), 2);
 
         // Both should have same name but different session names
-        assert_eq!(repos[0].name, "myrepo");
-        assert_eq!(repos[1].name, "myrepo");
+        assert_eq!(discovered[0].name, "myrepo");
+        assert_eq!(discovered[1].name, "myrepo");
 
         // Session names should be disambiguated with parent dir names
         let session_names: std::collections::HashSet<String> =
-            repos.iter().map(|r| r.session_name.clone()).collect();
+            discovered.iter().map(|r| r.session_name.clone()).collect();
         assert_eq!(session_names.len(), 2); // Both should be unique
 
         // Both should contain the repo name and parent dir somehow
-        for repo in &repos {
+        for repo in &discovered {
             assert!(repo.session_name.contains("myrepo"));
             assert!(repo.session_name.contains(WORKTREE_NAME_SEPARATOR));
         }

@@ -250,8 +250,11 @@ pub(super) fn enter_branch_select_with_loading<T: TmuxProvider + ?Sized + 'stati
     state.selected_repo_idx = Some(repo_idx);
     let repo = state.repos[repo_idx].clone();
     if show_loading {
-        state.mode = Mode::Loading(format!("Loading branches for {}...", repo.name));
+        state.mode = Mode::BranchSelect;
+        state.branches.clear();
+        state.branch_list.reset(0);
     }
+    state.loading_branches = true;
     spawn_branch_loading(git, tmux, sender, repo);
 }
 

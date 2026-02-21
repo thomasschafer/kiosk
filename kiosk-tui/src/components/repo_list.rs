@@ -24,7 +24,7 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, keys: &K
     );
 
     // Repo list
-    let items: Vec<ListItem> = state
+    let mut items: Vec<ListItem> = state
         .repo_list
         .filtered
         .iter()
@@ -53,13 +53,25 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, keys: &K
         })
         .collect();
 
+    if state.loading_repos && state.repo_list.filtered.is_empty() {
+        items.push(ListItem::new(Line::from(vec![Span::styled(
+            "Discovering repos...",
+            Style::default().fg(Color::DarkGray),
+        )])));
+    }
+
     let hints = build_repo_hints(keys);
+    let loading_suffix = if state.loading_repos {
+        " | loading..."
+    } else {
+        ""
+    };
     let list = List::new(items)
         .block(
             Block::default()
                 .borders(Borders::ALL)
                 .title(format!(
-                    " {} repos ({hints}) ",
+                    " {} repos ({hints}{loading_suffix}) ",
                     state.repo_list.filtered.len()
                 ))
                 .border_style(Style::default().fg(Color::DarkGray)),

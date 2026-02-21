@@ -73,6 +73,40 @@ fn wait_ms(ms: u64) {
     thread::sleep(Duration::from_millis(ms));
 }
 
+fn wait_for_screen<F>(env: &TestEnv, timeout_ms: u64, mut predicate: F) -> String
+where
+    F: FnMut(&str) -> bool,
+{
+    let start = std::time::Instant::now();
+    loop {
+        let screen = env.capture();
+        if predicate(&screen) {
+            return screen;
+        }
+        if start.elapsed() > Duration::from_millis(timeout_ms) {
+            return screen;
+        }
+        wait_ms(100);
+    }
+}
+
+fn wait_for_tmux_session(name: &str, timeout_ms: u64) -> bool {
+    let start = std::time::Instant::now();
+    loop {
+        let output = Command::new("tmux")
+            .args(["has-session", "-t", name])
+            .output()
+            .unwrap();
+        if output.status.success() {
+            return true;
+        }
+        if start.elapsed() > Duration::from_millis(timeout_ms) {
+            return false;
+        }
+        wait_ms(100);
+    }
+}
+
 struct TestEnv {
     tmp: tempfile::TempDir,
     config_dir: PathBuf,
@@ -155,8 +189,7 @@ impl TestEnv {
         assert!(output.status.success(), "git should be available in PATH");
         let real_git = String::from_utf8_lossy(&output.stdout).trim().to_string();
         let script = format!(
-            "#!/bin/sh\nif [ \"$1\" = \"worktree\" ] && [ \"$2\" = \"remove\" ]; then\n  sleep {}\nfi\nexec \"{}\" \"$@\"\n",
-            sleep_seconds, real_git
+            "#!/bin/sh\nif [ \"$1\" = \"worktree\" ] && [ \"$2\" = \"remove\" ]; then\n  sleep {sleep_seconds}\nfi\nexec \"{real_git}\" \"$@\"\n",
         );
         let wrapper = self.bin_dir.join("git");
         fs::write(&wrapper, script).unwrap();
@@ -343,13 +376,12 @@ fn test_e2e_worktree_creation() {
 
     // Enter the repo
     env.send_special("Tab");
-    wait_ms(300);
+    wait_for_screen(&env, 2500, |s| s.contains("select branch"));
 
     // Search for the branch and select it
     env.send("feat/wt");
     wait_ms(300);
     env.send_special("Enter");
-    wait_ms(2000); // Wait for worktree creation + session
 
     // Verify the worktree was created in .kiosk_worktrees/ with -- separator
     let wt_root = search_dir.join(WORKTREE_DIR_NAME);
@@ -359,21 +391,16 @@ fn test_e2e_worktree_creation() {
         "Worktree should exist at {}: found {:?}",
         expected_wt.display(),
         fs::read_dir(&wt_root).ok().map(|d| d
-            .filter_map(|e| e.ok())
+            .filter_map(Result::ok)
             .map(|e| e.file_name())
             .collect::<Vec<_>>())
     );
 
     // Verify tmux session was created with the worktree basename
     let session_name = "wt-repo--feat-wt-test";
-    let output = Command::new("tmux")
-        .args(["has-session", "-t", session_name])
-        .output()
-        .unwrap();
     assert!(
-        output.status.success(),
-        "tmux session '{}' should exist",
-        session_name
+        wait_for_tmux_session(session_name, 4000),
+        "tmux session '{session_name}' should exist"
     );
 
     // Verify session working directory is the worktree path
@@ -389,7 +416,8 @@ fn test_e2e_worktree_creation() {
         .unwrap();
     let pane_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
     assert!(
-        PathBuf::from(&pane_path) == expected_wt || pane_path.ends_with("wt-repo--feat-wt-test"),
+        Path::new(&pane_path) == expected_wt.as_path()
+            || pane_path.ends_with("wt-repo--feat-wt-test"),
         "Session dir should be the worktree path, got: {pane_path}"
     );
 
@@ -417,22 +445,16 @@ split_command = "sleep 30"
 
     // Enter branch picker, type a new branch name, and create it from the default base.
     env.send_special("Tab");
-    wait_ms(400);
+    wait_for_screen(&env, 2500, |s| s.contains("select branch"));
     env.send("feat/split-test");
     wait_ms(300);
     env.send_special("C-o");
     wait_ms(400);
     env.send_special("Enter");
-    wait_ms(2200);
 
-    let output = Command::new("tmux")
-        .args(["has-session", "-t", session_name])
-        .output()
-        .unwrap();
     assert!(
-        output.status.success(),
-        "tmux session '{}' should exist",
-        session_name
+        wait_for_tmux_session(session_name, 5000),
+        "tmux session '{session_name}' should exist"
     );
 
     let output = Command::new("tmux")
@@ -452,8 +474,7 @@ split_command = "sleep 30"
     assert_eq!(
         pane_ids.len(),
         2,
-        "Expected 2 panes when split_command is set, got: {:?}",
-        pane_ids
+        "Expected 2 panes when split_command is set, got: {pane_ids:?}",
     );
 
     let mut captured = String::new();
@@ -549,7 +570,7 @@ fn test_e2e_delete_worktree() {
 
     // Enter the repo
     env.send_special("Tab");
-    wait_ms(500);
+    wait_for_screen(&env, 2500, |s| s.contains("select branch"));
 
     // Navigate to the branch that has the worktree
     env.send("feat/to-delete");
@@ -557,9 +578,10 @@ fn test_e2e_delete_worktree() {
 
     // Press Ctrl+X to trigger delete
     env.send_special("C-x");
-    wait_ms(500);
 
-    let screen = env.capture();
+    let screen = wait_for_screen(&env, 2000, |s| {
+        s.contains("Delete") || s.contains("remove") || s.contains("confirm")
+    });
     assert!(
         screen.contains("Delete") || screen.contains("remove") || screen.contains("confirm"),
         "Should show confirmation dialog: {screen}"
@@ -606,12 +628,12 @@ fn test_e2e_delete_worktree_indicator_persists_after_restart() {
     env.launch_kiosk();
 
     env.send_special("Tab");
+    wait_for_screen(&env, 2500, |s| s.contains("select branch"));
     env.send("feat/persist-delete");
     env.send_special("C-x");
     env.send("y");
-    wait_ms(150);
 
-    let screen = env.capture();
+    let screen = wait_for_screen(&env, 2000, |s| s.contains("deleting"));
     assert!(
         screen.contains("deleting"),
         "Should show deleting indicator immediately after confirm: {screen}"
@@ -626,9 +648,10 @@ fn test_e2e_delete_worktree_indicator_persists_after_restart() {
 
     env.launch_kiosk();
     env.send_special("Tab");
+    wait_for_screen(&env, 2500, |s| s.contains("select branch"));
     env.send("feat/persist-delete");
 
-    let screen = env.capture();
+    let screen = wait_for_screen(&env, 2000, |s| s.contains("deleting"));
     assert!(
         screen.contains("deleting"),
         "Deleting indicator should persist after restart: {screen}"
@@ -965,7 +988,9 @@ fn test_e2e_remote_branches_searchable() {
     env.send("search-repo");
     wait_ms(200);
     env.send_special("Tab");
-    wait_ms(1500);
+    wait_for_screen(&env, 3000, |s| {
+        s.contains("feat-search-target") && s.contains("(remote)")
+    });
 
     // Search for the remote branch
     env.send("search-target");

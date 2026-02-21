@@ -388,14 +388,14 @@ unknown = "bad"
                 assert_eq!(path, "~/Work");
                 assert_eq!(*depth, Some(3));
             }
-            _ => panic!("Expected Rich variant"),
+            SearchDirEntry::Simple(_) => panic!("Expected Rich variant"),
         }
         match &config.search_dirs[2] {
             SearchDirEntry::Rich { path, depth } => {
                 assert_eq!(path, "~/Projects");
                 assert_eq!(*depth, None);
             }
-            _ => panic!("Expected Rich variant"),
+            SearchDirEntry::Simple(_) => panic!("Expected Rich variant"),
         }
     }
 }

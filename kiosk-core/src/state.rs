@@ -253,6 +253,7 @@ pub struct NewBranchFlow {
 pub struct AppState {
     pub repos: Vec<Repo>,
     pub repo_list: SearchableList,
+    pub loading_repos: bool,
 
     pub selected_repo_idx: Option<usize>,
     pub branches: Vec<BranchEntry>,
@@ -262,6 +263,7 @@ pub struct AppState {
 
     pub split_command: Option<String>,
     pub mode: Mode,
+    pub loading_branches: bool,
     pub error: Option<String>,
     pub pending_worktree_deletes: Vec<PendingWorktreeDelete>,
 }
@@ -272,12 +274,14 @@ impl AppState {
         Self {
             repos,
             repo_list,
+            loading_repos: false,
             selected_repo_idx: None,
             branches: Vec::new(),
             branch_list: SearchableList::new(0),
             new_branch_base: None,
             split_command,
             mode: Mode::RepoSelect,
+            loading_branches: false,
             error: None,
             pending_worktree_deletes: Vec::new(),
         }
@@ -287,12 +291,14 @@ impl AppState {
         Self {
             repos: Vec::new(),
             repo_list: SearchableList::new(0),
+            loading_repos: false,
             selected_repo_idx: None,
             branches: Vec::new(),
             branch_list: SearchableList::new(0),
             new_branch_base: None,
             split_command,
             mode: Mode::Loading(loading_message.to_string()),
+            loading_branches: false,
             error: None,
             pending_worktree_deletes: Vec::new(),
         }

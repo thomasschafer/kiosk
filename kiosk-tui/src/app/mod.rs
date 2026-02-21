@@ -82,6 +82,7 @@ pub fn run(
 
     // Start repo discovery in background if repos are empty
     if state.repos.is_empty() {
+        state.loading_repos = true;
         spawn_repo_discovery(git, &event_sender, search_dirs);
     }
 
@@ -308,6 +309,7 @@ fn draw_confirm_delete_dialog(
 }
 
 /// Handle events from background tasks
+#[allow(clippy::too_many_lines)]
 fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
     event: AppEvent,
     state: &mut AppState,
@@ -319,6 +321,8 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
         AppEvent::ReposDiscovered { repos } => {
             state.repo_list.reset(repos.len());
             state.repos = repos;
+            state.loading_repos = false;
+            state.loading_branches = false;
             if state.reconcile_pending_worktree_deletes() {
                 let _ = save_pending_worktree_deletes(&state.pending_worktree_deletes);
             }
@@ -364,6 +368,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
                     "Failed to remove worktree for {branch_name}: {error}"
                 ));
             }
+            state.loading_branches = false;
             state.mode = Mode::BranchSelect;
         }
         AppEvent::BranchesLoaded {
@@ -376,6 +381,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             }
             state.branches = branches;
             state.branch_list.reset(state.branches.len());
+            state.loading_branches = false;
             if state.reconcile_pending_worktree_deletes() {
                 let _ = save_pending_worktree_deletes(&state.pending_worktree_deletes);
             }
@@ -440,6 +446,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             } else {
                 state.mode = Mode::BranchSelect;
             }
+            state.loading_branches = false;
             state.error = Some(msg);
         }
     }
@@ -640,12 +647,15 @@ mod tests {
             &sender,
         );
         assert!(result.is_none());
-        assert!(matches!(state.mode, Mode::Loading(_)));
+        assert_eq!(state.mode, Mode::BranchSelect);
+        assert!(state.loading_branches);
+        assert!(state.branches.is_empty());
 
         // Wait for the background thread to send the event
         let event = rx.recv_timeout(std::time::Duration::from_secs(1)).unwrap();
         process_app_event(event, &mut state, &git, &tmux, &sender);
         assert_eq!(state.mode, Mode::BranchSelect);
+        assert!(!state.loading_branches);
         assert_eq!(state.branches.len(), 2);
     }
 
@@ -827,7 +837,7 @@ mod tests {
                 assert_eq!(path, PathBuf::from("/tmp/alpha"));
                 assert_eq!(session_name, "alpha");
             }
-            _ => panic!("Expected OpenAction::Open"),
+            OpenAction::Quit => panic!("Expected OpenAction::Open"),
         }
     }
 
@@ -954,7 +964,7 @@ mod tests {
                 assert_eq!(session_name, "beta");
                 assert_eq!(split_command.as_deref(), Some("hx"));
             }
-            _ => panic!("Expected OpenAction::Open"),
+            OpenAction::Quit => panic!("Expected OpenAction::Open"),
         }
     }
 

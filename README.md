@@ -96,6 +96,10 @@ Secondary accent color (default: "cyan").
 
 Success/positive color (default: "green").
 
+#### `keys`
+
+Key binding configuration.
+
 <!-- CONFIG END -->
 
 

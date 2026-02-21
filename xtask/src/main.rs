@@ -19,8 +19,8 @@ enum Commands {
         #[arg(long, default_value = "README.md")]
         readme: PathBuf,
 
-        /// Path to config.rs file
-        #[arg(long, default_value = "kiosk-core/src/config.rs")]
+        /// Path to config module file
+        #[arg(long, default_value = "kiosk-core/src/config/mod.rs")]
         config: PathBuf,
 
         /// Only check if README is up to date, without modifying it

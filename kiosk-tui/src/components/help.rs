@@ -23,7 +23,7 @@ pub fn draw(f: &mut Frame, state: &AppState, theme: &crate::theme::Theme, keys: 
 
     // Calculate popup size and position
     let area = f.area();
-    let popup_area = super::centered_rect(80, 85, area);
+    let popup_area = centered_rect(80, 85, area);
 
     // Clear the area behind the popup
     f.render_widget(Clear, popup_area);

@@ -14,7 +14,7 @@ pub fn draw(f: &mut Frame, state: &AppState, theme: &Theme) {
         return;
     };
 
-    let area = super::centered_rect(60, 60, f.area());
+    let area = centered_rect(60, 60, f.area());
     f.render_widget(Clear, area);
 
     let chunks = Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(area);

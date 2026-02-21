@@ -1,8 +1,12 @@
 use crate::{
     constants::{WORKTREE_DIR_DEDUP_MAX_ATTEMPTS, WORKTREE_DIR_NAME, WORKTREE_NAME_SEPARATOR},
     git::Repo,
+    pending_delete::PendingWorktreeDelete,
 };
-use std::path::PathBuf;
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+};
 
 /// Shared state for any searchable, filterable list.
 /// Eliminates the mode-dispatch triplication for search/cursor/movement.
@@ -259,6 +263,7 @@ pub struct AppState {
     pub split_command: Option<String>,
     pub mode: Mode,
     pub error: Option<String>,
+    pub pending_worktree_deletes: Vec<PendingWorktreeDelete>,
 }
 
 impl AppState {
@@ -274,6 +279,7 @@ impl AppState {
             split_command,
             mode: Mode::RepoSelect,
             error: None,
+            pending_worktree_deletes: Vec::new(),
         }
     }
 
@@ -288,6 +294,7 @@ impl AppState {
             split_command,
             mode: Mode::Loading(loading_message.to_string()),
             error: None,
+            pending_worktree_deletes: Vec::new(),
         }
     }
 
@@ -309,6 +316,53 @@ impl AppState {
             Mode::NewBranchBase => self.new_branch_base.as_ref().map(|f| &f.list),
             _ => None,
         }
+    }
+
+    pub fn is_branch_pending_delete(&self, repo_path: &Path, branch_name: &str) -> bool {
+        self.pending_worktree_deletes
+            .iter()
+            .any(|pending| pending.repo_path == repo_path && pending.branch_name == branch_name)
+    }
+
+    pub fn mark_pending_worktree_delete(&mut self, pending: PendingWorktreeDelete) {
+        self.pending_worktree_deletes.retain(|entry| {
+            !(entry.repo_path == pending.repo_path && entry.branch_name == pending.branch_name)
+        });
+        self.pending_worktree_deletes.push(pending);
+    }
+
+    pub fn clear_pending_worktree_delete_by_path(&mut self, worktree_path: &Path) -> bool {
+        let before = self.pending_worktree_deletes.len();
+        self.pending_worktree_deletes
+            .retain(|pending| pending.worktree_path != worktree_path);
+        before != self.pending_worktree_deletes.len()
+    }
+
+    pub fn clear_pending_worktree_delete_by_branch(
+        &mut self,
+        repo_path: &Path,
+        branch_name: &str,
+    ) -> bool {
+        let before = self.pending_worktree_deletes.len();
+        self.pending_worktree_deletes.retain(|pending| {
+            !(pending.repo_path == repo_path && pending.branch_name == branch_name)
+        });
+        before != self.pending_worktree_deletes.len()
+    }
+
+    /// Drop stale pending delete entries that no longer correspond to an existing worktree.
+    pub fn reconcile_pending_worktree_deletes(&mut self) -> bool {
+        let active_worktree_paths: HashSet<&Path> = self
+            .repos
+            .iter()
+            .flat_map(|repo| repo.worktrees.iter().map(|wt| wt.path.as_path()))
+            .collect();
+
+        let before = self.pending_worktree_deletes.len();
+        self.pending_worktree_deletes.retain(|pending| {
+            !pending.is_expired() && active_worktree_paths.contains(pending.worktree_path.as_path())
+        });
+        before != self.pending_worktree_deletes.len()
     }
 }
 
@@ -343,6 +397,7 @@ pub fn worktree_dir(repo: &Repo, branch: &str) -> anyhow::Result<PathBuf> {
 mod tests {
     use super::*;
     use crate::git::{Repo, Worktree};
+    use crate::pending_delete::PendingWorktreeDelete;
     use std::fs;
     use tempfile::tempdir;
 
@@ -519,5 +574,42 @@ mod tests {
         assert!(!entries[1].is_remote);
         assert!(entries[2].is_remote); // feature-a
         assert!(entries[3].is_remote); // feature-b
+    }
+
+    #[test]
+    fn test_pending_delete_mark_and_clear() {
+        let mut state = AppState::new(vec![make_repo(std::path::Path::new("/tmp"), "repo")], None);
+        let repo_path = PathBuf::from("/tmp/repo");
+        let worktree_path = PathBuf::from("/tmp/repo-dev");
+        let pending =
+            PendingWorktreeDelete::new(repo_path.clone(), "dev".to_string(), worktree_path.clone());
+        state.mark_pending_worktree_delete(pending);
+        assert!(state.is_branch_pending_delete(&repo_path, "dev"));
+
+        assert!(state.clear_pending_worktree_delete_by_path(&worktree_path));
+        assert!(!state.is_branch_pending_delete(&repo_path, "dev"));
+    }
+
+    #[test]
+    fn test_reconcile_pending_deletes_removes_missing_worktree() {
+        let repo = Repo {
+            name: "repo".to_string(),
+            session_name: "repo".to_string(),
+            path: PathBuf::from("/tmp/repo"),
+            worktrees: vec![Worktree {
+                path: PathBuf::from("/tmp/repo"),
+                branch: Some("main".to_string()),
+                is_main: true,
+            }],
+        };
+        let mut state = AppState::new(vec![repo], None);
+        state.mark_pending_worktree_delete(PendingWorktreeDelete::new(
+            PathBuf::from("/tmp/repo"),
+            "dev".to_string(),
+            PathBuf::from("/tmp/repo-dev"),
+        ));
+
+        assert!(state.reconcile_pending_worktree_deletes());
+        assert!(state.pending_worktree_deletes.is_empty());
     }
 }

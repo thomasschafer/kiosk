@@ -13,11 +13,22 @@ pub enum AppEvent {
     WorktreeCreated { path: PathBuf, session_name: String },
 
     /// A worktree was successfully removed
-    WorktreeRemoved { branch_name: String },
+    WorktreeRemoved {
+        branch_name: String,
+        worktree_path: PathBuf,
+    },
+
+    /// A worktree removal failed
+    WorktreeRemoveFailed {
+        branch_name: String,
+        worktree_path: PathBuf,
+        error: String,
+    },
 
     /// Local branches loaded
     BranchesLoaded {
         branches: Vec<crate::state::BranchEntry>,
+        worktrees: Vec<crate::git::Worktree>,
         /// Local branch names, needed to spawn remote branch loading
         local_names: Vec<String>,
     },

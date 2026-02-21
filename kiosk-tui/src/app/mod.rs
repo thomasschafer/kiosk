@@ -3,9 +3,9 @@ mod spawn;
 
 use crate::{components, keymap};
 use actions::{
-    enter_branch_select, handle_confirm_delete, handle_delete_worktree, handle_go_back,
-    handle_open_branch, handle_search_delete_word, handle_search_pop, handle_search_push,
-    handle_show_help, handle_start_new_branch,
+    enter_branch_select, enter_branch_select_with_loading, handle_confirm_delete,
+    handle_delete_worktree, handle_go_back, handle_open_branch, handle_search_delete_word,
+    handle_search_pop, handle_search_push, handle_show_help, handle_start_new_branch,
 };
 use crossterm::event::{self, Event, KeyEventKind};
 use fuzzy_matcher::{FuzzyMatcher, skim::SkimMatcherV2};
@@ -14,6 +14,7 @@ use kiosk_core::{
     config::{KeysConfig, keys::Command},
     event::AppEvent,
     git::GitProvider,
+    pending_delete::save_pending_worktree_deletes,
     state::{AppState, Mode},
     tmux::TmuxProvider,
 };
@@ -65,7 +66,7 @@ pub fn run(
     terminal: &mut DefaultTerminal,
     state: &mut AppState,
     git: &Arc<dyn GitProvider>,
-    tmux: &dyn TmuxProvider,
+    tmux: &Arc<dyn TmuxProvider>,
     theme: &crate::theme::Theme,
     keys: &kiosk_core::config::KeysConfig,
     search_dirs: Vec<(std::path::PathBuf, u16)>,
@@ -307,17 +308,20 @@ fn draw_confirm_delete_dialog(
 }
 
 /// Handle events from background tasks
-fn process_app_event(
+fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
     event: AppEvent,
     state: &mut AppState,
     git: &Arc<dyn GitProvider>,
-    tmux: &dyn TmuxProvider,
+    tmux: &Arc<T>,
     sender: &EventSender,
 ) -> Option<OpenAction> {
     match event {
         AppEvent::ReposDiscovered { repos } => {
             state.repo_list.reset(repos.len());
             state.repos = repos;
+            if state.reconcile_pending_worktree_deletes() {
+                let _ = save_pending_worktree_deletes(&state.pending_worktree_deletes);
+            }
             state.mode = Mode::RepoSelect;
         }
         AppEvent::WorktreeCreated { path, session_name } => {
@@ -327,20 +331,54 @@ fn process_app_event(
                 split_command: state.split_command.clone(),
             });
         }
-        AppEvent::WorktreeRemoved { branch_name: _ } => {
+        AppEvent::WorktreeRemoved {
+            branch_name: _,
+            worktree_path,
+        } => {
+            state.clear_pending_worktree_delete_by_path(&worktree_path);
+            if let Err(e) = save_pending_worktree_deletes(&state.pending_worktree_deletes) {
+                state.error = Some(format!("Failed to persist pending deletes: {e}"));
+            }
             // Return to branch select and refresh the branch list
             if let Some(repo_idx) = state.selected_repo_idx {
-                enter_branch_select(state, repo_idx, git, tmux, sender);
+                enter_branch_select_with_loading(state, repo_idx, git, tmux, sender, false);
             } else {
                 state.mode = Mode::BranchSelect;
             }
         }
+        AppEvent::WorktreeRemoveFailed {
+            branch_name,
+            worktree_path,
+            error,
+        } => {
+            if let Some(repo_idx) = state.selected_repo_idx {
+                let repo_path = state.repos[repo_idx].path.clone();
+                state.clear_pending_worktree_delete_by_branch(&repo_path, &branch_name);
+            } else {
+                state.clear_pending_worktree_delete_by_path(&worktree_path);
+            }
+            if let Err(e) = save_pending_worktree_deletes(&state.pending_worktree_deletes) {
+                state.error = Some(format!("Failed to persist pending deletes: {e}"));
+            } else {
+                state.error = Some(format!(
+                    "Failed to remove worktree for {branch_name}: {error}"
+                ));
+            }
+            state.mode = Mode::BranchSelect;
+        }
         AppEvent::BranchesLoaded {
             branches,
+            worktrees,
             local_names,
         } => {
+            if let Some(repo_idx) = state.selected_repo_idx {
+                state.repos[repo_idx].worktrees = worktrees;
+            }
             state.branches = branches;
             state.branch_list.reset(state.branches.len());
+            if state.reconcile_pending_worktree_deletes() {
+                let _ = save_pending_worktree_deletes(&state.pending_worktree_deletes);
+            }
             state.mode = Mode::BranchSelect;
 
             // Kick off remote branch loading
@@ -461,11 +499,11 @@ fn handle_simple_actions(action: &Action, state: &mut AppState) -> bool {
 }
 
 #[allow(clippy::needless_pass_by_value)]
-fn process_action(
+fn process_action<T: TmuxProvider + ?Sized + 'static>(
     action: Action,
     state: &mut AppState,
     git: &Arc<dyn GitProvider>,
-    tmux: &dyn TmuxProvider,
+    tmux: &Arc<T>,
     matcher: &SkimMatcherV2,
     sender: &EventSender,
 ) -> Option<OpenAction> {
@@ -521,7 +559,7 @@ fn process_action(
         Action::SearchPop => handle_search_pop(state, matcher),
 
         Action::DeleteWorktree => handle_delete_worktree(state),
-        Action::ConfirmDeleteWorktree => handle_confirm_delete(state, git, tmux, sender),
+        Action::ConfirmDeleteWorktree => handle_confirm_delete(state, git, tmux.as_ref(), sender),
 
         Action::SearchDeleteWord => handle_search_delete_word(state, matcher),
 
@@ -552,7 +590,7 @@ mod tests {
     use kiosk_core::git::mock::MockGitProvider;
     use kiosk_core::git::{Repo, Worktree};
     use kiosk_core::state::{AppState, BranchEntry, Mode, SearchableList};
-    use kiosk_core::tmux::mock::MockTmuxProvider;
+    use kiosk_core::tmux::{TmuxProvider, mock::MockTmuxProvider};
 
     fn make_sender() -> EventSender {
         let (tx, _rx) = mpsc::channel();
@@ -585,7 +623,7 @@ mod tests {
             branches: vec!["main".into(), "dev".into()],
             ..Default::default()
         });
-        let tmux = MockTmuxProvider::default();
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
         let matcher = SkimMatcherV2::default();
         let (tx, rx) = std::sync::mpsc::channel();
         let sender = EventSender {
@@ -629,7 +667,7 @@ mod tests {
         state.branch_list.reset(1);
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
-        let tmux = MockTmuxProvider::default();
+        let tmux = Arc::new(MockTmuxProvider::default());
         let sender = make_sender();
 
         // Simulate remote branches arriving
@@ -690,7 +728,7 @@ mod tests {
         state.branch_list.selected = None;
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
-        let tmux = MockTmuxProvider::default();
+        let tmux = Arc::new(MockTmuxProvider::default());
         let sender = make_sender();
 
         process_app_event(
@@ -723,7 +761,7 @@ mod tests {
         state.mode = Mode::BranchSelect;
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
-        let tmux = MockTmuxProvider::default();
+        let tmux = Arc::new(MockTmuxProvider::default());
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
 
@@ -743,7 +781,7 @@ mod tests {
         });
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
-        let tmux = MockTmuxProvider::default();
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
 
@@ -769,7 +807,7 @@ mod tests {
         state.branch_list.selected = Some(0);
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
-        let tmux = MockTmuxProvider::default();
+        let tmux = Arc::new(MockTmuxProvider::default());
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
 
@@ -810,7 +848,7 @@ mod tests {
         state.branch_list.selected = Some(0);
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
-        let tmux = MockTmuxProvider::default();
+        let tmux = Arc::new(MockTmuxProvider::default());
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
 
@@ -833,7 +871,7 @@ mod tests {
         assert_eq!(state.repo_list.filtered.len(), 2);
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
-        let tmux = MockTmuxProvider::default();
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
 
@@ -857,7 +895,7 @@ mod tests {
         assert_eq!(state.repo_list.selected, Some(0));
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
-        let tmux = MockTmuxProvider::default();
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
 
@@ -900,7 +938,7 @@ mod tests {
         state.repo_list.selected = Some(1);
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
-        let tmux = MockTmuxProvider::default();
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
 
@@ -932,7 +970,7 @@ mod tests {
             branches: vec!["main".into()],
             ..Default::default()
         });
-        let tmux = MockTmuxProvider::default();
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
 
@@ -969,7 +1007,7 @@ mod tests {
             branches: vec!["main".into()],
             ..Default::default()
         });
-        let tmux = MockTmuxProvider::default();
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
 
@@ -1003,7 +1041,7 @@ mod tests {
         state.branch_list.selected = Some(0);
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
-        let tmux = MockTmuxProvider::default();
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
 
@@ -1037,7 +1075,7 @@ mod tests {
         state.branch_list.selected = Some(0);
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
-        let tmux = MockTmuxProvider::default();
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
 
@@ -1071,7 +1109,7 @@ mod tests {
         state.branch_list.selected = Some(0);
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
-        let tmux = MockTmuxProvider::default();
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
 
@@ -1110,7 +1148,7 @@ mod tests {
         state.branch_list.selected = Some(0);
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
-        let tmux = MockTmuxProvider::default();
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
 
@@ -1155,7 +1193,7 @@ mod tests {
         }];
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
-        let tmux = MockTmuxProvider::default();
+        let tmux = Arc::new(MockTmuxProvider::default());
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
 
@@ -1168,9 +1206,10 @@ mod tests {
             &sender,
         );
 
-        let killed = tmux.killed_sessions.borrow();
+        let killed = tmux.killed_sessions.lock().unwrap();
         assert_eq!(killed.as_slice(), &["alpha-dev"]);
-        assert!(matches!(state.mode, Mode::Loading(_)));
+        assert!(matches!(state.mode, Mode::BranchSelect));
+        assert_eq!(state.pending_worktree_deletes.len(), 1);
     }
 
     #[test]
@@ -1196,7 +1235,7 @@ mod tests {
         }];
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
-        let tmux = MockTmuxProvider::default();
+        let tmux = Arc::new(MockTmuxProvider::default());
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
 
@@ -1209,9 +1248,81 @@ mod tests {
             &sender,
         );
 
-        let killed = tmux.killed_sessions.borrow();
+        let killed = tmux.killed_sessions.lock().unwrap();
         assert!(killed.is_empty());
-        assert!(matches!(state.mode, Mode::Loading(_)));
+        assert!(matches!(state.mode, Mode::BranchSelect));
+        assert_eq!(state.pending_worktree_deletes.len(), 1);
+    }
+
+    #[test]
+    fn test_worktree_removed_event_clears_pending_delete() {
+        let mut state = AppState::new(vec![make_repo("alpha")], None);
+        state.selected_repo_idx = Some(0);
+        state.mark_pending_worktree_delete(kiosk_core::pending_delete::PendingWorktreeDelete::new(
+            PathBuf::from("/tmp/alpha"),
+            "dev".to_string(),
+            PathBuf::from("/tmp/alpha-dev"),
+        ));
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider {
+            branches: vec!["main".to_string(), "dev".to_string()],
+            worktrees: vec![Worktree {
+                path: PathBuf::from("/tmp/alpha"),
+                branch: Some("main".to_string()),
+                is_main: true,
+            }],
+            ..Default::default()
+        });
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let sender = make_sender();
+
+        process_app_event(
+            AppEvent::WorktreeRemoved {
+                branch_name: "dev".to_string(),
+                worktree_path: PathBuf::from("/tmp/alpha-dev"),
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+        );
+
+        assert!(state.pending_worktree_deletes.is_empty());
+    }
+
+    #[test]
+    fn test_worktree_remove_failed_event_clears_pending_and_sets_error() {
+        let mut state = AppState::new(vec![make_repo("alpha")], None);
+        state.selected_repo_idx = Some(0);
+        state.mark_pending_worktree_delete(kiosk_core::pending_delete::PendingWorktreeDelete::new(
+            PathBuf::from("/tmp/alpha"),
+            "dev".to_string(),
+            PathBuf::from("/tmp/alpha-dev"),
+        ));
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let sender = make_sender();
+
+        process_app_event(
+            AppEvent::WorktreeRemoveFailed {
+                branch_name: "dev".to_string(),
+                worktree_path: PathBuf::from("/tmp/alpha-dev"),
+                error: "boom".to_string(),
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+        );
+
+        assert!(state.pending_worktree_deletes.is_empty());
+        assert!(
+            state
+                .error
+                .as_deref()
+                .is_some_and(|msg| msg.contains("Failed to remove"))
+        );
     }
 
     #[test]
@@ -1223,7 +1334,7 @@ mod tests {
         state.repo_list.cursor = state.repo_list.search.len(); // 5 (byte len)
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
-        let tmux = MockTmuxProvider::default();
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
 
@@ -1280,7 +1391,7 @@ mod tests {
         state.repo_list.cursor = state.repo_list.search.len(); // 5
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
-        let tmux = MockTmuxProvider::default();
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
 
@@ -1305,7 +1416,7 @@ mod tests {
         state.repo_list.cursor = 5; // at end
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
-        let tmux = MockTmuxProvider::default();
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
 

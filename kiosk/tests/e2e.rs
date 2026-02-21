@@ -76,6 +76,8 @@ fn wait_ms(ms: u64) {
 struct TestEnv {
     tmp: tempfile::TempDir,
     config_dir: PathBuf,
+    state_dir: PathBuf,
+    bin_dir: PathBuf,
     session_name: String,
 }
 
@@ -83,7 +85,11 @@ impl TestEnv {
     fn new(test_name: &str) -> Self {
         let tmp = tempfile::tempdir().unwrap();
         let config_dir = tmp.path().join("config");
+        let state_dir = tmp.path().join("state");
+        let bin_dir = tmp.path().join("bin");
         fs::create_dir_all(&config_dir).unwrap();
+        fs::create_dir_all(&state_dir).unwrap();
+        fs::create_dir_all(&bin_dir).unwrap();
 
         let session_name = format!("kiosk-e2e-{test_name}");
         cleanup_session(&session_name);
@@ -91,6 +97,8 @@ impl TestEnv {
         Self {
             tmp,
             config_dir,
+            state_dir,
+            bin_dir,
             session_name,
         }
     }
@@ -117,6 +125,7 @@ impl TestEnv {
     }
 
     fn launch_kiosk(&self) {
+        cleanup_session(&self.session_name);
         let binary = kiosk_binary();
         Command::new("tmux")
             .args([
@@ -129,14 +138,35 @@ impl TestEnv {
                 "-y",
                 "30",
                 &format!(
-                    "XDG_CONFIG_HOME={} {} ; sleep 2",
+                    "XDG_CONFIG_HOME={} XDG_STATE_HOME={} PATH={}:$PATH {} ; sleep 2",
                     self.config_dir.to_string_lossy(),
+                    self.state_dir.to_string_lossy(),
+                    self.bin_dir.to_string_lossy(),
                     binary.to_string_lossy()
                 ),
             ])
             .output()
             .unwrap();
         wait_ms(500);
+    }
+
+    fn install_slow_git_remove_wrapper(&self, sleep_seconds: u8) {
+        let output = Command::new("which").arg("git").output().unwrap();
+        assert!(output.status.success(), "git should be available in PATH");
+        let real_git = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let script = format!(
+            "#!/bin/sh\nif [ \"$1\" = \"worktree\" ] && [ \"$2\" = \"remove\" ]; then\n  sleep {}\nfi\nexec \"{}\" \"$@\"\n",
+            sleep_seconds, real_git
+        );
+        let wrapper = self.bin_dir.join("git");
+        fs::write(&wrapper, script).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&wrapper).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&wrapper, perms).unwrap();
+        }
     }
 
     fn capture(&self) -> String {
@@ -544,6 +574,64 @@ fn test_e2e_delete_worktree() {
     assert!(
         screen.contains("select branch") || !screen.contains("Confirm Delete"),
         "Should return to branch listing after deletion: {screen}"
+    );
+}
+
+#[test]
+fn test_e2e_delete_worktree_indicator_persists_after_restart() {
+    let env = TestEnv::new("delete-persist");
+    let search_dir = env.search_dir();
+    env.install_slow_git_remove_wrapper(3);
+
+    let repo = search_dir.join("persist-repo");
+    fs::create_dir_all(&repo).unwrap();
+    init_test_repo(&repo);
+
+    run_git(&repo, &["branch", "feat/persist-delete"]);
+    let wt_dir = search_dir
+        .join(WORKTREE_DIR_NAME)
+        .join("persist-repo--feat-persist-delete");
+    fs::create_dir_all(&wt_dir).unwrap();
+    run_git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            &wt_dir.to_string_lossy(),
+            "feat/persist-delete",
+        ],
+    );
+
+    env.write_config(&search_dir);
+    env.launch_kiosk();
+
+    env.send_special("Tab");
+    env.send("feat/persist-delete");
+    env.send_special("C-x");
+    env.send("y");
+    wait_ms(150);
+
+    let screen = env.capture();
+    assert!(
+        screen.contains("deleting"),
+        "Should show deleting indicator immediately after confirm: {screen}"
+    );
+
+    cleanup_session(&env.session_name);
+    wait_ms(150);
+    assert!(
+        wt_dir.exists(),
+        "Worktree should still exist before restart"
+    );
+
+    env.launch_kiosk();
+    env.send_special("Tab");
+    env.send("feat/persist-delete");
+
+    let screen = env.capture();
+    assert!(
+        screen.contains("deleting"),
+        "Deleting indicator should persist after restart: {screen}"
     );
 }
 

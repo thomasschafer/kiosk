@@ -4,5 +4,6 @@ pub mod constants;
 pub mod event;
 pub mod git;
 pub mod keyboard;
+pub mod pending_delete;
 pub mod state;
 pub mod tmux;

@@ -6,6 +6,7 @@ use std::{
 };
 
 use kiosk_core::git::Repo;
+use kiosk_core::tmux::TmuxProvider;
 
 use super::EventSender;
 
@@ -62,8 +63,15 @@ pub(super) fn spawn_worktree_removal(
             return;
         }
         match git.remove_worktree(&worktree_path) {
-            Ok(()) => sender.send(AppEvent::WorktreeRemoved { branch_name }),
-            Err(e) => sender.send(AppEvent::GitError(format!("{e}"))),
+            Ok(()) => sender.send(AppEvent::WorktreeRemoved {
+                branch_name,
+                worktree_path,
+            }),
+            Err(e) => sender.send(AppEvent::WorktreeRemoveFailed {
+                branch_name,
+                worktree_path,
+                error: format!("{e}"),
+            }),
         }
     });
 }
@@ -93,22 +101,26 @@ pub(super) fn spawn_branch_and_worktree_creation(
     });
 }
 
-pub(super) fn spawn_branch_loading(
+pub(super) fn spawn_branch_loading<T: TmuxProvider + ?Sized + 'static>(
     git: &Arc<dyn GitProvider>,
+    tmux: &Arc<T>,
     sender: &EventSender,
-    repo: Repo,
-    active_sessions: Vec<String>,
+    mut repo: Repo,
 ) {
     let git = Arc::clone(git);
+    let tmux = Arc::clone(tmux);
     let sender = sender.clone();
     thread::spawn(move || {
         if sender.cancel.load(Ordering::Relaxed) {
             return;
         }
+        let active_sessions = tmux.list_sessions();
+        repo.worktrees = git.list_worktrees(&repo.path);
         let local_names = git.list_branches(&repo.path);
         let branches = BranchEntry::build_sorted(&repo, &local_names, &active_sessions);
         sender.send(AppEvent::BranchesLoaded {
             branches,
+            worktrees: repo.worktrees,
             local_names,
         });
     });

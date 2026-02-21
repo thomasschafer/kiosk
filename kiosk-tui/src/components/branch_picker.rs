@@ -13,6 +13,7 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, keys: &K
     let repo_name = state
         .selected_repo_idx
         .map_or("??", |i| state.repos[i].name.as_str());
+    let selected_repo_path = state.selected_repo_idx.map(|i| state.repos[i].path.clone());
 
     let chunks = Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(area);
 
@@ -51,8 +52,16 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, keys: &K
             }
 
             let mut spans = vec![Span::raw(&branch.name)];
+            let is_deleting = selected_repo_path
+                .as_ref()
+                .is_some_and(|repo_path| state.is_branch_pending_delete(repo_path, &branch.name));
 
-            if branch.has_session {
+            if is_deleting {
+                spans.push(Span::styled(
+                    " (deleting...)",
+                    Style::default().fg(theme.accent),
+                ));
+            } else if branch.has_session {
                 spans.push(Span::styled(
                     " (session)",
                     Style::default().fg(theme.success),

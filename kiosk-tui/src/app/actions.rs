@@ -1,6 +1,7 @@
 use fuzzy_matcher::{FuzzyMatcher, skim::SkimMatcherV2};
 use kiosk_core::{
     git::GitProvider,
+    pending_delete::{PendingWorktreeDelete, save_pending_worktree_deletes},
     state::{AppState, Mode, NewBranchFlow, SearchableList, worktree_dir},
     tmux::TmuxProvider,
 };
@@ -71,6 +72,13 @@ pub(super) fn handle_delete_worktree(state: &mut AppState) {
         && let Some(&(idx, _)) = state.branch_list.filtered.get(sel)
     {
         let branch = &state.branches[idx];
+        if let Some(repo_idx) = state.selected_repo_idx {
+            let repo_path = state.repos[repo_idx].path.clone();
+            if state.is_branch_pending_delete(&repo_path, &branch.name) {
+                state.error = Some("Worktree deletion already in progress".to_string());
+                return;
+            }
+        }
         if branch.worktree_path.is_none() {
             state.error = Some("No worktree to delete".to_string());
         } else if branch.is_current {
@@ -84,10 +92,10 @@ pub(super) fn handle_delete_worktree(state: &mut AppState) {
     }
 }
 
-pub(super) fn handle_confirm_delete(
+pub(super) fn handle_confirm_delete<T: TmuxProvider + ?Sized>(
     state: &mut AppState,
     git: &Arc<dyn GitProvider>,
-    tmux: &dyn TmuxProvider,
+    tmux: &T,
     sender: &EventSender,
 ) {
     if let Mode::ConfirmDelete {
@@ -108,7 +116,19 @@ pub(super) fn handle_confirm_delete(
             }
 
             let worktree_path = worktree_path.clone();
-            state.mode = Mode::Loading(format!("Removing worktree for {branch_name}..."));
+            if let Some(repo_idx) = state.selected_repo_idx {
+                let repo_path = state.repos[repo_idx].path.clone();
+                let pending = PendingWorktreeDelete::new(
+                    repo_path,
+                    branch_name.clone(),
+                    worktree_path.clone(),
+                );
+                state.mark_pending_worktree_delete(pending);
+                if let Err(e) = save_pending_worktree_deletes(&state.pending_worktree_deletes) {
+                    state.error = Some(format!("Failed to persist pending deletes: {e}"));
+                }
+            }
+            state.mode = Mode::BranchSelect;
             spawn_worktree_removal(git, sender, worktree_path, branch_name);
         }
     }
@@ -209,18 +229,30 @@ pub(super) fn handle_open_branch(
     None
 }
 
-pub(super) fn enter_branch_select(
+pub(super) fn enter_branch_select<T: TmuxProvider + ?Sized + 'static>(
     state: &mut AppState,
     repo_idx: usize,
     git: &Arc<dyn GitProvider>,
-    tmux: &dyn TmuxProvider,
+    tmux: &Arc<T>,
     sender: &EventSender,
+) {
+    enter_branch_select_with_loading(state, repo_idx, git, tmux, sender, true);
+}
+
+pub(super) fn enter_branch_select_with_loading<T: TmuxProvider + ?Sized + 'static>(
+    state: &mut AppState,
+    repo_idx: usize,
+    git: &Arc<dyn GitProvider>,
+    tmux: &Arc<T>,
+    sender: &EventSender,
+    show_loading: bool,
 ) {
     state.selected_repo_idx = Some(repo_idx);
     let repo = state.repos[repo_idx].clone();
-    let sessions = tmux.list_sessions();
-    state.mode = Mode::Loading(format!("Loading branches for {}...", repo.name));
-    spawn_branch_loading(git, sender, repo, sessions);
+    if show_loading {
+        state.mode = Mode::Loading(format!("Loading branches for {}...", repo.name));
+    }
+    spawn_branch_loading(git, tmux, sender, repo);
 }
 
 pub(super) fn handle_search_push(state: &mut AppState, matcher: &SkimMatcherV2, c: char) {

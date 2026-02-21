@@ -4,8 +4,9 @@ use kiosk_core::{
     config,
     constants::{GIT_DIR_ENTRY, GITDIR_FILE_PREFIX, WORKTREE_DIR_NAME},
     git::{CliGitProvider, GitProvider},
+    pending_delete::load_pending_worktree_deletes,
     state::AppState,
-    tmux::CliTmuxProvider,
+    tmux::{CliTmuxProvider, TmuxProvider},
 };
 use kiosk_tui::{OpenAction, Theme};
 use std::{fs, io, path::Path, process::Command, sync::Arc};
@@ -52,9 +53,10 @@ fn run_tui(config: &config::Config) -> Result<()> {
     let search_dirs = config.resolved_search_dirs();
 
     let git: Arc<dyn GitProvider> = Arc::new(CliGitProvider);
-    let tmux = CliTmuxProvider;
+    let tmux: Arc<dyn TmuxProvider> = Arc::new(CliTmuxProvider);
     let mut state =
         AppState::new_loading("Discovering repos...", config.session.split_command.clone());
+    state.pending_worktree_deletes = load_pending_worktree_deletes();
 
     let theme = Theme::from_config(&config.theme);
 
@@ -76,8 +78,6 @@ fn run_tui(config: &config::Config) -> Result<()> {
             session_name,
             split_command,
         }) => {
-            use kiosk_core::tmux::TmuxProvider;
-
             if !tmux.session_exists(&session_name) {
                 tmux.create_session(&session_name, &path, split_command.as_deref())?;
             }

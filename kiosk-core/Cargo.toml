@@ -14,10 +14,10 @@ categories = ["command-line-utilities"]
 [dependencies]
 anyhow.workspace = true
 bitflags = "2"
-crossterm = "0.28"
+crossterm = "0.29"
 dirs = "6"
 serde.workspace = true
-toml = "0.8"
+toml = "1.0"
 
 [dev-dependencies]
 tempfile = "3"

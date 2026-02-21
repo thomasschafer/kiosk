@@ -13,10 +13,10 @@ categories = ["command-line-utilities"]
 
 [dependencies]
 anyhow.workspace = true
-crossterm = "0.28"
+crossterm = "0.29"
 fuzzy-matcher = "0.3"
 kiosk-core.workspace = true
-ratatui = "0.29"
+ratatui = "0.30"
 
 [lints]
 workspace = true

@@ -1,4 +1,5 @@
 use crate::theme::Theme;
+use kiosk_core::config::{Command, KeysConfig};
 use kiosk_core::state::AppState;
 use ratatui::{
     Frame,
@@ -8,7 +9,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
 };
 
-pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme) {
+pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, keys: &KeysConfig) {
     let repo_name = state
         .selected_repo_idx
         .map_or("??", |i| state.repos[i].name.as_str());
@@ -75,13 +76,12 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme) {
     }
 
     let count = state.filtered_branches.len();
+    let hints = build_branch_hints(keys);
     let list = List::new(items)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(format!(
-                    " {count} branches (Esc to go back, Ctrl+N for new branch, d to delete) "
-                ))
+                .title(format!(" {count} branches ({hints}) "))
                 .border_style(Style::default().fg(Color::DarkGray)),
         )
         .highlight_style(
@@ -95,4 +95,20 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme) {
     let mut list_state = ListState::default();
     list_state.select(state.branch_selected);
     f.render_stateful_widget(list, chunks[1], &mut list_state);
+}
+
+fn build_branch_hints(keys: &KeysConfig) -> String {
+    let mut hints = Vec::new();
+
+    if let Some(key) = KeysConfig::find_key(&keys.branch_select, &Command::GoBack) {
+        hints.push(format!("{key}: go back"));
+    }
+    if let Some(key) = KeysConfig::find_key(&keys.branch_select, &Command::NewBranch) {
+        hints.push(format!("{key}: new branch"));
+    }
+    if let Some(key) = KeysConfig::find_key(&keys.branch_select, &Command::DeleteWorktree) {
+        hints.push(format!("{key}: delete worktree"));
+    }
+
+    hints.join(", ")
 }

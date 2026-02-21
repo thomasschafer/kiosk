@@ -385,7 +385,9 @@ fn test_e2e_ctrl_n_new_branch() {
     env.send_special("Tab");
     wait_ms(200);
 
-    // Press Ctrl+O to trigger new branch flow
+    // Type a branch name, then press Ctrl+O to trigger new branch flow
+    env.send("feat/new-thing");
+    wait_ms(200);
     env.send_special("C-o");
     wait_ms(300);
 

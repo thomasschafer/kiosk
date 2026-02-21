@@ -190,6 +190,23 @@ impl KeysConfig {
         }
     }
 
+    /// Find the first key bound to a given command in a keymap
+    pub fn find_key(keymap: &KeyMap, command: &Command) -> Option<KeyEvent> {
+        // Prefer shorter/simpler key representations
+        let mut found: Vec<_> = keymap
+            .iter()
+            .filter(|(_, cmd)| *cmd == command)
+            .map(|(key, _)| *key)
+            .collect();
+        found.sort();
+        found.into_iter().next()
+    }
+
+    /// Find the first key bound to a command across a mode keymap + general
+    pub fn find_key_for(&self, mode_keymap: &KeyMap, command: &Command) -> Option<KeyEvent> {
+        Self::find_key(mode_keymap, command).or_else(|| Self::find_key(&self.general, command))
+    }
+
     /// Common movement + search bindings shared across list modes
     fn common_list_bindings() -> KeyMap {
         let mut map = KeyMap::new();
@@ -232,6 +249,22 @@ impl KeysConfig {
         map.insert(
             KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
             Command::SearchDeleteWord,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Left, KeyModifiers::NONE),
+            Command::CursorLeft,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+            Command::CursorRight,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Home, KeyModifiers::NONE),
+            Command::CursorStart,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::End, KeyModifiers::NONE),
+            Command::CursorEnd,
         );
         map
     }

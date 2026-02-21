@@ -142,27 +142,31 @@ fn draw(
     };
 
     match &state.mode {
-        Mode::RepoSelect => components::repo_list::draw(f, main_area, state, theme),
-        Mode::BranchSelect => components::branch_picker::draw(f, main_area, state, theme),
+        Mode::RepoSelect => components::repo_list::draw(f, main_area, state, theme, keys),
+        Mode::BranchSelect => components::branch_picker::draw(f, main_area, state, theme, keys),
         Mode::NewBranchBase => {
-            components::branch_picker::draw(f, main_area, state, theme);
+            components::branch_picker::draw(f, main_area, state, theme, keys);
             components::new_branch::draw(f, state, theme);
         }
         Mode::ConfirmDelete(_) => {
-            components::branch_picker::draw(f, main_area, state, theme);
+            components::branch_picker::draw(f, main_area, state, theme, keys);
             draw_confirm_delete_dialog(f, main_area, state, theme);
         }
         Mode::Help { previous } => {
             // Draw the previous mode as background
             match previous.as_ref() {
-                Mode::RepoSelect => components::repo_list::draw(f, main_area, state, theme),
-                Mode::BranchSelect => components::branch_picker::draw(f, main_area, state, theme),
+                Mode::RepoSelect => {
+                    components::repo_list::draw(f, main_area, state, theme, keys);
+                }
+                Mode::BranchSelect => {
+                    components::branch_picker::draw(f, main_area, state, theme, keys);
+                }
                 Mode::NewBranchBase => {
-                    components::branch_picker::draw(f, main_area, state, theme);
+                    components::branch_picker::draw(f, main_area, state, theme, keys);
                     components::new_branch::draw(f, state, theme);
                 }
                 Mode::ConfirmDelete(_) => {
-                    components::branch_picker::draw(f, main_area, state, theme);
+                    components::branch_picker::draw(f, main_area, state, theme, keys);
                     draw_confirm_delete_dialog(f, main_area, state, theme);
                 }
                 _ => {}
@@ -658,6 +662,10 @@ fn handle_show_help(state: &mut AppState) {
 }
 
 fn handle_start_new_branch(state: &mut AppState, git: &Arc<dyn GitProvider>) {
+    if state.branch_search.is_empty() {
+        state.error = Some("Type a branch name first".to_string());
+        return;
+    }
     let Some(repo_idx) = state.selected_repo_idx else {
         return;
     };
@@ -681,7 +689,11 @@ fn handle_delete_worktree(state: &mut AppState) {
         && let Some(&(idx, _)) = state.filtered_branches.get(sel)
     {
         let branch = &state.branches[idx];
-        if branch.worktree_path.is_some() && !branch.is_current {
+        if branch.worktree_path.is_none() {
+            state.error = Some("No worktree to delete".to_string());
+        } else if branch.is_current {
+            state.error = Some("Cannot delete the current branch's worktree".to_string());
+        } else {
             state.mode = Mode::ConfirmDelete(branch.name.clone());
         }
     }

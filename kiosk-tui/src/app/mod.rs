@@ -1,12 +1,20 @@
+mod actions;
+mod spawn;
+
 use crate::{components, keymap};
+use actions::{
+    enter_branch_select, handle_confirm_delete, handle_delete_worktree, handle_go_back,
+    handle_open_branch, handle_search_delete_word, handle_search_pop, handle_search_push,
+    handle_show_help, handle_start_new_branch,
+};
 use crossterm::event::{self, Event, KeyEventKind};
-use fuzzy_matcher::{FuzzyMatcher, skim::SkimMatcherV2};
+use fuzzy_matcher::skim::SkimMatcherV2;
 use kiosk_core::{
     action::Action,
     config::{KeysConfig, keys::Command},
     event::AppEvent,
     git::GitProvider,
-    state::{AppState, BranchEntry, Mode, NewBranchFlow, SearchableList, worktree_dir},
+    state::{AppState, Mode},
     tmux::TmuxProvider,
 };
 use ratatui::{
@@ -16,6 +24,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
 };
+use spawn::spawn_repo_discovery;
 use std::{
     path::PathBuf,
     sync::{
@@ -23,7 +32,6 @@ use std::{
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
-    thread,
     time::{Duration, Instant},
 };
 
@@ -340,95 +348,6 @@ fn process_app_event(
     None
 }
 
-fn spawn_repo_discovery(
-    git: &Arc<dyn GitProvider>,
-    sender: &EventSender,
-    search_dirs: Vec<(std::path::PathBuf, u16)>,
-) {
-    let git = Arc::clone(git);
-    let sender = sender.clone();
-    thread::spawn(move || {
-        // Check if cancelled before starting
-        if sender.cancel.load(Ordering::Relaxed) {
-            return;
-        }
-        let repos = git.discover_repos(&search_dirs);
-        sender.send(AppEvent::ReposDiscovered { repos });
-    });
-}
-
-fn spawn_worktree_creation(
-    git: &Arc<dyn GitProvider>,
-    sender: &EventSender,
-    repo_path: PathBuf,
-    branch: String,
-    wt_path: PathBuf,
-    session_name: String,
-) {
-    let git = Arc::clone(git);
-    let sender = sender.clone();
-    thread::spawn(move || {
-        // Check if cancelled before starting
-        if sender.cancel.load(Ordering::Relaxed) {
-            return;
-        }
-        match git.add_worktree(&repo_path, &branch, &wt_path) {
-            Ok(()) => sender.send(AppEvent::WorktreeCreated {
-                path: wt_path,
-                session_name,
-            }),
-            Err(e) => sender.send(AppEvent::GitError(format!("{e}"))),
-        }
-    });
-}
-
-fn spawn_worktree_removal(
-    git: &Arc<dyn GitProvider>,
-    sender: &EventSender,
-    worktree_path: PathBuf,
-    branch_name: String,
-) {
-    let git = Arc::clone(git);
-    let sender = sender.clone();
-    thread::spawn(move || {
-        // Check if cancelled before starting
-        if sender.cancel.load(Ordering::Relaxed) {
-            return;
-        }
-        match git.remove_worktree(&worktree_path) {
-            Ok(()) => sender.send(AppEvent::WorktreeRemoved { branch_name }),
-            Err(e) => sender.send(AppEvent::GitError(format!("{e}"))),
-        }
-    });
-}
-
-fn spawn_branch_and_worktree_creation(
-    git: &Arc<dyn GitProvider>,
-    sender: &EventSender,
-    repo_path: PathBuf,
-    new_branch: String,
-    base: String,
-    wt_path: PathBuf,
-    session_name: String,
-) {
-    let git = Arc::clone(git);
-    let sender = sender.clone();
-    thread::spawn(move || {
-        // Check if cancelled before starting
-        if sender.cancel.load(Ordering::Relaxed) {
-            return;
-        }
-        match git.create_branch_and_worktree(&repo_path, &new_branch, &base, &wt_path) {
-            Ok(()) => sender.send(AppEvent::WorktreeCreated {
-                path: wt_path,
-                session_name,
-            }),
-            Err(e) => sender.send(AppEvent::GitError(format!("{e}"))),
-        }
-    });
-}
-
-/// Handle movement-related actions via `SearchableList` methods
 fn handle_movement_actions(action: &Action, state: &mut AppState) -> bool {
     let Some(list) = state.active_list_mut() else {
         return false;
@@ -567,282 +486,12 @@ fn process_action(
     None
 }
 
-fn handle_go_back(state: &mut AppState) {
-    match state.mode.clone() {
-        Mode::BranchSelect => {
-            state.mode = Mode::RepoSelect;
-            state.branch_list.search.clear();
-            state.branch_list.cursor = 0;
-        }
-        Mode::NewBranchBase => {
-            state.new_branch_base = None;
-            state.mode = Mode::BranchSelect;
-        }
-        Mode::ConfirmDelete { .. } => {
-            state.mode = Mode::BranchSelect;
-        }
-        Mode::Help { previous } => {
-            state.mode = *previous;
-        }
-        Mode::RepoSelect | Mode::Loading(_) => {}
-    }
-}
-
-fn handle_show_help(state: &mut AppState) {
-    match state.mode.clone() {
-        Mode::Help { previous } => {
-            state.mode = *previous;
-        }
-        _ => {
-            state.mode = Mode::Help {
-                previous: Box::new(state.mode.clone()),
-            };
-        }
-    }
-}
-
-fn handle_start_new_branch(state: &mut AppState, git: &Arc<dyn GitProvider>) {
-    if state.branch_list.search.is_empty() {
-        state.error = Some("Type a branch name first".to_string());
-        return;
-    }
-    let Some(repo_idx) = state.selected_repo_idx else {
-        return;
-    };
-    let repo = &state.repos[repo_idx];
-    let bases = git.list_branches(&repo.path);
-    let list = SearchableList::new(bases.len());
-
-    state.new_branch_base = Some(NewBranchFlow {
-        new_name: state.branch_list.search.clone(),
-        bases,
-        list,
-    });
-    state.mode = Mode::NewBranchBase;
-}
-
-fn handle_delete_worktree(state: &mut AppState) {
-    if let Some(sel) = state.branch_list.selected
-        && let Some(&(idx, _)) = state.branch_list.filtered.get(sel)
-    {
-        let branch = &state.branches[idx];
-        if branch.worktree_path.is_none() {
-            state.error = Some("No worktree to delete".to_string());
-        } else if branch.is_current {
-            state.error = Some("Cannot delete the current branch's worktree".to_string());
-        } else {
-            state.mode = Mode::ConfirmDelete {
-                branch_name: branch.name.clone(),
-                has_session: branch.has_session,
-            };
-        }
-    }
-}
-
-fn handle_confirm_delete(
-    state: &mut AppState,
-    git: &Arc<dyn GitProvider>,
-    tmux: &dyn TmuxProvider,
-    sender: &EventSender,
-) {
-    if let Mode::ConfirmDelete {
-        branch_name,
-        has_session,
-    } = &state.mode
-    {
-        let branch_name = branch_name.clone();
-        let has_session = *has_session;
-        if let Some(branch) = state.branches.iter().find(|b| b.name == branch_name)
-            && let Some(worktree_path) = &branch.worktree_path
-        {
-            // Kill the tmux session first if it exists
-            if has_session && let Some(repo_idx) = state.selected_repo_idx {
-                let repo = &state.repos[repo_idx];
-                let session_name = repo.tmux_session_name(worktree_path);
-                tmux.kill_session(&session_name);
-            }
-
-            let worktree_path = worktree_path.clone();
-            state.mode = Mode::Loading(format!("Removing worktree for {branch_name}..."));
-            spawn_worktree_removal(git, sender, worktree_path, branch_name);
-        }
-    }
-}
-
-fn handle_open_branch(
-    state: &mut AppState,
-    git: &Arc<dyn GitProvider>,
-    sender: &EventSender,
-) -> Option<OpenAction> {
-    match state.mode {
-        Mode::BranchSelect => {
-            if let Some(sel) = state.branch_list.selected
-                && let Some(&(idx, _)) = state.branch_list.filtered.get(sel)
-            {
-                let branch = &state.branches[idx];
-                let repo_idx = state.selected_repo_idx?;
-                let repo = &state.repos[repo_idx];
-
-                if let Some(wt_path) = &branch.worktree_path {
-                    let session_name = repo.tmux_session_name(wt_path);
-                    return Some(OpenAction::Open {
-                        path: wt_path.clone(),
-                        session_name,
-                        split_command: state.split_command.clone(),
-                    });
-                }
-                match worktree_dir(repo, &branch.name) {
-                    Ok(wt_path) => {
-                        let branch_name = branch.name.clone();
-                        let session_name = repo.tmux_session_name(&wt_path);
-                        state.mode =
-                            Mode::Loading(format!("Creating worktree for {branch_name}..."));
-                        spawn_worktree_creation(
-                            git,
-                            sender,
-                            repo.path.clone(),
-                            branch_name,
-                            wt_path,
-                            session_name,
-                        );
-                    }
-                    Err(e) => {
-                        state.error = Some(format!("Failed to determine worktree path: {e}"));
-                        return None;
-                    }
-                }
-            }
-        }
-        Mode::NewBranchBase => {
-            if let Some(flow) = &state.new_branch_base
-                && let Some(sel) = flow.list.selected
-                && let Some(&(idx, _)) = flow.list.filtered.get(sel)
-            {
-                let base = flow.bases[idx].clone();
-                let new_name = flow.new_name.clone();
-                let repo_idx = state.selected_repo_idx?;
-                let repo = &state.repos[repo_idx];
-                match worktree_dir(repo, &new_name) {
-                    Ok(wt_path) => {
-                        let session_name = repo.tmux_session_name(&wt_path);
-                        state.mode =
-                            Mode::Loading(format!("Creating branch {new_name} from {base}..."));
-                        spawn_branch_and_worktree_creation(
-                            git,
-                            sender,
-                            repo.path.clone(),
-                            new_name,
-                            base,
-                            wt_path,
-                            session_name,
-                        );
-                    }
-                    Err(e) => {
-                        state.error = Some(format!("Failed to determine worktree path: {e}"));
-                        return None;
-                    }
-                }
-            }
-        }
-        Mode::RepoSelect | Mode::ConfirmDelete { .. } | Mode::Loading(_) | Mode::Help { .. } => {}
-    }
-    None
-}
-
-fn enter_branch_select(
-    state: &mut AppState,
-    repo_idx: usize,
-    git: &dyn GitProvider,
-    tmux: &dyn TmuxProvider,
-) {
-    state.selected_repo_idx = Some(repo_idx);
-    state.mode = Mode::BranchSelect;
-
-    let repo = &state.repos[repo_idx];
-    let branches = git.list_branches(&repo.path);
-    let sessions = tmux.list_sessions();
-
-    state.branches = BranchEntry::build_sorted(repo, &branches, &sessions);
-    state.branch_list.reset(state.branches.len());
-}
-
-/// Handle search character push action
-fn handle_search_push(state: &mut AppState, matcher: &SkimMatcherV2, c: char) {
-    if let Some(list) = state.active_list_mut() {
-        list.insert_char(c);
-    }
-    update_active_filter(state, matcher);
-}
-
-/// Handle search character pop action
-fn handle_search_pop(state: &mut AppState, matcher: &SkimMatcherV2) {
-    if let Some(list) = state.active_list_mut() {
-        list.backspace();
-    }
-    update_active_filter(state, matcher);
-}
-
-/// Handle search delete word action
-fn handle_search_delete_word(state: &mut AppState, matcher: &SkimMatcherV2) {
-    if let Some(list) = state.active_list_mut() {
-        list.delete_word();
-    }
-    update_active_filter(state, matcher);
-}
-
-/// Update the fuzzy filter for the active mode's list
-fn update_active_filter(state: &mut AppState, matcher: &SkimMatcherV2) {
-    match state.mode {
-        Mode::RepoSelect => {
-            let names: Vec<String> = state.repos.iter().map(|r| r.name.clone()).collect();
-            apply_fuzzy_filter(&mut state.repo_list, &names, matcher);
-        }
-        Mode::BranchSelect => {
-            let names: Vec<String> = state.branches.iter().map(|b| b.name.clone()).collect();
-            apply_fuzzy_filter(&mut state.branch_list, &names, matcher);
-        }
-        Mode::NewBranchBase => {
-            if let Some(flow) = &mut state.new_branch_base {
-                let bases = flow.bases.clone();
-                apply_fuzzy_filter(&mut flow.list, &bases, matcher);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// Apply fuzzy filter to a `SearchableList` against a set of item names
-fn apply_fuzzy_filter(list: &mut SearchableList, items: &[String], matcher: &SkimMatcherV2) {
-    if list.search.is_empty() {
-        list.filtered = items.iter().enumerate().map(|(i, _)| (i, 0)).collect();
-    } else {
-        let mut scored: Vec<(usize, i64)> = items
-            .iter()
-            .enumerate()
-            .filter_map(|(i, item)| {
-                matcher
-                    .fuzzy_match(item, &list.search)
-                    .map(|score| (i, score))
-            })
-            .collect();
-        scored.sort_by(|a, b| b.1.cmp(&a.1));
-        list.filtered = scored;
-    }
-    list.selected = if list.filtered.is_empty() {
-        None
-    } else {
-        Some(0)
-    };
-}
-
-/// Handle move selection action for different modes
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use kiosk_core::git::mock::MockGitProvider;
     use kiosk_core::git::{Repo, Worktree};
-    use kiosk_core::state::{AppState, BranchEntry, Mode};
+    use kiosk_core::state::{AppState, BranchEntry, Mode, SearchableList};
     use kiosk_core::tmux::mock::MockTmuxProvider;
 
     fn make_sender() -> EventSender {

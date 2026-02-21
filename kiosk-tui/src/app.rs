@@ -5,7 +5,7 @@ use kiosk_core::{
     action::Action,
     event::AppEvent,
     git::GitProvider,
-    state::{AppState, BranchEntry, Mode, NewBranchFlow, worktree_dir},
+    state::{AppState, BranchEntry, Mode, NewBranchFlow, SearchableList, worktree_dir},
     tmux::TmuxProvider,
 };
 use ratatui::{
@@ -292,18 +292,8 @@ fn process_app_event(
 ) -> Option<OpenAction> {
     match event {
         AppEvent::ReposDiscovered { repos } => {
+            state.repo_list.reset(repos.len());
             state.repos = repos;
-            state.filtered_repos = state
-                .repos
-                .iter()
-                .enumerate()
-                .map(|(i, _)| (i, 0))
-                .collect();
-            state.repo_selected = if state.filtered_repos.is_empty() {
-                None
-            } else {
-                Some(0)
-            };
             state.mode = Mode::RepoSelect;
         }
         AppEvent::WorktreeCreated { path, session_name } => {
@@ -423,116 +413,49 @@ fn spawn_branch_and_worktree_creation(
     });
 }
 
-/// Get the current list length based on mode
-fn get_list_length(state: &AppState) -> usize {
-    match state.mode {
-        Mode::RepoSelect => state.filtered_repos.len(),
-        Mode::BranchSelect => state.filtered_branches.len(),
-        Mode::NewBranchBase => state
-            .new_branch_base
-            .as_ref()
-            .map_or(0, |f| f.filtered.len()),
-        _ => 0,
-    }
-}
-
-/// Handle page movement actions
-fn handle_page_movement(action: &Action, state: &mut AppState) -> bool {
-    let list_len = get_list_length(state);
-    let delta = match action {
-        Action::HalfPageUp => -(list_len.try_into().unwrap_or(i32::MAX)).min(10),
-        Action::HalfPageDown => (list_len.try_into().unwrap_or(i32::MAX)).min(10),
-        Action::PageUp => -(list_len.try_into().unwrap_or(i32::MAX)).min(25),
-        Action::PageDown => (list_len.try_into().unwrap_or(i32::MAX)).min(25),
-        _ => return false,
-    };
-    handle_move_selection_action(state, delta);
-    true
-}
-
-/// Handle top/bottom movement actions
-fn handle_boundary_movement(action: &Action, state: &mut AppState) -> bool {
-    match action {
-        Action::MoveTop => {
-            match state.mode {
-                Mode::RepoSelect => {
-                    if !state.filtered_repos.is_empty() {
-                        state.repo_selected = Some(0);
-                    }
-                }
-                Mode::BranchSelect => {
-                    if !state.filtered_branches.is_empty() {
-                        state.branch_selected = Some(0);
-                    }
-                }
-                Mode::NewBranchBase => {
-                    if let Some(flow) = &mut state.new_branch_base
-                        && !flow.filtered.is_empty()
-                    {
-                        flow.selected = Some(0);
-                    }
-                }
-                _ => {}
-            }
-            true
-        }
-        Action::MoveBottom => {
-            match state.mode {
-                Mode::RepoSelect => {
-                    if !state.filtered_repos.is_empty() {
-                        state.repo_selected = Some(state.filtered_repos.len() - 1);
-                    }
-                }
-                Mode::BranchSelect => {
-                    if !state.filtered_branches.is_empty() {
-                        state.branch_selected = Some(state.filtered_branches.len() - 1);
-                    }
-                }
-                Mode::NewBranchBase => {
-                    if let Some(flow) = &mut state.new_branch_base
-                        && !flow.filtered.is_empty()
-                    {
-                        flow.selected = Some(flow.filtered.len() - 1);
-                    }
-                }
-                _ => {}
-            }
-            true
-        }
-        _ => false,
-    }
-}
-
-/// Handle movement-related actions (`HalfPageUp`, `HalfPageDown`, `PageUp`, `PageDown`, `MoveTop`, `MoveBottom`)
+/// Handle movement-related actions via `SearchableList` methods
 fn handle_movement_actions(action: &Action, state: &mut AppState) -> bool {
-    handle_page_movement(action, state) || handle_boundary_movement(action, state)
+    let Some(list) = state.active_list_mut() else {
+        return false;
+    };
+    let list_len: i32 = list.filtered.len().try_into().unwrap_or(i32::MAX);
+    match action {
+        Action::HalfPageUp => list.move_selection(-list_len.min(10)),
+        Action::HalfPageDown => list.move_selection(list_len.min(10)),
+        Action::PageUp => list.move_selection(-list_len.min(25)),
+        Action::PageDown => list.move_selection(list_len.min(25)),
+        Action::MoveTop => list.move_to_top(),
+        Action::MoveBottom => list.move_to_bottom(),
+        _ => return false,
+    }
+    true
 }
 
 /// Handle simple cursor and error actions
 fn handle_simple_actions(action: &Action, state: &mut AppState) -> bool {
     match action {
         Action::CursorLeft => {
-            handle_cursor_movement(state, CursorMove::Left);
+            if let Some(list) = state.active_list_mut() {
+                list.cursor_left();
+            }
             true
         }
         Action::CursorRight => {
-            handle_cursor_movement(state, CursorMove::Right);
+            if let Some(list) = state.active_list_mut() {
+                list.cursor_right();
+            }
             true
         }
         Action::CursorStart => {
-            handle_cursor_movement(state, CursorMove::Start);
+            if let Some(list) = state.active_list_mut() {
+                list.cursor_start();
+            }
             true
         }
         Action::CursorEnd => {
-            handle_cursor_movement(state, CursorMove::End);
-            true
-        }
-        Action::ShowError(msg) => {
-            state.error = Some(msg.clone());
-            true
-        }
-        Action::ClearError => {
-            state.error = None;
+            if let Some(list) = state.active_list_mut() {
+                list.cursor_end();
+            }
             true
         }
         Action::CancelDeleteWorktree => {
@@ -561,8 +484,8 @@ fn process_action(
         Action::Quit => return Some(OpenAction::Quit),
 
         Action::OpenRepo => {
-            if let Some(sel) = state.repo_selected
-                && let Some(&(idx, _)) = state.filtered_repos.get(sel)
+            if let Some(sel) = state.repo_list.selected
+                && let Some(&(idx, _)) = state.repo_list.filtered.get(sel)
             {
                 let repo = &state.repos[idx];
                 let session_name = repo.tmux_session_name(&repo.path);
@@ -575,8 +498,8 @@ fn process_action(
         }
 
         Action::EnterRepo => {
-            if let Some(sel) = state.repo_selected
-                && let Some(&(idx, _)) = state.filtered_repos.get(sel)
+            if let Some(sel) = state.repo_list.selected
+                && let Some(&(idx, _)) = state.repo_list.filtered.get(sel)
             {
                 enter_branch_select(state, idx, git.as_ref(), tmux);
             }
@@ -594,7 +517,11 @@ fn process_action(
             handle_start_new_branch(state, git);
         }
 
-        Action::MoveSelection(delta) => handle_move_selection_action(state, delta),
+        Action::MoveSelection(delta) => {
+            if let Some(list) = state.active_list_mut() {
+                list.move_selection(delta);
+            }
+        }
 
         Action::SearchPush(c) => handle_search_push(state, matcher, c),
         Action::SearchPop => handle_search_pop(state, matcher),
@@ -617,8 +544,6 @@ fn process_action(
         | Action::CursorRight
         | Action::CursorStart
         | Action::CursorEnd
-        | Action::ShowError(_)
-        | Action::ClearError
         | Action::CancelDeleteWorktree => {
             // These are handled by helper functions before this match
         }
@@ -631,8 +556,8 @@ fn handle_go_back(state: &mut AppState) {
     match state.mode.clone() {
         Mode::BranchSelect => {
             state.mode = Mode::RepoSelect;
-            state.branch_search.clear();
-            state.branch_cursor = 0;
+            state.branch_list.search.clear();
+            state.branch_list.cursor = 0;
         }
         Mode::NewBranchBase => {
             state.new_branch_base = None;
@@ -662,7 +587,7 @@ fn handle_show_help(state: &mut AppState) {
 }
 
 fn handle_start_new_branch(state: &mut AppState, git: &Arc<dyn GitProvider>) {
-    if state.branch_search.is_empty() {
+    if state.branch_list.search.is_empty() {
         state.error = Some("Type a branch name first".to_string());
         return;
     }
@@ -671,22 +596,19 @@ fn handle_start_new_branch(state: &mut AppState, git: &Arc<dyn GitProvider>) {
     };
     let repo = &state.repos[repo_idx];
     let bases = git.list_branches(&repo.path);
-    let filtered: Vec<(usize, i64)> = bases.iter().enumerate().map(|(i, _)| (i, 0)).collect();
-    let selected = if filtered.is_empty() { None } else { Some(0) };
+    let list = SearchableList::new(bases.len());
 
     state.new_branch_base = Some(NewBranchFlow {
-        new_name: state.branch_search.clone(),
+        new_name: state.branch_list.search.clone(),
         bases,
-        filtered,
-        selected,
-        search: String::new(),
+        list,
     });
     state.mode = Mode::NewBranchBase;
 }
 
 fn handle_delete_worktree(state: &mut AppState) {
-    if let Some(sel) = state.branch_selected
-        && let Some(&(idx, _)) = state.filtered_branches.get(sel)
+    if let Some(sel) = state.branch_list.selected
+        && let Some(&(idx, _)) = state.branch_list.filtered.get(sel)
     {
         let branch = &state.branches[idx];
         if branch.worktree_path.is_none() {
@@ -719,8 +641,8 @@ fn handle_open_branch(
 ) -> Option<OpenAction> {
     match state.mode {
         Mode::BranchSelect => {
-            if let Some(sel) = state.branch_selected
-                && let Some(&(idx, _)) = state.filtered_branches.get(sel)
+            if let Some(sel) = state.branch_list.selected
+                && let Some(&(idx, _)) = state.branch_list.filtered.get(sel)
             {
                 let branch = &state.branches[idx];
                 let repo_idx = state.selected_repo_idx?;
@@ -758,8 +680,8 @@ fn handle_open_branch(
         }
         Mode::NewBranchBase => {
             if let Some(flow) = &state.new_branch_base
-                && let Some(sel) = flow.selected
-                && let Some(&(idx, _)) = flow.filtered.get(sel)
+                && let Some(sel) = flow.list.selected
+                && let Some(&(idx, _)) = flow.list.filtered.get(sel)
             {
                 let base = flow.bases[idx].clone();
                 let new_name = flow.new_name.clone();
@@ -799,7 +721,6 @@ fn enter_branch_select(
     tmux: &dyn TmuxProvider,
 ) {
     state.selected_repo_idx = Some(repo_idx);
-    state.branch_search.clear();
     state.mode = Mode::BranchSelect;
 
     let repo = &state.repos[repo_idx];
@@ -841,268 +762,79 @@ fn enter_branch_select(
             .then(a.name.cmp(&b.name))
     });
 
-    state.filtered_branches = state
-        .branches
-        .iter()
-        .enumerate()
-        .map(|(i, _)| (i, 0))
-        .collect();
-    state.branch_selected = if state.filtered_branches.is_empty() {
+    state.branch_list.reset(state.branches.len());
+}
+
+/// Handle search character push action
+fn handle_search_push(state: &mut AppState, matcher: &SkimMatcherV2, c: char) {
+    if let Some(list) = state.active_list_mut() {
+        list.insert_char(c);
+    }
+    update_active_filter(state, matcher);
+}
+
+/// Handle search character pop action
+fn handle_search_pop(state: &mut AppState, matcher: &SkimMatcherV2) {
+    if let Some(list) = state.active_list_mut() {
+        list.backspace();
+    }
+    update_active_filter(state, matcher);
+}
+
+/// Handle search delete word action
+fn handle_search_delete_word(state: &mut AppState, matcher: &SkimMatcherV2) {
+    if let Some(list) = state.active_list_mut() {
+        list.delete_word();
+    }
+    update_active_filter(state, matcher);
+}
+
+/// Update the fuzzy filter for the active mode's list
+fn update_active_filter(state: &mut AppState, matcher: &SkimMatcherV2) {
+    match state.mode {
+        Mode::RepoSelect => {
+            let names: Vec<String> = state.repos.iter().map(|r| r.name.clone()).collect();
+            apply_fuzzy_filter(&mut state.repo_list, &names, matcher);
+        }
+        Mode::BranchSelect => {
+            let names: Vec<String> = state.branches.iter().map(|b| b.name.clone()).collect();
+            apply_fuzzy_filter(&mut state.branch_list, &names, matcher);
+        }
+        Mode::NewBranchBase => {
+            if let Some(flow) = &mut state.new_branch_base {
+                let bases = flow.bases.clone();
+                apply_fuzzy_filter(&mut flow.list, &bases, matcher);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Apply fuzzy filter to a `SearchableList` against a set of item names
+fn apply_fuzzy_filter(list: &mut SearchableList, items: &[String], matcher: &SkimMatcherV2) {
+    if list.search.is_empty() {
+        list.filtered = items.iter().enumerate().map(|(i, _)| (i, 0)).collect();
+    } else {
+        let mut scored: Vec<(usize, i64)> = items
+            .iter()
+            .enumerate()
+            .filter_map(|(i, item)| {
+                matcher
+                    .fuzzy_match(item, &list.search)
+                    .map(|score| (i, score))
+            })
+            .collect();
+        scored.sort_by(|a, b| b.1.cmp(&a.1));
+        list.filtered = scored;
+    }
+    list.selected = if list.filtered.is_empty() {
         None
     } else {
         Some(0)
     };
 }
 
-fn move_selection(selected: &mut Option<usize>, len: usize, delta: i32) {
-    if len == 0 {
-        return;
-    }
-    let current = selected.unwrap_or(0);
-    if delta > 0 {
-        *selected = Some(
-            current
-                .saturating_add(delta.unsigned_abs() as usize)
-                .min(len - 1),
-        );
-    } else {
-        *selected = Some(current.saturating_sub(delta.unsigned_abs() as usize));
-    }
-}
-
-fn update_repo_filter(state: &mut AppState, matcher: &SkimMatcherV2) {
-    let names: Vec<String> = state.repos.iter().map(|r| r.name.clone()).collect();
-    update_fuzzy_filter(
-        matcher,
-        &names,
-        &state.repo_search,
-        &mut state.filtered_repos,
-        &mut state.repo_selected,
-    );
-}
-
-fn update_branch_filter(state: &mut AppState, matcher: &SkimMatcherV2) {
-    let names: Vec<String> = state.branches.iter().map(|b| b.name.clone()).collect();
-    update_fuzzy_filter(
-        matcher,
-        &names,
-        &state.branch_search,
-        &mut state.filtered_branches,
-        &mut state.branch_selected,
-    );
-}
-
-fn update_flow_filter(flow: &mut NewBranchFlow, matcher: &SkimMatcherV2) {
-    update_fuzzy_filter(
-        matcher,
-        &flow.bases,
-        &flow.search,
-        &mut flow.filtered,
-        &mut flow.selected,
-    );
-}
-
-fn update_fuzzy_filter(
-    matcher: &SkimMatcherV2,
-    items: &[String],
-    query: &str,
-    filtered: &mut Vec<(usize, i64)>,
-    selected: &mut Option<usize>,
-) {
-    if query.is_empty() {
-        *filtered = items.iter().enumerate().map(|(i, _)| (i, 0)).collect();
-    } else {
-        let mut scored: Vec<(usize, i64)> = items
-            .iter()
-            .enumerate()
-            .filter_map(|(i, item)| matcher.fuzzy_match(item, query).map(|score| (i, score)))
-            .collect();
-        scored.sort_by(|a, b| b.1.cmp(&a.1));
-        *filtered = scored;
-    }
-
-    if filtered.is_empty() {
-        *selected = None;
-    } else {
-        *selected = Some(0);
-    }
-}
-
 /// Handle move selection action for different modes
-fn handle_move_selection_action(state: &mut AppState, delta: i32) {
-    match state.mode {
-        Mode::RepoSelect => {
-            move_selection(&mut state.repo_selected, state.filtered_repos.len(), delta);
-        }
-        Mode::BranchSelect => {
-            move_selection(
-                &mut state.branch_selected,
-                state.filtered_branches.len(),
-                delta,
-            );
-        }
-        Mode::NewBranchBase => {
-            if let Some(flow) = &mut state.new_branch_base {
-                move_selection(&mut flow.selected, flow.filtered.len(), delta);
-            }
-        }
-        Mode::ConfirmDelete(_) | Mode::Loading(_) | Mode::Help { .. } => {}
-    }
-}
-
-/// Handle search character push action
-fn handle_search_push(state: &mut AppState, matcher: &SkimMatcherV2, c: char) {
-    match state.mode {
-        Mode::RepoSelect => {
-            state.repo_search.insert(state.repo_cursor, c);
-            state.repo_cursor += c.len_utf8();
-            update_repo_filter(state, matcher);
-        }
-        Mode::BranchSelect => {
-            state.branch_search.insert(state.branch_cursor, c);
-            state.branch_cursor += c.len_utf8();
-            update_branch_filter(state, matcher);
-        }
-        Mode::NewBranchBase => {
-            if let Some(flow) = &mut state.new_branch_base {
-                flow.search.push(c);
-                update_flow_filter(flow, matcher);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// Handle search character pop action
-/// Remove the character before the cursor (handles multi-byte chars)
-fn remove_char_before(text: &mut String, cursor: &mut usize) {
-    if *cursor > 0 {
-        let prev_boundary = text[..*cursor]
-            .char_indices()
-            .next_back()
-            .map_or(0, |(i, _)| i);
-        text.drain(prev_boundary..*cursor);
-        *cursor = prev_boundary;
-    }
-}
-
-fn handle_search_pop(state: &mut AppState, matcher: &SkimMatcherV2) {
-    match state.mode {
-        Mode::RepoSelect => {
-            remove_char_before(&mut state.repo_search, &mut state.repo_cursor);
-            update_repo_filter(state, matcher);
-        }
-        Mode::BranchSelect => {
-            remove_char_before(&mut state.branch_search, &mut state.branch_cursor);
-            update_branch_filter(state, matcher);
-        }
-        Mode::NewBranchBase => {
-            if let Some(flow) = &mut state.new_branch_base {
-                flow.search.pop();
-                update_flow_filter(flow, matcher);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// Handle search delete word action
-fn handle_search_delete_word(state: &mut AppState, matcher: &SkimMatcherV2) {
-    match state.mode {
-        Mode::RepoSelect => {
-            delete_word(&mut state.repo_search, &mut state.repo_cursor);
-            update_repo_filter(state, matcher);
-        }
-        Mode::BranchSelect => {
-            delete_word(&mut state.branch_search, &mut state.branch_cursor);
-            update_branch_filter(state, matcher);
-        }
-        Mode::NewBranchBase => {
-            if let Some(flow) = &mut state.new_branch_base {
-                // NewBranchFlow doesn't have a cursor field, but we can simulate it
-                let mut temp_cursor = flow.search.len();
-                delete_word(&mut flow.search, &mut temp_cursor);
-                update_flow_filter(flow, matcher);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// Delete word backwards in a string at cursor position
-fn delete_word(text: &mut String, cursor: &mut usize) {
-    if text.is_empty() || *cursor == 0 {
-        return;
-    }
-
-    let bytes = text.as_bytes();
-    let mut new_cursor = (*cursor).min(bytes.len());
-
-    // Skip any whitespace at cursor
-    while new_cursor > 0 && bytes[new_cursor - 1].is_ascii_whitespace() {
-        new_cursor -= 1;
-    }
-
-    // Delete non-whitespace characters
-    while new_cursor > 0 && !bytes[new_cursor - 1].is_ascii_whitespace() {
-        new_cursor -= 1;
-    }
-
-    text.drain(new_cursor..*cursor);
-    *cursor = new_cursor;
-}
-
-/// Cursor movement direction
-#[derive(Debug, Clone, Copy)]
-enum CursorMove {
-    Left,
-    Right,
-    Start,
-    End,
-}
-
-/// Handle cursor movement in search fields
-fn handle_cursor_movement(state: &mut AppState, movement: CursorMove) {
-    match state.mode {
-        Mode::RepoSelect => {
-            move_cursor(&state.repo_search, &mut state.repo_cursor, movement);
-        }
-        Mode::BranchSelect => {
-            move_cursor(&state.branch_search, &mut state.branch_cursor, movement);
-        }
-        _ => {
-            // NewBranchFlow doesn't have cursor support, but we could add it later
-        }
-    }
-}
-
-/// Move cursor in text
-fn move_cursor(text: &str, cursor: &mut usize, movement: CursorMove) {
-    match movement {
-        CursorMove::Left => {
-            // Move to the previous char boundary
-            *cursor = text[..*cursor]
-                .char_indices()
-                .next_back()
-                .map_or(0, |(i, _)| i);
-        }
-        CursorMove::Right => {
-            // Move to the next char boundary
-            if *cursor < text.len() {
-                *cursor = text[*cursor..]
-                    .char_indices()
-                    .nth(1)
-                    .map_or(text.len(), |(i, _)| *cursor + i);
-            }
-        }
-        CursorMove::Start => {
-            *cursor = 0;
-        }
-        CursorMove::End => {
-            *cursor = text.len();
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -1137,7 +869,7 @@ mod tests {
     fn test_enter_repo_populates_branches() {
         let repos = vec![make_repo("alpha"), make_repo("beta")];
         let mut state = AppState::new(repos, None);
-        state.repo_selected = Some(0);
+        state.repo_list.selected = Some(0);
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider {
             branches: vec!["main".into(), "dev".into()],
@@ -1183,9 +915,7 @@ mod tests {
         state.new_branch_base = Some(kiosk_core::state::NewBranchFlow {
             new_name: "feat".into(),
             bases: vec!["main".into()],
-            filtered: vec![(0, 0)],
-            selected: Some(0),
-            search: String::new(),
+            list: SearchableList::new(1),
         });
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
@@ -1210,8 +940,8 @@ mod tests {
             has_session: false,
             is_current: true,
         }];
-        state.filtered_branches = vec![(0, 0)];
-        state.branch_selected = Some(0);
+        state.branch_list.filtered = vec![(0, 0)];
+        state.branch_list.selected = Some(0);
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux = MockTmuxProvider::default();
@@ -1250,8 +980,8 @@ mod tests {
             has_session: false,
             is_current: false,
         }];
-        state.filtered_branches = vec![(0, 0)];
-        state.branch_selected = Some(0);
+        state.branch_list.filtered = vec![(0, 0)];
+        state.branch_list.selected = Some(0);
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux = MockTmuxProvider::default();
@@ -1274,7 +1004,7 @@ mod tests {
     fn test_search_push_filters() {
         let repos = vec![make_repo("alpha"), make_repo("beta")];
         let mut state = AppState::new(repos, None);
-        assert_eq!(state.filtered_repos.len(), 2);
+        assert_eq!(state.repo_list.filtered.len(), 2);
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux = MockTmuxProvider::default();
@@ -1289,16 +1019,16 @@ mod tests {
             &matcher,
             &sender,
         );
-        assert_eq!(state.repo_search, "a");
+        assert_eq!(state.repo_list.search, "a");
         // "alpha" matches "a", "beta" also matches "a" — but both should be present
-        assert!(!state.filtered_repos.is_empty());
+        assert!(!state.repo_list.filtered.is_empty());
     }
 
     #[test]
     fn test_move_selection() {
         let repos = vec![make_repo("alpha"), make_repo("beta"), make_repo("gamma")];
         let mut state = AppState::new(repos, None);
-        assert_eq!(state.repo_selected, Some(0));
+        assert_eq!(state.repo_list.selected, Some(0));
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux = MockTmuxProvider::default();
@@ -1313,7 +1043,7 @@ mod tests {
             &matcher,
             &sender,
         );
-        assert_eq!(state.repo_selected, Some(1));
+        assert_eq!(state.repo_list.selected, Some(1));
 
         process_action(
             Action::MoveSelection(1),
@@ -1323,7 +1053,7 @@ mod tests {
             &matcher,
             &sender,
         );
-        assert_eq!(state.repo_selected, Some(2));
+        assert_eq!(state.repo_list.selected, Some(2));
 
         // Should clamp at max
         process_action(
@@ -1334,14 +1064,14 @@ mod tests {
             &matcher,
             &sender,
         );
-        assert_eq!(state.repo_selected, Some(2));
+        assert_eq!(state.repo_list.selected, Some(2));
     }
 
     #[test]
     fn test_open_repo_returns_repo_path() {
         let repos = vec![make_repo("alpha"), make_repo("beta")];
         let mut state = AppState::new(repos, Some("hx".into()));
-        state.repo_selected = Some(1);
+        state.repo_list.selected = Some(1);
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux = MockTmuxProvider::default();
@@ -1370,7 +1100,7 @@ mod tests {
         let mut state = AppState::new(repos, None);
         state.mode = Mode::BranchSelect;
         state.selected_repo_idx = Some(0);
-        state.branch_search = String::new(); // empty
+        state.branch_list.search = String::new(); // empty
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider {
             branches: vec!["main".into()],
@@ -1407,7 +1137,7 @@ mod tests {
         let mut state = AppState::new(repos, None);
         state.mode = Mode::BranchSelect;
         state.selected_repo_idx = Some(0);
-        state.branch_search = "feat/new".to_string();
+        state.branch_list.search = "feat/new".to_string();
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider {
             branches: vec!["main".into()],
@@ -1442,8 +1172,8 @@ mod tests {
             has_session: false,
             is_current: false,
         }];
-        state.filtered_branches = vec![(0, 0)];
-        state.branch_selected = Some(0);
+        state.branch_list.filtered = vec![(0, 0)];
+        state.branch_list.selected = Some(0);
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux = MockTmuxProvider::default();
@@ -1475,8 +1205,8 @@ mod tests {
             has_session: false,
             is_current: true,
         }];
-        state.filtered_branches = vec![(0, 0)];
-        state.branch_selected = Some(0);
+        state.branch_list.filtered = vec![(0, 0)];
+        state.branch_list.selected = Some(0);
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux = MockTmuxProvider::default();
@@ -1508,8 +1238,8 @@ mod tests {
             has_session: false,
             is_current: false,
         }];
-        state.filtered_branches = vec![(0, 0)];
-        state.branch_selected = Some(0);
+        state.branch_list.filtered = vec![(0, 0)];
+        state.branch_list.selected = Some(0);
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux = MockTmuxProvider::default();
@@ -1534,8 +1264,8 @@ mod tests {
         // "café" = 5 bytes: c(1) a(1) f(1) é(2)
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
-        state.repo_search = "café".to_string();
-        state.repo_cursor = state.repo_search.len(); // 5 (byte len)
+        state.repo_list.search = "café".to_string();
+        state.repo_list.cursor = state.repo_list.search.len(); // 5 (byte len)
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux = MockTmuxProvider::default();
@@ -1551,7 +1281,7 @@ mod tests {
             &matcher,
             &sender,
         );
-        assert_eq!(state.repo_cursor, 3); // before 'é' (byte offset of 'é')
+        assert_eq!(state.repo_list.cursor, 3); // before 'é' (byte offset of 'é')
 
         // Move left again should land before 'f'
         process_action(
@@ -1562,7 +1292,7 @@ mod tests {
             &matcher,
             &sender,
         );
-        assert_eq!(state.repo_cursor, 2);
+        assert_eq!(state.repo_list.cursor, 2);
 
         // Move right should skip over 'f' (1 byte)
         process_action(
@@ -1573,7 +1303,7 @@ mod tests {
             &matcher,
             &sender,
         );
-        assert_eq!(state.repo_cursor, 3);
+        assert_eq!(state.repo_list.cursor, 3);
 
         // Move right should skip over 'é' (2 bytes)
         process_action(
@@ -1584,15 +1314,15 @@ mod tests {
             &matcher,
             &sender,
         );
-        assert_eq!(state.repo_cursor, 5);
+        assert_eq!(state.repo_list.cursor, 5);
     }
 
     #[test]
     fn test_backspace_multibyte() {
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
-        state.repo_search = "café".to_string();
-        state.repo_cursor = state.repo_search.len(); // 5
+        state.repo_list.search = "café".to_string();
+        state.repo_list.cursor = state.repo_list.search.len(); // 5
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux = MockTmuxProvider::default();
@@ -1608,16 +1338,16 @@ mod tests {
             &matcher,
             &sender,
         );
-        assert_eq!(state.repo_search, "caf");
-        assert_eq!(state.repo_cursor, 3);
+        assert_eq!(state.repo_list.search, "caf");
+        assert_eq!(state.repo_list.cursor, 3);
     }
 
     #[test]
     fn test_cursor_movement_in_search() {
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
-        state.repo_search = "hello".to_string();
-        state.repo_cursor = 5; // at end
+        state.repo_list.search = "hello".to_string();
+        state.repo_list.cursor = 5; // at end
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux = MockTmuxProvider::default();
@@ -1633,7 +1363,7 @@ mod tests {
             &matcher,
             &sender,
         );
-        assert_eq!(state.repo_cursor, 4);
+        assert_eq!(state.repo_list.cursor, 4);
 
         // Move cursor to start
         process_action(
@@ -1644,7 +1374,7 @@ mod tests {
             &matcher,
             &sender,
         );
-        assert_eq!(state.repo_cursor, 0);
+        assert_eq!(state.repo_list.cursor, 0);
 
         // Move cursor to end
         process_action(
@@ -1655,7 +1385,7 @@ mod tests {
             &matcher,
             &sender,
         );
-        assert_eq!(state.repo_cursor, 5);
+        assert_eq!(state.repo_list.cursor, 5);
 
         // Move cursor right at end stays at end
         process_action(
@@ -1666,6 +1396,6 @@ mod tests {
             &matcher,
             &sender,
         );
-        assert_eq!(state.repo_cursor, 5);
+        assert_eq!(state.repo_list.cursor, 5);
     }
 }

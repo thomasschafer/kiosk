@@ -18,13 +18,13 @@ pub fn draw(f: &mut Frame, state: &AppState, theme: &Theme) {
 
     let chunks = Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(area);
 
-    let search_text = if flow.search.is_empty() {
+    let search_text = if flow.list.search.is_empty() {
         Line::from(Span::styled(
             "Select base branch...",
             Style::default().fg(Color::DarkGray),
         ))
     } else {
-        Line::from(flow.search.as_str())
+        Line::from(flow.list.search.as_str())
     };
     let title = format!(" New branch \"{}\" — pick base ", flow.new_name);
     let search_block = Block::default()
@@ -34,6 +34,7 @@ pub fn draw(f: &mut Frame, state: &AppState, theme: &Theme) {
     f.render_widget(Paragraph::new(search_text).block(search_block), chunks[0]);
 
     let items: Vec<ListItem> = flow
+        .list
         .filtered
         .iter()
         .map(|(idx, _)| ListItem::new(flow.bases[*idx].as_str()))
@@ -54,7 +55,7 @@ pub fn draw(f: &mut Frame, state: &AppState, theme: &Theme) {
         .highlight_symbol("▸ ");
 
     let mut list_state = ListState::default();
-    list_state.select(flow.selected);
+    list_state.select(flow.list.selected);
     f.render_stateful_widget(list, chunks[1], &mut list_state);
 }
 

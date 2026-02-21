@@ -64,8 +64,8 @@ fn command_to_action(command: &Command, state: &AppState) -> Option<Action> {
         Command::OpenBranch => {
             // Special logic for branch select mode - if search is non-empty and no matches, start new branch flow
             if let Mode::BranchSelect = state.mode
-                && !state.branch_search.is_empty()
-                && state.filtered_branches.is_empty()
+                && !state.branch_list.search.is_empty()
+                && state.branch_list.filtered.is_empty()
             {
                 return Some(Action::StartNewBranchFlow);
             }

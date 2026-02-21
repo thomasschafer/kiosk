@@ -17,15 +17,16 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, keys: &K
         f,
         chunks[0],
         "kiosk — select repo",
-        &state.repo_search,
-        state.repo_cursor,
+        &state.repo_list.search,
+        state.repo_list.cursor,
         "Type to search repos...",
         theme.accent,
     );
 
     // Repo list
     let items: Vec<ListItem> = state
-        .filtered_repos
+        .repo_list
+        .filtered
         .iter()
         .map(|(idx, _)| {
             let repo = &state.repos[*idx];
@@ -57,7 +58,10 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, keys: &K
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(format!(" {} repos ({hints}) ", state.filtered_repos.len()))
+                .title(format!(
+                    " {} repos ({hints}) ",
+                    state.repo_list.filtered.len()
+                ))
                 .border_style(Style::default().fg(Color::DarkGray)),
         )
         .highlight_style(
@@ -69,7 +73,7 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, keys: &K
         .highlight_symbol("▸ ");
 
     let mut list_state = ListState::default();
-    list_state.select(state.repo_selected);
+    list_state.select(state.repo_list.selected);
     f.render_stateful_widget(list, chunks[1], &mut list_state);
 }
 

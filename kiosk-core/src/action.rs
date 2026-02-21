@@ -34,6 +34,4 @@ pub enum Action {
     ConfirmDeleteWorktree,
     CancelDeleteWorktree,
     ShowHelp,
-    ShowError(String),
-    ClearError,
 }

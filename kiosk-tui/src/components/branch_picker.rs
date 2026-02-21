@@ -21,15 +21,16 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, keys: &K
         f,
         chunks[0],
         &format!("{repo_name} — select branch"),
-        &state.branch_search,
-        state.branch_cursor,
+        &state.branch_list.search,
+        state.branch_list.cursor,
         "Type to search branches (or type new branch name)...",
         theme.secondary,
     );
 
     // Branch list
     let mut items: Vec<ListItem> = state
-        .filtered_branches
+        .branch_list
+        .filtered
         .iter()
         .map(|(idx, _)| {
             let branch = &state.branches[*idx];
@@ -55,11 +56,11 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, keys: &K
         .collect();
 
     // If search doesn't match anything, show "create new branch" option
-    if state.filtered_branches.is_empty() && !state.branch_search.is_empty() {
+    if state.branch_list.filtered.is_empty() && !state.branch_list.search.is_empty() {
         items.push(ListItem::new(Line::from(vec![
             Span::styled("+ Create branch ", Style::default().fg(theme.success)),
             Span::styled(
-                format!("\"{}\"", state.branch_search),
+                format!("\"{}\"", state.branch_list.search),
                 Style::default()
                     .fg(theme.success)
                     .add_modifier(Modifier::BOLD),
@@ -71,7 +72,7 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, keys: &K
         ])));
     }
 
-    let count = state.filtered_branches.len();
+    let count = state.branch_list.filtered.len();
     let hints = build_branch_hints(keys);
     let list = List::new(items)
         .block(
@@ -89,7 +90,7 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, keys: &K
         .highlight_symbol("▸ ");
 
     let mut list_state = ListState::default();
-    list_state.select(state.branch_selected);
+    list_state.select(state.branch_list.selected);
     f.render_stateful_widget(list, chunks[1], &mut list_state);
 }
 

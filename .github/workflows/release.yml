@@ -106,7 +106,7 @@ jobs:
         key: v1-${{ matrix.target }}
 
     - name: Build binary
-      uses: clechasseur/rs-cargo@v2
+      uses: clechasseur/rs-cargo@v4
       with:
         command: build
         args: --release --target ${{ matrix.target }} --package kiosk

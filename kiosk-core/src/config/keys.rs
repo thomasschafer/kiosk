@@ -33,9 +33,15 @@ pub enum Command {
 
     // Search commands
     SearchPop,
+    SearchDeleteForward,
     SearchDeleteWord,
+    SearchDeleteWordForward,
+    SearchDeleteToStart,
+    SearchDeleteToEnd,
     CursorLeft,
     CursorRight,
+    CursorWordLeft,
+    CursorWordRight,
     CursorStart,
     CursorEnd,
 
@@ -67,9 +73,15 @@ impl FromStr for Command {
             "move_top" => Ok(Command::MoveTop),
             "move_bottom" => Ok(Command::MoveBottom),
             "search_pop" => Ok(Command::SearchPop),
+            "search_delete_forward" => Ok(Command::SearchDeleteForward),
             "search_delete_word" => Ok(Command::SearchDeleteWord),
+            "search_delete_word_forward" => Ok(Command::SearchDeleteWordForward),
+            "search_delete_to_start" => Ok(Command::SearchDeleteToStart),
+            "search_delete_to_end" => Ok(Command::SearchDeleteToEnd),
             "cursor_left" => Ok(Command::CursorLeft),
             "cursor_right" => Ok(Command::CursorRight),
+            "cursor_word_left" => Ok(Command::CursorWordLeft),
+            "cursor_word_right" => Ok(Command::CursorWordRight),
             "cursor_start" => Ok(Command::CursorStart),
             "cursor_end" => Ok(Command::CursorEnd),
             "confirm" => Ok(Command::Confirm),
@@ -100,9 +112,15 @@ impl std::fmt::Display for Command {
             Command::MoveTop => "move_top",
             Command::MoveBottom => "move_bottom",
             Command::SearchPop => "search_pop",
+            Command::SearchDeleteForward => "search_delete_forward",
             Command::SearchDeleteWord => "search_delete_word",
+            Command::SearchDeleteWordForward => "search_delete_word_forward",
+            Command::SearchDeleteToStart => "search_delete_to_start",
+            Command::SearchDeleteToEnd => "search_delete_to_end",
             Command::CursorLeft => "cursor_left",
             Command::CursorRight => "cursor_right",
+            Command::CursorWordLeft => "cursor_word_left",
+            Command::CursorWordRight => "cursor_word_right",
             Command::CursorStart => "cursor_start",
             Command::CursorEnd => "cursor_end",
             Command::Confirm => "confirm",
@@ -133,10 +151,16 @@ impl Command {
             Command::PageDown => "Page down",
             Command::MoveTop => "Move to top",
             Command::MoveBottom => "Move to bottom",
-            Command::SearchPop => "Delete search character",
-            Command::SearchDeleteWord => "Delete word",
+            Command::SearchPop => "Delete character backward",
+            Command::SearchDeleteForward => "Delete character forward",
+            Command::SearchDeleteWord => "Delete word backward",
+            Command::SearchDeleteWordForward => "Delete word forward",
+            Command::SearchDeleteToStart => "Delete to start of line",
+            Command::SearchDeleteToEnd => "Delete to end of line",
             Command::CursorLeft => "Cursor left",
             Command::CursorRight => "Cursor right",
+            Command::CursorWordLeft => "Cursor word left",
+            Command::CursorWordRight => "Cursor word right",
             Command::CursorStart => "Cursor to start",
             Command::CursorEnd => "Cursor to end",
             Command::Confirm => "Confirm",
@@ -207,9 +231,92 @@ impl KeysConfig {
         Self::find_key(mode_keymap, command).or_else(|| Self::find_key(&self.general, command))
     }
 
+    /// Search editing and cursor movement bindings
+    fn search_bindings() -> KeyMap {
+        let mut map = KeyMap::new();
+
+        // Search editing
+        map.insert(
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+            Command::SearchPop,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE),
+            Command::SearchDeleteForward,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+            Command::SearchDeleteForward,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
+            Command::SearchDeleteWord,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT),
+            Command::SearchDeleteWord,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::ALT),
+            Command::SearchDeleteWordForward,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+            Command::SearchDeleteToStart,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL),
+            Command::SearchDeleteToEnd,
+        );
+
+        // Cursor movement
+        map.insert(
+            KeyEvent::new(KeyCode::Left, KeyModifiers::NONE),
+            Command::CursorLeft,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+            Command::CursorRight,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT),
+            Command::CursorWordLeft,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Left, KeyModifiers::ALT),
+            Command::CursorWordLeft,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT),
+            Command::CursorWordRight,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Right, KeyModifiers::ALT),
+            Command::CursorWordRight,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Home, KeyModifiers::NONE),
+            Command::CursorStart,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
+            Command::CursorStart,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::End, KeyModifiers::NONE),
+            Command::CursorEnd,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL),
+            Command::CursorEnd,
+        );
+
+        map
+    }
+
     /// Common movement + search bindings shared across list modes
     fn common_list_bindings() -> KeyMap {
-        let mut map = KeyMap::new();
+        let mut map = Self::search_bindings();
         map.insert(
             KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
             Command::MoveUp,
@@ -227,11 +334,11 @@ impl KeysConfig {
             Command::MoveDown,
         );
         map.insert(
-            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL),
             Command::HalfPageDown,
         );
         map.insert(
-            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL),
             Command::HalfPageUp,
         );
         map.insert(
@@ -241,30 +348,6 @@ impl KeysConfig {
         map.insert(
             KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
             Command::PageDown,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
-            Command::SearchPop,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
-            Command::SearchDeleteWord,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Left, KeyModifiers::NONE),
-            Command::CursorLeft,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
-            Command::CursorRight,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Home, KeyModifiers::NONE),
-            Command::CursorStart,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::End, KeyModifiers::NONE),
-            Command::CursorEnd,
         );
         map.insert(
             KeyEvent::new(KeyCode::Char('g'), KeyModifiers::ALT),
@@ -563,6 +646,29 @@ mod tests {
 
         // Same for branch_select
         assert_eq!(config.branch_select.get(&left), Some(&Command::CursorLeft));
+    }
+
+    #[test]
+    fn test_default_search_bindings_take_priority() {
+        let config = KeysConfig::default();
+        let ctrl_u = KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL);
+        let ctrl_d = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL);
+        let ctrl_f = KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL);
+        let ctrl_b = KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL);
+
+        assert_eq!(
+            config.repo_select.get(&ctrl_u),
+            Some(&Command::SearchDeleteToStart)
+        );
+        assert_eq!(
+            config.repo_select.get(&ctrl_d),
+            Some(&Command::SearchDeleteForward)
+        );
+        assert_eq!(
+            config.repo_select.get(&ctrl_f),
+            Some(&Command::HalfPageDown)
+        );
+        assert_eq!(config.repo_select.get(&ctrl_b), Some(&Command::HalfPageUp));
     }
 
     #[test]

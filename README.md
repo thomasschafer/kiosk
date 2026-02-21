@@ -118,13 +118,25 @@ Key binding configuration.
 | Key | Action |
 |-----|--------|
 | A-G | Move to bottom |
+| A-b | Cursor word left |
+| A-backspace | Delete word backward |
+| A-d | Delete word forward |
+| A-f | Cursor word right |
 | A-g | Move to top |
-| C-d | Half page down |
+| A-left | Cursor word left |
+| A-right | Cursor word right |
+| C-a | Cursor to start |
+| C-b | Half page up |
+| C-d | Delete character forward |
+| C-e | Cursor to end |
+| C-f | Half page down |
+| C-k | Delete to end of line |
 | C-n | Move down |
 | C-p | Move up |
-| C-u | Half page up |
-| C-w | Delete word |
-| backspace | Delete search character |
+| C-u | Delete to start of line |
+| C-w | Delete word backward |
+| backspace | Delete character backward |
+| del | Delete character forward |
 | down | Move down |
 | end | Cursor to end |
 | enter | Open repository in tmux |
@@ -142,15 +154,27 @@ Key binding configuration.
 | Key | Action |
 |-----|--------|
 | A-G | Move to bottom |
+| A-b | Cursor word left |
+| A-backspace | Delete word backward |
+| A-d | Delete word forward |
+| A-f | Cursor word right |
 | A-g | Move to top |
-| C-d | Half page down |
+| A-left | Cursor word left |
+| A-right | Cursor word right |
+| C-a | Cursor to start |
+| C-b | Half page up |
+| C-d | Delete character forward |
+| C-e | Cursor to end |
+| C-f | Half page down |
+| C-k | Delete to end of line |
 | C-n | Move down |
 | C-o | New branch |
 | C-p | Move up |
-| C-u | Half page up |
-| C-w | Delete word |
+| C-u | Delete to start of line |
+| C-w | Delete word backward |
 | C-x | Delete worktree |
-| backspace | Delete search character |
+| backspace | Delete character backward |
+| del | Delete character forward |
 | down | Move down |
 | end | Cursor to end |
 | enter | Open branch in tmux |
@@ -167,13 +191,25 @@ Key binding configuration.
 | Key | Action |
 |-----|--------|
 | A-G | Move to bottom |
+| A-b | Cursor word left |
+| A-backspace | Delete word backward |
+| A-d | Delete word forward |
+| A-f | Cursor word right |
 | A-g | Move to top |
-| C-d | Half page down |
+| A-left | Cursor word left |
+| A-right | Cursor word right |
+| C-a | Cursor to start |
+| C-b | Half page up |
+| C-d | Delete character forward |
+| C-e | Cursor to end |
+| C-f | Half page down |
+| C-k | Delete to end of line |
 | C-n | Move down |
 | C-p | Move up |
-| C-u | Half page up |
-| C-w | Delete word |
-| backspace | Delete search character |
+| C-u | Delete to start of line |
+| C-w | Delete word backward |
+| backspace | Delete character backward |
+| del | Delete character forward |
 | down | Move down |
 | end | Cursor to end |
 | enter | Open branch in tmux |

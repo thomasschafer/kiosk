@@ -8,10 +8,14 @@ pub enum Action {
     GoBack,
     Quit,
 
-    // Search
+    // Search editing
     SearchPush(char),
     SearchPop,
+    SearchDeleteForward,
     SearchDeleteWord,
+    SearchDeleteWordForward,
+    SearchDeleteToStart,
+    SearchDeleteToEnd,
 
     // Movement
     MoveSelection(i32),
@@ -25,6 +29,8 @@ pub enum Action {
     // Cursor movement (for search input)
     CursorLeft,
     CursorRight,
+    CursorWordLeft,
+    CursorWordRight,
     CursorStart,
     CursorEnd,
 

@@ -108,6 +108,8 @@ Defaults shown below are generated from `KeysConfig::default()`.
 "C-h" = "show_help"
 
 [keys.repo_select]
+"A-G" = "move_bottom"
+"A-g" = "move_top"
 "C-d" = "half_page_down"
 "C-n" = "move_down"
 "C-p" = "move_up"
@@ -127,6 +129,8 @@ Defaults shown below are generated from `KeysConfig::default()`.
 "up" = "move_up"
 
 [keys.branch_select]
+"A-G" = "move_bottom"
+"A-g" = "move_top"
 "C-d" = "half_page_down"
 "C-n" = "move_down"
 "C-o" = "new_branch"
@@ -147,6 +151,8 @@ Defaults shown below are generated from `KeysConfig::default()`.
 "up" = "move_up"
 
 [keys.new_branch_base]
+"A-G" = "move_bottom"
+"A-g" = "move_top"
 "C-d" = "half_page_down"
 "C-n" = "move_down"
 "C-p" = "move_up"

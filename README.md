@@ -127,14 +127,14 @@ Key binding configuration.
 | backspace | Delete search character |
 | down | Move down |
 | end | Cursor to end |
-| enter | Open repository |
+| enter | Open repository in tmux |
 | esc | Quit the application |
 | home | Cursor to start |
 | left | Cursor left |
 | pagedown | Page down |
 | pageup | Page up |
 | right | Cursor right |
-| tab | Enter repository |
+| tab | Browse branches |
 | up | Move up |
 
 ### Branch Selection
@@ -153,7 +153,7 @@ Key binding configuration.
 | backspace | Delete search character |
 | down | Move down |
 | end | Cursor to end |
-| enter | Open branch |
+| enter | Open branch in tmux |
 | esc | Go back |
 | home | Cursor to start |
 | left | Cursor left |
@@ -176,7 +176,7 @@ Key binding configuration.
 | backspace | Delete search character |
 | down | Move down |
 | end | Cursor to end |
-| enter | Open branch |
+| enter | Open branch in tmux |
 | esc | Go back |
 | home | Cursor to start |
 | left | Cursor left |
@@ -198,5 +198,5 @@ Key binding configuration.
 
 ### Search
 
-In list modes (Repository/Branch Selection), any printable character will start or continue search filtering.
+In list modes (Repository, Branch, and New Branch Base Selection), any printable character will start or continue search filtering.
 <!-- KEYS END -->

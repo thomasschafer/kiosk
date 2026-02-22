@@ -119,7 +119,8 @@ fn main() -> ExitCode {
     let result = match cli.command {
         Some(Commands::Clean { dry_run }) => {
             let search_dirs = config.resolved_search_dirs();
-            clean_orphaned_worktrees(&search_dirs, dry_run).map_err(crate::cli::CliError::from)
+            clean_orphaned_worktrees(&search_dirs, git.as_ref(), dry_run)
+                .map_err(crate::cli::CliError::from)
         }
         Some(Commands::List { json }) => crate::cli::cmd_list(&config, git.as_ref(), json),
         Some(Commands::Branches { repo, json }) => {
@@ -341,6 +342,7 @@ fn should_disable_alt_screen() -> bool {
 
 fn clean_orphaned_worktrees(
     search_dirs: &[(std::path::PathBuf, u16)],
+    git: &dyn GitProvider,
     dry_run: bool,
 ) -> Result<()> {
     let mut orphaned_worktrees = Vec::new();
@@ -364,41 +366,75 @@ fn clean_orphaned_worktrees(
     }
 
     if orphaned_worktrees.is_empty() {
-        println!("No orphaned worktrees found.");
-        return Ok(());
-    }
+        println!("No orphaned worktree directories found.");
+    } else {
+        println!("Found {} orphaned worktree(s):", orphaned_worktrees.len());
+        for worktree in &orphaned_worktrees {
+            println!("  {}", worktree.display());
+        }
 
-    println!("Found {} orphaned worktree(s):", orphaned_worktrees.len());
-    for worktree in &orphaned_worktrees {
-        println!("  {}", worktree.display());
-    }
+        if dry_run {
+            println!("\n(Dry run - no changes made. Run without --dry-run to remove them.)");
+        } else {
+            // Prompt for confirmation
+            print!("\nRemove these orphaned worktrees? (y/N): ");
+            io::Write::flush(&mut io::stdout())?;
 
-    if dry_run {
-        println!("\n(Dry run - no changes made. Run without --dry-run to remove them.)");
-        return Ok(());
-    }
+            let mut input = String::new();
+            io::stdin().read_line(&mut input)?;
 
-    // Prompt for confirmation
-    print!("\nRemove these orphaned worktrees? (y/N): ");
-    io::Write::flush(&mut io::stdout())?;
-
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-
-    if input.trim().to_lowercase() != "y" {
-        println!("Cancelled.");
-        return Ok(());
-    }
-
-    // Remove the worktrees
-    for worktree in orphaned_worktrees {
-        match remove_worktree(&worktree) {
-            Ok(()) => println!("Removed: {}", worktree.display()),
-            Err(e) => eprintln!("Failed to remove {}: {}", worktree.display(), e),
+            if input.trim().to_lowercase() != "y" {
+                println!("Skipped orphaned worktree directory removal.");
+            } else {
+                // Remove the worktrees
+                for worktree in orphaned_worktrees {
+                    match remove_worktree(&worktree) {
+                        Ok(()) => println!("Removed: {}", worktree.display()),
+                        Err(e) => eprintln!("Failed to remove {}: {}", worktree.display(), e),
+                    }
+                }
+            }
         }
     }
 
+    clean_prunable_worktree_metadata(search_dirs, git, dry_run);
     Ok(())
+}
+
+fn clean_prunable_worktree_metadata(
+    search_dirs: &[(std::path::PathBuf, u16)],
+    git: &dyn GitProvider,
+    dry_run: bool,
+) {
+    let repos = git.discover_repos(search_dirs);
+    if repos.is_empty() {
+        println!("No repositories discovered for worktree metadata prune.");
+        return;
+    }
+
+    if dry_run {
+        println!(
+            "Would prune stale worktree metadata in {} repos.",
+            repos.len()
+        );
+        return;
+    }
+
+    let mut failures = Vec::new();
+    for repo in repos {
+        if let Err(error) = git.prune_worktrees(&repo.path) {
+            failures.push((repo.path, error));
+        }
+    }
+
+    if failures.is_empty() {
+        println!("Pruned stale worktree metadata in discovered repositories.");
+    } else {
+        eprintln!("Failed to prune stale worktree metadata:");
+        for (repo_path, error) in failures {
+            eprintln!("  {}: {}", repo_path.display(), error);
+        }
+    }
 }
 
 fn is_orphaned_worktree(path: &Path) -> bool {

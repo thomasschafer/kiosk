@@ -208,6 +208,46 @@ pub fn cmd_open(
     Ok(())
 }
 
+fn is_worktree_already_used_error(error: &anyhow::Error) -> bool {
+    error.to_string().contains("already used by worktree")
+}
+
+fn stale_worktree_hint(repo_path: &std::path::Path) -> String {
+    format!(
+        "stale worktree metadata may be blocking this branch. Try `git -C {} worktree prune --expire now` (or `kiosk clean`).",
+        repo_path.display()
+    )
+}
+
+fn run_with_stale_worktree_retry<F>(
+    git: &dyn GitProvider,
+    repo_path: &std::path::Path,
+    mut operation: F,
+) -> CliResult<()>
+where
+    F: FnMut() -> anyhow::Result<()>,
+{
+    let first_error = match operation() {
+        Ok(()) => return Ok(()),
+        Err(error) => error,
+    };
+
+    if !is_worktree_already_used_error(&first_error) {
+        return Err(CliError::from(first_error));
+    }
+
+    if let Err(prune_error) = git.prune_worktrees(repo_path) {
+        return Err(CliError::system(format!(
+            "{first_error}\n{hint}\nFailed to prune stale metadata automatically: {prune_error}",
+            hint = stale_worktree_hint(repo_path)
+        )));
+    }
+
+    operation().map_err(|retry_error| {
+        CliError::system(format!("{retry_error}\n{}", stale_worktree_hint(repo_path)))
+    })
+}
+
 #[allow(clippy::too_many_lines)]
 fn open_internal(
     config: &Config,
@@ -260,8 +300,9 @@ fn open_internal(
         }
 
         let wt = worktree_dir(&repo, new_branch).map_err(CliError::from)?;
-        git.create_branch_and_worktree(&repo.path, new_branch, base, &wt)
-            .map_err(CliError::from)?;
+        run_with_stale_worktree_retry(git, &repo.path, || {
+            git.create_branch_and_worktree(&repo.path, new_branch, base, &wt)
+        })?;
         created = true;
         let session = repo.tmux_session_name(&wt);
         (wt, session)
@@ -271,15 +312,17 @@ fn open_internal(
             (existing, session)
         } else if local.iter().any(|name| name == branch) {
             let wt = worktree_dir(&repo, branch).map_err(CliError::from)?;
-            git.add_worktree(&repo.path, branch, &wt)
-                .map_err(CliError::from)?;
+            run_with_stale_worktree_retry(git, &repo.path, || {
+                git.add_worktree(&repo.path, branch, &wt)
+            })?;
             created = true;
             let session = repo.tmux_session_name(&wt);
             (wt, session)
         } else if remote.iter().any(|name| name == branch) {
             let wt = worktree_dir(&repo, branch).map_err(CliError::from)?;
-            git.create_tracking_branch_and_worktree(&repo.path, branch, &wt)
-                .map_err(CliError::from)?;
+            run_with_stale_worktree_retry(git, &repo.path, || {
+                git.create_tracking_branch_and_worktree(&repo.path, branch, &wt)
+            })?;
             created = true;
             let session = repo.tmux_session_name(&wt);
             (wt, session)
@@ -695,6 +738,7 @@ pub fn print_error(error: &CliError, json: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::anyhow;
     use kiosk_core::{
         config, git::mock::MockGitProvider, git::repo::Worktree, tmux::mock::MockTmuxProvider,
     };
@@ -850,6 +894,91 @@ mod tests {
             tmux.sent_keys.lock().unwrap().as_slice(),
             &[("demo".to_string(), "echo MARKER".to_string())]
         );
+    }
+
+    #[test]
+    fn open_retries_after_stale_worktree_conflict() {
+        let config = test_config();
+        let mut git = MockGitProvider::default();
+        let tmux = MockTmuxProvider {
+            sessions: Mutex::new(Vec::new()),
+            inside_tmux: true,
+            ..Default::default()
+        };
+
+        git.repos = vec![repo("/tmp/demo", "demo")];
+        git.worktrees = vec![Worktree {
+            path: PathBuf::from("/tmp/demo"),
+            branch: Some("main".to_string()),
+            is_main: true,
+        }];
+        git.branches = vec!["main".to_string(), "feat/test".to_string()];
+        *git.add_worktree_result.lock().unwrap() = Some(Err(anyhow!(
+            "git worktree add failed: fatal: 'feat/test' is already used by worktree at '/tmp/.kiosk_worktrees/demo--feat-test'"
+        )));
+
+        let output = open_internal(
+            &config,
+            &git,
+            &tmux,
+            &OpenArgs {
+                repo: "demo".to_string(),
+                branch: Some("feat/test".to_string()),
+                new_branch: None,
+                base: None,
+                no_switch: true,
+                run: None,
+                log: false,
+                json: false,
+            },
+        )
+        .unwrap();
+
+        assert!(output.created);
+        assert_eq!(git.prune_worktrees_calls.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn open_shows_stale_worktree_hint_when_auto_prune_fails() {
+        let config = test_config();
+        let mut git = MockGitProvider::default();
+        let tmux = MockTmuxProvider {
+            sessions: Mutex::new(Vec::new()),
+            inside_tmux: true,
+            ..Default::default()
+        };
+
+        git.repos = vec![repo("/tmp/demo", "demo")];
+        git.worktrees = vec![Worktree {
+            path: PathBuf::from("/tmp/demo"),
+            branch: Some("main".to_string()),
+            is_main: true,
+        }];
+        git.branches = vec!["main".to_string(), "feat/test".to_string()];
+        *git.add_worktree_result.lock().unwrap() = Some(Err(anyhow!(
+            "git worktree add failed: fatal: 'feat/test' is already used by worktree at '/tmp/.kiosk_worktrees/demo--feat-test'"
+        )));
+        *git.prune_worktrees_result.lock().unwrap() = Some(Err(anyhow!("prune failed")));
+
+        let error = open_internal(
+            &config,
+            &git,
+            &tmux,
+            &OpenArgs {
+                repo: "demo".to_string(),
+                branch: Some("feat/test".to_string()),
+                new_branch: None,
+                base: None,
+                no_switch: true,
+                run: None,
+                log: false,
+                json: false,
+            },
+        )
+        .unwrap_err();
+
+        assert!(error.message().contains("stale worktree metadata"));
+        assert!(error.message().contains("worktree prune --expire now"));
     }
 
     #[test]

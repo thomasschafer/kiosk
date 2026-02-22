@@ -158,7 +158,7 @@ impl GitProvider for CliGitProvider {
 
     fn prune_worktrees(&self, repo_path: &Path) -> Result<()> {
         let output = Command::new("git")
-            .args(["worktree", "prune"])
+            .args(["worktree", "prune", "--expire", "now"])
             .current_dir(repo_path)
             .output()?;
 

@@ -13,36 +13,24 @@ use std::{
 pub struct CliGitProvider;
 
 impl GitProvider for CliGitProvider {
+    fn scan_repos(&self, dirs: &[(PathBuf, u16)]) -> Vec<Repo> {
+        let mut repos_with_dirs = Vec::new();
+
+        for (dir, depth) in dirs {
+            self.scan_dir_recursive(dir, dir, *depth, &mut repos_with_dirs, false);
+        }
+
+        Self::apply_collision_resolution(repos_with_dirs)
+    }
+
     fn discover_repos(&self, dirs: &[(PathBuf, u16)]) -> Vec<Repo> {
         let mut repos_with_dirs = Vec::new();
 
         for (dir, depth) in dirs {
-            self.scan_dir_recursive(dir, dir, *depth, &mut repos_with_dirs);
+            self.scan_dir_recursive(dir, dir, *depth, &mut repos_with_dirs, true);
         }
 
-        repos_with_dirs.sort_by(|a, b| a.0.name.to_lowercase().cmp(&b.0.name.to_lowercase()));
-
-        // Count occurrences of each repo name
-        let mut name_counts = std::collections::HashMap::<String, usize>::new();
-        for (repo, _) in &repos_with_dirs {
-            *name_counts.entry(repo.name.clone()).or_insert(0) += 1;
-        }
-
-        // Apply collision resolution
-        let mut repos = Vec::new();
-        for (mut repo, search_dir) in repos_with_dirs {
-            if name_counts[&repo.name] > 1 {
-                // Multiple repos with same name - disambiguate with parent dir
-                let parent_dir_name = search_dir.file_name().unwrap_or_default().to_string_lossy();
-                repo.session_name = format!("{}--({parent_dir_name})", repo.name);
-            } else {
-                // Unique name - use as is
-                repo.session_name.clone_from(&repo.name);
-            }
-            repos.push(repo);
-        }
-
-        repos
+        Self::apply_collision_resolution(repos_with_dirs)
     }
 
     fn list_branches(&self, repo_path: &Path) -> Vec<String> {
@@ -285,6 +273,49 @@ mod tests {
     }
 
     #[test]
+    fn test_scan_repos_returns_empty_worktrees() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_dir = tmp.path().join("my-repo");
+        fs::create_dir_all(&repo_dir).unwrap();
+        init_test_repo(&repo_dir);
+
+        let provider = CliGitProvider;
+        let repos = provider.scan_repos(&[(tmp.path().to_path_buf(), 1)]);
+        assert_eq!(repos.len(), 1);
+        assert_eq!(repos[0].name, "my-repo");
+        assert_eq!(repos[0].session_name, "my-repo");
+        assert!(
+            repos[0].worktrees.is_empty(),
+            "scan_repos should return repos with empty worktrees"
+        );
+    }
+
+    #[test]
+    fn test_scan_repos_collision_detection() {
+        let tmp1 = tempfile::tempdir().unwrap();
+        let tmp2 = tempfile::tempdir().unwrap();
+
+        let repo1 = tmp1.path().join("myrepo");
+        let repo2 = tmp2.path().join("myrepo");
+        fs::create_dir_all(&repo1).unwrap();
+        fs::create_dir_all(&repo2).unwrap();
+        init_test_repo(&repo1);
+        init_test_repo(&repo2);
+
+        let provider = CliGitProvider;
+        let scanned = provider.scan_repos(&[
+            (tmp1.path().to_path_buf(), 1),
+            (tmp2.path().to_path_buf(), 1),
+        ]);
+        assert_eq!(scanned.len(), 2);
+        assert_eq!(scanned[0].name, "myrepo");
+        assert_eq!(scanned[1].name, "myrepo");
+        let session_names: std::collections::HashSet<String> =
+            scanned.iter().map(|r| r.session_name.clone()).collect();
+        assert_eq!(session_names.len(), 2);
+    }
+
+    #[test]
     fn test_discover_repos_sorted() {
         let tmp = tempfile::tempdir().unwrap();
         for name in ["zebra", "alpha", "Middle"] {
@@ -471,6 +502,7 @@ impl CliGitProvider {
         search_root: &'a Path,
         depth: u16,
         repos: &mut Vec<(Repo, &'a Path)>,
+        with_worktrees: bool,
     ) {
         let entries = match std::fs::read_dir(dir) {
             Ok(entries) => entries,
@@ -488,14 +520,53 @@ impl CliGitProvider {
 
             // If this directory is a git repo, add it
             if path.join(GIT_DIR_ENTRY).exists() {
-                if let Some(repo) = self.build_repo(&path) {
+                let repo = if with_worktrees {
+                    self.build_repo(&path)
+                } else {
+                    Self::build_repo_stub(&path)
+                };
+                if let Some(repo) = repo {
                     repos.push((repo, search_root));
                 }
             } else if depth > 1 {
                 // Recurse into subdirectories if we have remaining depth
-                self.scan_dir_recursive(&path, search_root, depth - 1, repos);
+                self.scan_dir_recursive(&path, search_root, depth - 1, repos, with_worktrees);
             }
         }
+    }
+
+    /// Sorts repos by name and disambiguates session names for collisions.
+    fn apply_collision_resolution(mut repos_with_dirs: Vec<(Repo, &Path)>) -> Vec<Repo> {
+        repos_with_dirs.sort_by(|a, b| a.0.name.to_lowercase().cmp(&b.0.name.to_lowercase()));
+
+        let mut name_counts = std::collections::HashMap::<String, usize>::new();
+        for (repo, _) in &repos_with_dirs {
+            *name_counts.entry(repo.name.clone()).or_insert(0) += 1;
+        }
+
+        let mut repos = Vec::new();
+        for (mut repo, search_dir) in repos_with_dirs {
+            if name_counts[&repo.name] > 1 {
+                let parent_dir_name = search_dir.file_name().unwrap_or_default().to_string_lossy();
+                repo.session_name = format!("{}--({parent_dir_name})", repo.name);
+            } else {
+                repo.session_name.clone_from(&repo.name);
+            }
+            repos.push(repo);
+        }
+
+        repos
+    }
+
+    /// Create a repo stub from a path — no git calls, empty worktrees.
+    fn build_repo_stub(path: &Path) -> Option<Repo> {
+        let name = path.file_name()?.to_string_lossy().to_string();
+        Some(Repo {
+            session_name: name.clone(),
+            name,
+            path: path.to_path_buf(),
+            worktrees: vec![],
+        })
     }
 
     fn build_repo(&self, path: &Path) -> Option<Repo> {

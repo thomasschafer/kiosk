@@ -24,11 +24,37 @@ pub(super) fn spawn_repo_discovery<T: TmuxProvider + ?Sized + 'static>(
         if sender.cancel.load(Ordering::Relaxed) {
             return;
         }
-        let repos = git.discover_repos(&search_dirs);
+
+        // Phase 1: fast dir-only scan (no git calls)
+        let repos = git.scan_repos(&search_dirs);
+        sender.send(AppEvent::ReposDiscovered {
+            repos: repos.clone(),
+            session_activity: HashMap::new(),
+        });
+
+        if sender.cancel.load(Ordering::Relaxed) {
+            return;
+        }
+
+        // Phase 2: enrich with worktrees (parallel git calls) + session activity
+        let repo_paths: Vec<PathBuf> = repos.iter().map(|r| r.path.clone()).collect();
+        let worktrees_by_repo: Vec<(PathBuf, Vec<kiosk_core::git::Worktree>)> =
+            thread::scope(|s| {
+                let handles: Vec<_> = repo_paths
+                    .iter()
+                    .map(|path| {
+                        let git = &git;
+                        s.spawn(move || (path.clone(), git.list_worktrees(path)))
+                    })
+                    .collect();
+                handles.into_iter().map(|h| h.join().unwrap()).collect()
+            });
+
         let session_activity: HashMap<String, u64> =
             tmux.list_sessions_with_activity().into_iter().collect();
-        sender.send(AppEvent::ReposDiscovered {
-            repos,
+
+        sender.send(AppEvent::ReposEnriched {
+            worktrees_by_repo,
             session_activity,
         });
     });

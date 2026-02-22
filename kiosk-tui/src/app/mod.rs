@@ -17,7 +17,7 @@ use kiosk_core::{
     event::AppEvent,
     git::GitProvider,
     pending_delete::save_pending_worktree_deletes,
-    state::{AppState, Mode},
+    state::{AppState, Mode, SearchableList},
     tmux::TmuxProvider,
 };
 use ratatui::{
@@ -317,6 +317,44 @@ fn draw_confirm_delete_dialog(
     }
 }
 
+/// Rebuild a `SearchableList`'s filtered entries from new item names while preserving
+/// the current search text, cursor position, and selection (clamped to bounds).
+fn rebuild_filtered_preserving_search(list: &mut SearchableList, names: &[&str]) {
+    let prev_search = list.search.clone();
+    let prev_cursor = list.cursor;
+
+    if prev_search.is_empty() {
+        list.filtered = (0..names.len()).map(|i| (i, 0)).collect();
+    } else {
+        let matcher = SkimMatcherV2::default();
+        let mut scored: Vec<(usize, i64)> = names
+            .iter()
+            .enumerate()
+            .filter_map(|(i, name)| {
+                matcher
+                    .fuzzy_match(name, &prev_search)
+                    .map(|score| (i, score))
+            })
+            .collect();
+        scored.sort_by(|a, b| b.1.cmp(&a.1));
+        list.filtered = scored;
+    }
+
+    list.search = prev_search;
+    list.cursor = prev_cursor;
+    if let Some(sel) = list.selected {
+        if sel >= list.filtered.len() {
+            list.selected = if list.filtered.is_empty() {
+                None
+            } else {
+                Some(0)
+            };
+        }
+    } else if !list.filtered.is_empty() {
+        list.selected = Some(0);
+    }
+}
+
 /// Handle events from background tasks
 #[allow(clippy::too_many_lines)]
 fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
@@ -331,7 +369,20 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             mut repos,
             session_activity,
         } => {
-            state.session_activity = session_activity;
+            if !session_activity.is_empty() {
+                state.session_activity = session_activity;
+            }
+
+            // Preserve worktrees from the pre-loaded initial repo (if any)
+            if let Some(initial_path) = state.current_repo_path.as_deref()
+                && let Some(existing) = state.repos.iter().find(|r| r.path == initial_path)
+                && !existing.worktrees.is_empty()
+            {
+                let worktrees = existing.worktrees.clone();
+                if let Some(scanned) = repos.iter_mut().find(|r| r.path == initial_path) {
+                    scanned.worktrees = worktrees;
+                }
+            }
 
             // Sort repos (sort_repos handles current_repo_path priority)
             kiosk_core::state::sort_repos(
@@ -340,14 +391,29 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
                 &state.session_activity,
             );
 
-            state.repo_list.reset(repos.len());
+            // Track selected repo so we can update the index after re-sort
+            let selected_repo_path = state
+                .selected_repo_idx
+                .map(|idx| state.repos[idx].path.clone());
+
             state.repos = repos;
             state.loading_repos = false;
             state.loading_branches = false;
-            if state.reconcile_pending_worktree_deletes() {
-                let _ = save_pending_worktree_deletes(&state.pending_worktree_deletes);
+
+            // Update selected_repo_idx to follow the same repo after re-sort
+            state.selected_repo_idx =
+                selected_repo_path.and_then(|path| state.repos.iter().position(|r| r.path == path));
+
+            let names: Vec<&str> = state.repos.iter().map(|r| r.name.as_str()).collect();
+            rebuild_filtered_preserving_search(&mut state.repo_list, &names);
+
+            // Don't reconcile pending deletes here — worktree data may be incomplete
+            // (scan_repos sends stubs). ReposEnriched handles reconciliation.
+
+            // Only switch to RepoSelect from Loading — don't kick users out of BranchSelect
+            if matches!(state.mode, Mode::Loading(_)) {
+                state.mode = Mode::RepoSelect;
             }
-            state.mode = Mode::RepoSelect;
         }
         AppEvent::WorktreeCreated { path, session_name } => {
             return Some(OpenAction::Open {
@@ -419,47 +485,45 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
         }
         AppEvent::RemoteBranchesLoaded { branches } => {
             if state.mode == Mode::BranchSelect {
-                // Preserve current search/selection state
-                let prev_search = state.branch_list.search.clone();
-                let prev_cursor = state.branch_list.cursor;
-
                 state.branches.extend(branches);
-                // Re-apply filter with the expanded branch list
-                if prev_search.is_empty() {
-                    state.branch_list.filtered = state
-                        .branches
-                        .iter()
-                        .enumerate()
-                        .map(|(i, _)| (i, 0))
-                        .collect();
-                } else {
-                    // Re-run fuzzy filter
-                    let names: Vec<String> =
-                        state.branches.iter().map(|b| b.name.clone()).collect();
-                    let matcher = SkimMatcherV2::default();
-                    let mut scored: Vec<(usize, i64)> = names
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(i, item)| {
-                            matcher
-                                .fuzzy_match(item, &prev_search)
-                                .map(|score| (i, score))
-                        })
-                        .collect();
-                    scored.sort_by(|a, b| b.1.cmp(&a.1));
-                    state.branch_list.filtered = scored;
+                let names: Vec<&str> = state.branches.iter().map(|b| b.name.as_str()).collect();
+                rebuild_filtered_preserving_search(&mut state.branch_list, &names);
+            }
+        }
+        AppEvent::ReposEnriched {
+            worktrees_by_repo,
+            session_activity,
+        } => {
+            state.session_activity = session_activity;
+
+            // Update worktrees for each repo
+            for (repo_path, worktrees) in worktrees_by_repo {
+                if let Some(repo) = state.repos.iter_mut().find(|r| r.path == repo_path) {
+                    repo.worktrees = worktrees;
                 }
-                state.branch_list.cursor = prev_cursor;
-                // Keep selection if valid, otherwise reset
-                if let Some(sel) = state.branch_list.selected
-                    && sel >= state.branch_list.filtered.len()
-                {
-                    state.branch_list.selected = if state.branch_list.filtered.is_empty() {
-                        None
-                    } else {
-                        Some(0)
-                    };
-                }
+            }
+
+            // Track selected repo so we can update the index after re-sort
+            let selected_repo_path = state
+                .selected_repo_idx
+                .map(|idx| state.repos[idx].path.clone());
+
+            // Re-sort repos with full recency data
+            kiosk_core::state::sort_repos(
+                &mut state.repos,
+                state.current_repo_path.as_deref(),
+                &state.session_activity,
+            );
+
+            // Update selected_repo_idx to follow the same repo after re-sort
+            state.selected_repo_idx =
+                selected_repo_path.and_then(|path| state.repos.iter().position(|r| r.path == path));
+
+            let names: Vec<&str> = state.repos.iter().map(|r| r.name.as_str()).collect();
+            rebuild_filtered_preserving_search(&mut state.repo_list, &names);
+
+            if state.reconcile_pending_worktree_deletes() {
+                let _ = save_pending_worktree_deletes(&state.pending_worktree_deletes);
             }
         }
         AppEvent::GitError(msg) => {
@@ -1713,5 +1777,166 @@ mod tests {
             &sender,
         );
         assert_eq!(state.repo_list.cursor, 5);
+    }
+
+    #[test]
+    fn test_repos_discovered_preserves_search_state() {
+        let repos = vec![make_repo("alpha"), make_repo("beta"), make_repo("gamma")];
+        let mut state = AppState::new(repos, None);
+        state.mode = Mode::RepoSelect;
+
+        // Simulate user typing "al" in search
+        state.repo_list.search = "al".to_string();
+        state.repo_list.cursor = 2;
+        let matcher = SkimMatcherV2::default();
+        state.repo_list.filtered = state
+            .repos
+            .iter()
+            .enumerate()
+            .filter_map(|(i, r)| matcher.fuzzy_match(&r.name, "al").map(|score| (i, score)))
+            .collect();
+        state.repo_list.selected = if state.repo_list.filtered.is_empty() {
+            None
+        } else {
+            Some(0)
+        };
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux = Arc::new(MockTmuxProvider::default());
+        let sender = make_sender();
+
+        // New repos arrive (simulating background discovery)
+        let new_repos = vec![
+            make_repo("alpha"),
+            make_repo("beta"),
+            make_repo("gamma"),
+            make_repo("delta"),
+        ];
+
+        process_app_event(
+            AppEvent::ReposDiscovered {
+                repos: new_repos,
+                session_activity: std::collections::HashMap::new(),
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+        );
+
+        // Search text and cursor must be preserved
+        assert_eq!(state.repo_list.search, "al");
+        assert_eq!(state.repo_list.cursor, 2);
+        // "alpha" and "delta" match "al"; the others don't
+        assert!(
+            !state.repo_list.filtered.is_empty(),
+            "filtered should contain matches for 'al'"
+        );
+        for &(idx, _) in &state.repo_list.filtered {
+            assert!(
+                state.repos[idx].name.contains('a') || state.repos[idx].name.contains('l'),
+                "filtered repos should fuzzy-match 'al'"
+            );
+        }
+        assert_eq!(state.repos.len(), 4);
+        // Mode should stay RepoSelect, not get reset to Loading
+        assert_eq!(state.mode, Mode::RepoSelect);
+    }
+
+    #[test]
+    fn test_repos_discovered_does_not_kick_from_branch_select() {
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+        state.mode = Mode::BranchSelect;
+        state.selected_repo_idx = Some(0);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux = Arc::new(MockTmuxProvider::default());
+        let sender = make_sender();
+
+        process_app_event(
+            AppEvent::ReposDiscovered {
+                repos: vec![make_repo("alpha"), make_repo("beta")],
+                session_activity: std::collections::HashMap::new(),
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+        );
+
+        // Should stay in BranchSelect
+        assert_eq!(state.mode, Mode::BranchSelect);
+        assert_eq!(state.repos.len(), 2);
+    }
+
+    #[test]
+    fn test_repos_enriched_updates_worktrees_and_preserves_search() {
+        let repos = vec![make_repo("alpha"), make_repo("beta")];
+        let mut state = AppState::new(repos, None);
+        state.mode = Mode::RepoSelect;
+        // Both repos should have empty worktrees (simulating scan phase)
+        assert!(state.repos[0].worktrees.len() <= 1);
+
+        // Simulate user typing in search
+        state.repo_list.search = "bet".to_string();
+        state.repo_list.cursor = 3;
+        let matcher = SkimMatcherV2::default();
+        state.repo_list.filtered = state
+            .repos
+            .iter()
+            .enumerate()
+            .filter_map(|(i, r)| matcher.fuzzy_match(&r.name, "bet").map(|score| (i, score)))
+            .collect();
+        state.repo_list.selected = Some(0);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux = Arc::new(MockTmuxProvider::default());
+        let sender = make_sender();
+
+        let new_worktrees = vec![Worktree {
+            path: PathBuf::from("/tmp/alpha"),
+            branch: Some("main".to_string()),
+            is_main: true,
+        }];
+
+        let mut activity = std::collections::HashMap::new();
+        activity.insert("alpha".to_string(), 500);
+
+        process_app_event(
+            AppEvent::ReposEnriched {
+                worktrees_by_repo: vec![
+                    (PathBuf::from("/tmp/alpha"), new_worktrees),
+                    (
+                        PathBuf::from("/tmp/beta"),
+                        vec![Worktree {
+                            path: PathBuf::from("/tmp/beta"),
+                            branch: Some("main".to_string()),
+                            is_main: true,
+                        }],
+                    ),
+                ],
+                session_activity: activity,
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+        );
+
+        // Worktrees should be updated
+        let alpha = state.repos.iter().find(|r| r.name == "alpha").unwrap();
+        assert_eq!(alpha.worktrees.len(), 1);
+        assert_eq!(alpha.worktrees[0].branch.as_deref(), Some("main"));
+
+        let beta = state.repos.iter().find(|r| r.name == "beta").unwrap();
+        assert_eq!(beta.worktrees.len(), 1);
+
+        // Search state preserved
+        assert_eq!(state.repo_list.search, "bet");
+        assert_eq!(state.repo_list.cursor, 3);
+
+        // Session activity updated
+        assert_eq!(state.session_activity.get("alpha"), Some(&500));
     }
 }

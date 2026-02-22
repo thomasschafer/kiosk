@@ -3,6 +3,9 @@ use anyhow::Result;
 use std::path::{Path, PathBuf};
 
 pub trait GitProvider: Send + Sync {
+    /// Fast directory scan: returns repos with empty worktrees (no git calls).
+    fn scan_repos(&self, dirs: &[(PathBuf, u16)]) -> Vec<Repo>;
+    /// Full discovery: dir scan + worktree enrichment (calls git per repo).
     fn discover_repos(&self, dirs: &[(PathBuf, u16)]) -> Vec<Repo>;
     fn list_branches(&self, repo_path: &Path) -> Vec<String>;
     fn list_remote_branches(&self, repo_path: &Path) -> Vec<String>;

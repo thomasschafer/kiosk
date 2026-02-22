@@ -223,6 +223,18 @@ impl KeysConfig {
         }
     }
 
+    /// Return keymap layers in canonical documentation order.
+    pub fn doc_sections(&self) -> [(&'static str, &KeyMap); 6] {
+        [
+            ("general", &self.general),
+            ("text_edit", &self.text_edit),
+            ("list_navigation", &self.list_navigation),
+            ("modal", &self.modal),
+            ("repo_select", &self.repo_select),
+            ("branch_select", &self.branch_select),
+        ]
+    }
+
     /// Find the first key bound to a given command in a keymap.
     pub fn find_key(keymap: &KeyMap, command: &Command) -> Option<KeyEvent> {
         // Prefer shorter/simpler key representations
@@ -648,6 +660,27 @@ mod tests {
                 has_session: false,
             }),
             &["general", "modal"]
+        );
+    }
+
+    #[test]
+    fn test_doc_sections_order() {
+        let keys = KeysConfig::default();
+        let names: Vec<_> = keys
+            .doc_sections()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "general",
+                "text_edit",
+                "list_navigation",
+                "modal",
+                "repo_select",
+                "branch_select",
+            ]
         );
     }
 

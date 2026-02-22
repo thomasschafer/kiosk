@@ -155,7 +155,7 @@ pub struct KeysConfig {
     pub general: KeyMap,
     pub text_edit: KeyMap,
     pub list_navigation: KeyMap,
-    pub confirm_cancel: KeyMap,
+    pub modal: KeyMap,
     pub repo_select: KeyMap,
     pub branch_select: KeyMap,
 }
@@ -170,7 +170,7 @@ struct KeysConfigRaw {
     #[serde(default)]
     list_navigation: HashMap<String, String>,
     #[serde(default)]
-    confirm_cancel: HashMap<String, String>,
+    modal: HashMap<String, String>,
     #[serde(default)]
     repo_select: HashMap<String, String>,
     #[serde(default)]
@@ -184,48 +184,43 @@ impl Default for KeysConfig {
 }
 
 impl KeysConfig {
+    const REPO_SELECT_ORDER: &[&str] = &["general", "text_edit", "list_navigation", "repo_select"];
+    const BRANCH_SELECT_ORDER: &[&str] =
+        &["general", "text_edit", "list_navigation", "branch_select"];
+    const NEW_BRANCH_BASE_ORDER: &[&str] = &["general", "text_edit", "list_navigation", "modal"];
+    const CONFIRM_DELETE_ORDER: &[&str] = &["general", "modal"];
+    const GENERAL_ONLY_ORDER: &[&str] = &["general"];
+
     pub fn new() -> Self {
         Self {
             general: Self::default_general(),
             text_edit: Self::default_text_edit(),
             list_navigation: Self::default_list_navigation(),
-            confirm_cancel: Self::default_confirm_cancel(),
+            modal: Self::default_modal(),
             repo_select: Self::default_repo_select(),
             branch_select: Self::default_branch_select(),
         }
     }
 
-    /// Build the effective keymap for a given app mode using precedence:
-    /// general < shared layers < mode-specific
+    /// Build the effective keymap for a given app mode.
     pub fn keymap_for_mode(&self, mode: &Mode) -> KeyMap {
         let mut combined = KeyMap::new();
-        Self::apply_layer(&mut combined, &self.general);
-
-        match mode {
-            Mode::RepoSelect => {
-                Self::apply_layer(&mut combined, &self.text_edit);
-                Self::apply_layer(&mut combined, &self.list_navigation);
-                Self::apply_layer(&mut combined, &self.repo_select);
-            }
-            Mode::BranchSelect => {
-                Self::apply_layer(&mut combined, &self.text_edit);
-                Self::apply_layer(&mut combined, &self.list_navigation);
-                Self::apply_layer(&mut combined, &self.branch_select);
-            }
-            Mode::NewBranchBase => {
-                Self::apply_layer(&mut combined, &self.text_edit);
-                Self::apply_layer(&mut combined, &self.list_navigation);
-                Self::apply_layer(&mut combined, &self.confirm_cancel);
-            }
-            Mode::ConfirmDelete { .. } => {
-                Self::apply_layer(&mut combined, &self.confirm_cancel);
-            }
-            Mode::Help { .. } | Mode::Loading(_) => {
-                // general-only
-            }
+        for layer in Self::layer_order_for_mode(mode) {
+            self.apply_named_layer(&mut combined, layer);
         }
 
         combined
+    }
+
+    /// Return layer precedence for a mode from lowest to highest priority.
+    pub fn layer_order_for_mode(mode: &Mode) -> &'static [&'static str] {
+        match mode {
+            Mode::RepoSelect => Self::REPO_SELECT_ORDER,
+            Mode::BranchSelect => Self::BRANCH_SELECT_ORDER,
+            Mode::NewBranchBase => Self::NEW_BRANCH_BASE_ORDER,
+            Mode::ConfirmDelete { .. } => Self::CONFIRM_DELETE_ORDER,
+            Mode::Help { .. } | Mode::Loading(_) => Self::GENERAL_ONLY_ORDER,
+        }
     }
 
     /// Find the first key bound to a given command in a keymap.
@@ -248,6 +243,19 @@ impl KeysConfig {
                 base.insert(*key, command.clone());
             }
         }
+    }
+
+    fn apply_named_layer(&self, base: &mut KeyMap, layer_name: &str) {
+        let layer = match layer_name {
+            "general" => &self.general,
+            "text_edit" => &self.text_edit,
+            "list_navigation" => &self.list_navigation,
+            "modal" => &self.modal,
+            "repo_select" => &self.repo_select,
+            "branch_select" => &self.branch_select,
+            _ => unreachable!("unknown keymap layer: {layer_name}"),
+        };
+        Self::apply_layer(base, layer);
     }
 
     fn default_general() -> KeyMap {
@@ -337,7 +345,7 @@ impl KeysConfig {
         map
     }
 
-    fn default_confirm_cancel() -> KeyMap {
+    fn default_modal() -> KeyMap {
         let mut map = KeyMap::new();
         map.insert(
             KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
@@ -412,9 +420,7 @@ impl KeysConfig {
         config
             .list_navigation
             .extend(Self::parse_keymap(&raw.list_navigation)?);
-        config
-            .confirm_cancel
-            .extend(Self::parse_keymap(&raw.confirm_cancel)?);
+        config.modal.extend(Self::parse_keymap(&raw.modal)?);
         config
             .repo_select
             .extend(Self::parse_keymap(&raw.repo_select)?);
@@ -466,7 +472,7 @@ mod tests {
         assert!(!config.general.is_empty());
         assert!(!config.text_edit.is_empty());
         assert!(!config.list_navigation.is_empty());
-        assert!(!config.confirm_cancel.is_empty());
+        assert!(!config.modal.is_empty());
         assert!(!config.repo_select.is_empty());
         assert!(!config.branch_select.is_empty());
     }
@@ -511,7 +517,7 @@ mod tests {
             general: HashMap::new(),
             text_edit: HashMap::new(),
             list_navigation: HashMap::new(),
-            confirm_cancel: HashMap::new(),
+            modal: HashMap::new(),
             repo_select: {
                 let mut map = HashMap::new();
                 map.insert("C-c".to_string(), "show_help".to_string());
@@ -532,7 +538,7 @@ mod tests {
             general: HashMap::new(),
             text_edit: HashMap::new(),
             list_navigation: HashMap::new(),
-            confirm_cancel: HashMap::new(),
+            modal: HashMap::new(),
             repo_select: HashMap::new(),
             branch_select: {
                 let mut map = HashMap::new();
@@ -572,6 +578,77 @@ mod tests {
         assert_eq!(keymap.get(&right), Some(&Command::MoveCursorRight));
         assert_eq!(keymap.get(&home), Some(&Command::MoveCursorStart));
         assert_eq!(keymap.get(&end), Some(&Command::MoveCursorEnd));
+    }
+
+    #[test]
+    fn test_modal_precedence_over_general_in_confirm_delete() {
+        let raw = KeysConfigRaw {
+            general: {
+                let mut map = HashMap::new();
+                map.insert("enter".to_string(), "quit".to_string());
+                map
+            },
+            text_edit: HashMap::new(),
+            list_navigation: HashMap::new(),
+            modal: HashMap::new(),
+            repo_select: HashMap::new(),
+            branch_select: HashMap::new(),
+        };
+
+        let config = KeysConfig::from_raw(&raw).unwrap();
+        let map = config.keymap_for_mode(&Mode::ConfirmDelete {
+            branch_name: "x".to_string(),
+            has_session: false,
+        });
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(map.get(&enter), Some(&Command::Confirm));
+    }
+
+    #[test]
+    fn test_modal_noop_can_unbind_general_in_confirm_delete() {
+        let raw = KeysConfigRaw {
+            general: {
+                let mut map = HashMap::new();
+                map.insert("esc".to_string(), "quit".to_string());
+                map
+            },
+            text_edit: HashMap::new(),
+            list_navigation: HashMap::new(),
+            modal: {
+                let mut map = HashMap::new();
+                map.insert("esc".to_string(), "noop".to_string());
+                map
+            },
+            repo_select: HashMap::new(),
+            branch_select: HashMap::new(),
+        };
+
+        let config = KeysConfig::from_raw(&raw).unwrap();
+        let map = config.keymap_for_mode(&Mode::ConfirmDelete {
+            branch_name: "x".to_string(),
+            has_session: false,
+        });
+        let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(map.get(&esc), None, "Esc should be unbound in modal");
+    }
+
+    #[test]
+    fn test_layer_order_is_exported_for_docs() {
+        assert_eq!(
+            KeysConfig::layer_order_for_mode(&Mode::RepoSelect),
+            &["general", "text_edit", "list_navigation", "repo_select"]
+        );
+        assert_eq!(
+            KeysConfig::layer_order_for_mode(&Mode::NewBranchBase),
+            &["general", "text_edit", "list_navigation", "modal"]
+        );
+        assert_eq!(
+            KeysConfig::layer_order_for_mode(&Mode::ConfirmDelete {
+                branch_name: "x".to_string(),
+                has_session: false,
+            }),
+            &["general", "modal"]
+        );
     }
 
     #[test]

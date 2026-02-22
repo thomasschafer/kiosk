@@ -100,6 +100,13 @@ Success/positive color (default: "green").
 
 Key binding configuration.
 
+Layer precedence is generated from runtime composition order (later layers override earlier ones):
+
+- `repo_select`: `general < text_edit < list_navigation < repo_select`
+- `branch_select`: `general < text_edit < list_navigation < branch_select`
+- `new_branch_base`: `general < text_edit < list_navigation < modal`
+- `confirm_delete`: `general < modal`
+
 Defaults are shown below.
 
 ```toml
@@ -127,7 +134,7 @@ Defaults are shown below.
 "pageup" = "page_up"
 "up" = "move_up"
 
-[keys.confirm_cancel]
+[keys.modal]
 "enter" = "confirm"
 "esc" = "cancel"
 

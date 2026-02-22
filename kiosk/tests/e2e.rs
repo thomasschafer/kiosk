@@ -776,6 +776,59 @@ tab = "noop"
 }
 
 #[test]
+fn test_e2e_modal_bindings_override_general() {
+    let env = TestEnv::new("modal-overrides-general");
+    let search_dir = env.search_dir();
+
+    let repo = search_dir.join("modal-repo");
+    fs::create_dir_all(&repo).unwrap();
+    init_test_repo(&repo);
+
+    // Create a branch and worktree for delete confirmation flow
+    run_git(&repo, &["branch", "feat/modal-test"]);
+    let wt_dir = search_dir
+        .join(WORKTREE_DIR_NAME)
+        .join("modal-repo--feat-modal-test");
+    fs::create_dir_all(&wt_dir).unwrap();
+    run_git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            &wt_dir.to_string_lossy(),
+            "feat/modal-test",
+        ],
+    );
+
+    // C-c quits generally, but should cancel inside modal due to [keys.modal].
+    let extra = r#"
+[keys.modal]
+C-c = "cancel"
+"#;
+    env.write_config_with_extra(&search_dir, extra);
+    env.launch_kiosk();
+
+    env.send_special("Tab");
+    wait_for_screen(&env, 2500, |s| s.contains("select branch"));
+    env.send("feat/modal-test");
+    env.send_special("C-x");
+
+    let screen = wait_for_screen(&env, 2000, |s| s.contains("Confirm Delete"));
+    assert!(
+        screen.contains("Confirm Delete"),
+        "Delete confirm dialog should be visible: {screen}"
+    );
+
+    // In modal, C-c should cancel dialog (not quit app).
+    env.send_special("C-c");
+    let screen = wait_for_screen(&env, 2000, |s| s.contains("select branch"));
+    assert!(
+        screen.contains("select branch") && !screen.contains("Confirm Delete"),
+        "C-c should cancel modal and stay in branch view: {screen}"
+    );
+}
+
+#[test]
 fn test_e2e_help_esc_dismiss() {
     let env = TestEnv::new("help-esc");
     let search_dir = env.search_dir();

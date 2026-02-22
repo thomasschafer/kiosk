@@ -187,7 +187,7 @@ impl GitProvider for CliGitProvider {
         Ok(())
     }
 
-    fn default_branch(&self, repo_path: &Path) -> Option<String> {
+    fn default_branch(&self, repo_path: &Path, local_branches: &[String]) -> Option<String> {
         // Try symbolic-ref first
         let output = Command::new("git")
             .args(["symbolic-ref", "refs/remotes/origin/HEAD"])
@@ -203,9 +203,8 @@ impl GitProvider for CliGitProvider {
         }
 
         // Fall back to checking local branches
-        let branches = self.list_branches(repo_path);
         for candidate in &["main", "master"] {
-            if branches.iter().any(|b| b == candidate) {
+            if local_branches.iter().any(|b| b == candidate) {
                 return Some((*candidate).to_string());
             }
         }

@@ -33,21 +33,6 @@ fn create_session_commands(
 }
 
 impl TmuxProvider for CliTmuxProvider {
-    fn list_sessions(&self) -> Vec<String> {
-        let output = Command::new("tmux")
-            .args(["list-sessions", "-F", "#{session_name}"])
-            .output();
-
-        let Ok(output) = output else {
-            return Vec::new();
-        };
-
-        String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .map(String::from)
-            .collect()
-    }
-
     fn list_sessions_with_activity(&self) -> Vec<(String, u64)> {
         let output = Command::new("tmux")
             .args(["list-sessions", "-F", "#{session_name}:#{session_activity}"])

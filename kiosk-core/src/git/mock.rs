@@ -81,7 +81,7 @@ impl GitProvider for MockGitProvider {
             .unwrap_or(Ok(()))
     }
 
-    fn default_branch(&self, _repo_path: &Path) -> Option<String> {
+    fn default_branch(&self, _repo_path: &Path, _local_branches: &[String]) -> Option<String> {
         self.default_branch.clone()
     }
 

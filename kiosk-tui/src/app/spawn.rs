@@ -114,6 +114,7 @@ pub(super) fn spawn_branch_loading<T: TmuxProvider + ?Sized + 'static>(
     tmux: &Arc<T>,
     sender: &EventSender,
     mut repo: Repo,
+    cwd: Option<PathBuf>,
 ) {
     let git = Arc::clone(git);
     let tmux = Arc::clone(tmux);
@@ -130,13 +131,14 @@ pub(super) fn spawn_branch_loading<T: TmuxProvider + ?Sized + 'static>(
         let session_activity: HashMap<String, u64> = sessions_with_activity.into_iter().collect();
         repo.worktrees = git.list_worktrees(&repo.path);
         let local_names = git.list_branches(&repo.path);
-        let default_branch = git.default_branch(&repo.path);
+        let default_branch = git.default_branch(&repo.path, &local_names);
         let branches = BranchEntry::build_sorted_with_activity(
             &repo,
             &local_names,
             &active_sessions,
             default_branch.as_deref(),
             &session_activity,
+            cwd.as_deref(),
         );
         sender.send(AppEvent::BranchesLoaded {
             branches,

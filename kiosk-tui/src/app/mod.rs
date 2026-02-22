@@ -398,8 +398,9 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             worktrees,
             local_names,
             default_branch: _,
-            session_activity: _,
+            session_activity,
         } => {
+            state.session_activity = session_activity;
             if let Some(repo_idx) = state.selected_repo_idx {
                 state.repos[repo_idx].worktrees = worktrees;
             }
@@ -611,7 +612,7 @@ fn process_action<T: TmuxProvider + ?Sized + 'static>(
         }
 
         Action::StartNewBranchFlow => {
-            handle_start_new_branch(state, git);
+            handle_start_new_branch(state);
         }
 
         Action::MoveSelection(delta) => {

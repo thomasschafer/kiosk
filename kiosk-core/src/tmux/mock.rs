@@ -11,10 +11,6 @@ pub struct MockTmuxProvider {
 }
 
 impl TmuxProvider for MockTmuxProvider {
-    fn list_sessions(&self) -> Vec<String> {
-        self.sessions.clone()
-    }
-
     fn list_sessions_with_activity(&self) -> Vec<(String, u64)> {
         if self.sessions_with_activity.is_empty() {
             // Fall back to sessions with timestamp 0

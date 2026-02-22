@@ -14,7 +14,10 @@ use kiosk_tui::{OpenAction, Theme};
 use std::{fs, io, path::Path, process::Command, process::ExitCode, sync::Arc};
 
 #[derive(Parser)]
-#[command(version, about = "Git-aware tmux session manager TUI")]
+#[command(
+    version,
+    about = "Tmux session manager with worktree support. Use the TUI for interactive browsing, or CLI subcommands for scripting and AI agent workflows."
+)]
 struct Cli {
     /// Override path to config file
     #[arg(short, long)]
@@ -34,12 +37,14 @@ enum Commands {
     },
     /// List discovered repositories
     List {
+        /// Output result as JSON
         #[arg(long)]
         json: bool,
     },
     /// List branches for a repository
     Branches {
         repo: String,
+        /// Output result as JSON
         #[arg(long)]
         json: bool,
     },
@@ -47,16 +52,22 @@ enum Commands {
     Open {
         repo: String,
         branch: Option<String>,
+        /// Create a new branch with this name
         #[arg(long)]
         new_branch: Option<String>,
+        /// Base branch for --new-branch
         #[arg(long)]
         base: Option<String>,
+        /// Create session without switching to it (required outside tmux)
         #[arg(long)]
         no_switch: bool,
+        /// Command to execute in the session after creation
         #[arg(long)]
         run: Option<String>,
+        /// Enable logging of all session output to a file
         #[arg(long)]
         log: bool,
+        /// Output result as JSON
         #[arg(long)]
         json: bool,
     },
@@ -64,13 +75,16 @@ enum Commands {
     Status {
         repo: String,
         branch: Option<String>,
+        /// Output result as JSON
         #[arg(long)]
         json: bool,
+        /// Number of lines to include in output
         #[arg(long)]
         lines: Option<usize>,
     },
     /// List active kiosk sessions
     Sessions {
+        /// Output result as JSON
         #[arg(long)]
         json: bool,
     },
@@ -78,8 +92,12 @@ enum Commands {
     Delete {
         repo: String,
         branch: String,
+        /// Force deletion even if the session is attached
         #[arg(long)]
         force: bool,
+        /// Output result as JSON
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -150,11 +168,13 @@ fn main() -> ExitCode {
             repo,
             branch,
             force,
+            json,
         }) => {
             let args = crate::cli::DeleteArgs {
                 repo,
                 branch,
                 force,
+                json,
             };
             crate::cli::cmd_delete(&config, git.as_ref(), tmux.as_ref(), &args)
         }
@@ -301,9 +321,10 @@ fn command_wants_json(command: Option<&Commands>) -> bool {
             | Commands::Branches { json, .. }
             | Commands::Sessions { json }
             | Commands::Open { json, .. }
-            | Commands::Status { json, .. },
+            | Commands::Status { json, .. }
+            | Commands::Delete { json, .. },
         ) => *json,
-        Some(Commands::Clean { .. } | Commands::Delete { .. }) | None => false,
+        Some(Commands::Clean { .. }) | None => false,
     }
 }
 

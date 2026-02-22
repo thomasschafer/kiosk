@@ -1580,12 +1580,16 @@ fn test_e2e_headless_open_status_delete_workflow() {
         "status output should include marker: {output_text}"
     );
 
-    let delete_output = env.run_cli(&["delete", &repo_name, &branch_name, "--force"]);
+    let delete_output = env.run_cli(&["delete", &repo_name, &branch_name, "--force", "--json"]);
     assert!(
         delete_output.status.success(),
         "delete should succeed: {}",
         String::from_utf8_lossy(&delete_output.stderr)
     );
+    let delete_json: Value = serde_json::from_slice(&delete_output.stdout).unwrap();
+    assert_eq!(delete_json["deleted"], Value::Bool(true));
+    assert_eq!(delete_json["repo"], Value::String(repo_name));
+    assert_eq!(delete_json["branch"], Value::String(branch_name));
 }
 
 #[test]

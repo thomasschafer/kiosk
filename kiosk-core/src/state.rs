@@ -340,7 +340,7 @@ impl BranchEntry {
             .collect()
     }
 
-    pub(crate) fn sort_entries(entries: &mut [Self]) {
+    pub fn sort_entries(entries: &mut [Self]) {
         entries.sort_by(|a, b| {
             // Remote branches always sort after local
             a.is_remote

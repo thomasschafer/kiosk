@@ -9,7 +9,7 @@ use kiosk_core::{
     tmux::TmuxProvider,
 };
 use serde::Serialize;
-use std::{collections::HashSet, fs, path::PathBuf};
+use std::{collections::HashSet, fmt::Write, fs, path::PathBuf, process::Command};
 
 pub type CliResult<T> = Result<T, CliError>;
 
@@ -82,6 +82,7 @@ pub struct DeleteArgs {
     pub repo: String,
     pub branch: String,
     pub force: bool,
+    pub json: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -113,6 +114,14 @@ struct SessionOutput {
     branch: Option<String>,
     path: PathBuf,
     attached: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct DeleteOutput {
+    deleted: bool,
+    repo: String,
+    branch: String,
+    session: String,
 }
 
 pub fn resolve_repo_exact<'a>(repos: &'a [Repo], name: &str) -> CliResult<&'a Repo> {
@@ -149,9 +158,7 @@ pub fn cmd_list(config: &Config, git: &dyn GitProvider, json: bool) -> CliResult
             serde_json::to_string(&output).map_err(|e| CliError::system(e.to_string()))?
         );
     } else {
-        for repo in output {
-            println!("{}\t{}", repo.name, repo.path.display());
-        }
+        print!("{}", format_repo_table(&output));
     }
 
     Ok(())
@@ -175,7 +182,7 @@ pub fn cmd_branches(
     let mut entries = BranchEntry::build_sorted(&repo, &local, &active_sessions);
     let remote = BranchEntry::build_remote(&git.list_remote_branches(&repo.path), &local);
     entries.extend(remote);
-    sort_branch_entries(&mut entries);
+    BranchEntry::sort_entries(&mut entries);
 
     if json {
         println!(
@@ -183,25 +190,7 @@ pub fn cmd_branches(
             serde_json::to_string(&entries).map_err(|e| CliError::system(e.to_string()))?
         );
     } else {
-        println!("BRANCH\tSTAT\tWORKTREE");
-        for entry in entries {
-            let stat = format!(
-                "{}{}{}{}",
-                if entry.is_current { '*' } else { '-' },
-                if entry.worktree_path.is_some() {
-                    'W'
-                } else {
-                    '-'
-                },
-                if entry.has_session { 'S' } else { '-' },
-                if entry.is_remote { 'R' } else { '-' },
-            );
-            let path = entry
-                .worktree_path
-                .as_ref()
-                .map_or_else(|| "-".to_string(), |p| p.display().to_string());
-            println!("{}\t{}\t{}", entry.name, stat, path);
-        }
+        print!("{}", format_branch_table(&entries));
     }
 
     Ok(())
@@ -393,25 +382,28 @@ fn status_internal(
         repo.path.clone()
     };
 
-    let session_name = repo.tmux_session_name(&worktree_path);
-    if !tmux.session_exists(&session_name) {
-        return Err(CliError::user(format!(
-            "session '{session_name}' does not exist"
-        )));
-    }
-
     let lines = args.lines.unwrap_or(50).max(1);
-    let log_path = log_path_for_session(&session_name)?;
-    let output = if log_path.exists() {
-        fs::read_to_string(&log_path)
-            .with_context(|| format!("failed to read log file {}", log_path.display()))
-            .map_err(CliError::from)?
-    } else {
-        tmux.capture_pane(&session_name, lines)
-            .map_err(CliError::from)?
-    };
+    let session_name = repo.tmux_session_name(&worktree_path);
+    let session_exists = tmux.session_exists(&session_name);
 
-    let clients = tmux.list_clients(&session_name);
+    let (output, clients) = if session_exists {
+        let captured = tmux
+            .capture_pane(&session_name, lines)
+            .map_err(CliError::from)?;
+        let clients = tmux.list_clients(&session_name);
+        (captured, clients)
+    } else {
+        let log_path = log_path_for_session(&session_name)?;
+        if !log_path.exists() {
+            return Err(CliError::user(format!(
+                "session '{session_name}' does not exist"
+            )));
+        }
+        let log = fs::read_to_string(&log_path)
+            .with_context(|| format!("failed to read log file {}", log_path.display()))
+            .map_err(CliError::from)?;
+        (tail_lines(&log, lines), Vec::new())
+    };
 
     Ok(StatusOutput {
         session: session_name,
@@ -457,17 +449,7 @@ pub fn cmd_sessions(
             serde_json::to_string(&output).map_err(|e| CliError::system(e.to_string()))?
         );
     } else {
-        for row in output {
-            let branch = row.branch.unwrap_or_else(|| "(detached)".to_string());
-            println!(
-                "{}\t{}\t{}\t{}\tattached={}",
-                row.session,
-                row.repo,
-                branch,
-                row.path.display(),
-                row.attached
-            );
-        }
+        print!("{}", format_session_table(&output));
     }
 
     Ok(())
@@ -514,6 +496,12 @@ pub fn cmd_delete(
         }
         tmux.kill_session(&session_name);
     }
+    let log_path = log_path_for_session(&session_name)?;
+    if log_path.exists() {
+        fs::remove_file(&log_path)
+            .with_context(|| format!("failed to remove log file {}", log_path.display()))
+            .map_err(CliError::from)?;
+    }
 
     let mut pending = load_pending_worktree_deletes();
     if pending
@@ -536,7 +524,32 @@ pub fn cmd_delete(
     save_pending_worktree_deletes(&pending).map_err(CliError::from)?;
 
     remove_result.map_err(CliError::from)?;
-    println!("deleted: {} {}", repo.name, args.branch);
+    let prune = Command::new("git")
+        .args(["worktree", "prune"])
+        .current_dir(&repo.path)
+        .output()
+        .map_err(|e| CliError::system(e.to_string()))?;
+    if !prune.status.success() {
+        return Err(CliError::system(format!(
+            "git worktree prune failed: {}",
+            String::from_utf8_lossy(&prune.stderr).trim()
+        )));
+    }
+
+    let output = DeleteOutput {
+        deleted: true,
+        repo: repo.name.clone(),
+        branch: args.branch.clone(),
+        session: session_name,
+    };
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string(&output).map_err(|e| CliError::system(e.to_string()))?
+        );
+    } else {
+        println!("deleted: {} {}", repo.name, args.branch);
+    }
 
     Ok(())
 }
@@ -548,23 +561,125 @@ fn find_worktree_by_branch(repo: &Repo, branch: &str) -> Option<PathBuf> {
         .map(|worktree| worktree.path.clone())
 }
 
-fn sort_branch_entries(entries: &mut [BranchEntry]) {
-    entries.sort_by(|left, right| {
-        left.is_remote
-            .cmp(&right.is_remote)
-            .then(right.has_session.cmp(&left.has_session))
-            .then(
-                right
-                    .worktree_path
-                    .is_some()
-                    .cmp(&left.worktree_path.is_some()),
-            )
-            .then(left.name.cmp(&right.name))
-    });
-}
-
 fn log_path_for_session(session_name: &str) -> CliResult<PathBuf> {
     Ok(log_dir()?.join(format!("{session_name}.log")))
+}
+
+fn tail_lines(content: &str, lines: usize) -> String {
+    let mut selected = content.lines().rev().take(lines).collect::<Vec<_>>();
+    selected.reverse();
+    selected.join("\n")
+}
+
+fn format_repo_table(repos: &[RepoOutput]) -> String {
+    let name_header = "repo";
+    let path_header = "path";
+    let name_width = repos
+        .iter()
+        .map(|repo| repo.name.len())
+        .max()
+        .unwrap_or(name_header.len())
+        .max(name_header.len());
+
+    let mut out = String::new();
+    let _ = writeln!(out, "{name_header:<name_width$}  {path_header}");
+    for repo in repos {
+        let _ = writeln!(out, "{:<name_width$}  {}", repo.name, repo.path.display());
+    }
+    out
+}
+
+fn format_branch_table(entries: &[BranchEntry]) -> String {
+    let branch_header = "branch";
+    let stat_header = "stat";
+    let worktree_header = "worktree";
+    let branch_width = entries
+        .iter()
+        .map(|entry| entry.name.len())
+        .max()
+        .unwrap_or(branch_header.len())
+        .max(branch_header.len());
+    let stat_width = stat_header.len().max(4);
+
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "{branch_header:<branch_width$}  {stat_header:<stat_width$}  {worktree_header}"
+    );
+    for entry in entries {
+        let stat = format!(
+            "{}{}{}{}",
+            if entry.is_current { '*' } else { '-' },
+            if entry.worktree_path.is_some() {
+                'W'
+            } else {
+                '-'
+            },
+            if entry.has_session { 'S' } else { '-' },
+            if entry.is_remote { 'R' } else { '-' },
+        );
+        let worktree = entry
+            .worktree_path
+            .as_ref()
+            .map_or_else(|| "-".to_string(), |path| path.display().to_string());
+        let _ = writeln!(
+            out,
+            "{:<branch_width$}  {:<stat_width$}  {}",
+            entry.name, stat, worktree
+        );
+    }
+    out
+}
+
+fn format_session_table(rows: &[SessionOutput]) -> String {
+    let session_header = "session";
+    let repo_header = "repo";
+    let branch_header = "branch";
+    let path_header = "path";
+    let attached_header = "attached";
+
+    let session_width = rows
+        .iter()
+        .map(|row| row.session.len())
+        .max()
+        .unwrap_or(session_header.len())
+        .max(session_header.len());
+    let repo_width = rows
+        .iter()
+        .map(|row| row.repo.len())
+        .max()
+        .unwrap_or(repo_header.len())
+        .max(repo_header.len());
+    let branch_width = rows
+        .iter()
+        .map(|row| row.branch.as_deref().unwrap_or("(detached)").len())
+        .max()
+        .unwrap_or(branch_header.len())
+        .max(branch_header.len());
+    let path_width = rows
+        .iter()
+        .map(|row| row.path.display().to_string().len())
+        .max()
+        .unwrap_or(path_header.len())
+        .max(path_header.len());
+
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "{session_header:<session_width$}  {repo_header:<repo_width$}  {branch_header:<branch_width$}  {path_header:<path_width$}  {attached_header}"
+    );
+    for row in rows {
+        let _ = writeln!(
+            out,
+            "{:<session_width$}  {:<repo_width$}  {:<branch_width$}  {:<path_width$}  {}",
+            row.session,
+            row.repo,
+            row.branch.as_deref().unwrap_or("(detached)"),
+            row.path.display(),
+            row.attached
+        );
+    }
+    out
 }
 
 fn log_dir() -> CliResult<PathBuf> {
@@ -782,5 +897,87 @@ mod tests {
         assert!(output.attached);
         assert_eq!(output.clients, 1);
         assert!(output.output.contains("line a"));
+    }
+
+    #[test]
+    fn tail_lines_returns_requested_suffix() {
+        let content = "a\nb\nc\nd\ne\n";
+        assert_eq!(tail_lines(content, 2), "d\ne");
+        assert_eq!(tail_lines(content, 10), "a\nb\nc\nd\ne");
+    }
+
+    #[test]
+    fn format_repo_table_snapshot() {
+        let rows = vec![
+            RepoOutput {
+                name: "kiosk".to_string(),
+                path: PathBuf::from("/tmp/kiosk"),
+            },
+            RepoOutput {
+                name: "dotfiles".to_string(),
+                path: PathBuf::from("/tmp/dotfiles"),
+            },
+        ];
+        let rendered = format_repo_table(&rows);
+        assert_eq!(
+            rendered,
+            "repo      path\n\
+             kiosk     /tmp/kiosk\n\
+             dotfiles  /tmp/dotfiles\n"
+        );
+    }
+
+    #[test]
+    fn format_branch_table_snapshot() {
+        let rows = vec![
+            BranchEntry {
+                name: "main".to_string(),
+                worktree_path: Some(PathBuf::from("/tmp/repo")),
+                has_session: false,
+                is_current: true,
+                is_remote: false,
+            },
+            BranchEntry {
+                name: "feat/test".to_string(),
+                worktree_path: None,
+                has_session: false,
+                is_current: false,
+                is_remote: true,
+            },
+        ];
+        let rendered = format_branch_table(&rows);
+        assert_eq!(
+            rendered,
+            "branch     stat  worktree\n\
+             main       *W--  /tmp/repo\n\
+             feat/test  ---R  -\n"
+        );
+    }
+
+    #[test]
+    fn format_session_table_snapshot() {
+        let rows = vec![
+            SessionOutput {
+                session: "repo--feat".to_string(),
+                repo: "repo".to_string(),
+                branch: Some("feat/test".to_string()),
+                path: PathBuf::from("/tmp/repo-feat"),
+                attached: false,
+            },
+            SessionOutput {
+                session: "repo".to_string(),
+                repo: "repo".to_string(),
+                branch: None,
+                path: PathBuf::from("/tmp/repo"),
+                attached: true,
+            },
+        ];
+        let rendered = format_session_table(&rows);
+        assert_eq!(
+            rendered,
+            "session     repo  branch      path            attached\n\
+             repo--feat  repo  feat/test   /tmp/repo-feat  false\n\
+             repo        repo  (detached)  /tmp/repo       true\n"
+        );
     }
 }

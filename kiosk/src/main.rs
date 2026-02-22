@@ -14,7 +14,7 @@ use kiosk_tui::{OpenAction, Theme};
 use std::{fs, io, path::Path, process::Command, process::ExitCode, sync::Arc};
 
 #[derive(Parser)]
-#[command(version, about = "Tmux session manager with worktree support")]
+#[command(version, about = "Git-aware tmux session manager TUI")]
 struct Cli {
     /// Override path to config file
     #[arg(short, long)]

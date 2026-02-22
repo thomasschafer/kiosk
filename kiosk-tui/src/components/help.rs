@@ -18,7 +18,7 @@ pub fn draw(f: &mut Frame, state: &AppState, theme: &crate::theme::Theme, keys: 
     };
 
     // Create the help content
-    let help_content = build_help_content(keys, current_mode);
+    let help_content = build_help_content(keys, current_mode, theme.hint);
 
     // Calculate popup size and position
     let area = f.area();
@@ -46,7 +46,11 @@ pub fn draw(f: &mut Frame, state: &AppState, theme: &crate::theme::Theme, keys: 
 }
 
 /// Build the help content based on the current mode
-fn build_help_content(keys: &KeysConfig, current_mode: &Mode) -> Vec<Line<'static>> {
+fn build_help_content(
+    keys: &KeysConfig,
+    current_mode: &Mode,
+    hint_color: ratatui::style::Color,
+) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
 
     lines.push(Line::from(Span::styled(
@@ -74,7 +78,7 @@ fn build_help_content(keys: &KeysConfig, current_mode: &Mode) -> Vec<Line<'stati
     } else {
         keys.keymap_for_mode(current_mode)
     };
-    lines.extend(format_key_section(&mode_keymap));
+    lines.extend(format_key_section(&mode_keymap, hint_color));
 
     if matches!(
         current_mode,
@@ -94,7 +98,10 @@ fn build_help_content(keys: &KeysConfig, current_mode: &Mode) -> Vec<Line<'stati
 }
 
 /// Format a section of key bindings
-fn format_key_section(keymap: &HashMap<KeyEvent, Command>) -> Vec<Line<'static>> {
+fn format_key_section(
+    keymap: &HashMap<KeyEvent, Command>,
+    hint_color: ratatui::style::Color,
+) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
 
     if keymap.is_empty() {
@@ -111,8 +118,11 @@ fn format_key_section(keymap: &HashMap<KeyEvent, Command>) -> Vec<Line<'static>>
         }
         let key_str = key_event.to_string();
         let description = command.description();
-        let line = format!("  {key_str:<13} {description}");
-        lines.push(Line::from(line));
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(format!("{key_str:<13}"), Style::default().fg(hint_color)),
+            Span::raw(format!(" {description}")),
+        ]));
     }
 
     lines

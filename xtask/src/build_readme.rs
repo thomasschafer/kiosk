@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use kiosk_core::config::KeysConfig;
+use kiosk_core::config::{KeysConfig, NamedColor, ThemeConfig};
 use quote::ToTokens;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
@@ -72,6 +72,11 @@ fn process_struct(
     all_structs: &HashMap<String, ItemStruct>,
     toml_prefix: &str,
 ) -> Result<()> {
+    if struct_item.ident == "ThemeConfig" && toml_prefix == "theme" {
+        docs.push_str(&generate_theme_docs()?);
+        return Ok(());
+    }
+
     if struct_item.ident == "KeysConfig" && toml_prefix == "keys" {
         docs.push_str("Defaults are shown below.\n\n");
         docs.push_str("```toml\n");
@@ -202,6 +207,42 @@ fn resolve_module_path(source_path: &Path, item_mod: &ItemMod) -> Option<std::pa
         return Some(mod_candidate);
     }
     None
+}
+
+fn generate_theme_docs() -> Result<String> {
+    let mut docs = String::new();
+
+    // List available colours (auto-generated from NamedColor::all())
+    let color_names: Vec<&str> = NamedColor::all().iter().map(|(name, _)| *name).collect();
+    let _ = writeln!(
+        docs,
+        "Colors can be a named color ({}) or a hex value (`#rrggbb`). `grey` is also accepted as an alias for `gray`.\n",
+        color_names
+            .iter()
+            .map(|n| format!("`{n}`"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+
+    // Generate default TOML
+    docs.push_str("Defaults:\n\n```toml\n");
+    docs.push_str(&generate_default_theme_toml()?);
+    docs.push_str("```\n\n");
+
+    Ok(docs)
+}
+
+fn generate_default_theme_toml() -> Result<String> {
+    #[derive(serde::Serialize)]
+    struct ThemeWrapper<'a> {
+        theme: &'a ThemeConfig,
+    }
+
+    let theme = ThemeConfig::default();
+    let wrapped = ThemeWrapper { theme: &theme };
+    let toml_str =
+        toml::to_string_pretty(&wrapped).context("Failed to serialize default theme config")?;
+    Ok(toml_str)
 }
 
 fn generate_default_keys_toml() -> Result<String> {

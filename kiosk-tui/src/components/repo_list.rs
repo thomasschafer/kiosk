@@ -1,26 +1,29 @@
 use crate::theme::Theme;
-use kiosk_core::config::{Command, KeysConfig};
-use kiosk_core::state::{AppState, Mode};
+use kiosk_core::config::KeysConfig;
+use kiosk_core::state::AppState;
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState},
 };
 
-pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, keys: &KeysConfig) {
+pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, _keys: &KeysConfig) {
     let chunks = Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(area);
 
     // Search bar
     super::search_bar::draw(
         f,
         chunks[0],
-        "kiosk — select repo",
+        &super::search_bar::SearchBarStyle {
+            title: "kiosk — select repo",
+            placeholder: "Type to search repos...",
+            border_color: theme.accent,
+            muted_color: theme.muted,
+        },
         &state.repo_list.search,
         state.repo_list.cursor,
-        "Type to search repos...",
-        theme.accent,
     );
 
     // Repo list
@@ -40,12 +43,12 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, keys: &K
             let mut spans = vec![Span::raw(&repo.name)];
             spans.push(Span::styled(
                 format!(" [{branch}]"),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme.muted),
             ));
             if wt_count > 1 {
                 spans.push(Span::styled(
                     format!(" +{} worktrees", wt_count - 1),
-                    Style::default().fg(Color::Yellow),
+                    Style::default().fg(theme.warning),
                 ));
             }
 
@@ -56,11 +59,11 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, keys: &K
     if state.loading_repos && state.repo_list.filtered.is_empty() {
         items.push(ListItem::new(Line::from(vec![Span::styled(
             "Discovering repos...",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme.muted),
         )])));
     }
 
-    let hints = build_repo_hints(keys);
+    let count = state.repo_list.filtered.len();
     let loading_suffix = if state.loading_repos {
         " | loading..."
     } else {
@@ -70,16 +73,13 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, keys: &K
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(format!(
-                    " {} repos ({hints}{loading_suffix}) ",
-                    state.repo_list.filtered.len()
-                ))
-                .border_style(Style::default().fg(Color::DarkGray)),
+                .title(format!(" {count} repos{loading_suffix} "))
+                .border_style(Style::default().fg(theme.border)),
         )
         .highlight_style(
             Style::default()
                 .bg(theme.accent)
-                .fg(Color::Black)
+                .fg(theme.highlight_fg)
                 .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol("▸ ");
@@ -88,18 +88,4 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, keys: &K
     list_state.select(state.repo_list.selected);
     *list_state.offset_mut() = state.repo_list.scroll_offset;
     f.render_stateful_widget(list, chunks[1], &mut list_state);
-}
-
-fn build_repo_hints(keys: &KeysConfig) -> String {
-    let keymap = keys.keymap_for_mode(&Mode::RepoSelect);
-    let mut hints = Vec::new();
-
-    if let Some(key) = KeysConfig::find_key(&keymap, &Command::OpenRepo) {
-        hints.push(format!("{key}: open"));
-    }
-    if let Some(key) = KeysConfig::find_key(&keymap, &Command::EnterRepo) {
-        hints.push(format!("{key}: branches"));
-    }
-
-    hints.join(", ")
 }

@@ -1,16 +1,16 @@
 use crate::theme::Theme;
-use kiosk_core::config::{Command, KeysConfig};
-use kiosk_core::state::{AppState, Mode};
+use kiosk_core::config::KeysConfig;
+use kiosk_core::state::AppState;
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState},
 };
 
 #[allow(clippy::too_many_lines)]
-pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, keys: &KeysConfig) {
+pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, _keys: &KeysConfig) {
     let repo_name = state
         .selected_repo_idx
         .map_or("??", |i| state.repos[i].name.as_str());
@@ -19,14 +19,18 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, keys: &K
     let chunks = Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(area);
 
     // Search bar
+    let title = format!("{repo_name} — select branch");
     super::search_bar::draw(
         f,
         chunks[0],
-        &format!("{repo_name} — select branch"),
+        &super::search_bar::SearchBarStyle {
+            title: &title,
+            placeholder: "Type to search branches (or type new branch name)...",
+            border_color: theme.secondary,
+            muted_color: theme.muted,
+        },
         &state.branch_list.search,
         state.branch_list.cursor,
-        "Type to search branches (or type new branch name)...",
-        theme.secondary,
     );
 
     // Branch list
@@ -39,14 +43,11 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, keys: &K
 
             if branch.is_remote {
                 // Remote branches rendered with muted style
-                let mut spans = vec![Span::styled(
-                    &branch.name,
-                    Style::default().fg(Color::DarkGray),
-                )];
+                let mut spans = vec![Span::styled(&branch.name, Style::default().fg(theme.muted))];
                 spans.push(Span::styled(
                     " (remote)",
                     Style::default()
-                        .fg(Color::DarkGray)
+                        .fg(theme.muted)
                         .add_modifier(Modifier::ITALIC),
                 ));
                 return ListItem::new(Line::from(spans));
@@ -70,7 +71,7 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, keys: &K
             } else if branch.worktree_path.is_some() {
                 spans.push(Span::styled(
                     " (worktree)",
-                    Style::default().fg(Color::Yellow),
+                    Style::default().fg(theme.warning),
                 ));
             }
             if branch.is_current {
@@ -85,7 +86,7 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, keys: &K
     if state.loading_branches && state.branch_list.filtered.is_empty() {
         items.push(ListItem::new(Line::from(vec![Span::styled(
             "Loading branches...",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme.muted),
         )])));
     } else if state.branch_list.filtered.is_empty() && !state.branch_list.search.is_empty() {
         items.push(ListItem::new(Line::from(vec![
@@ -96,15 +97,11 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, keys: &K
                     .fg(theme.success)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(
-                " (Enter to pick base)",
-                Style::default().fg(Color::DarkGray),
-            ),
+            Span::styled(" (Enter to pick base)", Style::default().fg(theme.muted)),
         ])));
     }
 
     let count = state.branch_list.filtered.len();
-    let hints = build_branch_hints(keys);
     let loading_suffix = if state.loading_branches {
         " | loading..."
     } else {
@@ -114,13 +111,13 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, keys: &K
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(format!(" {count} branches ({hints}{loading_suffix}) "))
-                .border_style(Style::default().fg(Color::DarkGray)),
+                .title(format!(" {count} branches{loading_suffix} "))
+                .border_style(Style::default().fg(theme.border)),
         )
         .highlight_style(
             Style::default()
                 .bg(theme.secondary)
-                .fg(Color::Black)
+                .fg(theme.highlight_fg)
                 .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol("▸ ");
@@ -129,21 +126,4 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, keys: &K
     list_state.select(state.branch_list.selected);
     *list_state.offset_mut() = state.branch_list.scroll_offset;
     f.render_stateful_widget(list, chunks[1], &mut list_state);
-}
-
-fn build_branch_hints(keys: &KeysConfig) -> String {
-    let keymap = keys.keymap_for_mode(&Mode::BranchSelect);
-    let mut hints = Vec::new();
-
-    if let Some(key) = KeysConfig::find_key(&keymap, &Command::GoBack) {
-        hints.push(format!("{key}: go back"));
-    }
-    if let Some(key) = KeysConfig::find_key(&keymap, &Command::NewBranch) {
-        hints.push(format!("{key}: new branch"));
-    }
-    if let Some(key) = KeysConfig::find_key(&keymap, &Command::DeleteWorktree) {
-        hints.push(format!("{key}: delete worktree"));
-    }
-
-    hints.join(", ")
 }

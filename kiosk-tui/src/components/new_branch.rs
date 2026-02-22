@@ -3,7 +3,7 @@ use kiosk_core::state::AppState;
 use ratatui::{
     Frame,
     layout::{Constraint, Layout},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
 };
@@ -21,7 +21,7 @@ pub fn draw(f: &mut Frame, state: &AppState, theme: &Theme) {
     let search_text = if flow.list.search.is_empty() {
         Line::from(Span::styled(
             "Select base branch...",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme.muted),
         ))
     } else {
         Line::from(flow.list.search.as_str())
@@ -44,12 +44,12 @@ pub fn draw(f: &mut Frame, state: &AppState, theme: &Theme) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray)),
+                .border_style(Style::default().fg(theme.border)),
         )
         .highlight_style(
             Style::default()
                 .bg(theme.success)
-                .fg(Color::Black)
+                .fg(theme.highlight_fg)
                 .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol("▸ ");

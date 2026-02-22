@@ -3,12 +3,25 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
+    sync::atomic::{AtomicU64, Ordering},
     thread,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 fn kiosk_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_kiosk"))
+}
+
+static TEST_ID: AtomicU64 = AtomicU64::new(1);
+
+fn unique_id() -> String {
+    let pid = std::process::id();
+    let ctr = TEST_ID.fetch_add(1, Ordering::Relaxed);
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    format!("{pid}-{ctr}-{ts}")
 }
 
 fn run_git(dir: &Path, args: &[&str]) {
@@ -41,31 +54,37 @@ fn init_test_repo(dir: &Path) {
     run_git(dir, &["commit", "-m", "init"]);
 }
 
-fn tmux_capture(session: &str) -> String {
+fn tmux_capture(socket: &str, session: &str) -> String {
     let output = Command::new("tmux")
-        .args(["capture-pane", "-t", session, "-p"])
+        .args(["-L", socket, "capture-pane", "-t", session, "-p"])
         .output()
         .unwrap();
     String::from_utf8_lossy(&output.stdout).to_string()
 }
 
-fn tmux_send(session: &str, keys: &str) {
+fn tmux_send(socket: &str, session: &str, keys: &str) {
     Command::new("tmux")
-        .args(["send-keys", "-t", session, keys])
+        .args(["-L", socket, "send-keys", "-t", session, keys])
         .output()
         .unwrap();
 }
 
-fn tmux_send_special(session: &str, key: &str) {
+fn tmux_send_special(socket: &str, session: &str, key: &str) {
     Command::new("tmux")
-        .args(["send-keys", "-t", session, key])
+        .args(["-L", socket, "send-keys", "-t", session, key])
         .output()
         .unwrap();
 }
 
-fn cleanup_session(name: &str) {
+fn cleanup_session(socket: &str, name: &str) {
     let _ = Command::new("tmux")
-        .args(["kill-session", "-t", name])
+        .args(["-L", socket, "kill-session", "-t", name])
+        .output();
+}
+
+fn cleanup_server(socket: &str) {
+    let _ = Command::new("tmux")
+        .args(["-L", socket, "kill-server"])
         .output();
 }
 
@@ -90,11 +109,11 @@ where
     }
 }
 
-fn wait_for_tmux_session(name: &str, timeout_ms: u64) -> bool {
+fn wait_for_tmux_session(socket: &str, name: &str, timeout_ms: u64) -> bool {
     let start = std::time::Instant::now();
     loop {
         let output = Command::new("tmux")
-            .args(["has-session", "-t", name])
+            .args(["-L", socket, "has-session", "-t", name])
             .output()
             .unwrap();
         if output.status.success() {
@@ -113,6 +132,7 @@ struct TestEnv {
     state_dir: PathBuf,
     bin_dir: PathBuf,
     session_name: String,
+    tmux_socket: String,
 }
 
 impl TestEnv {
@@ -125,8 +145,9 @@ impl TestEnv {
         fs::create_dir_all(&state_dir).unwrap();
         fs::create_dir_all(&bin_dir).unwrap();
 
-        let session_name = format!("kiosk-e2e-{test_name}");
-        cleanup_session(&session_name);
+        let id = unique_id();
+        let tmux_socket = format!("kiosk-e2e-{id}");
+        let session_name = format!("kiosk-e2e-{test_name}-{id}");
 
         Self {
             tmp,
@@ -134,6 +155,7 @@ impl TestEnv {
             state_dir,
             bin_dir,
             session_name,
+            tmux_socket,
         }
     }
 
@@ -159,10 +181,12 @@ impl TestEnv {
     }
 
     fn launch_kiosk(&self) {
-        cleanup_session(&self.session_name);
+        cleanup_session(&self.tmux_socket, &self.session_name);
         let binary = kiosk_binary();
         Command::new("tmux")
             .args([
+                "-L",
+                &self.tmux_socket,
                 "new-session",
                 "-d",
                 "-s",
@@ -172,7 +196,7 @@ impl TestEnv {
                 "-y",
                 "30",
                 &format!(
-                    "XDG_CONFIG_HOME={} XDG_STATE_HOME={} PATH={}:$PATH {} ; sleep 2",
+                    "XDG_CONFIG_HOME={} XDG_STATE_HOME={} KIOSK_NO_ALT_SCREEN=1 PATH={}:$PATH {} ; sleep 2",
                     self.config_dir.to_string_lossy(),
                     self.state_dir.to_string_lossy(),
                     self.bin_dir.to_string_lossy(),
@@ -203,23 +227,23 @@ impl TestEnv {
     }
 
     fn capture(&self) -> String {
-        tmux_capture(&self.session_name)
+        tmux_capture(&self.tmux_socket, &self.session_name)
     }
 
     fn send(&self, keys: &str) {
-        tmux_send(&self.session_name, keys);
+        tmux_send(&self.tmux_socket, &self.session_name, keys);
         wait_ms(300);
     }
 
     fn send_special(&self, key: &str) {
-        tmux_send_special(&self.session_name, key);
+        tmux_send_special(&self.tmux_socket, &self.session_name, key);
         wait_ms(300);
     }
 }
 
 impl Drop for TestEnv {
     fn drop(&mut self) {
-        cleanup_session(&self.session_name);
+        cleanup_server(&self.tmux_socket);
     }
 }
 
@@ -399,13 +423,15 @@ fn test_e2e_worktree_creation() {
     // Verify tmux session was created with the worktree basename
     let session_name = "wt-repo--feat-wt-test";
     assert!(
-        wait_for_tmux_session(session_name, 4000),
+        wait_for_tmux_session(&env.tmux_socket, session_name, 4000),
         "tmux session '{session_name}' should exist"
     );
 
     // Verify session working directory is the worktree path
     let output = Command::new("tmux")
         .args([
+            "-L",
+            &env.tmux_socket,
             "display-message",
             "-t",
             session_name,
@@ -422,7 +448,7 @@ fn test_e2e_worktree_creation() {
     );
 
     // Cleanup the created session
-    cleanup_session(session_name);
+    cleanup_session(&env.tmux_socket, session_name);
 }
 
 #[test]
@@ -430,7 +456,7 @@ fn test_e2e_split_command_creates_split_pane_for_new_branch_flow() {
     let env = TestEnv::new("split-pane-new-branch");
     let search_dir = env.search_dir();
     let session_name = "split-repo--feat-split-test";
-    cleanup_session(session_name);
+    cleanup_session(&env.tmux_socket, session_name);
 
     let repo = search_dir.join("split-repo");
     fs::create_dir_all(&repo).unwrap();
@@ -453,12 +479,20 @@ split_command = "sleep 30"
     env.send_special("Enter");
 
     assert!(
-        wait_for_tmux_session(session_name, 5000),
+        wait_for_tmux_session(&env.tmux_socket, session_name, 5000),
         "tmux session '{session_name}' should exist"
     );
 
     let output = Command::new("tmux")
-        .args(["list-panes", "-t", session_name, "-F", "#{pane_id}"])
+        .args([
+            "-L",
+            &env.tmux_socket,
+            "list-panes",
+            "-t",
+            session_name,
+            "-F",
+            "#{pane_id}",
+        ])
         .output()
         .unwrap();
     assert!(
@@ -480,7 +514,7 @@ split_command = "sleep 30"
     let mut captured = String::new();
     for pane_id in &pane_ids {
         let output = Command::new("tmux")
-            .args(["capture-pane", "-t", pane_id, "-p"])
+            .args(["-L", &env.tmux_socket, "capture-pane", "-t", pane_id, "-p"])
             .output()
             .unwrap();
         captured.push_str(&String::from_utf8_lossy(&output.stdout));
@@ -489,6 +523,8 @@ split_command = "sleep 30"
 
     let output = Command::new("tmux")
         .args([
+            "-L",
+            &env.tmux_socket,
             "list-panes",
             "-t",
             session_name,
@@ -503,7 +539,7 @@ split_command = "sleep 30"
         "Expected one pane running sleep, commands were: {pane_commands}; captured panes: {captured}"
     );
 
-    cleanup_session(session_name);
+    cleanup_session(&env.tmux_socket, session_name);
 }
 
 #[test]
@@ -639,7 +675,7 @@ fn test_e2e_delete_worktree_indicator_persists_after_restart() {
         "Should show deleting indicator immediately after confirm: {screen}"
     );
 
-    cleanup_session(&env.session_name);
+    cleanup_session(&env.tmux_socket, &env.session_name);
     wait_ms(150);
     assert!(
         wt_dir.exists(),

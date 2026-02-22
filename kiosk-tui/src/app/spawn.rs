@@ -144,7 +144,6 @@ pub(super) fn spawn_branch_loading<T: TmuxProvider + ?Sized + 'static>(
             branches,
             worktrees: repo.worktrees,
             local_names,
-            default_branch,
             session_activity,
         });
     });

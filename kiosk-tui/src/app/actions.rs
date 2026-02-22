@@ -63,6 +63,10 @@ pub(super) fn handle_start_new_branch(state: &mut AppState) {
         .filter(|b| !b.is_remote)
         .map(|b| b.name.clone())
         .collect();
+    if bases.is_empty() {
+        state.error = Some("No local branches to use as base".to_string());
+        return;
+    }
     let list = SearchableList::new(bases.len());
 
     state.base_branch_selection = Some(BaseBranchSelection {
@@ -258,7 +262,7 @@ pub(super) fn enter_branch_select_with_loading<T: TmuxProvider + ?Sized + 'stati
 ) {
     state.selected_repo_idx = Some(repo_idx);
     let repo = state.repos[repo_idx].clone();
-    let cwd = state.current_repo_path.clone();
+    let cwd = state.cwd_worktree_path.clone();
     if show_loading {
         state.mode = Mode::BranchSelect;
         state.branches.clear();

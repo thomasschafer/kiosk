@@ -55,18 +55,19 @@ fn run_tui(config: &config::Config) -> Result<()> {
     let git: Arc<dyn GitProvider> = Arc::new(CliGitProvider);
     let tmux: Arc<dyn TmuxProvider> = Arc::new(CliTmuxProvider);
 
-    // Try to detect current repo from CWD for instant display
-    let current_repo_path = git.resolve_repo_from_cwd().and_then(|p| {
-        // Only use if the repo is within one of the configured search dirs
-        let canonical = dunce::canonicalize(&p).unwrap_or(p);
-        search_dirs
-            .iter()
-            .any(|(dir, _)| {
-                let dir_canonical = dunce::canonicalize(dir).unwrap_or_else(|_| dir.clone());
-                canonical.starts_with(&dir_canonical)
-            })
-            .then_some(canonical)
-    });
+    // Detect CWD repo/worktree for instant display and ordering.
+    // cwd_worktree_path: the toplevel of whatever git tree the user is in (main repo or worktree)
+    // current_repo_path: the main repo root (resolved through worktree .git pointers)
+    let cwd_worktree_path = git
+        .resolve_repo_from_cwd()
+        .and_then(|p| dunce::canonicalize(&p).ok());
+    let current_repo_path = cwd_worktree_path
+        .as_ref()
+        .and_then(|p| resolve_main_repo_root(p))
+        .and_then(|main_root| {
+            let canonical = dunce::canonicalize(&main_root).unwrap_or(main_root);
+            is_within_search_dirs(&canonical, &search_dirs).then_some(canonical)
+        });
     let initial_repo = current_repo_path.as_ref().and_then(|repo_path| {
         let name = repo_path.file_name()?.to_string_lossy().to_string();
         let worktrees = git.list_worktrees(repo_path);
@@ -82,11 +83,13 @@ fn run_tui(config: &config::Config) -> Result<()> {
         let mut s = AppState::new(vec![repo], config.session.split_command.clone());
         s.loading_repos = true;
         s.current_repo_path = current_repo_path;
+        s.cwd_worktree_path = cwd_worktree_path;
         s
     } else {
         let mut s =
             AppState::new_loading("Discovering repos...", config.session.split_command.clone());
         s.current_repo_path = current_repo_path;
+        s.cwd_worktree_path = cwd_worktree_path;
         s
     };
     state.pending_worktree_deletes = load_pending_worktree_deletes();
@@ -129,6 +132,35 @@ fn run_tui(config: &config::Config) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn is_within_search_dirs(path: &Path, search_dirs: &[(std::path::PathBuf, u16)]) -> bool {
+    search_dirs.iter().any(|(dir, _)| {
+        let dir_canonical = dunce::canonicalize(dir).unwrap_or_else(|_| dir.clone());
+        path.starts_with(&dir_canonical)
+    })
+}
+
+/// If `path` is a secondary git worktree root, resolve to the main repository root.
+/// Returns the path unchanged if it's already a main repository root.
+fn resolve_main_repo_root(path: &Path) -> Option<std::path::PathBuf> {
+    let git_entry = path.join(GIT_DIR_ENTRY);
+    if git_entry.is_file() {
+        // Secondary worktree: .git is a file containing "gitdir: /path/to/main/.git/worktrees/name"
+        let content = fs::read_to_string(&git_entry).ok()?;
+        let gitdir_str = content
+            .lines()
+            .find(|l| l.starts_with(GITDIR_FILE_PREFIX))?
+            .strip_prefix(GITDIR_FILE_PREFIX)?
+            .trim();
+        let gitdir = Path::new(gitdir_str);
+        // .git/worktrees/<name> → .git/worktrees → .git → repo root
+        gitdir.parent()?.parent()?.parent().map(Path::to_path_buf)
+    } else if git_entry.is_dir() {
+        Some(path.to_path_buf())
+    } else {
+        None
+    }
 }
 
 fn should_disable_alt_screen() -> bool {

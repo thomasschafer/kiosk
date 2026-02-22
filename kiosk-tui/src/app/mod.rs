@@ -397,7 +397,6 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             branches,
             worktrees,
             local_names,
-            default_branch: _,
             session_activity,
         } => {
             state.session_activity = session_activity;
@@ -1232,6 +1231,15 @@ mod tests {
         state.mode = Mode::BranchSelect;
         state.selected_repo_idx = Some(0);
         state.branch_list.search = "feat/new".to_string();
+        state.branches = vec![BranchEntry {
+            name: "main".into(),
+            worktree_path: Some(PathBuf::from("/tmp/alpha")),
+            has_session: false,
+            is_current: true,
+            is_remote: false,
+            is_default: true,
+            session_activity_ts: None,
+        }];
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider {
             branches: vec!["main".into()],

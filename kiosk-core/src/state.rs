@@ -390,7 +390,7 @@ pub fn sort_repos(
                 let b_activity = repo_max_activity(b, session_activity);
                 cmp_optional_recency(a_activity, b_activity)
             })
-            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+            .then_with(|| a.name.cmp(&b.name))
     });
 }
 
@@ -484,7 +484,10 @@ pub struct AppState {
     active_list_page_rows: usize,
     pub pending_worktree_deletes: Vec<PendingWorktreeDelete>,
     pub session_activity: HashMap<String, u64>,
+    /// Main repo root path from CWD (for repo ordering)
     pub current_repo_path: Option<PathBuf>,
+    /// CWD resolved to repo/worktree root (for branch current detection)
+    pub cwd_worktree_path: Option<PathBuf>,
 }
 
 impl AppState {
@@ -506,6 +509,7 @@ impl AppState {
             pending_worktree_deletes: Vec::new(),
             session_activity: HashMap::new(),
             current_repo_path: None,
+            cwd_worktree_path: None,
         }
     }
 
@@ -526,6 +530,7 @@ impl AppState {
             pending_worktree_deletes: Vec::new(),
             session_activity: HashMap::new(),
             current_repo_path: None,
+            cwd_worktree_path: None,
         }
     }
 
@@ -1261,7 +1266,7 @@ mod tests {
 
     #[test]
     fn test_branch_sort_no_default_no_current() {
-        // No worktrees at all means no current branch
+        // No default branch; CWD is None so fallback picks first worktree as current
         let repo = Repo {
             name: "myrepo".to_string(),
             session_name: "myrepo".to_string(),

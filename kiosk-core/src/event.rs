@@ -34,8 +34,6 @@ pub enum AppEvent {
         worktrees: Vec<crate::git::Worktree>,
         /// Local branch names, needed to spawn remote branch loading
         local_names: Vec<String>,
-        /// Default branch name for the repo
-        default_branch: Option<String>,
         /// Session activity timestamps
         session_activity: HashMap<String, u64>,
     },

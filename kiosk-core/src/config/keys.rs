@@ -296,17 +296,17 @@ impl KeysConfig {
         }
     }
 
-    /// Return key-layer section names ordered from highest to lowest precedence.
+    /// Return key-layer section names ordered from lowest to highest precedence.
     ///
     /// Order is derived from mode layer precedence definitions, not hardcoded names.
-    pub fn docs_section_order_desc() -> Vec<&'static str> {
-        Self::docs_layer_order_desc()
+    pub fn docs_section_order_asc() -> Vec<&'static str> {
+        Self::docs_layer_order_asc()
             .into_iter()
             .map(Self::layer_name)
             .collect()
     }
 
-    fn docs_layer_order_desc() -> Vec<Layer> {
+    fn docs_layer_order_asc() -> Vec<Layer> {
         let mut indegree: HashMap<Layer, usize> = Self::ALL_LAYERS
             .iter()
             .copied()
@@ -356,10 +356,9 @@ impl KeysConfig {
         }
 
         if low_to_high.len() != Self::ALL_LAYERS.len() {
-            return Self::ALL_LAYERS.iter().copied().rev().collect();
+            return Self::ALL_LAYERS.to_vec();
         }
 
-        low_to_high.reverse();
         low_to_high
     }
 
@@ -416,7 +415,14 @@ impl KeysConfig {
     }
 
     fn layer_rank(layer: Layer) -> u8 {
-        layer as u8
+        match layer {
+            Layer::General => 0,
+            Layer::TextEdit => 1,
+            Layer::ListNavigation => 2,
+            Layer::RepoSelect => 3,
+            Layer::BranchSelect => 4,
+            Layer::Modal => 5,
+        }
     }
 
     fn default_general() -> KeyMap {
@@ -860,17 +866,42 @@ mod tests {
     }
 
     #[test]
-    fn test_docs_section_order_desc_is_derived_from_layer_precedence() {
+    fn test_docs_section_order_asc_is_derived_from_layer_precedence() {
         assert_eq!(
-            KeysConfig::docs_section_order_desc(),
+            KeysConfig::docs_section_order_asc(),
             vec![
-                "branch_select",
-                "repo_select",
-                "modal",
-                "list_navigation",
-                "text_edit",
                 "general",
+                "text_edit",
+                "list_navigation",
+                "repo_select",
+                "branch_select",
+                "modal",
             ]
+        );
+    }
+
+    #[test]
+    fn test_modal_overrides_lower_layers_in_select_base_branch() {
+        let raw = KeysConfigRaw {
+            general: HashMap::new(),
+            text_edit: HashMap::new(),
+            list_navigation: {
+                let mut map = HashMap::new();
+                map.insert("enter".to_string(), "move_down".to_string());
+                map
+            },
+            modal: HashMap::new(),
+            repo_select: HashMap::new(),
+            branch_select: HashMap::new(),
+        };
+
+        let config = KeysConfig::from_raw(&raw).unwrap();
+        let map = config.keymap_for_mode(&Mode::SelectBaseBranch);
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(
+            map.get(&enter),
+            Some(&Command::Confirm),
+            "modal should have highest precedence in select-base flow"
         );
     }
 

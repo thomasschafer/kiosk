@@ -103,32 +103,9 @@ Key binding configuration.
 Defaults are shown below.
 
 ```toml
-[keys.branch_select]
-"C-o" = "new_branch"
-"C-x" = "delete_worktree"
-"enter" = "open_branch"
-"esc" = "go_back"
-
-[keys.repo_select]
-"enter" = "open_repo"
-"esc" = "quit"
-"tab" = "enter_repo"
-
-[keys.modal]
-"enter" = "confirm"
-"esc" = "cancel"
-
-[keys.list_navigation]
-"A-G" = "move_bottom"
-"A-g" = "move_top"
-"C-b" = "half_page_up"
-"C-f" = "half_page_down"
-"C-n" = "move_down"
-"C-p" = "move_up"
-"down" = "move_down"
-"pagedown" = "page_down"
-"pageup" = "page_up"
-"up" = "move_up"
+[keys.general]
+"C-c" = "quit"
+"C-h" = "show_help"
 
 [keys.text_edit]
 "A-b" = "move_cursor_word_left"
@@ -150,9 +127,32 @@ Defaults are shown below.
 "left" = "move_cursor_left"
 "right" = "move_cursor_right"
 
-[keys.general]
-"C-c" = "quit"
-"C-h" = "show_help"
+[keys.list_navigation]
+"A-G" = "move_bottom"
+"A-g" = "move_top"
+"C-b" = "half_page_up"
+"C-f" = "half_page_down"
+"C-n" = "move_down"
+"C-p" = "move_up"
+"down" = "move_down"
+"pagedown" = "page_down"
+"pageup" = "page_up"
+"up" = "move_up"
+
+[keys.repo_select]
+"enter" = "open_repo"
+"esc" = "quit"
+"tab" = "enter_repo"
+
+[keys.branch_select]
+"C-o" = "new_branch"
+"C-x" = "delete_worktree"
+"enter" = "open_branch"
+"esc" = "go_back"
+
+[keys.modal]
+"enter" = "confirm"
+"esc" = "cancel"
 
 ```
 

@@ -1276,3 +1276,169 @@ fn test_e2e_remote_branches_searchable() {
         "Local 'main' should be filtered out by search: {screen}"
     );
 }
+
+#[test]
+fn test_e2e_repo_ordering_current_first() {
+    let env = TestEnv::new("repo-order-current");
+    let search_dir = env.search_dir();
+
+    let repo_alpha = search_dir.join("alpha-repo");
+    let repo_beta = search_dir.join("beta-repo");
+    fs::create_dir_all(&repo_alpha).unwrap();
+    fs::create_dir_all(&repo_beta).unwrap();
+    init_test_repo(&repo_alpha);
+    init_test_repo(&repo_beta);
+
+    env.write_config(&search_dir);
+
+    // Launch kiosk from inside beta-repo's directory so it becomes the current repo
+    cleanup_session(&env.tmux_socket, &env.session_name);
+    let binary = kiosk_binary();
+    Command::new("tmux")
+        .args([
+            "-L",
+            &env.tmux_socket,
+            "new-session",
+            "-d",
+            "-s",
+            &env.session_name,
+            "-x",
+            "120",
+            "-y",
+            "30",
+            "-c",
+            &repo_beta.to_string_lossy(),
+            &format!(
+                "XDG_CONFIG_HOME={} XDG_STATE_HOME={} KIOSK_NO_ALT_SCREEN=1 PATH={}:$PATH {} ; sleep 2",
+                env.config_dir.to_string_lossy(),
+                env.state_dir.to_string_lossy(),
+                env.bin_dir.to_string_lossy(),
+                binary.to_string_lossy()
+            ),
+        ])
+        .output()
+        .unwrap();
+    wait_ms(500);
+
+    let screen = wait_for_screen(&env, 3000, |s| {
+        s.contains("alpha-repo") && s.contains("beta-repo")
+    });
+
+    // beta-repo should appear before alpha-repo since we launched from beta's dir
+    let beta_pos = screen
+        .find("beta-repo")
+        .expect("beta-repo should be visible");
+    let alpha_pos = screen
+        .find("alpha-repo")
+        .expect("alpha-repo should be visible");
+    assert!(
+        beta_pos < alpha_pos,
+        "beta-repo (current) should appear before alpha-repo. Screen:\n{screen}"
+    );
+}
+
+#[test]
+fn test_e2e_repo_ordering_sessions_before_no_sessions() {
+    let env = TestEnv::new("repo-order-sessions");
+    let search_dir = env.search_dir();
+
+    let repo_aaa = search_dir.join("aaa-repo");
+    let repo_mmm = search_dir.join("mmm-repo");
+    let repo_zzz = search_dir.join("zzz-repo");
+    fs::create_dir_all(&repo_aaa).unwrap();
+    fs::create_dir_all(&repo_mmm).unwrap();
+    fs::create_dir_all(&repo_zzz).unwrap();
+    init_test_repo(&repo_aaa);
+    init_test_repo(&repo_mmm);
+    init_test_repo(&repo_zzz);
+
+    env.write_config(&search_dir);
+
+    // Create a tmux session for mmm-repo (matching kiosk's session naming: repo name)
+    Command::new("tmux")
+        .args([
+            "-L",
+            &env.tmux_socket,
+            "new-session",
+            "-d",
+            "-s",
+            "mmm-repo",
+            "-x",
+            "80",
+            "-y",
+            "24",
+        ])
+        .output()
+        .unwrap();
+    wait_ms(200);
+
+    env.launch_kiosk();
+
+    let screen = wait_for_screen(&env, 3000, |s| {
+        s.contains("aaa-repo") && s.contains("mmm-repo") && s.contains("zzz-repo")
+    });
+
+    let mmm_pos = screen.find("mmm-repo").expect("mmm-repo should be visible");
+    let aaa_pos = screen.find("aaa-repo").expect("aaa-repo should be visible");
+    let zzz_pos = screen.find("zzz-repo").expect("zzz-repo should be visible");
+
+    // mmm-repo has a session, should appear before aaa-repo and zzz-repo
+    assert!(
+        mmm_pos < aaa_pos && mmm_pos < zzz_pos,
+        "mmm-repo (has session) should appear before repos without sessions. Screen:\n{screen}"
+    );
+}
+
+#[test]
+fn test_e2e_branch_ordering() {
+    let env = TestEnv::new("branch-order");
+    let search_dir = env.search_dir();
+
+    let repo = search_dir.join("order-repo");
+    fs::create_dir_all(&repo).unwrap();
+    init_test_repo(&repo);
+
+    // Create branches
+    run_git(&repo, &["branch", "aaa-plain"]);
+    run_git(&repo, &["branch", "mmm-worktree"]);
+    run_git(&repo, &["branch", "zzz-plain"]);
+
+    // Create a worktree for mmm-worktree
+    let wt_dir = search_dir
+        .join(WORKTREE_DIR_NAME)
+        .join("order-repo--mmm-worktree");
+    fs::create_dir_all(&wt_dir).unwrap();
+    run_git(
+        &repo,
+        &["worktree", "add", &wt_dir.to_string_lossy(), "mmm-worktree"],
+    );
+
+    env.write_config(&search_dir);
+    env.launch_kiosk();
+
+    // Enter the repo
+    env.send_special("Tab");
+    wait_for_screen(&env, 2500, |s| s.contains("select branch"));
+
+    let screen = env.capture();
+
+    // main is current → first
+    // mmm-worktree has a worktree → before plain branches
+    // aaa-plain and zzz-plain are plain → alphabetical after worktree branches
+    let main_pos = screen.find("main").expect("main should be visible");
+    let mmm_pos = screen
+        .find("mmm-worktree")
+        .expect("mmm-worktree should be visible");
+    let aaa_pos = screen
+        .find("aaa-plain")
+        .expect("aaa-plain should be visible");
+
+    assert!(
+        main_pos < mmm_pos,
+        "main (current) should appear before mmm-worktree. Screen:\n{screen}"
+    );
+    assert!(
+        mmm_pos < aaa_pos,
+        "mmm-worktree (has worktree) should appear before aaa-plain. Screen:\n{screen}"
+    );
+}

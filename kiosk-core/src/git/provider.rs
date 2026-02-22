@@ -3,6 +3,9 @@ use anyhow::Result;
 use std::path::{Path, PathBuf};
 
 pub trait GitProvider: Send + Sync {
+    /// Fast directory scan: returns repos with empty worktrees (no git calls).
+    fn scan_repos(&self, dirs: &[(PathBuf, u16)]) -> Vec<Repo>;
+    /// Full discovery: dir scan + worktree enrichment (calls git per repo).
     fn discover_repos(&self, dirs: &[(PathBuf, u16)]) -> Vec<Repo>;
     fn list_branches(&self, repo_path: &Path) -> Vec<String>;
     fn list_remote_branches(&self, repo_path: &Path) -> Vec<String>;
@@ -23,4 +26,9 @@ pub trait GitProvider: Send + Sync {
         branch: &str,
         worktree_path: &Path,
     ) -> Result<()>;
+    /// Detect the default branch (main/master) for a repository.
+    /// Accepts the already-fetched local branch list to avoid redundant git calls in the fallback.
+    fn default_branch(&self, repo_path: &Path, local_branches: &[String]) -> Option<String>;
+    /// Resolve the current working directory to a git repository root
+    fn resolve_repo_from_cwd(&self) -> Option<PathBuf>;
 }

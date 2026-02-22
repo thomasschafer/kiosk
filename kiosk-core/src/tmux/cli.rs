@@ -33,9 +33,9 @@ fn create_session_commands(
 }
 
 impl TmuxProvider for CliTmuxProvider {
-    fn list_sessions(&self) -> Vec<String> {
+    fn list_sessions_with_activity(&self) -> Vec<(String, u64)> {
         let output = Command::new("tmux")
-            .args(["list-sessions", "-F", "#{session_name}"])
+            .args(["list-sessions", "-F", "#{session_name}:#{session_activity}"])
             .output();
 
         let Ok(output) = output else {
@@ -44,7 +44,11 @@ impl TmuxProvider for CliTmuxProvider {
 
         String::from_utf8_lossy(&output.stdout)
             .lines()
-            .map(String::from)
+            .filter_map(|line| {
+                let (name, ts) = line.rsplit_once(':')?;
+                let ts = ts.parse::<u64>().ok()?;
+                Some((name.to_string(), ts))
+            })
             .collect()
     }
 

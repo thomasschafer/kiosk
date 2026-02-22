@@ -47,16 +47,26 @@ pub(super) fn handle_show_help(state: &mut AppState) {
     }
 }
 
-pub(super) fn handle_start_new_branch(state: &mut AppState, git: &Arc<dyn GitProvider>) {
+pub(super) fn handle_start_new_branch(state: &mut AppState) {
     if state.branch_list.search.is_empty() {
         state.error = Some("Type a branch name first".to_string());
         return;
     }
-    let Some(repo_idx) = state.selected_repo_idx else {
+    if state.selected_repo_idx.is_none() {
         return;
-    };
-    let repo = &state.repos[repo_idx];
-    let bases = git.list_branches(&repo.path);
+    }
+    // Derive base branches from the already-loaded branch list, preserving its ordering
+    // and filtering out remote-only branches (which can't serve as local bases).
+    let bases: Vec<String> = state
+        .branches
+        .iter()
+        .filter(|b| !b.is_remote)
+        .map(|b| b.name.clone())
+        .collect();
+    if bases.is_empty() {
+        state.error = Some("No local branches to use as base".to_string());
+        return;
+    }
     let list = SearchableList::new(bases.len());
 
     state.base_branch_selection = Some(BaseBranchSelection {
@@ -252,13 +262,14 @@ pub(super) fn enter_branch_select_with_loading<T: TmuxProvider + ?Sized + 'stati
 ) {
     state.selected_repo_idx = Some(repo_idx);
     let repo = state.repos[repo_idx].clone();
+    let cwd = state.cwd_worktree_path.clone();
     if show_loading {
         state.mode = Mode::BranchSelect;
         state.branches.clear();
         state.branch_list.reset(0);
     }
     state.loading_branches = true;
-    spawn_branch_loading(git, tmux, sender, repo);
+    spawn_branch_loading(git, tmux, sender, repo, cwd);
 }
 
 pub(super) fn handle_search_push(state: &mut AppState, matcher: &SkimMatcherV2, c: char) {

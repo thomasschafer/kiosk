@@ -383,9 +383,7 @@ fn clean_orphaned_worktrees(
             let mut input = String::new();
             io::stdin().read_line(&mut input)?;
 
-            if input.trim().to_lowercase() != "y" {
-                println!("Skipped orphaned worktree directory removal.");
-            } else {
+            if input.trim().to_lowercase() == "y" {
                 // Remove the worktrees
                 for worktree in orphaned_worktrees {
                     match remove_worktree(&worktree) {
@@ -393,6 +391,8 @@ fn clean_orphaned_worktrees(
                         Err(e) => eprintln!("Failed to remove {}: {}", worktree.display(), e),
                     }
                 }
+            } else {
+                println!("Skipped orphaned worktree directory removal.");
             }
         }
     }

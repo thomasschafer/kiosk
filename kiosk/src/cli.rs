@@ -176,7 +176,7 @@ pub fn cmd_branches(
 
     let local = git.list_branches(&repo.path);
     let active_sessions = tmux.list_sessions();
-    let mut entries = BranchEntry::build_sorted(&repo, &local, &active_sessions);
+    let mut entries = BranchEntry::build(&repo, &local, &active_sessions);
     let remote = BranchEntry::build_remote(&git.list_remote_branches(&repo.path), &local);
     entries.extend(remote);
     BranchEntry::sort_entries(&mut entries);

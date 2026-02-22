@@ -80,11 +80,11 @@ impl GitProvider for MockGitProvider {
             .unwrap_or(Ok(()))
     }
 
-    fn prune_worktrees(&self, _repo_path: &Path) -> Result<()> {
+    fn prune_worktrees(&self, repo_path: &Path) -> Result<()> {
         self.prune_worktrees_calls
             .lock()
             .unwrap()
-            .push(_repo_path.to_path_buf());
+            .push(repo_path.to_path_buf());
         self.prune_worktrees_result
             .lock()
             .unwrap()

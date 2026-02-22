@@ -153,7 +153,13 @@ fn resolve_main_repo_root(path: &Path) -> Option<std::path::PathBuf> {
             .find(|l| l.starts_with(GITDIR_FILE_PREFIX))?
             .strip_prefix(GITDIR_FILE_PREFIX)?
             .trim();
-        let gitdir = Path::new(gitdir_str);
+        let gitdir_raw = Path::new(gitdir_str);
+        // Resolve relative gitdir paths against the worktree root
+        let gitdir = if gitdir_raw.is_relative() {
+            path.join(gitdir_raw)
+        } else {
+            gitdir_raw.to_path_buf()
+        };
         // .git/worktrees/<name> → .git/worktrees → .git → repo root
         gitdir.parent()?.parent()?.parent().map(Path::to_path_buf)
     } else if git_entry.is_dir() {

@@ -188,14 +188,14 @@ impl GitProvider for CliGitProvider {
     }
 
     fn default_branch(&self, repo_path: &Path, local_branches: &[String]) -> Option<String> {
-        // Try symbolic-ref first
-        let output = Command::new("git")
+        // Try symbolic-ref first; fall through on spawn/IO errors so the
+        // local-branch heuristic below still runs.
+        if let Ok(output) = Command::new("git")
             .args(["symbolic-ref", "refs/remotes/origin/HEAD"])
             .current_dir(repo_path)
             .output()
-            .ok()?;
-
-        if output.status.success() {
+            && output.status.success()
+        {
             let refname = String::from_utf8_lossy(&output.stdout).trim().to_string();
             if let Some(branch) = refname.strip_prefix("refs/remotes/origin/") {
                 return Some(branch.to_string());

@@ -246,8 +246,9 @@ pub struct BranchEntry {
 impl BranchEntry {
     /// Build sorted branch entries from a repo's branches, worktrees, and active tmux sessions.
     ///
-    /// Ordering: current first, then default branch, then by session recency,
+    /// Ordering: current first, then by session recency,
     /// then worktrees without sessions, then remaining branches.
+    /// For default-branch awareness use [`Self::build_sorted_with_activity`].
     pub fn build_sorted(
         repo: &crate::git::Repo,
         branch_names: &[String],

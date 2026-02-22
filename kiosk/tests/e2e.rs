@@ -180,6 +180,10 @@ impl TestEnv {
         fs::write(kiosk_config_dir.join("config.toml"), config).unwrap();
     }
 
+    fn config_file_path(&self) -> PathBuf {
+        self.config_dir.join("kiosk").join("config.toml")
+    }
+
     fn launch_kiosk(&self) {
         cleanup_session(&self.tmux_socket, &self.session_name);
         let binary = kiosk_binary();
@@ -201,6 +205,33 @@ impl TestEnv {
                     self.state_dir.to_string_lossy(),
                     self.bin_dir.to_string_lossy(),
                     binary.to_string_lossy()
+                ),
+            ])
+            .output()
+            .unwrap();
+        wait_ms(500);
+    }
+
+    fn launch_kiosk_with_config_arg(&self, config_path: &Path, fake_xdg_config_home: &Path) {
+        cleanup_session(&self.session_name);
+        let binary = kiosk_binary();
+        Command::new("tmux")
+            .args([
+                "new-session",
+                "-d",
+                "-s",
+                &self.session_name,
+                "-x",
+                "120",
+                "-y",
+                "30",
+                &format!(
+                    "XDG_CONFIG_HOME={} XDG_STATE_HOME={} PATH={}:$PATH {} --config {} ; sleep 2",
+                    fake_xdg_config_home.to_string_lossy(),
+                    self.state_dir.to_string_lossy(),
+                    self.bin_dir.to_string_lossy(),
+                    binary.to_string_lossy(),
+                    config_path.to_string_lossy()
                 ),
             ])
             .output()
@@ -772,6 +803,46 @@ tab = "noop"
     assert!(
         screen.contains("select branch"),
         "F1 should enter repo (custom binding): {screen}"
+    );
+}
+
+#[test]
+fn test_e2e_config_flag_overrides_xdg_config_home() {
+    let env = TestEnv::new("config-flag");
+    let search_dir = env.search_dir();
+
+    let repo = search_dir.join("flag-repo");
+    fs::create_dir_all(&repo).unwrap();
+    init_test_repo(&repo);
+
+    // Config that remaps EnterRepo from Tab to F1 in repo selection
+    let extra = r#"
+[keys.repo_select]
+F1 = "enter_repo"
+tab = "noop"
+"#;
+    env.write_config_with_extra(&search_dir, extra);
+
+    // Point XDG_CONFIG_HOME to a dir that does not contain kiosk/config.toml.
+    let fake_xdg = env.tmp.path().join("fake-xdg");
+    fs::create_dir_all(&fake_xdg).unwrap();
+
+    env.launch_kiosk_with_config_arg(&env.config_file_path(), &fake_xdg);
+
+    // Tab should be unbound by config loaded from --config.
+    env.send_special("Tab");
+    let screen = wait_for_screen(&env, 800, |s| s.contains("select branch"));
+    assert!(
+        !screen.contains("select branch"),
+        "Tab should not enter branch view when loading config from --config: {screen}"
+    );
+
+    // F1 should work if --config took effect
+    env.send_special("F1");
+    let screen = wait_for_screen(&env, 2500, |s| s.contains("select branch"));
+    assert!(
+        screen.contains("select branch"),
+        "F1 should enter repo when loading config from --config: {screen}"
     );
 }
 

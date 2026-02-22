@@ -53,7 +53,7 @@ fn generate_config_docs(content: &str, config_path: &Path) -> Result<String> {
     let mut docs = String::new();
 
     if let Some(config_struct) = structs.get("Config") {
-        process_struct(&mut docs, config_struct, &structs, "");
+        process_struct(&mut docs, config_struct, &structs, "")?;
     } else {
         anyhow::bail!("Config struct not found in the source file.");
     }
@@ -71,13 +71,13 @@ fn process_struct(
     struct_item: &ItemStruct,
     all_structs: &HashMap<String, ItemStruct>,
     toml_prefix: &str,
-) {
+) -> Result<()> {
     if struct_item.ident == "KeysConfig" && toml_prefix == "keys" {
         docs.push_str("Defaults are shown below.\n\n");
         docs.push_str("```toml\n");
-        docs.push_str(&generate_default_keys_toml());
+        docs.push_str(&generate_default_keys_toml()?);
         docs.push_str("```\n\n");
-        return;
+        return Ok(());
     }
 
     if let Fields::Named(ref fields) = struct_item.fields {
@@ -101,7 +101,7 @@ fn process_struct(
                         docs.push_str("\n\n");
                     }
 
-                    process_struct(docs, nested_struct, all_structs, &toml_path);
+                    process_struct(docs, nested_struct, all_structs, &toml_path)?;
                 } else {
                     let _ = writeln!(docs, "#### `{field_name}`\n");
                     docs.push_str(&field_doc);
@@ -110,6 +110,8 @@ fn process_struct(
             }
         }
     }
+
+    Ok(())
 }
 
 fn get_type_name(field: &Field) -> String {
@@ -202,7 +204,7 @@ fn resolve_module_path(source_path: &Path, item_mod: &ItemMod) -> Option<std::pa
     None
 }
 
-fn generate_default_keys_toml() -> String {
+fn generate_default_keys_toml() -> Result<String> {
     #[derive(serde::Serialize)]
     struct KeysWrapper<'a> {
         keys: &'a KeysConfig,
@@ -210,37 +212,44 @@ fn generate_default_keys_toml() -> String {
 
     let keys = KeysConfig::default();
     let wrapped = KeysWrapper { keys: &keys };
-    let value = toml::Value::try_from(&wrapped).expect("default keys config should serialize");
+    let value =
+        toml::Value::try_from(&wrapped).context("Failed to serialize default keys config")?;
     let section_table = value
         .get("keys")
         .and_then(toml::Value::as_table)
-        .expect("serialized keys should contain [keys] table");
+        .context("Serialized keys config is missing [keys] table")?;
     let mut out = String::new();
     let ordered_sections = KeysConfig::docs_section_order_asc();
 
     for section in ordered_sections {
         let section_value = section_table
             .get(section)
-            .unwrap_or_else(|| panic!("missing serialized key section: {section}"));
-        write_keymap_section(&mut out, section, section_value);
+            .with_context(|| format!("Missing serialized key section: [keys.{section}]"))?;
+        write_keymap_section(&mut out, section, section_value)?;
     }
 
-    out
+    Ok(out)
 }
 
-fn write_keymap_section(out: &mut String, section: &str, section_value: &toml::Value) {
+fn write_keymap_section(
+    out: &mut String,
+    section: &str,
+    section_value: &toml::Value,
+) -> Result<()> {
     let _ = writeln!(out, "[keys.{section}]");
     let mut entries: Vec<_> = section_value
         .as_table()
-        .expect("key section should serialize as a table")
+        .with_context(|| format!("Expected [keys.{section}] to serialize as a TOML table"))?
         .iter()
         .map(|(key, command)| {
-            (
-                key.clone(),
-                command.as_str().unwrap_or_default().to_string(),
-            )
+            command
+                .as_str()
+                .with_context(|| {
+                    format!("Expected [keys.{section}] \"{key}\" value to serialize as string")
+                })
+                .map(|value| (key.clone(), value.to_string()))
         })
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
     entries.sort_unstable();
     for (key, command) in entries {
         let _ = writeln!(
@@ -251,6 +260,7 @@ fn write_keymap_section(out: &mut String, section: &str, section_value: &toml::V
         );
     }
     out.push('\n');
+    Ok(())
 }
 
 fn escape_toml_string(input: &str) -> String {

@@ -325,23 +325,13 @@ impl KeysConfig {
     }
 
     fn mode_uses_layer(mode: &Mode, layer: Layer) -> bool {
-        match mode {
-            Mode::RepoSelect => matches!(
-                layer,
-                Layer::General | Layer::TextEdit | Layer::ListNavigation | Layer::RepoSelect
-            ),
-            Mode::BranchSelect => matches!(
-                layer,
-                Layer::General | Layer::TextEdit | Layer::ListNavigation | Layer::BranchSelect
-            ),
-            Mode::SelectBaseBranch => {
-                matches!(
-                    layer,
-                    Layer::General | Layer::TextEdit | Layer::ListNavigation | Layer::Modal
-                )
-            }
-            Mode::ConfirmWorktreeDelete { .. } => matches!(layer, Layer::General | Layer::Modal),
-            Mode::Help { .. } | Mode::Loading(_) => matches!(layer, Layer::General),
+        match layer {
+            Layer::General => true,
+            Layer::TextEdit => mode.supports_text_edit(),
+            Layer::ListNavigation => mode.supports_list_navigation(),
+            Layer::RepoSelect => mode.supports_repo_select_actions(),
+            Layer::BranchSelect => mode.supports_branch_select_actions(),
+            Layer::Modal => mode.supports_modal_actions(),
         }
     }
 
@@ -544,23 +534,22 @@ impl KeysConfig {
         Ok(keymap)
     }
 
+    fn extend_layer(base: &mut KeyMap, raw_map: &HashMap<String, String>) -> Result<(), String> {
+        base.extend(Self::parse_keymap(raw_map)?);
+        Ok(())
+    }
+
     /// Merge user configuration with defaults.
     ///
     /// Keep `Noop` values so higher-precedence layers can explicitly unbind inherited mappings.
     fn from_raw(raw: &KeysConfigRaw) -> Result<Self, String> {
         let mut config = Self::default();
-        config.general.extend(Self::parse_keymap(&raw.general)?);
-        config.text_edit.extend(Self::parse_keymap(&raw.text_edit)?);
-        config
-            .list_navigation
-            .extend(Self::parse_keymap(&raw.list_navigation)?);
-        config.modal.extend(Self::parse_keymap(&raw.modal)?);
-        config
-            .repo_select
-            .extend(Self::parse_keymap(&raw.repo_select)?);
-        config
-            .branch_select
-            .extend(Self::parse_keymap(&raw.branch_select)?);
+        Self::extend_layer(&mut config.general, &raw.general)?;
+        Self::extend_layer(&mut config.text_edit, &raw.text_edit)?;
+        Self::extend_layer(&mut config.list_navigation, &raw.list_navigation)?;
+        Self::extend_layer(&mut config.modal, &raw.modal)?;
+        Self::extend_layer(&mut config.repo_select, &raw.repo_select)?;
+        Self::extend_layer(&mut config.branch_select, &raw.branch_select)?;
 
         Ok(config)
     }

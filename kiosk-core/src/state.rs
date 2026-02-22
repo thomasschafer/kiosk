@@ -298,6 +298,37 @@ pub enum Mode {
     },
 }
 
+impl Mode {
+    pub(crate) fn supports_text_edit(&self) -> bool {
+        matches!(
+            self,
+            Mode::RepoSelect | Mode::BranchSelect | Mode::SelectBaseBranch
+        )
+    }
+
+    pub(crate) fn supports_list_navigation(&self) -> bool {
+        matches!(
+            self,
+            Mode::RepoSelect | Mode::BranchSelect | Mode::SelectBaseBranch
+        )
+    }
+
+    pub(crate) fn supports_modal_actions(&self) -> bool {
+        matches!(
+            self,
+            Mode::SelectBaseBranch | Mode::ConfirmWorktreeDelete { .. }
+        )
+    }
+
+    pub(crate) fn supports_repo_select_actions(&self) -> bool {
+        matches!(self, Mode::RepoSelect)
+    }
+
+    pub(crate) fn supports_branch_select_actions(&self) -> bool {
+        matches!(self, Mode::BranchSelect)
+    }
+}
+
 /// The new-branch flow state
 #[derive(Debug, Clone)]
 pub struct BaseBranchSelection {

@@ -220,10 +220,12 @@ impl TestEnv {
     }
 
     fn launch_kiosk_with_config_arg(&self, config_path: &Path, fake_xdg_config_home: &Path) {
-        cleanup_session(&self.session_name);
+        cleanup_session(&self.tmux_socket, &self.session_name);
         let binary = kiosk_binary();
         Command::new("tmux")
             .args([
+                "-L",
+                &self.tmux_socket,
                 "new-session",
                 "-d",
                 "-s",
@@ -233,7 +235,7 @@ impl TestEnv {
                 "-y",
                 "30",
                 &format!(
-                    "XDG_CONFIG_HOME={} XDG_STATE_HOME={} PATH={}:$PATH {} --config {} ; sleep 2",
+                    "XDG_CONFIG_HOME={} XDG_STATE_HOME={} KIOSK_NO_ALT_SCREEN=1 PATH={}:$PATH {} --config {} ; sleep 2",
                     fake_xdg_config_home.to_string_lossy(),
                     self.state_dir.to_string_lossy(),
                     self.bin_dir.to_string_lossy(),

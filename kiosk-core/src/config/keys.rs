@@ -444,11 +444,11 @@ impl KeysConfig {
             Command::MoveDown,
         );
         map.insert(
-            KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::ALT),
             Command::HalfPageDown,
         );
         map.insert(
-            KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char('k'), KeyModifiers::ALT),
             Command::HalfPageUp,
         );
         map.insert(
@@ -458,6 +458,14 @@ impl KeysConfig {
         map.insert(
             KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
             Command::PageDown,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
+            Command::PageDown,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Char('v'), KeyModifiers::ALT),
+            Command::PageUp,
         );
         map.insert(
             KeyEvent::new(KeyCode::Char('g'), KeyModifiers::ALT),
@@ -815,12 +823,14 @@ mod tests {
     }
 
     #[test]
-    fn test_default_search_bindings_take_priority() {
+    fn test_default_text_edit_and_navigation_bindings() {
         let config = KeysConfig::default();
         let ctrl_u = KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL);
         let ctrl_d = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL);
-        let ctrl_f = KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL);
-        let ctrl_b = KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL);
+        let alt_j = KeyEvent::new(KeyCode::Char('j'), KeyModifiers::ALT);
+        let alt_k = KeyEvent::new(KeyCode::Char('k'), KeyModifiers::ALT);
+        let ctrl_v = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
+        let alt_v = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::ALT);
 
         assert_eq!(
             config
@@ -839,16 +849,30 @@ mod tests {
         assert_eq!(
             config
                 .keymap_for_mode(&Mode::RepoSelect)
-                .get(&ctrl_f)
+                .get(&alt_j)
                 .cloned(),
             Some(Command::HalfPageDown)
         );
         assert_eq!(
             config
                 .keymap_for_mode(&Mode::RepoSelect)
-                .get(&ctrl_b)
+                .get(&alt_k)
                 .cloned(),
             Some(Command::HalfPageUp)
+        );
+        assert_eq!(
+            config
+                .keymap_for_mode(&Mode::RepoSelect)
+                .get(&ctrl_v)
+                .cloned(),
+            Some(Command::PageDown)
+        );
+        assert_eq!(
+            config
+                .keymap_for_mode(&Mode::RepoSelect)
+                .get(&alt_v)
+                .cloned(),
+            Some(Command::PageUp)
         );
     }
 

@@ -1059,8 +1059,8 @@ fn test_e2e_ctrl_u_clears_search_input() {
 }
 
 #[test]
-fn test_e2e_ctrl_f_and_ctrl_b_half_page_navigation() {
-    let env = TestEnv::new("ctrl-f-b-half-page");
+fn test_e2e_alt_j_and_alt_k_half_page_navigation() {
+    let env = TestEnv::new("alt-j-k-half-page");
     let search_dir = env.search_dir();
 
     for i in 0..30 {
@@ -1076,20 +1076,55 @@ fn test_e2e_ctrl_f_and_ctrl_b_half_page_navigation() {
     let initial_selected =
         selected_line(&screen).expect("Expected an initially selected repo line in UI");
 
-    env.send_special("C-f");
+    env.send_special("M-j");
     let screen = env.capture();
-    let after_down = selected_line(&screen).expect("Expected selected line after C-f");
+    let after_down = selected_line(&screen).expect("Expected selected line after A-j");
     assert_ne!(
         after_down, initial_selected,
-        "Ctrl+F should move selection by half page. screen:\n{screen}"
+        "Alt+j should move selection by half page. screen:\n{screen}"
     );
 
-    env.send_special("C-b");
+    env.send_special("M-k");
     let screen = env.capture();
-    let after_up = selected_line(&screen).expect("Expected selected line after C-b");
+    let after_up = selected_line(&screen).expect("Expected selected line after A-k");
     assert_eq!(
         after_up, initial_selected,
-        "Ctrl+B should move selection back by half page. screen:\n{screen}"
+        "Alt+k should move selection back by half page. screen:\n{screen}"
+    );
+}
+
+#[test]
+fn test_e2e_ctrl_v_and_alt_v_page_navigation() {
+    let env = TestEnv::new("ctrl-v-alt-v-page");
+    let search_dir = env.search_dir();
+
+    for i in 0..40 {
+        let repo = search_dir.join(format!("page-nav-{i:02}"));
+        fs::create_dir_all(&repo).unwrap();
+        init_test_repo(&repo);
+    }
+
+    env.write_config(&search_dir);
+    env.launch_kiosk();
+
+    let screen = env.capture();
+    let initial_selected =
+        selected_line(&screen).expect("Expected an initially selected repo line in UI");
+
+    env.send_special("C-v");
+    let screen = env.capture();
+    let after_page_down = selected_line(&screen).expect("Expected selected line after C-v");
+    assert_ne!(
+        after_page_down, initial_selected,
+        "Ctrl+v should move selection by page down. screen:\n{screen}"
+    );
+
+    env.send_special("M-v");
+    let screen = env.capture();
+    let after_page_up = selected_line(&screen).expect("Expected selected line after A-v");
+    assert_eq!(
+        after_page_up, initial_selected,
+        "Alt+v should move selection back by page up. screen:\n{screen}"
     );
 }
 

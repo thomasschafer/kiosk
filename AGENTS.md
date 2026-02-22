@@ -1,7 +1,7 @@
 # Agent instructions
 
 ## Text
-Please use sentence case unless some other casing e.g. title case is aboslutely necessary.
+Please use sentence case unless some other casing e.g. title case is absolutely necessary.
 
 ## Code style
 - Code should be as DRY as reasonably possible. This doesn't just apply to exact copies of code: if there are repeated patterns, we should extract these out for re-use when reasonably possible.

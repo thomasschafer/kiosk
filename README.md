@@ -99,6 +99,7 @@ Success/positive color (default: "green").
 ### `[keys]` section
 
 Key binding configuration.
+To unbind an inherited key mapping, assign it to `noop`.
 
 Defaults are shown below.
 
@@ -130,10 +131,12 @@ Defaults are shown below.
 [keys.list_navigation]
 "A-G" = "move_bottom"
 "A-g" = "move_top"
-"C-b" = "half_page_up"
-"C-f" = "half_page_down"
+"A-j" = "half_page_down"
+"A-k" = "half_page_up"
+"A-v" = "page_up"
 "C-n" = "move_down"
 "C-p" = "move_up"
+"C-v" = "page_down"
 "down" = "move_down"
 "pagedown" = "page_down"
 "pageup" = "page_up"

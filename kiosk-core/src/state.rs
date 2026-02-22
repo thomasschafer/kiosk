@@ -774,6 +774,43 @@ mod tests {
     }
 
     #[test]
+    fn test_prev_word_boundary_edges() {
+        let mut list = SearchableList::new(0);
+        list.search = "alpha   beta".to_string();
+
+        assert_eq!(list.prev_word_boundary(0), 0);
+        assert_eq!(list.prev_word_boundary(list.search.len()), 8);
+        assert_eq!(list.prev_word_boundary(7), 0);
+        assert_eq!(list.prev_word_boundary(usize::MAX), 8);
+    }
+
+    #[test]
+    fn test_next_word_boundary_edges() {
+        let mut list = SearchableList::new(0);
+        list.search = "alpha   beta".to_string();
+
+        assert_eq!(list.next_word_boundary(0), 5);
+        assert_eq!(list.next_word_boundary(5), 12);
+        assert_eq!(
+            list.next_word_boundary(list.search.len()),
+            list.search.len()
+        );
+        assert_eq!(list.next_word_boundary(usize::MAX), list.search.len());
+    }
+
+    #[test]
+    fn test_word_boundary_empty_and_spaces_only() {
+        let empty = SearchableList::new(0);
+        assert_eq!(empty.prev_word_boundary(3), 0);
+        assert_eq!(empty.next_word_boundary(3), 0);
+
+        let mut spaces = SearchableList::new(0);
+        spaces.search = "   ".to_string();
+        assert_eq!(spaces.prev_word_boundary(3), 0);
+        assert_eq!(spaces.next_word_boundary(0), 3);
+    }
+
+    #[test]
     fn test_reconcile_pending_deletes_removes_missing_worktree() {
         let repo = Repo {
             name: "repo".to_string(),

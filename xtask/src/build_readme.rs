@@ -1,8 +1,5 @@
 use anyhow::{Context, Result};
-use kiosk_core::{
-    config::{KeysConfig, keys::KeyMap},
-    state::Mode,
-};
+use kiosk_core::config::{KeysConfig, keys::KeyMap};
 use quote::ToTokens;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
@@ -76,7 +73,6 @@ fn process_struct(
     toml_prefix: &str,
 ) {
     if struct_item.ident == "KeysConfig" && toml_prefix == "keys" {
-        docs.push_str(&generate_keys_precedence_docs());
         docs.push_str("Defaults are shown below.\n\n");
         docs.push_str("```toml\n");
         docs.push_str(&generate_default_keys_toml());
@@ -218,36 +214,6 @@ fn generate_default_keys_toml() -> String {
     write_keymap_section(&mut out, "branch_select", &keys.branch_select);
 
     out
-}
-
-fn generate_keys_precedence_docs() -> String {
-    let mut docs = String::new();
-    docs.push_str("Layer precedence is generated from runtime composition order (later layers override earlier ones):\n\n");
-    let _ = writeln!(
-        docs,
-        "- `repo_select`: `{}`",
-        KeysConfig::layer_order_for_mode(&Mode::RepoSelect).join(" < ")
-    );
-    let _ = writeln!(
-        docs,
-        "- `branch_select`: `{}`",
-        KeysConfig::layer_order_for_mode(&Mode::BranchSelect).join(" < ")
-    );
-    let _ = writeln!(
-        docs,
-        "- `new_branch_base`: `{}`",
-        KeysConfig::layer_order_for_mode(&Mode::NewBranchBase).join(" < ")
-    );
-    let _ = writeln!(
-        docs,
-        "- `confirm_delete`: `{}`\n",
-        KeysConfig::layer_order_for_mode(&Mode::ConfirmDelete {
-            branch_name: "_".to_string(),
-            has_session: false,
-        })
-        .join(" < ")
-    );
-    docs
 }
 
 fn write_keymap_section(out: &mut String, section: &str, keymap: &KeyMap) {

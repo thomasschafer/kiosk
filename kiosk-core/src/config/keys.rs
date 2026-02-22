@@ -1,7 +1,7 @@
 use crate::keyboard::{KeyCode, KeyEvent, KeyModifiers};
 use crate::state::Mode;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
 /// Commands that can be bound to keys
@@ -182,7 +182,8 @@ impl Command {
 /// Key bindings for a specific layer/mode
 pub type KeyMap = HashMap<KeyEvent, Command>;
 
-#[derive(Debug, Clone, Copy)]
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum Layer {
     General,
     TextEdit,
@@ -247,6 +248,21 @@ impl KeysConfig {
     ];
     const CONFIRM_WORKTREE_DELETE_LAYERS: &[Layer] = &[Layer::General, Layer::Modal];
     const GENERAL_ONLY_LAYERS: &[Layer] = &[Layer::General];
+    const ALL_LAYERS: &[Layer] = &[
+        Layer::General,
+        Layer::TextEdit,
+        Layer::ListNavigation,
+        Layer::Modal,
+        Layer::RepoSelect,
+        Layer::BranchSelect,
+    ];
+    const MODE_LAYER_ORDERS: &[&[Layer]] = &[
+        Self::REPO_SELECT_LAYERS,
+        Self::BRANCH_SELECT_LAYERS,
+        Self::SELECT_BASE_BRANCH_LAYERS,
+        Self::CONFIRM_WORKTREE_DELETE_LAYERS,
+        Self::GENERAL_ONLY_LAYERS,
+    ];
 
     pub fn new() -> Self {
         Self {
@@ -278,6 +294,73 @@ impl KeysConfig {
             Mode::ConfirmWorktreeDelete { .. } => Self::CONFIRM_WORKTREE_DELETE_LAYERS,
             Mode::Help { .. } | Mode::Loading(_) => Self::GENERAL_ONLY_LAYERS,
         }
+    }
+
+    /// Return key-layer section names ordered from highest to lowest precedence.
+    ///
+    /// Order is derived from mode layer precedence definitions, not hardcoded names.
+    pub fn docs_section_order_desc() -> Vec<&'static str> {
+        Self::docs_layer_order_desc()
+            .into_iter()
+            .map(Self::layer_name)
+            .collect()
+    }
+
+    fn docs_layer_order_desc() -> Vec<Layer> {
+        let mut indegree: HashMap<Layer, usize> = Self::ALL_LAYERS
+            .iter()
+            .copied()
+            .map(|layer| (layer, 0))
+            .collect();
+        let mut outgoing: HashMap<Layer, Vec<Layer>> = Self::ALL_LAYERS
+            .iter()
+            .copied()
+            .map(|layer| (layer, Vec::new()))
+            .collect();
+        let mut seen_edges: HashSet<(Layer, Layer)> = HashSet::new();
+
+        for order in Self::MODE_LAYER_ORDERS {
+            for pair in order.windows(2) {
+                let from = pair[0];
+                let to = pair[1];
+                if seen_edges.insert((from, to)) {
+                    outgoing.entry(from).or_default().push(to);
+                    *indegree.entry(to).or_default() += 1;
+                }
+            }
+        }
+
+        let mut ready: Vec<Layer> = indegree
+            .iter()
+            .filter(|(_, count)| **count == 0)
+            .map(|(layer, _)| *layer)
+            .collect();
+        ready.sort_by_key(|layer| Self::layer_rank(*layer));
+
+        let mut low_to_high = Vec::with_capacity(Self::ALL_LAYERS.len());
+        while let Some(layer) = ready.first().copied() {
+            ready.remove(0);
+            low_to_high.push(layer);
+
+            if let Some(targets) = outgoing.get(&layer) {
+                for target in targets {
+                    if let Some(count) = indegree.get_mut(target) {
+                        *count = count.saturating_sub(1);
+                        if *count == 0 {
+                            ready.push(*target);
+                        }
+                    }
+                }
+            }
+            ready.sort_by_key(|next| Self::layer_rank(*next));
+        }
+
+        if low_to_high.len() != Self::ALL_LAYERS.len() {
+            return Self::ALL_LAYERS.iter().copied().rev().collect();
+        }
+
+        low_to_high.reverse();
+        low_to_high
     }
 
     #[cfg(test)]
@@ -321,7 +404,6 @@ impl KeysConfig {
         }
     }
 
-    #[cfg(test)]
     fn layer_name(layer: Layer) -> &'static str {
         match layer {
             Layer::General => "general",
@@ -331,6 +413,10 @@ impl KeysConfig {
             Layer::RepoSelect => "repo_select",
             Layer::BranchSelect => "branch_select",
         }
+    }
+
+    fn layer_rank(layer: Layer) -> u8 {
+        layer as u8
     }
 
     fn default_general() -> KeyMap {
@@ -770,6 +856,21 @@ mod tests {
                 has_session: false,
             }),
             vec!["general", "modal"]
+        );
+    }
+
+    #[test]
+    fn test_docs_section_order_desc_is_derived_from_layer_precedence() {
+        assert_eq!(
+            KeysConfig::docs_section_order_desc(),
+            vec![
+                "branch_select",
+                "repo_select",
+                "modal",
+                "list_navigation",
+                "text_edit",
+                "general",
+            ]
         );
     }
 

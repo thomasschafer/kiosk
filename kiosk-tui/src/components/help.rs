@@ -29,7 +29,7 @@ pub fn draw(f: &mut Frame, state: &AppState, theme: &crate::theme::Theme, keys: 
 
     // Create the main block
     let block = Block::default()
-        .title("Help — Keybindings")
+        .title("Help — key bindings")
         .title_style(
             Style::default()
                 .fg(theme.accent)
@@ -56,10 +56,10 @@ fn build_help_content(keys: &KeysConfig, current_mode: &Mode) -> Vec<Line<'stati
     lines.push(Line::from(""));
 
     let mode_title = match current_mode {
-        Mode::RepoSelect => "Repository Selection:",
-        Mode::BranchSelect => "Branch Selection:",
-        Mode::SelectBaseBranch => "Base Branch Selection:",
-        Mode::ConfirmWorktreeDelete { .. } => "Delete Confirmation:",
+        Mode::RepoSelect => "Repository selection:",
+        Mode::BranchSelect => "Branch selection:",
+        Mode::SelectBaseBranch => "Base branch selection:",
+        Mode::ConfirmWorktreeDelete { .. } => "Delete confirmation:",
         Mode::Loading(_) => "Loading:",
         Mode::Help { .. } => "General:",
     };

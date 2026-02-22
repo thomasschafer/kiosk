@@ -305,7 +305,7 @@ fn draw_confirm_delete_dialog(
 
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(" Confirm Delete ")
+            .title(" Confirm delete ")
             .border_style(Style::default().fg(theme.accent));
 
         let centered = components::centered_rect(50, 20, area);

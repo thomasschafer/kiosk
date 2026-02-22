@@ -216,8 +216,12 @@ fn generate_default_keys_toml() -> String {
         .and_then(toml::Value::as_table)
         .expect("serialized keys should contain [keys] table");
     let mut out = String::new();
+    let ordered_sections = KeysConfig::docs_section_order_desc();
 
-    for (section, section_value) in section_table {
+    for section in ordered_sections {
+        let section_value = section_table
+            .get(section)
+            .unwrap_or_else(|| panic!("missing serialized key section: {section}"));
         write_keymap_section(&mut out, section, section_value);
     }
 

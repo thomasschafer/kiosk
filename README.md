@@ -109,9 +109,14 @@ Defaults are shown below.
 "enter" = "open_branch"
 "esc" = "go_back"
 
-[keys.general]
-"C-c" = "quit"
-"C-h" = "show_help"
+[keys.repo_select]
+"enter" = "open_repo"
+"esc" = "quit"
+"tab" = "enter_repo"
+
+[keys.modal]
+"enter" = "confirm"
+"esc" = "cancel"
 
 [keys.list_navigation]
 "A-G" = "move_bottom"
@@ -124,15 +129,6 @@ Defaults are shown below.
 "pagedown" = "page_down"
 "pageup" = "page_up"
 "up" = "move_up"
-
-[keys.modal]
-"enter" = "confirm"
-"esc" = "cancel"
-
-[keys.repo_select]
-"enter" = "open_repo"
-"esc" = "quit"
-"tab" = "enter_repo"
 
 [keys.text_edit]
 "A-b" = "move_cursor_word_left"
@@ -153,6 +149,10 @@ Defaults are shown below.
 "home" = "move_cursor_start"
 "left" = "move_cursor_left"
 "right" = "move_cursor_right"
+
+[keys.general]
+"C-c" = "quit"
+"C-h" = "show_help"
 
 ```
 

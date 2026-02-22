@@ -668,7 +668,7 @@ fn test_e2e_delete_worktree() {
     // Just verify that we're back to the branch listing (the confirmation was processed)
     let screen = env.capture();
     assert!(
-        screen.contains("select branch") || !screen.contains("Confirm Delete"),
+        screen.contains("select branch") || !screen.contains("Confirm delete"),
         "Should return to branch listing after deletion: {screen}"
     );
 }
@@ -891,9 +891,9 @@ C-c = "cancel"
     env.send("feat/modal-test");
     env.send_special("C-x");
 
-    let screen = wait_for_screen(&env, 2000, |s| s.contains("Confirm Delete"));
+    let screen = wait_for_screen(&env, 2000, |s| s.contains("Confirm delete"));
     assert!(
-        screen.contains("Confirm Delete"),
+        screen.contains("Confirm delete"),
         "Delete confirm dialog should be visible: {screen}"
     );
 
@@ -901,7 +901,7 @@ C-c = "cancel"
     env.send_special("C-c");
     let screen = wait_for_screen(&env, 2000, |s| s.contains("select branch"));
     assert!(
-        screen.contains("select branch") && !screen.contains("Confirm Delete"),
+        screen.contains("select branch") && !screen.contains("Confirm delete"),
         "C-c should cancel modal and stay in branch view: {screen}"
     );
 }
@@ -922,7 +922,7 @@ fn test_e2e_help_esc_dismiss() {
     env.send_special("C-h");
     let screen = env.capture();
     assert!(
-        screen.contains("Help") && screen.contains("Keybindings"),
+        screen.contains("Help") && screen.contains("key bindings"),
         "Help overlay should be visible: {screen}"
     );
 
@@ -930,7 +930,7 @@ fn test_e2e_help_esc_dismiss() {
     env.send_special("Escape");
     let screen = env.capture();
     assert!(
-        screen.contains("select repo") && !screen.contains("Keybindings"),
+        screen.contains("select repo") && !screen.contains("key bindings"),
         "Help should be dismissed by Esc: {screen}"
     );
 }

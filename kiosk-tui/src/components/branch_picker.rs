@@ -1,6 +1,6 @@
 use crate::theme::Theme;
 use kiosk_core::config::{Command, KeysConfig};
-use kiosk_core::state::AppState;
+use kiosk_core::state::{AppState, Mode};
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
@@ -131,15 +131,16 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, keys: &K
 }
 
 fn build_branch_hints(keys: &KeysConfig) -> String {
+    let keymap = keys.keymap_for_mode(&Mode::BranchSelect);
     let mut hints = Vec::new();
 
-    if let Some(key) = KeysConfig::find_key(&keys.branch_select, &Command::GoBack) {
+    if let Some(key) = KeysConfig::find_key(&keymap, &Command::GoBack) {
         hints.push(format!("{key}: go back"));
     }
-    if let Some(key) = KeysConfig::find_key(&keys.branch_select, &Command::NewBranch) {
+    if let Some(key) = KeysConfig::find_key(&keymap, &Command::NewBranch) {
         hints.push(format!("{key}: new branch"));
     }
-    if let Some(key) = KeysConfig::find_key(&keys.branch_select, &Command::DeleteWorktree) {
+    if let Some(key) = KeysConfig::find_key(&keymap, &Command::DeleteWorktree) {
         hints.push(format!("{key}: delete worktree"));
     }
 

@@ -207,10 +207,11 @@ fn generate_default_keys_toml() -> String {
     let mut out = String::new();
 
     write_keymap_section(&mut out, "general", &keys.general);
+    write_keymap_section(&mut out, "text_edit", &keys.text_edit);
+    write_keymap_section(&mut out, "list_navigation", &keys.list_navigation);
+    write_keymap_section(&mut out, "confirm_cancel", &keys.confirm_cancel);
     write_keymap_section(&mut out, "repo_select", &keys.repo_select);
     write_keymap_section(&mut out, "branch_select", &keys.branch_select);
-    write_keymap_section(&mut out, "new_branch_base", &keys.new_branch_base);
-    write_keymap_section(&mut out, "confirmation", &keys.confirmation);
 
     out
 }

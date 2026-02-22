@@ -258,10 +258,14 @@ fn draw_confirm_delete_dialog(
             "Delete worktree for branch "
         };
 
-        let confirm_key = KeysConfig::find_key(&keys.confirmation, &Command::Confirm)
-            .map_or("y".to_string(), |k| k.to_string());
-        let cancel_key = KeysConfig::find_key(&keys.confirmation, &Command::Cancel)
-            .map_or("Esc".to_string(), |k| k.to_string());
+        let keymap = keys.keymap_for_mode(&Mode::ConfirmDelete {
+            branch_name: branch_name.clone(),
+            has_session: *has_session,
+        });
+        let confirm_key = KeysConfig::find_key(&keymap, &Command::Confirm)
+            .map_or("enter".to_string(), |k| k.to_string());
+        let cancel_key = KeysConfig::find_key(&keymap, &Command::Cancel)
+            .map_or("esc".to_string(), |k| k.to_string());
 
         let text = vec![
             Line::from(vec![

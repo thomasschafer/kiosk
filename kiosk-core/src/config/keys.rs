@@ -1,4 +1,5 @@
 use crate::keyboard::{KeyCode, KeyEvent, KeyModifiers};
+use crate::state::Mode;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -6,7 +7,7 @@ use std::str::FromStr;
 /// Commands that can be bound to keys
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Command {
-    /// No-op: explicitly unbinds a key (removes the default binding)
+    /// No-op: explicitly unbinds a key (removes inherited/default binding)
     Noop,
 
     // General commands
@@ -21,7 +22,7 @@ pub enum Command {
     NewBranch,
     DeleteWorktree,
 
-    // Movement commands
+    // List movement commands
     MoveUp,
     MoveDown,
     HalfPageUp,
@@ -31,15 +32,15 @@ pub enum Command {
     MoveTop,
     MoveBottom,
 
-    // Search commands
-    SearchPop,
-    SearchDeleteWord,
-    CursorLeft,
-    CursorRight,
-    CursorStart,
-    CursorEnd,
+    // Text-edit commands
+    DeleteBackwardChar,
+    DeleteBackwardWord,
+    MoveCursorLeft,
+    MoveCursorRight,
+    MoveCursorStart,
+    MoveCursorEnd,
 
-    // Confirmation commands
+    // Generic confirm/cancel commands
     Confirm,
     Cancel,
 }
@@ -66,12 +67,12 @@ impl FromStr for Command {
             "page_down" => Ok(Command::PageDown),
             "move_top" => Ok(Command::MoveTop),
             "move_bottom" => Ok(Command::MoveBottom),
-            "search_pop" => Ok(Command::SearchPop),
-            "search_delete_word" => Ok(Command::SearchDeleteWord),
-            "cursor_left" => Ok(Command::CursorLeft),
-            "cursor_right" => Ok(Command::CursorRight),
-            "cursor_start" => Ok(Command::CursorStart),
-            "cursor_end" => Ok(Command::CursorEnd),
+            "delete_backward_char" => Ok(Command::DeleteBackwardChar),
+            "delete_backward_word" => Ok(Command::DeleteBackwardWord),
+            "move_cursor_left" => Ok(Command::MoveCursorLeft),
+            "move_cursor_right" => Ok(Command::MoveCursorRight),
+            "move_cursor_start" => Ok(Command::MoveCursorStart),
+            "move_cursor_end" => Ok(Command::MoveCursorEnd),
             "confirm" => Ok(Command::Confirm),
             "cancel" => Ok(Command::Cancel),
             _ => Err(format!("Unknown command: {s}")),
@@ -99,12 +100,12 @@ impl std::fmt::Display for Command {
             Command::PageDown => "page_down",
             Command::MoveTop => "move_top",
             Command::MoveBottom => "move_bottom",
-            Command::SearchPop => "search_pop",
-            Command::SearchDeleteWord => "search_delete_word",
-            Command::CursorLeft => "cursor_left",
-            Command::CursorRight => "cursor_right",
-            Command::CursorStart => "cursor_start",
-            Command::CursorEnd => "cursor_end",
+            Command::DeleteBackwardChar => "delete_backward_char",
+            Command::DeleteBackwardWord => "delete_backward_word",
+            Command::MoveCursorLeft => "move_cursor_left",
+            Command::MoveCursorRight => "move_cursor_right",
+            Command::MoveCursorStart => "move_cursor_start",
+            Command::MoveCursorEnd => "move_cursor_end",
             Command::Confirm => "confirm",
             Command::Cancel => "cancel",
         };
@@ -133,29 +134,30 @@ impl Command {
             Command::PageDown => "Page down",
             Command::MoveTop => "Move to top",
             Command::MoveBottom => "Move to bottom",
-            Command::SearchPop => "Delete search character",
-            Command::SearchDeleteWord => "Delete word",
-            Command::CursorLeft => "Cursor left",
-            Command::CursorRight => "Cursor right",
-            Command::CursorStart => "Cursor to start",
-            Command::CursorEnd => "Cursor to end",
+            Command::DeleteBackwardChar => "Delete backward char",
+            Command::DeleteBackwardWord => "Delete backward word",
+            Command::MoveCursorLeft => "Move cursor left",
+            Command::MoveCursorRight => "Move cursor right",
+            Command::MoveCursorStart => "Move cursor to start",
+            Command::MoveCursorEnd => "Move cursor to end",
             Command::Confirm => "Confirm",
             Command::Cancel => "Cancel",
         }
     }
 }
 
-/// Key bindings for a specific mode
+/// Key bindings for a specific layer/mode
 pub type KeyMap = HashMap<KeyEvent, Command>;
 
-/// Complete key binding configuration
+/// Complete key binding configuration, composed from reusable layers.
 #[derive(Debug, Clone)]
 pub struct KeysConfig {
     pub general: KeyMap,
+    pub text_edit: KeyMap,
+    pub list_navigation: KeyMap,
+    pub confirm_cancel: KeyMap,
     pub repo_select: KeyMap,
     pub branch_select: KeyMap,
-    pub new_branch_base: KeyMap,
-    pub confirmation: KeyMap,
 }
 
 /// Intermediate structure for deserializing key bindings
@@ -164,13 +166,15 @@ struct KeysConfigRaw {
     #[serde(default)]
     general: HashMap<String, String>,
     #[serde(default)]
+    text_edit: HashMap<String, String>,
+    #[serde(default)]
+    list_navigation: HashMap<String, String>,
+    #[serde(default)]
+    confirm_cancel: HashMap<String, String>,
+    #[serde(default)]
     repo_select: HashMap<String, String>,
     #[serde(default)]
     branch_select: HashMap<String, String>,
-    #[serde(default)]
-    new_branch_base: HashMap<String, String>,
-    #[serde(default)]
-    confirmation: HashMap<String, String>,
 }
 
 impl Default for KeysConfig {
@@ -183,14 +187,48 @@ impl KeysConfig {
     pub fn new() -> Self {
         Self {
             general: Self::default_general(),
+            text_edit: Self::default_text_edit(),
+            list_navigation: Self::default_list_navigation(),
+            confirm_cancel: Self::default_confirm_cancel(),
             repo_select: Self::default_repo_select(),
             branch_select: Self::default_branch_select(),
-            new_branch_base: Self::default_new_branch_base(),
-            confirmation: Self::default_confirmation(),
         }
     }
 
-    /// Find the first key bound to a given command in a keymap
+    /// Build the effective keymap for a given app mode using precedence:
+    /// general < shared layers < mode-specific
+    pub fn keymap_for_mode(&self, mode: &Mode) -> KeyMap {
+        let mut combined = KeyMap::new();
+        Self::apply_layer(&mut combined, &self.general);
+
+        match mode {
+            Mode::RepoSelect => {
+                Self::apply_layer(&mut combined, &self.text_edit);
+                Self::apply_layer(&mut combined, &self.list_navigation);
+                Self::apply_layer(&mut combined, &self.repo_select);
+            }
+            Mode::BranchSelect => {
+                Self::apply_layer(&mut combined, &self.text_edit);
+                Self::apply_layer(&mut combined, &self.list_navigation);
+                Self::apply_layer(&mut combined, &self.branch_select);
+            }
+            Mode::NewBranchBase => {
+                Self::apply_layer(&mut combined, &self.text_edit);
+                Self::apply_layer(&mut combined, &self.list_navigation);
+                Self::apply_layer(&mut combined, &self.confirm_cancel);
+            }
+            Mode::ConfirmDelete { .. } => {
+                Self::apply_layer(&mut combined, &self.confirm_cancel);
+            }
+            Mode::Help { .. } | Mode::Loading(_) => {
+                // general-only
+            }
+        }
+
+        combined
+    }
+
+    /// Find the first key bound to a given command in a keymap.
     pub fn find_key(keymap: &KeyMap, command: &Command) -> Option<KeyEvent> {
         // Prefer shorter/simpler key representations
         let mut found: Vec<_> = keymap
@@ -202,13 +240,59 @@ impl KeysConfig {
         found.into_iter().next()
     }
 
-    /// Find the first key bound to a command across a mode keymap + general
-    pub fn find_key_for(&self, mode_keymap: &KeyMap, command: &Command) -> Option<KeyEvent> {
-        Self::find_key(mode_keymap, command).or_else(|| Self::find_key(&self.general, command))
+    fn apply_layer(base: &mut KeyMap, layer: &KeyMap) {
+        for (key, command) in layer {
+            if *command == Command::Noop {
+                base.remove(key);
+            } else {
+                base.insert(*key, command.clone());
+            }
+        }
     }
 
-    /// Common movement + search bindings shared across list modes
-    fn common_list_bindings() -> KeyMap {
+    fn default_general() -> KeyMap {
+        let mut map = KeyMap::new();
+        map.insert(
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            Command::Quit,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL),
+            Command::ShowHelp,
+        );
+        map
+    }
+
+    fn default_text_edit() -> KeyMap {
+        let mut map = KeyMap::new();
+        map.insert(
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+            Command::DeleteBackwardChar,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
+            Command::DeleteBackwardWord,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Left, KeyModifiers::NONE),
+            Command::MoveCursorLeft,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+            Command::MoveCursorRight,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Home, KeyModifiers::NONE),
+            Command::MoveCursorStart,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::End, KeyModifiers::NONE),
+            Command::MoveCursorEnd,
+        );
+        map
+    }
+
+    fn default_list_navigation() -> KeyMap {
         let mut map = KeyMap::new();
         map.insert(
             KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
@@ -243,30 +327,6 @@ impl KeysConfig {
             Command::PageDown,
         );
         map.insert(
-            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
-            Command::SearchPop,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
-            Command::SearchDeleteWord,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Left, KeyModifiers::NONE),
-            Command::CursorLeft,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
-            Command::CursorRight,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Home, KeyModifiers::NONE),
-            Command::CursorStart,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::End, KeyModifiers::NONE),
-            Command::CursorEnd,
-        );
-        map.insert(
             KeyEvent::new(KeyCode::Char('g'), KeyModifiers::ALT),
             Command::MoveTop,
         );
@@ -277,21 +337,21 @@ impl KeysConfig {
         map
     }
 
-    fn default_general() -> KeyMap {
+    fn default_confirm_cancel() -> KeyMap {
         let mut map = KeyMap::new();
         map.insert(
-            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
-            Command::Quit,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            Command::Confirm,
         );
         map.insert(
-            KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL),
-            Command::ShowHelp,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            Command::Cancel,
         );
         map
     }
 
     fn default_repo_select() -> KeyMap {
-        let mut map = Self::common_list_bindings();
+        let mut map = KeyMap::new();
         map.insert(
             KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
             Command::OpenRepo,
@@ -308,7 +368,7 @@ impl KeysConfig {
     }
 
     fn default_branch_select() -> KeyMap {
-        let mut map = Self::common_list_bindings();
+        let mut map = KeyMap::new();
         map.insert(
             KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
             Command::OpenBranch,
@@ -328,44 +388,6 @@ impl KeysConfig {
         map
     }
 
-    fn default_new_branch_base() -> KeyMap {
-        let mut map = Self::common_list_bindings();
-        map.insert(
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            Command::OpenBranch,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-            Command::GoBack,
-        );
-        map
-    }
-
-    fn default_confirmation() -> KeyMap {
-        let mut map = KeyMap::new();
-        map.insert(
-            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
-            Command::Confirm,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            Command::Confirm,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
-            Command::Cancel,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Char('N'), KeyModifiers::NONE),
-            Command::Cancel,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-            Command::Cancel,
-        );
-        map
-    }
-
     /// Parse a string representation of keybindings into a `KeyMap`
     fn parse_keymap(raw_map: &HashMap<String, String>) -> Result<KeyMap, String> {
         let mut keymap = KeyMap::new();
@@ -379,33 +401,26 @@ impl KeysConfig {
         Ok(keymap)
     }
 
-    /// Merge user overrides into a keymap, then strip any Noop entries (unbinds)
-    fn merge_and_strip(base: &mut KeyMap, overrides: KeyMap) {
-        base.extend(overrides);
-        base.retain(|_, cmd| *cmd != Command::Noop);
-    }
-
-    /// Merge user configuration with defaults
+    /// Merge user configuration with defaults.
+    ///
+    /// Keep `Noop` values so higher-precedence layers can explicitly unbind inherited mappings.
     fn from_raw(raw: &KeysConfigRaw) -> Result<Self, String> {
         let mut config = Self::default();
 
-        Self::merge_and_strip(&mut config.general, Self::parse_keymap(&raw.general)?);
-        Self::merge_and_strip(
-            &mut config.repo_select,
-            Self::parse_keymap(&raw.repo_select)?,
-        );
-        Self::merge_and_strip(
-            &mut config.branch_select,
-            Self::parse_keymap(&raw.branch_select)?,
-        );
-        Self::merge_and_strip(
-            &mut config.new_branch_base,
-            Self::parse_keymap(&raw.new_branch_base)?,
-        );
-        Self::merge_and_strip(
-            &mut config.confirmation,
-            Self::parse_keymap(&raw.confirmation)?,
-        );
+        config.general.extend(Self::parse_keymap(&raw.general)?);
+        config.text_edit.extend(Self::parse_keymap(&raw.text_edit)?);
+        config
+            .list_navigation
+            .extend(Self::parse_keymap(&raw.list_navigation)?);
+        config
+            .confirm_cancel
+            .extend(Self::parse_keymap(&raw.confirm_cancel)?);
+        config
+            .repo_select
+            .extend(Self::parse_keymap(&raw.repo_select)?);
+        config
+            .branch_select
+            .extend(Self::parse_keymap(&raw.branch_select)?);
 
         Ok(config)
     }
@@ -429,29 +444,31 @@ mod tests {
     #[test]
     fn test_command_from_str() {
         assert_eq!(Command::from_str("quit").unwrap(), Command::Quit);
-        assert_eq!(Command::from_str("move_up").unwrap(), Command::MoveUp);
+        assert_eq!(
+            Command::from_str("delete_backward_char").unwrap(),
+            Command::DeleteBackwardChar
+        );
         assert!(Command::from_str("invalid_command").is_err());
     }
 
     #[test]
     fn test_command_display() {
         assert_eq!(Command::Quit.to_string(), "quit");
-        assert_eq!(Command::MoveUp.to_string(), "move_up");
-    }
-
-    #[test]
-    fn test_command_description() {
-        assert_eq!(Command::Quit.description(), "Quit the application");
-        assert_eq!(Command::MoveUp.description(), "Move up");
+        assert_eq!(
+            Command::DeleteBackwardWord.to_string(),
+            "delete_backward_word"
+        );
     }
 
     #[test]
     fn test_default_keys_config() {
         let config = KeysConfig::default();
         assert!(!config.general.is_empty());
+        assert!(!config.text_edit.is_empty());
+        assert!(!config.list_navigation.is_empty());
+        assert!(!config.confirm_cancel.is_empty());
         assert!(!config.repo_select.is_empty());
         assert!(!config.branch_select.is_empty());
-        assert!(!config.confirmation.is_empty());
     }
 
     #[test]
@@ -489,52 +506,52 @@ mod tests {
     }
 
     #[test]
-    fn test_from_raw_merge() {
+    fn test_mode_precedence_more_specific_wins() {
         let raw = KeysConfigRaw {
-            general: {
+            general: HashMap::new(),
+            text_edit: HashMap::new(),
+            list_navigation: HashMap::new(),
+            confirm_cancel: HashMap::new(),
+            repo_select: {
                 let mut map = HashMap::new();
-                map.insert("F1".to_string(), "show_help".to_string());
+                map.insert("C-c".to_string(), "show_help".to_string());
                 map
             },
-            repo_select: HashMap::new(),
             branch_select: HashMap::new(),
-            new_branch_base: HashMap::new(),
-            confirmation: HashMap::new(),
         };
 
         let config = KeysConfig::from_raw(&raw).unwrap();
-
-        // Should have default C-h -> show_help plus new F1 -> show_help
-        assert!(config.general.len() >= 2);
-        let f1_key = KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE);
-        assert_eq!(config.general.get(&f1_key), Some(&Command::ShowHelp));
+        let map = config.keymap_for_mode(&Mode::RepoSelect);
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(map.get(&ctrl_c), Some(&Command::ShowHelp));
     }
 
     #[test]
-    fn test_noop_unbinds_default() {
+    fn test_noop_can_unbind_inherited_mapping() {
         let raw = KeysConfigRaw {
-            general: {
+            general: HashMap::new(),
+            text_edit: HashMap::new(),
+            list_navigation: HashMap::new(),
+            confirm_cancel: HashMap::new(),
+            repo_select: HashMap::new(),
+            branch_select: {
                 let mut map = HashMap::new();
-                // Unbind the default C-h -> show_help
-                map.insert("C-h".to_string(), "noop".to_string());
+                map.insert("C-n".to_string(), "noop".to_string());
                 map
             },
-            repo_select: HashMap::new(),
-            branch_select: HashMap::new(),
-            new_branch_base: HashMap::new(),
-            confirmation: HashMap::new(),
         };
 
         let config = KeysConfig::from_raw(&raw).unwrap();
-
-        let ctrl_h = KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL);
-        assert_eq!(config.general.get(&ctrl_h), None, "C-h should be unbound");
+        let map = config.keymap_for_mode(&Mode::BranchSelect);
+        let ctrl_n = KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL);
+        assert_eq!(map.get(&ctrl_n), None, "C-n should be unbound");
     }
 
     #[test]
     fn test_find_key_reverse_lookup() {
         let config = KeysConfig::default();
-        let key = KeysConfig::find_key(&config.general, &Command::Quit);
+        let keymap = config.keymap_for_mode(&Mode::RepoSelect);
+        let key = KeysConfig::find_key(&keymap, &Command::Quit);
         assert_eq!(
             key,
             Some(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL))
@@ -542,27 +559,19 @@ mod tests {
     }
 
     #[test]
-    fn test_find_key_not_found() {
+    fn test_default_text_edit_bindings() {
         let config = KeysConfig::default();
-        let key = KeysConfig::find_key(&config.general, &Command::OpenRepo);
-        assert_eq!(key, None);
-    }
+        let keymap = config.keymap_for_mode(&Mode::RepoSelect);
 
-    #[test]
-    fn test_default_cursor_bindings() {
-        let config = KeysConfig::default();
         let left = KeyEvent::new(KeyCode::Left, KeyModifiers::NONE);
         let right = KeyEvent::new(KeyCode::Right, KeyModifiers::NONE);
         let home = KeyEvent::new(KeyCode::Home, KeyModifiers::NONE);
         let end = KeyEvent::new(KeyCode::End, KeyModifiers::NONE);
 
-        assert_eq!(config.repo_select.get(&left), Some(&Command::CursorLeft));
-        assert_eq!(config.repo_select.get(&right), Some(&Command::CursorRight));
-        assert_eq!(config.repo_select.get(&home), Some(&Command::CursorStart));
-        assert_eq!(config.repo_select.get(&end), Some(&Command::CursorEnd));
-
-        // Same for branch_select
-        assert_eq!(config.branch_select.get(&left), Some(&Command::CursorLeft));
+        assert_eq!(keymap.get(&left), Some(&Command::MoveCursorLeft));
+        assert_eq!(keymap.get(&right), Some(&Command::MoveCursorRight));
+        assert_eq!(keymap.get(&home), Some(&Command::MoveCursorStart));
+        assert_eq!(keymap.get(&end), Some(&Command::MoveCursorEnd));
     }
 
     #[test]

@@ -244,6 +244,35 @@ define_commands! {
 /// Key bindings for a specific layer/mode
 pub type KeyMap = HashMap<KeyEvent, Command>;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeybindingEntry {
+    pub key: KeyEvent,
+    pub command: Command,
+    pub description: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeybindingSection {
+    pub name: &'static str,
+    pub entries: Vec<KeybindingEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlattenedKeybindingRow {
+    pub section_index: usize,
+    pub section_name: &'static str,
+    pub key_display: String,
+    pub command: Command,
+    pub description: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModeKeybindingCatalog {
+    pub mode: Mode,
+    pub sections: Vec<KeybindingSection>,
+    pub flattened: Vec<FlattenedKeybindingRow>,
+}
+
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum Layer {
@@ -336,6 +365,45 @@ impl KeysConfig {
         combined
     }
 
+    /// Build keybinding sections for a mode without applying higher-layer overrides.
+    pub fn sections_for_mode(&self, mode: &Mode) -> Vec<KeybindingSection> {
+        Layer::ORDER_ASC
+            .into_iter()
+            .filter(|layer| Self::mode_uses_layer(mode, *layer))
+            .map(|layer| KeybindingSection {
+                name: layer.section_name(),
+                entries: Self::entries_for_layer(self.layer(layer)),
+            })
+            .collect()
+    }
+
+    /// Build sectioned and flattened keybinding data for a mode.
+    pub fn catalog_for_mode(&self, mode: &Mode) -> ModeKeybindingCatalog {
+        let sections = self.sections_for_mode(mode);
+        let flattened = sections
+            .iter()
+            .enumerate()
+            .flat_map(|(section_index, section)| {
+                section
+                    .entries
+                    .iter()
+                    .map(move |entry| FlattenedKeybindingRow {
+                        section_index,
+                        section_name: section.name,
+                        key_display: entry.key.to_string(),
+                        command: entry.command.clone(),
+                        description: entry.description,
+                    })
+            })
+            .collect();
+
+        ModeKeybindingCatalog {
+            mode: mode.clone(),
+            sections,
+            flattened,
+        }
+    }
+
     /// Return key-layer section names ordered from lowest to highest precedence.
     pub fn docs_section_order_asc() -> Vec<&'static str> {
         Layer::ORDER_ASC
@@ -373,6 +441,26 @@ impl KeysConfig {
                 base.insert(*key, command.clone());
             }
         }
+    }
+
+    fn entries_for_layer(layer: &KeyMap) -> Vec<KeybindingEntry> {
+        let mut entries: Vec<KeybindingEntry> = layer
+            .iter()
+            .filter_map(|(key, command)| {
+                if *command == Command::Noop {
+                    None
+                } else {
+                    Some(KeybindingEntry {
+                        key: *key,
+                        command: command.clone(),
+                        description: command.labels().description,
+                    })
+                }
+            })
+            .collect();
+
+        entries.sort_by(|a, b| a.key.to_string().cmp(&b.key.to_string()));
+        entries
     }
 
     fn layer(&self, layer: Layer) -> &KeyMap {
@@ -857,6 +945,77 @@ mod tests {
                 "modal",
             ]
         );
+    }
+
+    #[test]
+    fn test_sections_for_mode_uses_layer_precedence_order() {
+        let config = KeysConfig::default();
+        let section_names: Vec<&str> = config
+            .sections_for_mode(&Mode::BranchSelect)
+            .iter()
+            .map(|section| section.name)
+            .collect();
+
+        assert_eq!(
+            section_names,
+            vec!["general", "text_edit", "list_navigation", "branch_select"]
+        );
+    }
+
+    #[test]
+    fn test_sections_for_mode_excludes_noop_entries() {
+        let raw = KeysConfigRaw {
+            general: {
+                let mut map = HashMap::new();
+                map.insert("C-c".to_string(), "noop".to_string());
+                map.insert("C-h".to_string(), "show_help".to_string());
+                map
+            },
+            text_edit: HashMap::new(),
+            list_navigation: HashMap::new(),
+            modal: HashMap::new(),
+            repo_select: HashMap::new(),
+            branch_select: HashMap::new(),
+        };
+
+        let config = KeysConfig::from_raw(&raw).unwrap();
+        let general = config
+            .sections_for_mode(&Mode::RepoSelect)
+            .into_iter()
+            .find(|section| section.name == "general")
+            .unwrap();
+
+        assert_eq!(general.entries.len(), 1);
+        assert_eq!(general.entries[0].command, Command::ShowHelp);
+    }
+
+    #[test]
+    fn test_catalog_for_mode_flattened_order_is_deterministic() {
+        let config = KeysConfig::default();
+        let catalog = config.catalog_for_mode(&Mode::RepoSelect);
+
+        let section_names: Vec<&str> = catalog
+            .sections
+            .iter()
+            .map(|section| section.name)
+            .collect();
+        assert_eq!(
+            section_names,
+            vec!["general", "text_edit", "list_navigation", "repo_select"]
+        );
+
+        let mut previous_section_index = 0;
+        let mut previous_key = String::new();
+        for row in &catalog.flattened {
+            if row.section_index == previous_section_index {
+                assert!(previous_key <= row.key_display);
+            } else {
+                assert_eq!(row.section_index, previous_section_index + 1);
+                previous_section_index = row.section_index;
+                previous_key.clear();
+            }
+            previous_key = row.key_display.clone();
+        }
     }
 
     #[test]

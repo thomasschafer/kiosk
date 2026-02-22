@@ -133,6 +133,122 @@ fn selected_line(screen: &str) -> Option<String> {
         .map(|line| line.trim().to_string())
 }
 
+fn extract_help_body_lines(screen: &str) -> Vec<String> {
+    let lines: Vec<&str> = screen.lines().collect();
+    let Some(title_idx) = lines
+        .iter()
+        .position(|line| line.contains("bindings (esc: close)"))
+    else {
+        return Vec::new();
+    };
+
+    let mut body = Vec::new();
+    for line in lines.iter().skip(title_idx + 1) {
+        if line.contains("└") && line.contains("┘") {
+            break;
+        }
+        if line.contains('│') {
+            let bars: Vec<usize> = line.match_indices('│').map(|(idx, _)| idx).collect();
+            if bars.len() >= 3 {
+                body.push(line[(bars[1] + 3)..bars[2]].to_string());
+            } else {
+                body.push((*line).to_string());
+            }
+        }
+    }
+    body
+}
+
+fn normalize_selection(lines: &[String]) -> Vec<String> {
+    lines.iter().map(|line| line.replace("▸ ", "  ")).collect()
+}
+
+fn selected_help_body_row(lines: &[String]) -> Option<usize> {
+    lines.iter().position(|line| line.contains("▸ "))
+}
+
+fn selected_help_body_line(lines: &[String]) -> Option<String> {
+    selected_help_body_row(lines)
+        .and_then(|idx| lines.get(idx))
+        .cloned()
+}
+
+fn help_view_state(screen: &str) -> (Vec<String>, usize) {
+    let body = extract_help_body_lines(screen);
+    let normalized = normalize_selection(&body);
+    let selected = selected_help_body_row(&body).expect("help selected row");
+    (normalized, selected)
+}
+
+fn help_view_detail(screen: &str) -> (usize, usize, String) {
+    let body = extract_help_body_lines(screen);
+    let selected = selected_help_body_row(&body).expect("help selected row");
+    let selected_line = selected_help_body_line(&body).expect("help selected line");
+    (selected, body.len(), selected_line)
+}
+
+fn move_help_to_bottom(env: &TestEnv) -> (Vec<String>, usize) {
+    let mut last: Option<(Vec<String>, usize)> = None;
+    let mut stable_count = 0usize;
+
+    for _ in 0..500 {
+        env.send_special("Down");
+        wait_ms(30);
+        let state = help_view_state(&env.capture());
+        if let Some(prev) = &last {
+            if *prev == state {
+                stable_count += 1;
+                if stable_count >= 3 {
+                    return state;
+                }
+            } else {
+                stable_count = 0;
+            }
+        }
+        last = Some(state);
+    }
+
+    panic!("help list did not stabilize at bottom");
+}
+
+fn wait_for_help_state_change(
+    env: &TestEnv,
+    previous: &(Vec<String>, usize),
+    timeout_ms: u64,
+) -> (Vec<String>, usize) {
+    let start = std::time::Instant::now();
+    let mut last = help_view_state(&env.capture());
+    loop {
+        if &last != previous {
+            return last;
+        }
+        if start.elapsed() > Duration::from_millis(timeout_ms) {
+            panic!("Timed out waiting for help state to change");
+        }
+        wait_ms(50);
+        last = help_view_state(&env.capture());
+    }
+}
+
+fn wait_for_help_state_exact(
+    env: &TestEnv,
+    expected: &(Vec<String>, usize),
+    timeout_ms: u64,
+) -> (Vec<String>, usize) {
+    let start = std::time::Instant::now();
+    let mut last = help_view_state(&env.capture());
+    loop {
+        if &last == expected {
+            return last;
+        }
+        if start.elapsed() > Duration::from_millis(timeout_ms) {
+            panic!("Timed out waiting for expected help state");
+        }
+        wait_ms(50);
+        last = help_view_state(&env.capture());
+    }
+}
+
 struct TestEnv {
     tmp: tempfile::TempDir,
     config_dir: PathBuf,
@@ -924,7 +1040,7 @@ fn test_e2e_help_esc_dismiss() {
     env.send_special("C-h");
     let screen = env.capture();
     assert!(
-        screen.contains("Help") && screen.contains("key bindings"),
+        screen.contains("help - key bindings") && screen.contains("general:"),
         "Help overlay should be visible: {screen}"
     );
 
@@ -935,6 +1051,134 @@ fn test_e2e_help_esc_dismiss() {
         screen.contains("select repo") && !screen.contains("key bindings"),
         "Help should be dismissed by Esc: {screen}"
     );
+}
+
+#[test]
+fn test_e2e_help_search_filters_rows() {
+    let env = TestEnv::new("help-search");
+    let search_dir = env.search_dir();
+
+    let repo = search_dir.join("help-search-repo");
+    fs::create_dir_all(&repo).unwrap();
+    init_test_repo(&repo);
+
+    env.write_config(&search_dir);
+    env.launch_kiosk();
+
+    env.send_special("Tab");
+    wait_for_screen(&env, 2500, |s| s.contains("select branch"));
+
+    env.send_special("C-h");
+    wait_for_screen(&env, 2000, |s| s.contains("help - key bindings"));
+
+    env.send("worktree");
+    let screen = wait_for_screen(&env, 2000, |s| s.contains("Delete worktree"));
+    assert!(
+        screen.contains("Delete worktree"),
+        "Help search should keep delete bindings visible: {screen}"
+    );
+}
+
+#[test]
+fn test_e2e_help_bottom_edge_up_down_keeps_viewport_stable() {
+    let env = TestEnv::new("help-bottom-edge-stable");
+    let search_dir = env.search_dir();
+
+    let repo = search_dir.join("help-bottom-repo");
+    fs::create_dir_all(&repo).unwrap();
+    init_test_repo(&repo);
+
+    env.write_config(&search_dir);
+    env.launch_kiosk();
+
+    env.send_special("C-h");
+    wait_for_screen(&env, 2000, |s| s.contains("help - key bindings"));
+
+    let bottom_state = move_help_to_bottom(&env);
+    env.send_special("Up");
+    let _up_state = wait_for_help_state_change(&env, &bottom_state, 2000);
+
+    env.send_special("Down");
+    let down_state = wait_for_help_state_exact(&env, &bottom_state, 2000);
+    assert_eq!(
+        down_state, bottom_state,
+        "Up then down should round-trip exactly"
+    );
+}
+
+#[test]
+fn test_e2e_help_bottom_edge_multiple_up_keeps_viewport() {
+    let env = TestEnv::new("help-bottom-multi-up");
+    let search_dir = env.search_dir();
+
+    let repo = search_dir.join("help-bottom-multi-up-repo");
+    fs::create_dir_all(&repo).unwrap();
+    init_test_repo(&repo);
+
+    env.write_config(&search_dir);
+    env.launch_kiosk();
+
+    env.send_special("C-h");
+    wait_for_screen(&env, 2000, |s| s.contains("help - key bindings"));
+
+    let baseline_state = move_help_to_bottom(&env);
+    let mut current = baseline_state.clone();
+
+    for _ in 0..3 {
+        env.send_special("Up");
+        let (body, _) = wait_for_help_state_change(&env, &current, 2000);
+        assert!(
+            body.len() == baseline_state.0.len(),
+            "Viewport height should remain stable while moving up"
+        );
+        current = help_view_state(&env.capture());
+    }
+
+    for _ in 0..3 {
+        env.send_special("Down");
+        let (body, _) = wait_for_help_state_change(&env, &current, 2000);
+        assert!(
+            body.len() == baseline_state.0.len(),
+            "Viewport height should remain stable while moving down"
+        );
+        current = help_view_state(&env.capture());
+    }
+
+    let final_state = wait_for_help_state_exact(&env, &baseline_state, 2000);
+    assert_eq!(
+        final_state, baseline_state,
+        "Three up then three down should round-trip to baseline at bottom edge"
+    );
+}
+
+#[test]
+fn test_e2e_help_rapid_down_only_hits_visual_bottom_at_true_end() {
+    let env = TestEnv::new("help-rapid-down-end-only");
+    let search_dir = env.search_dir();
+
+    let repo = search_dir.join("help-rapid-down-repo");
+    fs::create_dir_all(&repo).unwrap();
+    init_test_repo(&repo);
+
+    env.write_config(&search_dir);
+    env.launch_kiosk();
+
+    env.send_special("Tab");
+    wait_for_screen(&env, 2500, |s| s.contains("select branch"));
+    env.send_special("C-h");
+    wait_for_screen(&env, 2000, |s| s.contains("help - key bindings"));
+
+    for _ in 0..100 {
+        env.send_special("Down");
+        wait_ms(20);
+        let (selected_row, body_rows, selected_line) = help_view_detail(&env.capture());
+        if selected_row + 1 == body_rows {
+            assert!(
+                selected_line.contains("Go back"),
+                "Bottom row should only be the true end in branch help, got: {selected_line}"
+            );
+        }
+    }
 }
 
 #[test]

@@ -127,7 +127,7 @@ pub fn run(
 
             if let Some(action) = keymap::resolve_action(key, state, keys)
                 && let Some(result) =
-                    process_action(action, state, git, tmux, &matcher, &event_sender)
+                    process_action(action, state, git, tmux, keys, &matcher, &event_sender)
             {
                 return Ok(Some(result));
             }
@@ -262,7 +262,11 @@ fn active_list_page_rows(full_area: Rect, main_area: Rect, mode: &Mode) -> usize
             let chunks = Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(popup);
             list_rows_from_list_area(chunks[1])
         }
-        Mode::Help { previous } => active_list_page_rows(full_area, main_area, previous),
+        Mode::Help { .. } => {
+            let popup = components::centered_rect(80, 85, full_area);
+            let chunks = Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(popup);
+            list_rows_from_list_area(chunks[1])
+        }
         Mode::Loading(_) => 1,
     }
 }
@@ -600,31 +604,69 @@ fn handle_movement_actions(action: &Action, state: &mut AppState) -> bool {
     match action {
         Action::HalfPageUp => {
             list.move_selection(-half_page_step);
-            list.update_scroll_offset_for_selection(-1, page_rows_usize);
         }
         Action::HalfPageDown => {
             list.move_selection(half_page_step);
-            list.update_scroll_offset_for_selection(1, page_rows_usize);
         }
         Action::PageUp => {
             list.move_selection(-page_step);
-            list.update_scroll_offset_for_selection(-1, page_rows_usize);
         }
         Action::PageDown => {
             list.move_selection(page_step);
-            list.update_scroll_offset_for_selection(1, page_rows_usize);
         }
         Action::MoveTop => {
             list.move_to_top();
-            list.update_scroll_offset_for_selection(-1, page_rows_usize);
         }
         Action::MoveBottom => {
             list.move_to_bottom();
-            list.update_scroll_offset_for_selection(1, page_rows_usize);
         }
         _ => return false,
     }
+    update_active_list_scroll_offset(state, page_rows_usize);
     true
+}
+
+fn update_active_list_scroll_offset(state: &mut AppState, viewport_rows: usize) {
+    if let Mode::Help { .. } = state.mode {
+        if let Some(overlay) = &mut state.help_overlay {
+            update_help_scroll_offset(overlay, viewport_rows);
+        }
+    } else if let Some(list) = state.active_list_mut() {
+        list.update_scroll_offset_for_selection(viewport_rows);
+    }
+}
+
+fn update_help_scroll_offset(
+    overlay: &mut kiosk_core::state::HelpOverlayState,
+    viewport_rows: usize,
+) {
+    let (row_item_indices, total_visual_rows) = components::help::help_visual_metrics(overlay);
+    let len = overlay.list.filtered.len();
+    if len == 0 {
+        overlay.list.scroll_offset = 0;
+        return;
+    }
+
+    let selected = overlay.list.selected.unwrap_or(0).min(len - 1);
+    let selected_visual = row_item_indices.get(selected).copied().unwrap_or(0);
+
+    let viewport_rows = viewport_rows.max(1);
+    let max_visual_offset = total_visual_rows.saturating_sub(viewport_rows);
+    let current_visual_offset = overlay.list.scroll_offset.min(max_visual_offset);
+    let anchor_top = usize::from(viewport_rows > 2);
+    let anchor_bottom = viewport_rows.saturating_sub(2);
+
+    let desired_visual_offset =
+        if selected_visual < current_visual_offset.saturating_add(anchor_top) {
+            selected_visual.saturating_sub(anchor_top)
+        } else if selected_visual > current_visual_offset.saturating_add(anchor_bottom) {
+            selected_visual.saturating_sub(anchor_bottom)
+        } else {
+            current_visual_offset
+        }
+        .min(max_visual_offset);
+
+    overlay.list.scroll_offset = desired_visual_offset;
 }
 
 /// Handle simple cursor and error actions
@@ -680,6 +722,7 @@ fn process_action<T: TmuxProvider + ?Sized + 'static>(
     state: &mut AppState,
     git: &Arc<dyn GitProvider>,
     tmux: &Arc<T>,
+    keys: &KeysConfig,
     matcher: &SkimMatcherV2,
     sender: &EventSender,
 ) -> Option<OpenAction> {
@@ -726,11 +769,11 @@ fn process_action<T: TmuxProvider + ?Sized + 'static>(
         }
 
         Action::MoveSelection(delta) => {
-            let page_rows = state.active_list_page_rows();
             if let Some(list) = state.active_list_mut() {
                 list.move_selection(delta);
-                list.update_scroll_offset_for_selection(delta, page_rows);
             }
+            let page_rows = state.active_list_page_rows();
+            update_active_list_scroll_offset(state, page_rows);
         }
 
         Action::SearchPush(c) => handle_search_push(state, matcher, c),
@@ -745,7 +788,7 @@ fn process_action<T: TmuxProvider + ?Sized + 'static>(
 
         Action::SearchDeleteWord => handle_search_delete_word(state, matcher),
 
-        Action::ShowHelp => handle_show_help(state),
+        Action::ShowHelp => handle_show_help(state, keys),
 
         // Movement, cursor, and cancel actions are handled by helper functions above.
         // If we reach here, it means the action wasn't applicable in the current mode
@@ -820,6 +863,7 @@ mod tests {
             &mut state,
             &git,
             &tmux,
+            &KeysConfig::default(),
             &matcher,
             &sender,
         );
@@ -962,7 +1006,15 @@ mod tests {
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
 
-        process_action(Action::GoBack, &mut state, &git, &tmux, &matcher, &sender);
+        process_action(
+            Action::GoBack,
+            &mut state,
+            &git,
+            &tmux,
+            &KeysConfig::default(),
+            &matcher,
+            &sender,
+        );
         assert_eq!(state.mode, Mode::RepoSelect);
     }
 
@@ -982,9 +1034,234 @@ mod tests {
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
 
-        process_action(Action::GoBack, &mut state, &git, &tmux, &matcher, &sender);
+        process_action(
+            Action::GoBack,
+            &mut state,
+            &git,
+            &tmux,
+            &KeysConfig::default(),
+            &matcher,
+            &sender,
+        );
         assert_eq!(state.mode, Mode::BranchSelect);
         assert!(state.base_branch_selection.is_none());
+    }
+
+    #[test]
+    fn test_show_help_initializes_overlay_and_toggles_back() {
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+        let keys = KeysConfig::default();
+
+        process_action(
+            Action::ShowHelp,
+            &mut state,
+            &git,
+            &tmux,
+            &keys,
+            &matcher,
+            &sender,
+        );
+
+        assert!(matches!(state.mode, Mode::Help { .. }));
+        let overlay = state.help_overlay.as_ref().unwrap();
+        assert!(!overlay.rows.is_empty());
+        assert_eq!(overlay.list.filtered.len(), overlay.rows.len());
+
+        process_action(
+            Action::ShowHelp,
+            &mut state,
+            &git,
+            &tmux,
+            &keys,
+            &matcher,
+            &sender,
+        );
+
+        assert_eq!(state.mode, Mode::RepoSelect);
+        assert!(state.help_overlay.is_none());
+    }
+
+    #[test]
+    fn test_help_search_and_movement_use_help_list_state() {
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+        let keys = KeysConfig::default();
+
+        process_action(
+            Action::ShowHelp,
+            &mut state,
+            &git,
+            &tmux,
+            &keys,
+            &matcher,
+            &sender,
+        );
+
+        let initial_count = state
+            .help_overlay
+            .as_ref()
+            .map_or(0, |overlay| overlay.list.filtered.len());
+        process_action(
+            Action::SearchPush('d'),
+            &mut state,
+            &git,
+            &tmux,
+            &keys,
+            &matcher,
+            &sender,
+        );
+        process_action(
+            Action::SearchPush('e'),
+            &mut state,
+            &git,
+            &tmux,
+            &keys,
+            &matcher,
+            &sender,
+        );
+
+        let filtered_count = state
+            .help_overlay
+            .as_ref()
+            .map_or(0, |overlay| overlay.list.filtered.len());
+        assert!(filtered_count > 0);
+        assert!(filtered_count <= initial_count);
+
+        let before = state
+            .help_overlay
+            .as_ref()
+            .and_then(|overlay| overlay.list.selected)
+            .unwrap_or(0);
+        process_action(
+            Action::MoveSelection(1),
+            &mut state,
+            &git,
+            &tmux,
+            &keys,
+            &matcher,
+            &sender,
+        );
+        let after = state
+            .help_overlay
+            .as_ref()
+            .and_then(|overlay| overlay.list.selected)
+            .unwrap_or(0);
+        assert!(after >= before);
+    }
+
+    #[test]
+    fn test_help_up_from_bottom_keeps_scroll_offset() {
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+        state.set_active_list_page_rows(20);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+        let keys = KeysConfig::default();
+
+        process_action(
+            Action::ShowHelp,
+            &mut state,
+            &git,
+            &tmux,
+            &keys,
+            &matcher,
+            &sender,
+        );
+
+        for _ in 0..200 {
+            process_action(
+                Action::MoveSelection(1),
+                &mut state,
+                &git,
+                &tmux,
+                &keys,
+                &matcher,
+                &sender,
+            );
+        }
+        let offset_before = state
+            .help_overlay
+            .as_ref()
+            .map_or(0, |overlay| overlay.list.scroll_offset);
+
+        process_action(
+            Action::MoveSelection(-1),
+            &mut state,
+            &git,
+            &tmux,
+            &keys,
+            &matcher,
+            &sender,
+        );
+        let offset_after = state
+            .help_overlay
+            .as_ref()
+            .map_or(0, |overlay| overlay.list.scroll_offset);
+
+        assert_eq!(offset_before, offset_after);
+    }
+
+    #[test]
+    fn test_help_down_keeps_selection_one_above_bottom_before_end() {
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+        state.set_active_list_page_rows(20);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+        let keys = KeysConfig::default();
+
+        process_action(
+            Action::ShowHelp,
+            &mut state,
+            &git,
+            &tmux,
+            &keys,
+            &matcher,
+            &sender,
+        );
+
+        for _ in 0..20 {
+            process_action(
+                Action::MoveSelection(1),
+                &mut state,
+                &git,
+                &tmux,
+                &keys,
+                &matcher,
+                &sender,
+            );
+        }
+
+        let overlay = state.help_overlay.as_ref().expect("help overlay");
+        let (indices, _total) = components::help::help_visual_metrics(overlay);
+        let selected_logical = overlay.list.selected.expect("selected logical");
+        let selected_visual = indices
+            .get(selected_logical)
+            .copied()
+            .expect("selected visual");
+        let offset_visual = overlay.list.scroll_offset;
+        let row_in_view = selected_visual.saturating_sub(offset_visual);
+        assert!(
+            row_in_view <= 18,
+            "Expected selected row to stay above visual bottom before end"
+        );
     }
 
     #[test]
@@ -1015,6 +1292,7 @@ mod tests {
             &mut state,
             &git,
             &tmux,
+            &KeysConfig::default(),
             &matcher,
             &sender,
         );
@@ -1058,6 +1336,7 @@ mod tests {
             &mut state,
             &git,
             &tmux,
+            &KeysConfig::default(),
             &matcher,
             &sender,
         );
@@ -1081,6 +1360,7 @@ mod tests {
             &mut state,
             &git,
             &tmux,
+            &KeysConfig::default(),
             &matcher,
             &sender,
         );
@@ -1105,6 +1385,7 @@ mod tests {
             &mut state,
             &git,
             &tmux,
+            &KeysConfig::default(),
             &matcher,
             &sender,
         );
@@ -1115,6 +1396,7 @@ mod tests {
             &mut state,
             &git,
             &tmux,
+            &KeysConfig::default(),
             &matcher,
             &sender,
         );
@@ -1126,6 +1408,7 @@ mod tests {
             &mut state,
             &git,
             &tmux,
+            &KeysConfig::default(),
             &matcher,
             &sender,
         );
@@ -1149,6 +1432,7 @@ mod tests {
                 &mut state,
                 &git,
                 &tmux,
+                &KeysConfig::default(),
                 &matcher,
                 &sender,
             );
@@ -1180,15 +1464,32 @@ mod tests {
             &mut state,
             &git,
             &tmux,
+            &KeysConfig::default(),
             &matcher,
             &sender,
         );
         assert_eq!(state.repo_list.selected, Some(4));
 
-        process_action(Action::PageDown, &mut state, &git, &tmux, &matcher, &sender);
+        process_action(
+            Action::PageDown,
+            &mut state,
+            &git,
+            &tmux,
+            &KeysConfig::default(),
+            &matcher,
+            &sender,
+        );
         assert_eq!(state.repo_list.selected, Some(12));
 
-        process_action(Action::PageUp, &mut state, &git, &tmux, &matcher, &sender);
+        process_action(
+            Action::PageUp,
+            &mut state,
+            &git,
+            &tmux,
+            &KeysConfig::default(),
+            &matcher,
+            &sender,
+        );
         assert_eq!(state.repo_list.selected, Some(4));
     }
 
@@ -1203,7 +1504,15 @@ mod tests {
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
 
-        process_action(Action::PageDown, &mut state, &git, &tmux, &matcher, &sender);
+        process_action(
+            Action::PageDown,
+            &mut state,
+            &git,
+            &tmux,
+            &KeysConfig::default(),
+            &matcher,
+            &sender,
+        );
         assert_eq!(state.repo_list.selected, Some(5));
 
         process_action(
@@ -1211,12 +1520,21 @@ mod tests {
             &mut state,
             &git,
             &tmux,
+            &KeysConfig::default(),
             &matcher,
             &sender,
         );
         assert_eq!(state.repo_list.selected, Some(5));
 
-        process_action(Action::PageUp, &mut state, &git, &tmux, &matcher, &sender);
+        process_action(
+            Action::PageUp,
+            &mut state,
+            &git,
+            &tmux,
+            &KeysConfig::default(),
+            &matcher,
+            &sender,
+        );
         assert_eq!(state.repo_list.selected, Some(0));
 
         process_action(
@@ -1224,6 +1542,7 @@ mod tests {
             &mut state,
             &git,
             &tmux,
+            &KeysConfig::default(),
             &matcher,
             &sender,
         );
@@ -1247,6 +1566,7 @@ mod tests {
             &mut state,
             &git,
             &tmux,
+            &KeysConfig::default(),
             &matcher,
             &sender,
         );
@@ -1261,6 +1581,7 @@ mod tests {
             &mut state,
             &git,
             &tmux,
+            &KeysConfig::default(),
             &matcher,
             &sender,
         );
@@ -1282,7 +1603,15 @@ mod tests {
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
 
-        let result = process_action(Action::OpenRepo, &mut state, &git, &tmux, &matcher, &sender);
+        let result = process_action(
+            Action::OpenRepo,
+            &mut state,
+            &git,
+            &tmux,
+            &KeysConfig::default(),
+            &matcher,
+            &sender,
+        );
         assert!(result.is_some());
         match result.unwrap() {
             OpenAction::Open {
@@ -1319,6 +1648,7 @@ mod tests {
             &mut state,
             &git,
             &tmux,
+            &KeysConfig::default(),
             &matcher,
             &sender,
         );
@@ -1365,6 +1695,7 @@ mod tests {
             &mut state,
             &git,
             &tmux,
+            &KeysConfig::default(),
             &matcher,
             &sender,
         );
@@ -1401,6 +1732,7 @@ mod tests {
             &mut state,
             &git,
             &tmux,
+            &KeysConfig::default(),
             &matcher,
             &sender,
         );
@@ -1437,6 +1769,7 @@ mod tests {
             &mut state,
             &git,
             &tmux,
+            &KeysConfig::default(),
             &matcher,
             &sender,
         );
@@ -1473,6 +1806,7 @@ mod tests {
             &mut state,
             &git,
             &tmux,
+            &KeysConfig::default(),
             &matcher,
             &sender,
         );
@@ -1514,6 +1848,7 @@ mod tests {
             &mut state,
             &git,
             &tmux,
+            &KeysConfig::default(),
             &matcher,
             &sender,
         );
@@ -1561,6 +1896,7 @@ mod tests {
             &mut state,
             &git,
             &tmux,
+            &KeysConfig::default(),
             &matcher,
             &sender,
         );
@@ -1605,6 +1941,7 @@ mod tests {
             &mut state,
             &git,
             &tmux,
+            &KeysConfig::default(),
             &matcher,
             &sender,
         );
@@ -1705,6 +2042,7 @@ mod tests {
             &mut state,
             &git,
             &tmux,
+            &KeysConfig::default(),
             &matcher,
             &sender,
         );
@@ -1716,6 +2054,7 @@ mod tests {
             &mut state,
             &git,
             &tmux,
+            &KeysConfig::default(),
             &matcher,
             &sender,
         );
@@ -1727,6 +2066,7 @@ mod tests {
             &mut state,
             &git,
             &tmux,
+            &KeysConfig::default(),
             &matcher,
             &sender,
         );
@@ -1738,6 +2078,7 @@ mod tests {
             &mut state,
             &git,
             &tmux,
+            &KeysConfig::default(),
             &matcher,
             &sender,
         );
@@ -1762,6 +2103,7 @@ mod tests {
             &mut state,
             &git,
             &tmux,
+            &KeysConfig::default(),
             &matcher,
             &sender,
         );
@@ -1787,6 +2129,7 @@ mod tests {
             &mut state,
             &git,
             &tmux,
+            &KeysConfig::default(),
             &matcher,
             &sender,
         );
@@ -1798,6 +2141,7 @@ mod tests {
             &mut state,
             &git,
             &tmux,
+            &KeysConfig::default(),
             &matcher,
             &sender,
         );
@@ -1809,6 +2153,7 @@ mod tests {
             &mut state,
             &git,
             &tmux,
+            &KeysConfig::default(),
             &matcher,
             &sender,
         );
@@ -1820,6 +2165,7 @@ mod tests {
             &mut state,
             &git,
             &tmux,
+            &KeysConfig::default(),
             &matcher,
             &sender,
         );

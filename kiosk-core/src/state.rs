@@ -1,5 +1,5 @@
 use crate::{
-    config::keys::Command,
+    config::keys::{Command, FlattenedKeybindingRow},
     constants::{WORKTREE_DIR_DEDUP_MAX_ATTEMPTS, WORKTREE_DIR_NAME, WORKTREE_NAME_SEPARATOR},
     git::Repo,
     pending_delete::PendingWorktreeDelete,
@@ -94,7 +94,7 @@ impl SearchableList {
         }
     }
 
-    pub fn update_scroll_offset_for_selection(&mut self, direction: i32, viewport_rows: usize) {
+    pub fn update_scroll_offset_for_selection(&mut self, viewport_rows: usize) {
         let len = self.filtered.len();
         if len == 0 {
             self.scroll_offset = 0;
@@ -104,22 +104,19 @@ impl SearchableList {
         let viewport_rows = viewport_rows.max(1);
         let max_offset = len.saturating_sub(viewport_rows);
         let selected = self.selected.unwrap_or(0).min(len - 1);
+        let anchor_top = usize::from(viewport_rows > 2);
+        let anchor_bottom = viewport_rows.saturating_sub(2);
 
-        let offset = match direction.cmp(&0) {
-            std::cmp::Ordering::Greater => {
-                // While moving down, keep selection one row above the bottom edge until the true end.
-                let anchor_bottom = viewport_rows.saturating_sub(2);
-                selected.saturating_sub(anchor_bottom)
-            }
-            std::cmp::Ordering::Less => {
-                // While moving up, keep selection one row below the top edge until the true start.
-                let anchor_top = usize::from(viewport_rows > 1);
-                selected.saturating_sub(anchor_top)
-            }
-            std::cmp::Ordering::Equal => self.scroll_offset,
-        };
+        let top_bound = self.scroll_offset.saturating_add(anchor_top);
+        let bottom_bound = self.scroll_offset.saturating_add(anchor_bottom);
 
-        self.scroll_offset = offset.min(max_offset);
+        if selected < top_bound {
+            self.scroll_offset = selected.saturating_sub(anchor_top);
+        } else if selected > bottom_bound {
+            self.scroll_offset = selected.saturating_sub(anchor_bottom);
+        }
+
+        self.scroll_offset = self.scroll_offset.min(max_offset);
     }
 
     /// Move cursor left by one char (UTF-8 safe)
@@ -464,14 +461,14 @@ impl Mode {
     pub(crate) fn supports_text_edit(&self) -> bool {
         matches!(
             self,
-            Mode::RepoSelect | Mode::BranchSelect | Mode::SelectBaseBranch
+            Mode::RepoSelect | Mode::BranchSelect | Mode::SelectBaseBranch | Mode::Help { .. }
         )
     }
 
     pub(crate) fn supports_list_navigation(&self) -> bool {
         matches!(
             self,
-            Mode::RepoSelect | Mode::BranchSelect | Mode::SelectBaseBranch
+            Mode::RepoSelect | Mode::BranchSelect | Mode::SelectBaseBranch | Mode::Help { .. }
         )
     }
 
@@ -501,6 +498,12 @@ pub struct BaseBranchSelection {
     pub list: SearchableList,
 }
 
+#[derive(Debug, Clone)]
+pub struct HelpOverlayState {
+    pub list: SearchableList,
+    pub rows: Vec<FlattenedKeybindingRow>,
+}
+
 /// Central application state. Components read from this, actions modify it.
 #[derive(Debug, Clone)]
 pub struct AppState {
@@ -513,6 +516,7 @@ pub struct AppState {
     pub branch_list: SearchableList,
 
     pub base_branch_selection: Option<BaseBranchSelection>,
+    pub help_overlay: Option<HelpOverlayState>,
 
     pub split_command: Option<String>,
     pub mode: Mode,
@@ -538,6 +542,7 @@ impl AppState {
             branches: Vec::new(),
             branch_list: SearchableList::new(0),
             base_branch_selection: None,
+            help_overlay: None,
             split_command,
             mode: Mode::RepoSelect,
             loading_branches: false,
@@ -559,6 +564,7 @@ impl AppState {
             branches: Vec::new(),
             branch_list: SearchableList::new(0),
             base_branch_selection: None,
+            help_overlay: None,
             split_command,
             mode: Mode::Loading(loading_message.to_string()),
             loading_branches: false,
@@ -577,6 +583,7 @@ impl AppState {
             Mode::RepoSelect => Some(&mut self.repo_list),
             Mode::BranchSelect => Some(&mut self.branch_list),
             Mode::SelectBaseBranch => self.base_branch_selection.as_mut().map(|f| &mut f.list),
+            Mode::Help { .. } => self.active_help_list_mut(),
             _ => None,
         }
     }
@@ -587,8 +594,17 @@ impl AppState {
             Mode::RepoSelect => Some(&self.repo_list),
             Mode::BranchSelect => Some(&self.branch_list),
             Mode::SelectBaseBranch => self.base_branch_selection.as_ref().map(|f| &f.list),
+            Mode::Help { .. } => self.active_help_list(),
             _ => None,
         }
+    }
+
+    pub fn active_help_list_mut(&mut self) -> Option<&mut SearchableList> {
+        self.help_overlay.as_mut().map(|overlay| &mut overlay.list)
+    }
+
+    pub fn active_help_list(&self) -> Option<&SearchableList> {
+        self.help_overlay.as_ref().map(|overlay| &overlay.list)
     }
 
     pub fn is_branch_pending_delete(&self, repo_path: &Path, branch_name: &str) -> bool {
@@ -878,7 +894,7 @@ mod tests {
         // Move down into the middle: selection should be anchored one row above bottom.
         for _ in 0..25 {
             list.move_selection(1);
-            list.update_scroll_offset_for_selection(1, viewport_rows);
+            list.update_scroll_offset_for_selection(viewport_rows);
         }
         let selected = list.selected.unwrap_or(0);
         assert_eq!(selected - list.scroll_offset, 18);
@@ -886,7 +902,7 @@ mod tests {
         // Move to bottom: selection may reach the actual bottom row.
         for _ in 0..200 {
             list.move_selection(1);
-            list.update_scroll_offset_for_selection(1, viewport_rows);
+            list.update_scroll_offset_for_selection(viewport_rows);
         }
         let selected = list.selected.unwrap_or(0);
         assert_eq!(selected, 99);
@@ -894,24 +910,101 @@ mod tests {
 
         // Move up: keep viewport stationary first, then anchor one below top.
         list.move_selection(-1);
-        list.update_scroll_offset_for_selection(-1, viewport_rows);
+        list.update_scroll_offset_for_selection(viewport_rows);
         let selected = list.selected.unwrap_or(0);
         assert_eq!(selected, 98);
         assert_eq!(selected - list.scroll_offset, 18);
 
         for _ in 0..17 {
             list.move_selection(-1);
-            list.update_scroll_offset_for_selection(-1, viewport_rows);
+            list.update_scroll_offset_for_selection(viewport_rows);
         }
         let selected = list.selected.unwrap_or(0);
         assert_eq!(selected, 81);
         assert_eq!(selected - list.scroll_offset, 1);
 
         list.move_selection(-1);
-        list.update_scroll_offset_for_selection(-1, viewport_rows);
+        list.update_scroll_offset_for_selection(viewport_rows);
         let selected = list.selected.unwrap_or(0);
         assert_eq!(selected, 80);
         assert_eq!(selected - list.scroll_offset, 1);
+    }
+
+    #[test]
+    fn test_scroll_down_starts_before_last_viewport_row() {
+        let mut list = SearchableList::new(100);
+        let viewport_rows = 20;
+
+        for _ in 0..18 {
+            list.move_selection(1);
+            list.update_scroll_offset_for_selection(viewport_rows);
+        }
+        assert_eq!(list.selected, Some(18));
+        assert_eq!(list.scroll_offset, 0);
+
+        list.move_selection(1);
+        list.update_scroll_offset_for_selection(viewport_rows);
+        assert_eq!(list.selected, Some(19));
+        assert_eq!(list.scroll_offset, 1);
+    }
+
+    #[test]
+    fn test_scroll_up_from_bottom_keeps_offset_until_top_anchor_hit() {
+        let mut list = SearchableList::new(100);
+        let viewport_rows = 20;
+
+        for _ in 0..200 {
+            list.move_selection(1);
+            list.update_scroll_offset_for_selection(viewport_rows);
+        }
+        let offset_at_bottom = list.scroll_offset;
+        assert_eq!(list.selected, Some(99));
+
+        for expected_selected in (81..=98).rev() {
+            list.move_selection(-1);
+            list.update_scroll_offset_for_selection(viewport_rows);
+            assert_eq!(list.selected, Some(expected_selected));
+            assert_eq!(list.scroll_offset, offset_at_bottom);
+        }
+    }
+
+    #[test]
+    fn test_scroll_reversing_direction_near_bottom_does_not_move_offset() {
+        let mut list = SearchableList::new(100);
+        let viewport_rows = 20;
+        for _ in 0..200 {
+            list.move_selection(1);
+            list.update_scroll_offset_for_selection(viewport_rows);
+        }
+
+        let offset_before = list.scroll_offset;
+        list.move_selection(-1);
+        list.update_scroll_offset_for_selection(viewport_rows);
+        let offset_after_up = list.scroll_offset;
+        list.move_selection(1);
+        list.update_scroll_offset_for_selection(viewport_rows);
+        let offset_after_down = list.scroll_offset;
+
+        assert_eq!(offset_before, offset_after_up);
+        assert_eq!(offset_after_up, offset_after_down);
+    }
+
+    #[test]
+    fn test_first_up_from_bottom_does_not_change_offset_across_viewports() {
+        for viewport_rows in 3..=40 {
+            let mut list = SearchableList::new(35);
+            for _ in 0..200 {
+                list.move_selection(1);
+                list.update_scroll_offset_for_selection(viewport_rows);
+            }
+            let offset_before = list.scroll_offset;
+            list.move_selection(-1);
+            list.update_scroll_offset_for_selection(viewport_rows);
+            assert_eq!(
+                list.scroll_offset, offset_before,
+                "Offset changed for viewport_rows={viewport_rows}"
+            );
+        }
     }
 
     #[test]
@@ -1565,5 +1658,31 @@ mod tests {
             assert!(!entry.is_current);
             assert!(entry.worktree_path.is_none());
         }
+    }
+
+    #[test]
+    fn test_active_list_points_to_help_overlay_in_help_mode() {
+        let mut state = AppState::new(vec![make_repo(std::path::Path::new("/tmp"), "repo")], None);
+        state.help_overlay = Some(HelpOverlayState {
+            list: SearchableList::new(3),
+            rows: Vec::new(),
+        });
+        state.mode = Mode::Help {
+            previous: Box::new(Mode::RepoSelect),
+        };
+
+        assert!(state.active_list().is_some());
+        assert_eq!(state.active_list().and_then(|list| list.selected), Some(0));
+
+        if let Some(list) = state.active_list_mut() {
+            list.move_selection(1);
+        }
+        assert_eq!(
+            state
+                .help_overlay
+                .as_ref()
+                .and_then(|overlay| overlay.list.selected),
+            Some(1)
+        );
     }
 }

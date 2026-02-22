@@ -12,6 +12,7 @@ clap = { version = "4", features = ["derive"] }
 kiosk-core = { version = "0.2.0", path = "kiosk-core" }
 kiosk-tui = { version = "0.2.0", path = "kiosk-tui" }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }

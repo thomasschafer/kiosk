@@ -1,4 +1,5 @@
 use kiosk_core::constants::WORKTREE_DIR_NAME;
+use serde_json::Value;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -114,6 +115,23 @@ fn wait_for_tmux_session(socket: &str, name: &str, timeout_ms: u64) -> bool {
     loop {
         let output = Command::new("tmux")
             .args(["-L", socket, "has-session", "-t", name])
+            .output()
+            .unwrap();
+        if output.status.success() {
+            return true;
+        }
+        if start.elapsed() > Duration::from_millis(timeout_ms) {
+            return false;
+        }
+        wait_ms(100);
+    }
+}
+
+fn wait_for_tmux_session_default(name: &str, timeout_ms: u64) -> bool {
+    let start = std::time::Instant::now();
+    loop {
+        let output = Command::new("tmux")
+            .args(["has-session", "-t", name])
             .output()
             .unwrap();
         if output.status.success() {
@@ -278,6 +296,15 @@ impl TestEnv {
     fn send_special(&self, key: &str) {
         tmux_send_special(&self.tmux_socket, &self.session_name, key);
         wait_ms(300);
+    }
+
+    fn run_cli(&self, args: &[&str]) -> std::process::Output {
+        Command::new(kiosk_binary())
+            .args(args)
+            .env("XDG_CONFIG_HOME", &self.config_dir)
+            .env("XDG_STATE_HOME", &self.state_dir)
+            .output()
+            .unwrap()
     }
 }
 
@@ -1441,4 +1468,158 @@ fn test_e2e_branch_ordering() {
         mmm_pos < aaa_pos,
         "mmm-worktree (has worktree) should appear before aaa-plain. Screen:\n{screen}"
     );
+}
+
+#[test]
+fn test_e2e_headless_list_and_branches_json() {
+    let env = TestEnv::new("headless-list-branches");
+    let search_dir = env.search_dir();
+    let repo = search_dir.join("headless-repo");
+    fs::create_dir_all(&repo).unwrap();
+    init_test_repo(&repo);
+    run_git(&repo, &["branch", "feat/headless"]);
+
+    env.write_config(&search_dir);
+
+    let list_output = env.run_cli(&["list", "--json"]);
+    assert!(
+        list_output.status.success(),
+        "list should succeed: {}",
+        String::from_utf8_lossy(&list_output.stderr)
+    );
+    let list_json: Value = serde_json::from_slice(&list_output.stdout).unwrap();
+    assert!(
+        list_json
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["name"] == "headless-repo"),
+        "headless-repo should be listed: {list_json}"
+    );
+
+    let branches_output = env.run_cli(&["branches", "headless-repo", "--json"]);
+    assert!(
+        branches_output.status.success(),
+        "branches should succeed: {}",
+        String::from_utf8_lossy(&branches_output.stderr)
+    );
+    let branches_json: Value = serde_json::from_slice(&branches_output.stdout).unwrap();
+    assert!(
+        branches_json
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["name"] == "feat/headless"),
+        "feat/headless should be present: {branches_json}"
+    );
+}
+
+#[test]
+fn test_e2e_headless_open_status_delete_workflow() {
+    let env = TestEnv::new("headless-workflow");
+    let search_dir = env.search_dir();
+    let id = unique_id();
+    let repo_name = format!("workflow-repo-{id}");
+    let branch_name = format!("feat/e2e-headless-{id}");
+    let repo = search_dir.join(&repo_name);
+    fs::create_dir_all(&repo).unwrap();
+    init_test_repo(&repo);
+    env.write_config(&search_dir);
+
+    let open_output = env.run_cli(&[
+        "open",
+        &repo_name,
+        "--new-branch",
+        &branch_name,
+        "--base",
+        "main",
+        "--no-switch",
+        "--run",
+        "echo KIOSK_TEST_MARKER",
+        "--json",
+    ]);
+    assert!(
+        open_output.status.success(),
+        "open should succeed: {}",
+        String::from_utf8_lossy(&open_output.stderr)
+    );
+    let open_json: Value = serde_json::from_slice(&open_output.stdout).unwrap();
+    let session = open_json["session"].as_str().unwrap().to_string();
+    assert!(
+        wait_for_tmux_session_default(&session, 5000),
+        "tmux session {session} should exist"
+    );
+
+    let mut output_text = String::new();
+    for _ in 0..20 {
+        let status_output = env.run_cli(&[
+            "status",
+            &repo_name,
+            &branch_name,
+            "--json",
+            "--lines",
+            "40",
+        ]);
+        assert!(
+            status_output.status.success(),
+            "status should succeed: {}",
+            String::from_utf8_lossy(&status_output.stderr)
+        );
+        let status_json: Value = serde_json::from_slice(&status_output.stdout).unwrap();
+        output_text = status_json["output"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        if output_text.contains("KIOSK_TEST_MARKER") {
+            break;
+        }
+        wait_ms(150);
+    }
+    assert!(
+        output_text.contains("KIOSK_TEST_MARKER"),
+        "status output should include marker: {output_text}"
+    );
+
+    let delete_output = env.run_cli(&["delete", &repo_name, &branch_name, "--force"]);
+    assert!(
+        delete_output.status.success(),
+        "delete should succeed: {}",
+        String::from_utf8_lossy(&delete_output.stderr)
+    );
+}
+
+#[test]
+fn test_e2e_headless_open_is_idempotent() {
+    let env = TestEnv::new("headless-idempotent");
+    let search_dir = env.search_dir();
+    let id = unique_id();
+    let repo_name = format!("idempotent-repo-{id}");
+    let repo = search_dir.join(&repo_name);
+    fs::create_dir_all(&repo).unwrap();
+    init_test_repo(&repo);
+    env.write_config(&search_dir);
+
+    let first = env.run_cli(&["open", &repo_name, "main", "--no-switch", "--json"]);
+    assert!(
+        first.status.success(),
+        "first open should succeed: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let first_json: Value = serde_json::from_slice(&first.stdout).unwrap();
+    assert_eq!(first_json["created"], Value::Bool(true));
+
+    let second = env.run_cli(&["open", &repo_name, "main", "--no-switch", "--json"]);
+    assert!(
+        second.status.success(),
+        "second open should succeed: {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    let second_json: Value = serde_json::from_slice(&second.stdout).unwrap();
+    assert_eq!(second_json["created"], Value::Bool(false));
+
+    if let Some(session) = second_json["session"].as_str() {
+        let _ = Command::new("tmux")
+            .args(["kill-session", "-t", session])
+            .output();
+    }
 }

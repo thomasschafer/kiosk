@@ -1,3 +1,5 @@
+mod cli;
+
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use kiosk_core::{
@@ -9,7 +11,7 @@ use kiosk_core::{
     tmux::{CliTmuxProvider, TmuxProvider},
 };
 use kiosk_tui::{OpenAction, Theme};
-use std::{fs, io, path::Path, process::Command, sync::Arc};
+use std::{fs, io, path::Path, process::Command, process::ExitCode, sync::Arc};
 
 #[derive(Parser)]
 #[command(version, about = "Tmux session manager with worktree support")]
@@ -30,23 +32,146 @@ enum Commands {
         #[arg(long)]
         dry_run: bool,
     },
+    /// List discovered repositories
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// List branches for a repository
+    Branches {
+        repo: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Open or create a worktree and tmux session
+    Open {
+        repo: String,
+        branch: Option<String>,
+        #[arg(long)]
+        new_branch: Option<String>,
+        #[arg(long)]
+        base: Option<String>,
+        #[arg(long)]
+        no_switch: bool,
+        #[arg(long)]
+        run: Option<String>,
+        #[arg(long)]
+        log: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show status for a session
+    Status {
+        repo: String,
+        branch: Option<String>,
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        lines: Option<usize>,
+    },
+    /// List active kiosk sessions
+    Sessions {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Delete a worktree and session
+    Delete {
+        repo: String,
+        branch: String,
+        #[arg(long)]
+        force: bool,
+    },
 }
 
-fn main() -> Result<()> {
+fn main() -> ExitCode {
     let cli = Cli::parse();
-    let config = config::load_config(cli.config.as_deref())?;
+    let json_errors = command_wants_json(cli.command.as_ref());
+    let config = match config::load_config(cli.config.as_deref()) {
+        Ok(config) => config,
+        Err(error) => {
+            let cli_error = crate::cli::CliError::system(error.to_string());
+            crate::cli::print_error(&cli_error, json_errors);
+            return ExitCode::from(2);
+        }
+    };
 
-    match cli.command {
+    let git: Arc<dyn GitProvider> = Arc::new(CliGitProvider);
+    let tmux: Arc<dyn TmuxProvider> = Arc::new(CliTmuxProvider);
+
+    let result = match cli.command {
         Some(Commands::Clean { dry_run }) => {
             let search_dirs = config.resolved_search_dirs();
-            clean_orphaned_worktrees(&search_dirs, dry_run)?;
+            clean_orphaned_worktrees(&search_dirs, dry_run).map_err(crate::cli::CliError::from)
         }
-        None => {
-            run_tui(&config)?;
+        Some(Commands::List { json }) => crate::cli::cmd_list(&config, git.as_ref(), json),
+        Some(Commands::Branches { repo, json }) => {
+            crate::cli::cmd_branches(&config, git.as_ref(), tmux.as_ref(), &repo, json)
+        }
+        Some(Commands::Open {
+            repo,
+            branch,
+            new_branch,
+            base,
+            no_switch,
+            run,
+            log,
+            json,
+        }) => {
+            let args = crate::cli::OpenArgs {
+                repo,
+                branch,
+                new_branch,
+                base,
+                no_switch,
+                run,
+                log,
+                json,
+            };
+            crate::cli::cmd_open(&config, git.as_ref(), tmux.as_ref(), &args)
+        }
+        Some(Commands::Status {
+            repo,
+            branch,
+            json,
+            lines,
+        }) => {
+            let args = crate::cli::StatusArgs {
+                repo,
+                branch,
+                json,
+                lines,
+            };
+            crate::cli::cmd_status(&config, git.as_ref(), tmux.as_ref(), &args)
+        }
+        Some(Commands::Sessions { json }) => {
+            crate::cli::cmd_sessions(&config, git.as_ref(), tmux.as_ref(), json)
+        }
+        Some(Commands::Delete {
+            repo,
+            branch,
+            force,
+        }) => {
+            let args = crate::cli::DeleteArgs {
+                repo,
+                branch,
+                force,
+            };
+            crate::cli::cmd_delete(&config, git.as_ref(), tmux.as_ref(), &args)
+        }
+        None => run_tui(&config).map_err(crate::cli::CliError::from),
+    };
+
+    match result {
+        Ok(()) => ExitCode::from(0),
+        Err(error) => {
+            crate::cli::print_error(&error, json_errors);
+            let code: u8 = match error.code() {
+                1 => 1,
+                _ => 2,
+            };
+            ExitCode::from(code)
         }
     }
-
-    Ok(())
 }
 
 fn run_tui(config: &config::Config) -> Result<()> {
@@ -166,6 +291,19 @@ fn resolve_main_repo_root(path: &Path) -> Option<std::path::PathBuf> {
         Some(path.to_path_buf())
     } else {
         None
+    }
+}
+
+fn command_wants_json(command: Option<&Commands>) -> bool {
+    match command {
+        Some(
+            Commands::List { json }
+            | Commands::Branches { json, .. }
+            | Commands::Sessions { json }
+            | Commands::Open { json, .. }
+            | Commands::Status { json, .. },
+        ) => *json,
+        Some(Commands::Clean { .. } | Commands::Delete { .. }) | None => false,
     }
 }
 

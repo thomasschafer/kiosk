@@ -10,6 +10,10 @@ pub trait TmuxProvider: Send + Sync {
         dir: &Path,
         split_command: Option<&str>,
     ) -> anyhow::Result<()>;
+    fn capture_pane(&self, session: &str, lines: usize) -> anyhow::Result<String>;
+    fn send_keys(&self, session: &str, keys: &str) -> anyhow::Result<()>;
+    fn pipe_pane(&self, session: &str, log_path: &Path) -> anyhow::Result<()>;
+    fn list_clients(&self, session: &str) -> Vec<String>;
     fn switch_to_session(&self, name: &str);
     fn kill_session(&self, name: &str);
     fn is_inside_tmux(&self) -> bool;

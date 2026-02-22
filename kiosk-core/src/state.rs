@@ -4,6 +4,7 @@ use crate::{
     git::Repo,
     pending_delete::PendingWorktreeDelete,
 };
+use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
@@ -228,7 +229,7 @@ impl SearchableList {
 }
 
 /// Rich branch entry with worktree and session metadata
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct BranchEntry {
     pub name: String,
@@ -1565,5 +1566,27 @@ mod tests {
             assert!(!entry.is_current);
             assert!(entry.worktree_path.is_none());
         }
+    }
+
+    #[test]
+    fn test_branch_entry_serde_round_trip() {
+        let entry = BranchEntry {
+            name: "feat/test".to_string(),
+            worktree_path: Some(PathBuf::from("/tmp/repo-feat-test")),
+            has_session: true,
+            is_current: false,
+            is_default: false,
+            is_remote: false,
+            session_activity_ts: Some(12345),
+        };
+
+        let json = serde_json::to_string(&entry).unwrap();
+        let decoded: BranchEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.name, entry.name);
+        assert_eq!(decoded.worktree_path, entry.worktree_path);
+        assert_eq!(decoded.has_session, entry.has_session);
+        assert_eq!(decoded.is_remote, entry.is_remote);
+        assert_eq!(decoded.is_default, entry.is_default);
+        assert_eq!(decoded.session_activity_ts, entry.session_activity_ts);
     }
 }

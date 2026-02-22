@@ -9,7 +9,7 @@ use kiosk_core::{
     tmux::TmuxProvider,
 };
 use serde::Serialize;
-use std::{collections::HashSet, fmt::Write, fs, path::PathBuf, process::Command};
+use std::{collections::HashSet, fmt::Write, fs, path::PathBuf};
 
 pub type CliResult<T> = Result<T, CliError>;
 
@@ -153,10 +153,7 @@ pub fn cmd_list(config: &Config, git: &dyn GitProvider, json: bool) -> CliResult
         .collect();
 
     if json {
-        println!(
-            "{}",
-            serde_json::to_string(&output).map_err(|e| CliError::system(e.to_string()))?
-        );
+        print_json(&output)?;
     } else {
         print!("{}", format_repo_table(&output));
     }
@@ -185,10 +182,7 @@ pub fn cmd_branches(
     BranchEntry::sort_entries(&mut entries);
 
     if json {
-        println!(
-            "{}",
-            serde_json::to_string(&entries).map_err(|e| CliError::system(e.to_string()))?
-        );
+        print_json(&entries)?;
     } else {
         print!("{}", format_branch_table(&entries));
     }
@@ -205,10 +199,7 @@ pub fn cmd_open(
     let output = open_internal(config, git, tmux, args)?;
 
     if args.json {
-        println!(
-            "{}",
-            serde_json::to_string(&output).map_err(|e| CliError::system(e.to_string()))?
-        );
+        print_json(&output)?;
     } else {
         println!("session: {}", output.session);
         println!("path: {}", output.path.display());
@@ -261,10 +252,9 @@ fn open_internal(
             )));
         }
 
-        let base = args
-            .base
-            .as_deref()
-            .ok_or_else(|| CliError::user("--new-branch requires --base"))?;
+        let Some(base) = args.base.as_deref() else {
+            unreachable!("validated: --new-branch always requires --base");
+        };
         if !local.iter().any(|branch| branch == base) {
             return Err(CliError::user(format!("base branch '{base}' not found")));
         }
@@ -348,10 +338,7 @@ pub fn cmd_status(
     let output = status_internal(config, git, tmux, args)?;
 
     if args.json {
-        println!(
-            "{}",
-            serde_json::to_string(&output).map_err(|e| CliError::system(e.to_string()))?
-        );
+        print_json(&output)?;
     } else {
         println!("session: {}", output.session);
         println!("path: {}", output.path.display());
@@ -444,10 +431,7 @@ pub fn cmd_sessions(
     output.sort_by(|left, right| left.session.cmp(&right.session));
 
     if json {
-        println!(
-            "{}",
-            serde_json::to_string(&output).map_err(|e| CliError::system(e.to_string()))?
-        );
+        print_json(&output)?;
     } else {
         print!("{}", format_session_table(&output));
     }
@@ -524,17 +508,7 @@ pub fn cmd_delete(
     save_pending_worktree_deletes(&pending).map_err(CliError::from)?;
 
     remove_result.map_err(CliError::from)?;
-    let prune = Command::new("git")
-        .args(["worktree", "prune"])
-        .current_dir(&repo.path)
-        .output()
-        .map_err(|e| CliError::system(e.to_string()))?;
-    if !prune.status.success() {
-        return Err(CliError::system(format!(
-            "git worktree prune failed: {}",
-            String::from_utf8_lossy(&prune.stderr).trim()
-        )));
-    }
+    git.prune_worktrees(&repo.path).map_err(CliError::from)?;
 
     let output = DeleteOutput {
         deleted: true,
@@ -543,10 +517,7 @@ pub fn cmd_delete(
         session: session_name,
     };
     if args.json {
-        println!(
-            "{}",
-            serde_json::to_string(&output).map_err(|e| CliError::system(e.to_string()))?
-        );
+        print_json(&output)?;
     } else {
         println!("deleted: {} {}", repo.name, args.branch);
     }
@@ -562,6 +533,14 @@ fn find_worktree_by_branch(repo: &Repo, branch: &str) -> Option<PathBuf> {
 }
 
 fn log_path_for_session(session_name: &str) -> CliResult<PathBuf> {
+    if session_name.is_empty()
+        || session_name.starts_with('.')
+        || session_name.contains('/')
+        || session_name.contains('\\')
+        || session_name.contains("..")
+    {
+        return Err(CliError::system("Invalid session name"));
+    }
     Ok(log_dir()?.join(format!("{session_name}.log")))
 }
 
@@ -683,17 +662,25 @@ fn format_session_table(rows: &[SessionOutput]) -> String {
 }
 
 fn log_dir() -> CliResult<PathBuf> {
-    let base = if let Ok(xdg_data_home) = std::env::var("XDG_DATA_HOME")
-        && !xdg_data_home.is_empty()
+    let base = if let Ok(xdg_state_home) = std::env::var("XDG_STATE_HOME")
+        && !xdg_state_home.is_empty()
     {
-        PathBuf::from(xdg_data_home)
+        PathBuf::from(xdg_state_home)
     } else {
         let home = std::env::var("HOME")
             .map(PathBuf::from)
             .map_err(|_| CliError::system("HOME environment variable not set"))?;
-        home.join(".local").join("share")
+        home.join(".local").join("state")
     };
     Ok(base.join("kiosk").join("logs"))
+}
+
+fn print_json<T: Serialize>(value: &T) -> CliResult<()> {
+    println!(
+        "{}",
+        serde_json::to_string(value).map_err(|e| CliError::system(e.to_string()))?
+    );
+    Ok(())
 }
 
 pub fn print_error(error: &CliError, json: bool) {
@@ -711,7 +698,7 @@ mod tests {
     use kiosk_core::{
         config, git::mock::MockGitProvider, git::repo::Worktree, tmux::mock::MockTmuxProvider,
     };
-    use std::sync::Mutex;
+    use std::{collections::HashMap, sync::Mutex};
 
     fn test_config() -> Config {
         config::load_config_from_str("search_dirs = [\"/tmp\"]").unwrap()
@@ -743,7 +730,7 @@ mod tests {
         let config = test_config();
         let mut git = MockGitProvider::default();
         let tmux = MockTmuxProvider {
-            sessions: vec!["demo--feat-test".to_string()],
+            sessions: Mutex::new(vec!["demo--feat-test".to_string()]),
             inside_tmux: true,
             ..Default::default()
         };
@@ -790,6 +777,7 @@ mod tests {
         let config = test_config();
         let mut git = MockGitProvider::default();
         let tmux = MockTmuxProvider {
+            sessions: Mutex::new(Vec::new()),
             inside_tmux: true,
             ..Default::default()
         };
@@ -828,6 +816,7 @@ mod tests {
         let config = test_config();
         let mut git = MockGitProvider::default();
         let tmux = MockTmuxProvider {
+            sessions: Mutex::new(Vec::new()),
             inside_tmux: true,
             ..Default::default()
         };
@@ -867,9 +856,11 @@ mod tests {
     fn status_reports_attached_from_client_count() {
         let config = test_config();
         let mut git = MockGitProvider::default();
+        let mut clients = HashMap::new();
+        clients.insert("demo".to_string(), vec!["/dev/pts/1".to_string()]);
         let tmux = MockTmuxProvider {
-            sessions: vec!["demo".to_string()],
-            clients: vec!["/dev/pts/1".to_string()],
+            sessions: Mutex::new(vec!["demo".to_string()]),
+            clients,
             capture_output: Mutex::new("line a\nline b".to_string()),
             ..Default::default()
         };

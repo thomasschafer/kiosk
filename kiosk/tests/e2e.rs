@@ -110,30 +110,14 @@ where
     }
 }
 
-fn wait_for_tmux_session(socket: &str, name: &str, timeout_ms: u64) -> bool {
+fn wait_for_tmux_session(socket: Option<&str>, name: &str, timeout_ms: u64) -> bool {
     let start = std::time::Instant::now();
     loop {
-        let output = Command::new("tmux")
-            .args(["-L", socket, "has-session", "-t", name])
-            .output()
-            .unwrap();
-        if output.status.success() {
-            return true;
+        let mut command = Command::new("tmux");
+        if let Some(socket) = socket {
+            command.args(["-L", socket]);
         }
-        if start.elapsed() > Duration::from_millis(timeout_ms) {
-            return false;
-        }
-        wait_ms(100);
-    }
-}
-
-fn wait_for_tmux_session_default(name: &str, timeout_ms: u64) -> bool {
-    let start = std::time::Instant::now();
-    loop {
-        let output = Command::new("tmux")
-            .args(["has-session", "-t", name])
-            .output()
-            .unwrap();
+        let output = command.args(["has-session", "-t", name]).output().unwrap();
         if output.status.success() {
             return true;
         }
@@ -158,6 +142,34 @@ struct TestEnv {
     bin_dir: PathBuf,
     session_name: String,
     tmux_socket: String,
+}
+
+struct BranchCleanupGuard {
+    bin: PathBuf,
+    config_dir: PathBuf,
+    state_dir: PathBuf,
+    repo: String,
+    branch: String,
+    enabled: bool,
+}
+
+impl BranchCleanupGuard {
+    fn disable(&mut self) {
+        self.enabled = false;
+    }
+}
+
+impl Drop for BranchCleanupGuard {
+    fn drop(&mut self) {
+        if !self.enabled {
+            return;
+        }
+        let _ = Command::new(&self.bin)
+            .args(["delete", &self.repo, &self.branch, "--force", "--json"])
+            .env("XDG_CONFIG_HOME", &self.config_dir)
+            .env("XDG_STATE_HOME", &self.state_dir)
+            .output();
+    }
 }
 
 impl TestEnv {
@@ -490,7 +502,7 @@ fn test_e2e_worktree_creation() {
     // Verify tmux session was created with the worktree basename
     let session_name = "wt-repo--feat-wt-test";
     assert!(
-        wait_for_tmux_session(&env.tmux_socket, session_name, 4000),
+        wait_for_tmux_session(Some(&env.tmux_socket), session_name, 4000),
         "tmux session '{session_name}' should exist"
     );
 
@@ -546,7 +558,7 @@ split_command = "sleep 30"
     env.send_special("Enter");
 
     assert!(
-        wait_for_tmux_session(&env.tmux_socket, session_name, 5000),
+        wait_for_tmux_session(Some(&env.tmux_socket), session_name, 5000),
         "tmux session '{session_name}' should exist"
     );
 
@@ -1525,6 +1537,14 @@ fn test_e2e_headless_open_status_delete_workflow() {
     fs::create_dir_all(&repo).unwrap();
     init_test_repo(&repo);
     env.write_config(&search_dir);
+    let mut cleanup = BranchCleanupGuard {
+        bin: kiosk_binary(),
+        config_dir: env.config_dir.clone(),
+        state_dir: env.state_dir.clone(),
+        repo: repo_name.clone(),
+        branch: branch_name.clone(),
+        enabled: true,
+    };
 
     let open_output = env.run_cli(&[
         "open",
@@ -1546,7 +1566,7 @@ fn test_e2e_headless_open_status_delete_workflow() {
     let open_json: Value = serde_json::from_slice(&open_output.stdout).unwrap();
     let session = open_json["session"].as_str().unwrap().to_string();
     assert!(
-        wait_for_tmux_session_default(&session, 5000),
+        wait_for_tmux_session(None, &session, 5000),
         "tmux session {session} should exist"
     );
 
@@ -1590,6 +1610,7 @@ fn test_e2e_headless_open_status_delete_workflow() {
     assert_eq!(delete_json["deleted"], Value::Bool(true));
     assert_eq!(delete_json["repo"], Value::String(repo_name));
     assert_eq!(delete_json["branch"], Value::String(branch_name));
+    cleanup.disable();
 }
 
 #[test]

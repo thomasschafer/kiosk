@@ -229,7 +229,7 @@ impl SearchableList {
 }
 
 /// Rich branch entry with worktree and session metadata
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct BranchEntry {
     pub name: String,
@@ -1582,11 +1582,6 @@ mod tests {
 
         let json = serde_json::to_string(&entry).unwrap();
         let decoded: BranchEntry = serde_json::from_str(&json).unwrap();
-        assert_eq!(decoded.name, entry.name);
-        assert_eq!(decoded.worktree_path, entry.worktree_path);
-        assert_eq!(decoded.has_session, entry.has_session);
-        assert_eq!(decoded.is_remote, entry.is_remote);
-        assert_eq!(decoded.is_default, entry.is_default);
-        assert_eq!(decoded.session_activity_ts, entry.session_activity_ts);
+        assert_eq!(decoded, entry);
     }
 }

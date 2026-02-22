@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Worktree {
     pub path: PathBuf,
     pub branch: Option<String>,
@@ -9,7 +9,7 @@ pub struct Worktree {
     pub is_main: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Repo {
     pub name: String,
     pub path: PathBuf,
@@ -106,8 +106,6 @@ mod tests {
 
         let json = serde_json::to_string(&repo).unwrap();
         let decoded: Repo = serde_json::from_str(&json).unwrap();
-        assert_eq!(decoded.name, repo.name);
-        assert_eq!(decoded.path, repo.path);
-        assert_eq!(decoded.worktrees[0].branch, repo.worktrees[0].branch);
+        assert_eq!(decoded, repo);
     }
 }

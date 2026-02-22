@@ -1,11 +1,12 @@
 use super::provider::TmuxProvider;
 use anyhow::Result;
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Mutex;
 
 #[derive(Default)]
 pub struct MockTmuxProvider {
-    pub sessions: Vec<String>,
+    pub sessions: Mutex<Vec<String>>,
     pub sessions_with_activity: Vec<(String, u64)>,
     pub inside_tmux: bool,
     pub killed_sessions: Mutex<Vec<String>>,
@@ -13,7 +14,7 @@ pub struct MockTmuxProvider {
     pub switched_sessions: Mutex<Vec<String>>,
     pub sent_keys: Mutex<Vec<(String, String)>>,
     pub piped_sessions: Mutex<Vec<(String, std::path::PathBuf)>>,
-    pub clients: Vec<String>,
+    pub clients: HashMap<String, Vec<String>>,
     pub capture_output: Mutex<String>,
     pub create_session_result: Mutex<Option<Result<()>>>,
     pub capture_pane_result: Mutex<Option<Result<String>>>,
@@ -24,15 +25,23 @@ pub struct MockTmuxProvider {
 impl TmuxProvider for MockTmuxProvider {
     fn list_sessions_with_activity(&self) -> Vec<(String, u64)> {
         if self.sessions_with_activity.is_empty() {
-            // Fall back to sessions with timestamp 0
-            self.sessions.iter().map(|s| (s.clone(), 0)).collect()
+            self.sessions
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|s| (s.clone(), 0))
+                .collect()
         } else {
             self.sessions_with_activity.clone()
         }
     }
 
     fn session_exists(&self, name: &str) -> bool {
-        self.sessions.contains(&name.to_string())
+        self.sessions
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|session| session == name)
     }
 
     fn create_session(
@@ -42,6 +51,10 @@ impl TmuxProvider for MockTmuxProvider {
         _split_command: Option<&str>,
     ) -> anyhow::Result<()> {
         self.created_sessions.lock().unwrap().push(name.to_string());
+        let mut sessions = self.sessions.lock().unwrap();
+        if !sessions.iter().any(|session| session == name) {
+            sessions.push(name.to_string());
+        }
         self.create_session_result
             .lock()
             .unwrap()
@@ -81,8 +94,8 @@ impl TmuxProvider for MockTmuxProvider {
             .unwrap_or(Ok(()))
     }
 
-    fn list_clients(&self, _session: &str) -> Vec<String> {
-        self.clients.clone()
+    fn list_clients(&self, session: &str) -> Vec<String> {
+        self.clients.get(session).cloned().unwrap_or_default()
     }
 
     fn switch_to_session(&self, name: &str) {

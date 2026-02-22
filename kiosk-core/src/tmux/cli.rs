@@ -113,7 +113,8 @@ impl TmuxProvider for CliTmuxProvider {
 
     fn pipe_pane(&self, session: &str, log_path: &Path) -> Result<()> {
         let target = format!("={session}:0.0");
-        let command = format!("cat >> {}", log_path.to_string_lossy());
+        let escaped_path = log_path.to_string_lossy().replace('\'', "'\\''");
+        let command = format!("cat >> '{escaped_path}'");
         let output = Command::new("tmux")
             .args(["pipe-pane", "-t", &target, "-o", &command])
             .output()

@@ -178,7 +178,7 @@ fn main() -> ExitCode {
             };
             crate::cli::cmd_delete(&config, git.as_ref(), tmux.as_ref(), &args)
         }
-        None => run_tui(&config).map_err(crate::cli::CliError::from),
+        None => run_tui(&config, &git, &tmux).map_err(crate::cli::CliError::from),
     };
 
     match result {
@@ -194,11 +194,12 @@ fn main() -> ExitCode {
     }
 }
 
-fn run_tui(config: &config::Config) -> Result<()> {
+fn run_tui(
+    config: &config::Config,
+    git: &Arc<dyn GitProvider>,
+    tmux: &Arc<dyn TmuxProvider>,
+) -> Result<()> {
     let search_dirs = config.resolved_search_dirs();
-
-    let git: Arc<dyn GitProvider> = Arc::new(CliGitProvider);
-    let tmux: Arc<dyn TmuxProvider> = Arc::new(CliTmuxProvider);
 
     // Detect CWD repo/worktree for instant display and ordering.
     // cwd_worktree_path: the toplevel of whatever git tree the user is in (main repo or worktree)
@@ -253,8 +254,8 @@ fn run_tui(config: &config::Config) -> Result<()> {
     let result = kiosk_tui::run(
         &mut terminal,
         &mut state,
-        &git,
-        &tmux,
+        git,
+        tmux,
         &theme,
         &config.keys,
         search_dirs,

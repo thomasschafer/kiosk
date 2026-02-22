@@ -464,7 +464,8 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
 }
 
 fn handle_movement_actions(action: &Action, state: &mut AppState) -> bool {
-    let page_rows: i32 = state.active_list_page_rows().try_into().unwrap_or(i32::MAX);
+    let page_rows_usize = state.active_list_page_rows();
+    let page_rows: i32 = page_rows_usize.try_into().unwrap_or(i32::MAX);
     let page_step = page_rows.max(1);
     let half_page_step = (page_step / 2).max(1);
 
@@ -472,12 +473,30 @@ fn handle_movement_actions(action: &Action, state: &mut AppState) -> bool {
         return false;
     };
     match action {
-        Action::HalfPageUp => list.move_selection(-half_page_step),
-        Action::HalfPageDown => list.move_selection(half_page_step),
-        Action::PageUp => list.move_selection(-page_step),
-        Action::PageDown => list.move_selection(page_step),
-        Action::MoveTop => list.move_to_top(),
-        Action::MoveBottom => list.move_to_bottom(),
+        Action::HalfPageUp => {
+            list.move_selection(-half_page_step);
+            list.update_scroll_offset_for_selection(-1, page_rows_usize);
+        }
+        Action::HalfPageDown => {
+            list.move_selection(half_page_step);
+            list.update_scroll_offset_for_selection(1, page_rows_usize);
+        }
+        Action::PageUp => {
+            list.move_selection(-page_step);
+            list.update_scroll_offset_for_selection(-1, page_rows_usize);
+        }
+        Action::PageDown => {
+            list.move_selection(page_step);
+            list.update_scroll_offset_for_selection(1, page_rows_usize);
+        }
+        Action::MoveTop => {
+            list.move_to_top();
+            list.update_scroll_offset_for_selection(-1, page_rows_usize);
+        }
+        Action::MoveBottom => {
+            list.move_to_bottom();
+            list.update_scroll_offset_for_selection(1, page_rows_usize);
+        }
         _ => return false,
     }
     true
@@ -582,8 +601,10 @@ fn process_action<T: TmuxProvider + ?Sized + 'static>(
         }
 
         Action::MoveSelection(delta) => {
+            let page_rows = state.active_list_page_rows();
             if let Some(list) = state.active_list_mut() {
                 list.move_selection(delta);
+                list.update_scroll_offset_for_selection(delta, page_rows);
             }
         }
 
@@ -970,6 +991,37 @@ mod tests {
             &sender,
         );
         assert_eq!(state.repo_list.selected, Some(2));
+    }
+
+    #[test]
+    fn test_move_selection_updates_scroll_anchor() {
+        let repos: Vec<_> = (0..40).map(|i| make_repo(&format!("repo-{i}"))).collect();
+        let mut state = AppState::new(repos, None);
+        state.set_active_list_page_rows(20);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+
+        for _ in 0..25 {
+            process_action(
+                Action::MoveSelection(1),
+                &mut state,
+                &git,
+                &tmux,
+                &matcher,
+                &sender,
+            );
+        }
+
+        let selected = state.repo_list.selected.unwrap_or(0);
+        assert_eq!(selected, 25);
+        assert_eq!(
+            selected - state.repo_list.scroll_offset,
+            18,
+            "Selection should remain one row above bottom while scrolling down"
+        );
     }
 
     #[test]

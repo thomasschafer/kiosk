@@ -17,6 +17,7 @@ pub struct SearchableList {
     /// Index-score pairs, sorted by score descending
     pub filtered: Vec<(usize, i64)>,
     pub selected: Option<usize>,
+    pub scroll_offset: usize,
 }
 
 impl SearchableList {
@@ -50,6 +51,7 @@ impl SearchableList {
             cursor: 0,
             filtered: (0..item_count).map(|i| (i, 0)).collect(),
             selected: if item_count > 0 { Some(0) } else { None },
+            scroll_offset: 0,
         }
     }
 
@@ -58,6 +60,7 @@ impl SearchableList {
         self.cursor = 0;
         self.filtered = (0..item_count).map(|i| (i, 0)).collect();
         self.selected = if item_count > 0 { Some(0) } else { None };
+        self.scroll_offset = 0;
     }
 
     /// Move selection by delta, clamping to bounds
@@ -88,6 +91,34 @@ impl SearchableList {
         if !self.filtered.is_empty() {
             self.selected = Some(self.filtered.len() - 1);
         }
+    }
+
+    pub fn update_scroll_offset_for_selection(&mut self, direction: i32, viewport_rows: usize) {
+        let len = self.filtered.len();
+        if len == 0 {
+            self.scroll_offset = 0;
+            return;
+        }
+
+        let viewport_rows = viewport_rows.max(1);
+        let max_offset = len.saturating_sub(viewport_rows);
+        let selected = self.selected.unwrap_or(0).min(len - 1);
+
+        let offset = match direction.cmp(&0) {
+            std::cmp::Ordering::Greater => {
+                // While moving down, keep selection one row above the bottom edge until the true end.
+                let anchor_bottom = viewport_rows.saturating_sub(2);
+                selected.saturating_sub(anchor_bottom)
+            }
+            std::cmp::Ordering::Less => {
+                // While moving up, keep selection one row below the top edge until the true start.
+                let anchor_top = usize::from(viewport_rows > 1);
+                selected.saturating_sub(anchor_top)
+            }
+            std::cmp::Ordering::Equal => self.scroll_offset,
+        };
+
+        self.scroll_offset = offset.min(max_offset);
     }
 
     /// Move cursor left by one char (UTF-8 safe)
@@ -696,6 +727,50 @@ mod tests {
 
         assert!(state.clear_pending_worktree_delete_by_path(&worktree_path));
         assert!(!state.is_branch_pending_delete(&repo_path, "dev"));
+    }
+
+    #[test]
+    fn test_scroll_anchor_behavior_down_then_up() {
+        let mut list = SearchableList::new(100);
+        let viewport_rows = 20;
+
+        // Move down into the middle: selection should be anchored one row above bottom.
+        for _ in 0..25 {
+            list.move_selection(1);
+            list.update_scroll_offset_for_selection(1, viewport_rows);
+        }
+        let selected = list.selected.unwrap_or(0);
+        assert_eq!(selected - list.scroll_offset, 18);
+
+        // Move to bottom: selection may reach the actual bottom row.
+        for _ in 0..200 {
+            list.move_selection(1);
+            list.update_scroll_offset_for_selection(1, viewport_rows);
+        }
+        let selected = list.selected.unwrap_or(0);
+        assert_eq!(selected, 99);
+        assert_eq!(selected - list.scroll_offset, 19);
+
+        // Move up: keep viewport stationary first, then anchor one below top.
+        list.move_selection(-1);
+        list.update_scroll_offset_for_selection(-1, viewport_rows);
+        let selected = list.selected.unwrap_or(0);
+        assert_eq!(selected, 98);
+        assert_eq!(selected - list.scroll_offset, 18);
+
+        for _ in 0..17 {
+            list.move_selection(-1);
+            list.update_scroll_offset_for_selection(-1, viewport_rows);
+        }
+        let selected = list.selected.unwrap_or(0);
+        assert_eq!(selected, 81);
+        assert_eq!(selected - list.scroll_offset, 1);
+
+        list.move_selection(-1);
+        list.update_scroll_offset_for_selection(-1, viewport_rows);
+        let selected = list.selected.unwrap_or(0);
+        assert_eq!(selected, 80);
+        assert_eq!(selected - list.scroll_offset, 1);
     }
 
     #[test]

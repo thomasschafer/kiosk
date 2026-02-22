@@ -351,4 +351,5 @@ fn apply_fuzzy_filter(list: &mut SearchableList, items: &[String], matcher: &Ski
     } else {
         Some(0)
     };
+    list.scroll_offset = 0;
 }

@@ -56,5 +56,6 @@ pub fn draw(f: &mut Frame, state: &AppState, theme: &Theme) {
 
     let mut list_state = ListState::default();
     list_state.select(flow.list.selected);
+    *list_state.offset_mut() = flow.list.scroll_offset;
     f.render_stateful_widget(list, chunks[1], &mut list_state);
 }

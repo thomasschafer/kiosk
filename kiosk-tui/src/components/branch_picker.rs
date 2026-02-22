@@ -127,6 +127,7 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, keys: &K
 
     let mut list_state = ListState::default();
     list_state.select(state.branch_list.selected);
+    *list_state.offset_mut() = state.branch_list.scroll_offset;
     f.render_stateful_widget(list, chunks[1], &mut list_state);
 }
 

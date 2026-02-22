@@ -397,7 +397,10 @@ pub fn sort_repos(
 /// Get the most recent session activity for a repo (across all its worktrees).
 fn repo_max_activity(repo: &Repo, session_activity: &HashMap<String, u64>) -> Option<u64> {
     let main_session = std::iter::once(repo.tmux_session_name(&repo.path));
-    let wt_sessions = repo.worktrees.iter().map(|wt| repo.tmux_session_name(&wt.path));
+    let wt_sessions = repo
+        .worktrees
+        .iter()
+        .map(|wt| repo.tmux_session_name(&wt.path));
     main_session
         .chain(wt_sessions)
         .filter_map(|name| session_activity.get(&name).copied())

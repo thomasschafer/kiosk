@@ -465,14 +465,12 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
 
 fn handle_movement_actions(action: &Action, state: &mut AppState) -> bool {
     let page_rows: i32 = state.active_list_page_rows().try_into().unwrap_or(i32::MAX);
-    let page_step_floor = page_rows.max(1);
+    let page_step = page_rows.max(1);
+    let half_page_step = (page_step / 2).max(1);
 
     let Some(list) = state.active_list_mut() else {
         return false;
     };
-    let list_len: i32 = list.filtered.len().try_into().unwrap_or(i32::MAX);
-    let page_step = page_step_floor.min(list_len.max(1));
-    let half_page_step = (page_step / 2).max(1);
     match action {
         Action::HalfPageUp => list.move_selection(-half_page_step),
         Action::HalfPageDown => list.move_selection(half_page_step),
@@ -1039,6 +1037,47 @@ mod tests {
             &sender,
         );
         assert_eq!(state.repo_list.selected, Some(0));
+    }
+
+    #[test]
+    fn test_half_page_uses_viewport_rows_when_list_is_shorter() {
+        let repos: Vec<_> = (0..13).map(|i| make_repo(&format!("repo-{i}"))).collect();
+        let mut state = AppState::new(repos, None);
+        state.set_active_list_page_rows(20);
+        assert_eq!(state.repo_list.selected, Some(0));
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+
+        process_action(
+            Action::HalfPageDown,
+            &mut state,
+            &git,
+            &tmux,
+            &matcher,
+            &sender,
+        );
+        assert_eq!(
+            state.repo_list.selected,
+            Some(10),
+            "Half-page should move by half viewport rows (20/2)"
+        );
+
+        process_action(
+            Action::HalfPageDown,
+            &mut state,
+            &git,
+            &tmux,
+            &matcher,
+            &sender,
+        );
+        assert_eq!(
+            state.repo_list.selected,
+            Some(12),
+            "Should clamp to list end"
+        );
     }
 
     #[test]

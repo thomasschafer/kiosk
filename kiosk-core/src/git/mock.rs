@@ -17,6 +17,8 @@ pub struct MockGitProvider {
     pub add_worktree_result: Mutex<Option<Result<()>>>,
     pub create_branch_result: Mutex<Option<Result<()>>>,
     pub remove_worktree_result: Mutex<Option<Result<()>>>,
+    pub default_branch: Option<String>,
+    pub current_repo_path: Option<PathBuf>,
 }
 
 impl GitProvider for MockGitProvider {
@@ -77,5 +79,13 @@ impl GitProvider for MockGitProvider {
             .unwrap()
             .take()
             .unwrap_or(Ok(()))
+    }
+
+    fn default_branch(&self, _repo_path: &Path) -> Option<String> {
+        self.default_branch.clone()
+    }
+
+    fn resolve_repo_from_cwd(&self) -> Option<PathBuf> {
+        self.current_repo_path.clone()
     }
 }

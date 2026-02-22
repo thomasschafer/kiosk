@@ -1,5 +1,6 @@
 use kiosk_core::{event::AppEvent, git::GitProvider, state::BranchEntry};
 use std::{
+    collections::HashMap,
     path::PathBuf,
     sync::{Arc, atomic::Ordering},
     thread,
@@ -10,19 +11,26 @@ use kiosk_core::tmux::TmuxProvider;
 
 use super::EventSender;
 
-pub(super) fn spawn_repo_discovery(
+pub(super) fn spawn_repo_discovery<T: TmuxProvider + ?Sized + 'static>(
     git: &Arc<dyn GitProvider>,
+    tmux: &Arc<T>,
     sender: &EventSender,
     search_dirs: Vec<(PathBuf, u16)>,
 ) {
     let git = Arc::clone(git);
+    let tmux = Arc::clone(tmux);
     let sender = sender.clone();
     thread::spawn(move || {
         if sender.cancel.load(Ordering::Relaxed) {
             return;
         }
         let repos = git.discover_repos(&search_dirs);
-        sender.send(AppEvent::ReposDiscovered { repos });
+        let session_activity: HashMap<String, u64> =
+            tmux.list_sessions_with_activity().into_iter().collect();
+        sender.send(AppEvent::ReposDiscovered {
+            repos,
+            session_activity,
+        });
     });
 }
 
@@ -114,14 +122,28 @@ pub(super) fn spawn_branch_loading<T: TmuxProvider + ?Sized + 'static>(
         if sender.cancel.load(Ordering::Relaxed) {
             return;
         }
-        let active_sessions = tmux.list_sessions();
+        let sessions_with_activity = tmux.list_sessions_with_activity();
+        let active_sessions: Vec<String> = sessions_with_activity
+            .iter()
+            .map(|(n, _)| n.clone())
+            .collect();
+        let session_activity: HashMap<String, u64> = sessions_with_activity.into_iter().collect();
         repo.worktrees = git.list_worktrees(&repo.path);
         let local_names = git.list_branches(&repo.path);
-        let branches = BranchEntry::build_sorted(&repo, &local_names, &active_sessions);
+        let default_branch = git.default_branch(&repo.path);
+        let branches = BranchEntry::build_sorted_with_activity(
+            &repo,
+            &local_names,
+            &active_sessions,
+            default_branch.as_deref(),
+            &session_activity,
+        );
         sender.send(AppEvent::BranchesLoaded {
             branches,
             worktrees: repo.worktrees,
             local_names,
+            default_branch,
+            session_activity,
         });
     });
 }

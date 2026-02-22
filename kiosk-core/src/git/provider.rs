@@ -23,4 +23,8 @@ pub trait GitProvider: Send + Sync {
         branch: &str,
         worktree_path: &Path,
     ) -> Result<()>;
+    /// Detect the default branch (main/master) for a repository
+    fn default_branch(&self, repo_path: &Path) -> Option<String>;
+    /// Resolve the current working directory to a git repository root
+    fn resolve_repo_from_cwd(&self) -> Option<PathBuf>;
 }

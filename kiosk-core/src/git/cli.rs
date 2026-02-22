@@ -186,6 +186,48 @@ impl GitProvider for CliGitProvider {
 
         Ok(())
     }
+
+    fn default_branch(&self, repo_path: &Path) -> Option<String> {
+        // Try symbolic-ref first
+        let output = Command::new("git")
+            .args(["symbolic-ref", "refs/remotes/origin/HEAD"])
+            .current_dir(repo_path)
+            .output()
+            .ok()?;
+
+        if output.status.success() {
+            let refname = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if let Some(branch) = refname.strip_prefix("refs/remotes/origin/") {
+                return Some(branch.to_string());
+            }
+        }
+
+        // Fall back to checking local branches
+        let branches = self.list_branches(repo_path);
+        for candidate in &["main", "master"] {
+            if branches.iter().any(|b| b == candidate) {
+                return Some((*candidate).to_string());
+            }
+        }
+
+        None
+    }
+
+    fn resolve_repo_from_cwd(&self) -> Option<PathBuf> {
+        let output = Command::new("git")
+            .args(["rev-parse", "--show-toplevel"])
+            .output()
+            .ok()?;
+
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() {
+                return Some(PathBuf::from(path));
+            }
+        }
+
+        None
+    }
 }
 
 #[cfg(test)]

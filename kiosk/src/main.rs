@@ -54,8 +54,41 @@ fn run_tui(config: &config::Config) -> Result<()> {
 
     let git: Arc<dyn GitProvider> = Arc::new(CliGitProvider);
     let tmux: Arc<dyn TmuxProvider> = Arc::new(CliTmuxProvider);
-    let mut state =
-        AppState::new_loading("Discovering repos...", config.session.split_command.clone());
+
+    // Try to detect current repo from CWD for instant display
+    let current_repo_path = git.resolve_repo_from_cwd().and_then(|p| {
+        // Only use if the repo is within one of the configured search dirs
+        let canonical = dunce::canonicalize(&p).unwrap_or(p);
+        search_dirs
+            .iter()
+            .any(|(dir, _)| {
+                let dir_canonical = dunce::canonicalize(dir).unwrap_or_else(|_| dir.clone());
+                canonical.starts_with(&dir_canonical)
+            })
+            .then_some(canonical)
+    });
+    let initial_repo = current_repo_path.as_ref().and_then(|repo_path| {
+        let name = repo_path.file_name()?.to_string_lossy().to_string();
+        let worktrees = git.list_worktrees(repo_path);
+        Some(kiosk_core::git::Repo {
+            session_name: name.clone(),
+            name,
+            path: repo_path.clone(),
+            worktrees,
+        })
+    });
+
+    let mut state = if let Some(repo) = initial_repo {
+        let mut s = AppState::new(vec![repo], config.session.split_command.clone());
+        s.loading_repos = true;
+        s.current_repo_path = current_repo_path;
+        s
+    } else {
+        let mut s =
+            AppState::new_loading("Discovering repos...", config.session.split_command.clone());
+        s.current_repo_path = current_repo_path;
+        s
+    };
     state.pending_worktree_deletes = load_pending_worktree_deletes();
 
     let theme = Theme::from_config(&config.theme);

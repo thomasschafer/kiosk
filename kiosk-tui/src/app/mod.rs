@@ -83,10 +83,10 @@ pub fn run(
     };
     let spinner_start = Instant::now();
 
-    // Start repo discovery in background if repos are empty
-    if state.repos.is_empty() {
+    // Start repo discovery in background
+    if state.loading_repos || state.repos.is_empty() {
         state.loading_repos = true;
-        spawn_repo_discovery(git, &event_sender, search_dirs);
+        spawn_repo_discovery(git, tmux, &event_sender, search_dirs);
     }
 
     loop {
@@ -327,7 +327,19 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
     sender: &EventSender,
 ) -> Option<OpenAction> {
     match event {
-        AppEvent::ReposDiscovered { repos } => {
+        AppEvent::ReposDiscovered {
+            mut repos,
+            session_activity,
+        } => {
+            state.session_activity = session_activity;
+
+            // Sort repos (sort_repos handles current_repo_path priority)
+            kiosk_core::state::sort_repos(
+                &mut repos,
+                state.current_repo_path.as_deref(),
+                &state.session_activity,
+            );
+
             state.repo_list.reset(repos.len());
             state.repos = repos;
             state.loading_repos = false;
@@ -385,6 +397,8 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             branches,
             worktrees,
             local_names,
+            default_branch: _,
+            session_activity: _,
         } => {
             if let Some(repo_idx) = state.selected_repo_idx {
                 state.repos[repo_idx].worktrees = worktrees;
@@ -725,6 +739,8 @@ mod tests {
             has_session: false,
             is_current: true,
             is_remote: false,
+            is_default: false,
+            session_activity_ts: None,
         }];
         state.branch_list.reset(1);
 
@@ -740,6 +756,8 @@ mod tests {
                 has_session: false,
                 is_current: false,
                 is_remote: true,
+                is_default: false,
+                session_activity_ts: None,
             },
             BranchEntry {
                 name: "feature-y".to_string(),
@@ -747,6 +765,8 @@ mod tests {
                 has_session: false,
                 is_current: false,
                 is_remote: true,
+                is_default: false,
+                session_activity_ts: None,
             },
         ];
 
@@ -781,6 +801,8 @@ mod tests {
             has_session: false,
             is_current: true,
             is_remote: false,
+            is_default: false,
+            session_activity_ts: None,
         }];
         state.branch_list.reset(1);
         state.branch_list.search = "feat".to_string();
@@ -801,6 +823,8 @@ mod tests {
                     has_session: false,
                     is_current: false,
                     is_remote: true,
+                    is_default: false,
+                    session_activity_ts: None,
                 }],
             },
             &mut state,
@@ -864,6 +888,8 @@ mod tests {
             has_session: false,
             is_current: true,
             is_remote: false,
+            is_default: false,
+            session_activity_ts: None,
         }];
         state.branch_list.filtered = vec![(0, 0)];
         state.branch_list.selected = Some(0);
@@ -905,6 +931,8 @@ mod tests {
             has_session: false,
             is_current: false,
             is_remote: false,
+            is_default: false,
+            session_activity_ts: None,
         }];
         state.branch_list.filtered = vec![(0, 0)];
         state.branch_list.selected = Some(0);
@@ -1237,6 +1265,8 @@ mod tests {
             has_session: false,
             is_current: false,
             is_remote: false,
+            is_default: false,
+            session_activity_ts: None,
         }];
         state.branch_list.filtered = vec![(0, 0)];
         state.branch_list.selected = Some(0);
@@ -1271,6 +1301,8 @@ mod tests {
             has_session: false,
             is_current: true,
             is_remote: false,
+            is_default: false,
+            session_activity_ts: None,
         }];
         state.branch_list.filtered = vec![(0, 0)];
         state.branch_list.selected = Some(0);
@@ -1305,6 +1337,8 @@ mod tests {
             has_session: false,
             is_current: false,
             is_remote: false,
+            is_default: false,
+            session_activity_ts: None,
         }];
         state.branch_list.filtered = vec![(0, 0)];
         state.branch_list.selected = Some(0);
@@ -1344,6 +1378,8 @@ mod tests {
             has_session: true,
             is_current: false,
             is_remote: false,
+            is_default: false,
+            session_activity_ts: None,
         }];
         state.branch_list.filtered = vec![(0, 0)];
         state.branch_list.selected = Some(0);
@@ -1391,6 +1427,8 @@ mod tests {
             has_session: true,
             is_current: false,
             is_remote: false,
+            is_default: false,
+            session_activity_ts: None,
         }];
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
@@ -1433,6 +1471,8 @@ mod tests {
             has_session: false,
             is_current: false,
             is_remote: false,
+            is_default: false,
+            session_activity_ts: None,
         }];
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());

@@ -4,7 +4,7 @@ use crate::{
     pending_delete::PendingWorktreeDelete,
 };
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
 };
 
@@ -228,27 +228,42 @@ impl SearchableList {
 
 /// Rich branch entry with worktree and session metadata
 #[derive(Debug, Clone)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct BranchEntry {
     pub name: String,
     /// If a worktree already exists for this branch
     pub worktree_path: Option<PathBuf>,
     pub has_session: bool,
     pub is_current: bool,
+    /// Whether this is the default branch (main/master)
+    pub is_default: bool,
     /// Remote-only branch (no local tracking branch)
     pub is_remote: bool,
+    /// Last activity timestamp for the session (if any)
+    pub session_activity_ts: Option<u64>,
 }
 
 impl BranchEntry {
     /// Build sorted branch entries from a repo's branches, worktrees, and active tmux sessions.
     ///
-    /// Sorted by: sessions first, then worktrees, then alphabetical.
+    /// Ordering: current first, then default branch, then by session recency,
+    /// then worktrees without sessions, then remaining branches.
     pub fn build_sorted(
         repo: &crate::git::Repo,
         branch_names: &[String],
         active_sessions: &[String],
     ) -> Vec<Self> {
-        use std::collections::HashMap;
+        Self::build_sorted_with_activity(repo, branch_names, active_sessions, None, &HashMap::new())
+    }
 
+    /// Build sorted branch entries with activity timestamps and default branch info.
+    pub fn build_sorted_with_activity(
+        repo: &crate::git::Repo,
+        branch_names: &[String],
+        active_sessions: &[String],
+        default_branch: Option<&str>,
+        session_activity: &HashMap<String, u64>,
+    ) -> Vec<Self> {
         let wt_by_branch: HashMap<&str, &crate::git::Worktree> = repo
             .worktrees
             .iter()
@@ -261,17 +276,24 @@ impl BranchEntry {
             .iter()
             .map(|name| {
                 let worktree_path = wt_by_branch.get(name.as_str()).map(|wt| wt.path.clone());
-                let has_session = worktree_path
+                let session_name = worktree_path.as_ref().map(|p| repo.tmux_session_name(p));
+                let has_session = session_name
                     .as_ref()
-                    .is_some_and(|p| active_sessions.contains(&repo.tmux_session_name(p)));
+                    .is_some_and(|sn| active_sessions.contains(sn));
                 let is_current = current_branch == Some(name.as_str());
+                let is_default = default_branch == Some(name.as_str());
+                let session_activity_ts = session_name
+                    .as_ref()
+                    .and_then(|sn| session_activity.get(sn).copied());
 
                 Self {
                     name: name.clone(),
                     worktree_path,
                     has_session,
                     is_current,
+                    is_default,
                     is_remote: false,
+                    session_activity_ts,
                 }
             })
             .collect();
@@ -293,7 +315,9 @@ impl BranchEntry {
                 worktree_path: None,
                 has_session: false,
                 is_current: false,
+                is_default: false,
                 is_remote: true,
+                session_activity_ts: None,
             })
             .collect()
     }
@@ -303,11 +327,69 @@ impl BranchEntry {
             // Remote branches always sort after local
             a.is_remote
                 .cmp(&b.is_remote)
-                .then(b.has_session.cmp(&a.has_session))
+                // Current branch first
+                .then(b.is_current.cmp(&a.is_current))
+                // Default branch second
+                .then(b.is_default.cmp(&a.is_default))
+                // Branches with sessions, ordered by recency (most recent first)
+                .then(match (a.session_activity_ts, b.session_activity_ts) {
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (Some(a_ts), Some(b_ts)) => b_ts.cmp(&a_ts),
+                    (None, None) => std::cmp::Ordering::Equal,
+                })
+                // Branches with worktrees before those without
                 .then(b.worktree_path.is_some().cmp(&a.worktree_path.is_some()))
                 .then(a.name.cmp(&b.name))
         });
     }
+}
+
+/// Sort repos by: current repo first, then repos with sessions by recency, then alphabetically.
+#[allow(clippy::implicit_hasher)]
+pub fn sort_repos(
+    repos: &mut [Repo],
+    current_repo_path: Option<&Path>,
+    session_activity: &HashMap<String, u64>,
+) {
+    repos.sort_by(|a, b| {
+        let a_is_current = current_repo_path.is_some_and(|p| a.path == p);
+        let b_is_current = current_repo_path.is_some_and(|p| b.path == p);
+
+        // Current repo first
+        b_is_current
+            .cmp(&a_is_current)
+            .then_with(|| {
+                // Repos with sessions by most recent activity
+                let a_activity = repo_max_activity(a, session_activity);
+                let b_activity = repo_max_activity(b, session_activity);
+                match (a_activity, b_activity) {
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (Some(a_ts), Some(b_ts)) => b_ts.cmp(&a_ts),
+                    (None, None) => std::cmp::Ordering::Equal,
+                }
+            })
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+}
+
+/// Get the most recent session activity for a repo (across all its worktrees).
+fn repo_max_activity(repo: &Repo, session_activity: &HashMap<String, u64>) -> Option<u64> {
+    let mut max: Option<u64> = None;
+    // Check main repo session
+    let main_session = repo.tmux_session_name(&repo.path);
+    if let Some(&ts) = session_activity.get(&main_session) {
+        max = Some(ts);
+    }
+    // Check worktree sessions
+    for wt in &repo.worktrees {
+        let session_name = repo.tmux_session_name(&wt.path);
+        if let Some(&ts) = session_activity.get(&session_name) {
+            max = Some(max.map_or(ts, |m: u64| m.max(ts)));
+        }
+    }
+    max
 }
 
 /// What mode the app is in
@@ -389,6 +471,8 @@ pub struct AppState {
     pub error: Option<String>,
     active_list_page_rows: usize,
     pub pending_worktree_deletes: Vec<PendingWorktreeDelete>,
+    pub session_activity: HashMap<String, u64>,
+    pub current_repo_path: Option<PathBuf>,
 }
 
 impl AppState {
@@ -408,6 +492,8 @@ impl AppState {
             error: None,
             active_list_page_rows: 10,
             pending_worktree_deletes: Vec::new(),
+            session_activity: HashMap::new(),
+            current_repo_path: None,
         }
     }
 
@@ -426,6 +512,8 @@ impl AppState {
             error: None,
             active_list_page_rows: 10,
             pending_worktree_deletes: Vec::new(),
+            session_activity: HashMap::new(),
+            current_repo_path: None,
         }
     }
 
@@ -647,16 +735,15 @@ mod tests {
 
         let entries = BranchEntry::build_sorted(&repo, &branches, &sessions);
 
-        // dev has session → first
-        assert_eq!(entries[0].name, "dev");
-        assert!(entries[0].has_session);
+        // main is current → first
+        assert_eq!(entries[0].name, "main");
+        assert!(entries[0].is_current);
         assert!(entries[0].worktree_path.is_some());
 
-        // main has worktree but no session → second
-        assert_eq!(entries[1].name, "main");
-        assert!(!entries[1].has_session);
+        // dev has session → second
+        assert_eq!(entries[1].name, "dev");
+        assert!(entries[1].has_session);
         assert!(entries[1].worktree_path.is_some());
-        assert!(entries[1].is_current);
 
         // feature has nothing → last
         assert_eq!(entries[2].name, "feature");
@@ -709,8 +796,8 @@ mod tests {
         BranchEntry::sort_entries(&mut entries);
 
         // Local branches should come before remote
-        assert!(!entries[0].is_remote); // dev or main
-        assert!(!entries[1].is_remote);
+        assert!(!entries[0].is_remote); // main (current)
+        assert!(!entries[1].is_remote); // dev
         assert!(entries[2].is_remote); // feature-a
         assert!(entries[3].is_remote); // feature-b
     }
@@ -809,6 +896,127 @@ mod tests {
         assert_eq!(spaces.prev_word_boundary(3), 0);
         assert_eq!(spaces.next_word_boundary(0), 3);
     }
+        
+    #[test]
+    fn test_branch_sort_order_with_activity() {
+        let repo = Repo {
+            name: "myrepo".to_string(),
+            session_name: "myrepo".to_string(),
+            path: PathBuf::from("/tmp/myrepo"),
+            worktrees: vec![
+                Worktree {
+                    path: PathBuf::from("/tmp/myrepo"),
+                    branch: Some("main".to_string()),
+                    is_main: true,
+                },
+                Worktree {
+                    path: PathBuf::from("/tmp/myrepo--dev"),
+                    branch: Some("dev".to_string()),
+                    is_main: false,
+                },
+                Worktree {
+                    path: PathBuf::from("/tmp/myrepo--hotfix"),
+                    branch: Some("hotfix".to_string()),
+                    is_main: false,
+                },
+            ],
+        };
+
+        let branches = vec![
+            "main".into(),
+            "dev".into(),
+            "hotfix".into(),
+            "feature".into(),
+        ];
+        let sessions = vec!["myrepo--dev".to_string(), "myrepo--hotfix".to_string()];
+        let mut activity = HashMap::new();
+        activity.insert("myrepo--dev".to_string(), 100);
+        activity.insert("myrepo--hotfix".to_string(), 200);
+
+        let entries = BranchEntry::build_sorted_with_activity(
+            &repo,
+            &branches,
+            &sessions,
+            Some("main"),
+            &activity,
+        );
+
+        // Order: current (main), default (main, but already current), sessions by recency, worktrees, rest
+        assert_eq!(entries[0].name, "main"); // current + default
+        assert!(entries[0].is_current);
+        assert!(entries[0].is_default);
+        assert_eq!(entries[1].name, "hotfix"); // session ts=200
+        assert_eq!(entries[2].name, "dev"); // session ts=100
+        assert_eq!(entries[3].name, "feature"); // no session, no worktree
+    }
+
+    #[test]
+    fn test_branch_sort_default_after_current() {
+        let repo = Repo {
+            name: "myrepo".to_string(),
+            session_name: "myrepo".to_string(),
+            path: PathBuf::from("/tmp/myrepo"),
+            worktrees: vec![Worktree {
+                path: PathBuf::from("/tmp/myrepo"),
+                branch: Some("dev".to_string()),
+                is_main: true,
+            }],
+        };
+
+        let branches = vec!["main".into(), "dev".into(), "feature".into()];
+        let entries = BranchEntry::build_sorted_with_activity(
+            &repo,
+            &branches,
+            &[],
+            Some("main"),
+            &HashMap::new(),
+        );
+
+        assert_eq!(entries[0].name, "dev"); // current
+        assert_eq!(entries[1].name, "main"); // default
+        assert_eq!(entries[2].name, "feature");
+    }
+
+    #[test]
+    fn test_sort_repos_ordering() {
+        let mut repos = vec![
+            Repo {
+                name: "zebra".to_string(),
+                session_name: "zebra".to_string(),
+                path: PathBuf::from("/tmp/zebra"),
+                worktrees: vec![Worktree {
+                    path: PathBuf::from("/tmp/zebra"),
+                    branch: Some("main".to_string()),
+                    is_main: true,
+                }],
+            },
+            Repo {
+                name: "alpha".to_string(),
+                session_name: "alpha".to_string(),
+                path: PathBuf::from("/tmp/alpha"),
+                worktrees: vec![Worktree {
+                    path: PathBuf::from("/tmp/alpha"),
+                    branch: Some("main".to_string()),
+                    is_main: true,
+                }],
+            },
+            Repo {
+                name: "current".to_string(),
+                session_name: "current".to_string(),
+                path: PathBuf::from("/tmp/current"),
+                worktrees: vec![],
+            },
+        ];
+
+        let mut activity = HashMap::new();
+        activity.insert("zebra".to_string(), 500);
+
+        sort_repos(&mut repos, Some(Path::new("/tmp/current")), &activity);
+
+        assert_eq!(repos[0].name, "current"); // current repo
+        assert_eq!(repos[1].name, "zebra"); // has session
+        assert_eq!(repos[2].name, "alpha"); // alphabetical
+    }
 
     #[test]
     fn test_reconcile_pending_deletes_removes_missing_worktree() {
@@ -831,5 +1039,353 @@ mod tests {
 
         assert!(state.reconcile_pending_worktree_deletes());
         assert!(state.pending_worktree_deletes.is_empty());
+    }
+
+    #[test]
+    fn test_sort_repos_no_current_repo() {
+        let mut repos = vec![
+            Repo {
+                name: "zebra".to_string(),
+                session_name: "zebra".to_string(),
+                path: PathBuf::from("/tmp/zebra"),
+                worktrees: vec![Worktree {
+                    path: PathBuf::from("/tmp/zebra"),
+                    branch: Some("main".to_string()),
+                    is_main: true,
+                }],
+            },
+            Repo {
+                name: "alpha".to_string(),
+                session_name: "alpha".to_string(),
+                path: PathBuf::from("/tmp/alpha"),
+                worktrees: vec![],
+            },
+            Repo {
+                name: "mango".to_string(),
+                session_name: "mango".to_string(),
+                path: PathBuf::from("/tmp/mango"),
+                worktrees: vec![Worktree {
+                    path: PathBuf::from("/tmp/mango"),
+                    branch: Some("main".to_string()),
+                    is_main: true,
+                }],
+            },
+        ];
+
+        let mut activity = HashMap::new();
+        activity.insert("mango".to_string(), 300);
+        activity.insert("zebra".to_string(), 100);
+
+        sort_repos(&mut repos, None, &activity);
+
+        // Sessions by recency first, then alphabetical
+        assert_eq!(repos[0].name, "mango"); // session ts=300
+        assert_eq!(repos[1].name, "zebra"); // session ts=100
+        assert_eq!(repos[2].name, "alpha"); // no session, alphabetical
+    }
+
+    #[test]
+    fn test_sort_repos_multiple_worktree_sessions() {
+        let mut repos = vec![
+            Repo {
+                name: "repo-a".to_string(),
+                session_name: "repo-a".to_string(),
+                path: PathBuf::from("/tmp/repo-a"),
+                worktrees: vec![
+                    Worktree {
+                        path: PathBuf::from("/tmp/repo-a"),
+                        branch: Some("main".to_string()),
+                        is_main: true,
+                    },
+                    Worktree {
+                        path: PathBuf::from("/tmp/repo-a--feat"),
+                        branch: Some("feat".to_string()),
+                        is_main: false,
+                    },
+                ],
+            },
+            Repo {
+                name: "repo-b".to_string(),
+                session_name: "repo-b".to_string(),
+                path: PathBuf::from("/tmp/repo-b"),
+                worktrees: vec![Worktree {
+                    path: PathBuf::from("/tmp/repo-b"),
+                    branch: Some("main".to_string()),
+                    is_main: true,
+                }],
+            },
+        ];
+
+        let mut activity = HashMap::new();
+        // repo-a has two worktree sessions: main at 50, feat at 500
+        activity.insert("repo-a".to_string(), 50);
+        activity.insert("repo-a--feat".to_string(), 500);
+        // repo-b has one session at 200
+        activity.insert("repo-b".to_string(), 200);
+
+        sort_repos(&mut repos, None, &activity);
+
+        // repo-a max activity is 500 > repo-b's 200
+        assert_eq!(repos[0].name, "repo-a");
+        assert_eq!(repos[1].name, "repo-b");
+    }
+
+    #[test]
+    fn test_sort_repos_empty() {
+        let mut repos: Vec<Repo> = vec![];
+        sort_repos(&mut repos, None, &HashMap::new());
+        assert!(repos.is_empty());
+    }
+
+    #[test]
+    fn test_branch_sort_current_is_also_default() {
+        let repo = Repo {
+            name: "myrepo".to_string(),
+            session_name: "myrepo".to_string(),
+            path: PathBuf::from("/tmp/myrepo"),
+            worktrees: vec![Worktree {
+                path: PathBuf::from("/tmp/myrepo"),
+                branch: Some("main".to_string()),
+                is_main: true,
+            }],
+        };
+
+        let branches = vec!["main".into(), "dev".into(), "feature".into()];
+        let entries = BranchEntry::build_sorted_with_activity(
+            &repo,
+            &branches,
+            &[],
+            Some("main"),
+            &HashMap::new(),
+        );
+
+        // main is both current and default — should appear exactly once at position 0
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].name, "main");
+        assert!(entries[0].is_current);
+        assert!(entries[0].is_default);
+        // No duplicate
+        assert_eq!(
+            entries.iter().filter(|e| e.name == "main").count(),
+            1,
+            "main should appear exactly once"
+        );
+    }
+
+    #[test]
+    fn test_branch_sort_session_without_activity_ts() {
+        let repo = Repo {
+            name: "myrepo".to_string(),
+            session_name: "myrepo".to_string(),
+            path: PathBuf::from("/tmp/myrepo"),
+            worktrees: vec![
+                Worktree {
+                    path: PathBuf::from("/tmp/myrepo"),
+                    branch: Some("main".to_string()),
+                    is_main: true,
+                },
+                Worktree {
+                    path: PathBuf::from("/tmp/myrepo--dev"),
+                    branch: Some("dev".to_string()),
+                    is_main: false,
+                },
+                Worktree {
+                    path: PathBuf::from("/tmp/myrepo--hotfix"),
+                    branch: Some("hotfix".to_string()),
+                    is_main: false,
+                },
+                Worktree {
+                    path: PathBuf::from("/tmp/myrepo--no-ts"),
+                    branch: Some("no-ts".to_string()),
+                    is_main: false,
+                },
+            ],
+        };
+
+        let branches = vec![
+            "main".into(),
+            "dev".into(),
+            "hotfix".into(),
+            "no-ts".into(),
+            "plain".into(),
+        ];
+        // no-ts has a session but no activity timestamp
+        let sessions = vec![
+            "myrepo--dev".to_string(),
+            "myrepo--hotfix".to_string(),
+            "myrepo--no-ts".to_string(),
+        ];
+        let mut activity = HashMap::new();
+        activity.insert("myrepo--dev".to_string(), 100);
+        activity.insert("myrepo--hotfix".to_string(), 200);
+        // no-ts intentionally missing from activity map
+
+        let entries = BranchEntry::build_sorted_with_activity(
+            &repo,
+            &branches,
+            &sessions,
+            Some("main"),
+            &activity,
+        );
+
+        assert_eq!(entries[0].name, "main"); // current + default
+        assert_eq!(entries[1].name, "hotfix"); // session ts=200
+        assert_eq!(entries[2].name, "dev"); // session ts=100
+        // no-ts has session but no timestamp — has_session=true but session_activity_ts=None
+        // It has a worktree, so it sorts among worktree branches
+        // The sort_entries sorts by session_activity_ts first (Some before None),
+        // then worktree presence. no-ts has no activity_ts so it falls to worktree tier.
+        let no_ts_pos = entries.iter().position(|e| e.name == "no-ts").unwrap();
+        let plain_pos = entries.iter().position(|e| e.name == "plain").unwrap();
+        assert!(
+            no_ts_pos < plain_pos,
+            "no-ts (has worktree) should sort before plain (no worktree)"
+        );
+    }
+
+    #[test]
+    fn test_branch_sort_no_default_no_current() {
+        // No worktrees at all means no current branch
+        let repo = Repo {
+            name: "myrepo".to_string(),
+            session_name: "myrepo".to_string(),
+            path: PathBuf::from("/tmp/myrepo"),
+            worktrees: vec![
+                Worktree {
+                    path: PathBuf::from("/tmp/myrepo--alpha"),
+                    branch: Some("alpha".to_string()),
+                    is_main: false,
+                },
+                Worktree {
+                    path: PathBuf::from("/tmp/myrepo--beta"),
+                    branch: Some("beta".to_string()),
+                    is_main: false,
+                },
+            ],
+        };
+
+        let branches = vec![
+            "alpha".into(),
+            "beta".into(),
+            "gamma".into(),
+            "delta".into(),
+        ];
+        let sessions = vec!["myrepo--alpha".to_string()];
+        let mut activity = HashMap::new();
+        activity.insert("myrepo--alpha".to_string(), 999);
+
+        let entries = BranchEntry::build_sorted_with_activity(
+            &repo, &branches, &sessions, None, // no default
+            &activity,
+        );
+
+        // alpha has session with ts → first
+        assert_eq!(entries[0].name, "alpha");
+        // beta has worktree but no session → next
+        assert_eq!(entries[1].name, "beta");
+        // gamma and delta are plain, alphabetical
+        assert_eq!(entries[2].name, "delta");
+        assert_eq!(entries[3].name, "gamma");
+    }
+
+    #[test]
+    fn test_branch_sort_worktrees_before_plain() {
+        let repo = Repo {
+            name: "myrepo".to_string(),
+            session_name: "myrepo".to_string(),
+            path: PathBuf::from("/tmp/myrepo"),
+            worktrees: vec![
+                Worktree {
+                    path: PathBuf::from("/tmp/myrepo"),
+                    branch: Some("main".to_string()),
+                    is_main: true,
+                },
+                Worktree {
+                    path: PathBuf::from("/tmp/myrepo--wt-branch"),
+                    branch: Some("wt-branch".to_string()),
+                    is_main: false,
+                },
+            ],
+        };
+
+        let branches = vec![
+            "main".into(),
+            "aaa-plain".into(),
+            "wt-branch".into(),
+            "zzz-plain".into(),
+        ];
+
+        let entries =
+            BranchEntry::build_sorted_with_activity(&repo, &branches, &[], None, &HashMap::new());
+
+        assert_eq!(entries[0].name, "main"); // current
+        assert_eq!(entries[1].name, "wt-branch"); // has worktree
+        // plain branches alphabetical
+        assert_eq!(entries[2].name, "aaa-plain");
+        assert_eq!(entries[3].name, "zzz-plain");
+    }
+
+    #[test]
+    fn test_branch_sort_remote_always_last() {
+        let mut entries = vec![
+            BranchEntry {
+                name: "aaa-remote".to_string(),
+                worktree_path: None,
+                has_session: false,
+                is_current: false,
+                is_default: false,
+                is_remote: true,
+                session_activity_ts: None,
+            },
+            BranchEntry {
+                name: "zzz-local".to_string(),
+                worktree_path: None,
+                has_session: false,
+                is_current: false,
+                is_default: false,
+                is_remote: false,
+                session_activity_ts: None,
+            },
+            BranchEntry {
+                name: "mmm-local".to_string(),
+                worktree_path: None,
+                has_session: false,
+                is_current: false,
+                is_default: false,
+                is_remote: false,
+                session_activity_ts: None,
+            },
+        ];
+
+        BranchEntry::sort_entries(&mut entries);
+
+        // Local branches first (alphabetical), then remote
+        assert_eq!(entries[0].name, "mmm-local");
+        assert!(!entries[0].is_remote);
+        assert_eq!(entries[1].name, "zzz-local");
+        assert!(!entries[1].is_remote);
+        assert_eq!(entries[2].name, "aaa-remote");
+        assert!(entries[2].is_remote);
+    }
+
+    #[test]
+    fn test_build_remote_has_correct_defaults() {
+        let remote = vec!["feat-x".into(), "feat-y".into()];
+        let local: Vec<String> = vec![];
+
+        let entries = BranchEntry::build_remote(&remote, &local);
+
+        assert_eq!(entries.len(), 2);
+        for entry in &entries {
+            assert!(!entry.is_default, "remote entries should not be default");
+            assert!(
+                entry.session_activity_ts.is_none(),
+                "remote entries should have no activity ts"
+            );
+            assert!(entry.is_remote, "remote entries should be marked remote");
+            assert!(!entry.has_session);
+            assert!(!entry.is_current);
+            assert!(entry.worktree_path.is_none());
+        }
     }
 }

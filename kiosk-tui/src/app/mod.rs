@@ -280,9 +280,13 @@ fn draw_confirm_delete_dialog(
             ]),
             Line::raw(""),
             Line::from(vec![
+                Span::raw("confirm ("),
                 Span::styled(&confirm_key, Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(")"),
                 Span::raw(" / "),
+                Span::raw("cancel ("),
                 Span::styled(&cancel_key, Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(")"),
             ]),
         ];
 

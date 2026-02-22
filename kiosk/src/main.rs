@@ -14,7 +14,7 @@ use std::{fs, io, path::Path, process::Command, sync::Arc};
 #[derive(Parser)]
 #[command(version, about = "Tmux session manager with worktree support")]
 struct Cli {
-    /// Path to config file (default: ~/.config/kiosk/config.toml)
+    /// Override path to config file
     #[arg(short, long)]
     config: Option<std::path::PathBuf>,
 

@@ -623,8 +623,8 @@ fn test_e2e_delete_worktree() {
         "Should show confirmation dialog: {screen}"
     );
 
-    // Press 'y' to confirm deletion
-    env.send("y");
+    // Press Enter to confirm deletion
+    env.send_special("Enter");
     wait_ms(500);
 
     // Just verify that we're back to the branch listing (the confirmation was processed)
@@ -667,7 +667,7 @@ fn test_e2e_delete_worktree_indicator_persists_after_restart() {
     wait_for_screen(&env, 2500, |s| s.contains("select branch"));
     env.send("feat/persist-delete");
     env.send_special("C-x");
-    env.send("y");
+    env.send_special("Enter");
 
     let screen = wait_for_screen(&env, 2000, |s| s.contains("deleting"));
     assert!(

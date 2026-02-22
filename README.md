@@ -100,82 +100,47 @@ Success/positive color (default: "green").
 
 Key binding configuration.
 
-Defaults are shown below:.
+Defaults are shown below.
 
 ```toml
 [keys.general]
 "C-c" = "quit"
 "C-h" = "show_help"
 
-[keys.repo_select]
+[keys.text_edit]
+"C-w" = "delete_backward_word"
+"backspace" = "delete_backward_char"
+"end" = "move_cursor_end"
+"home" = "move_cursor_start"
+"left" = "move_cursor_left"
+"right" = "move_cursor_right"
+
+[keys.list_navigation]
 "A-G" = "move_bottom"
 "A-g" = "move_top"
 "C-d" = "half_page_down"
 "C-n" = "move_down"
 "C-p" = "move_up"
 "C-u" = "half_page_up"
-"C-w" = "search_delete_word"
-"backspace" = "search_pop"
 "down" = "move_down"
-"end" = "cursor_end"
-"enter" = "open_repo"
-"esc" = "quit"
-"home" = "cursor_start"
-"left" = "cursor_left"
 "pagedown" = "page_down"
 "pageup" = "page_up"
-"right" = "cursor_right"
-"tab" = "enter_repo"
 "up" = "move_up"
 
-[keys.branch_select]
-"A-G" = "move_bottom"
-"A-g" = "move_top"
-"C-d" = "half_page_down"
-"C-n" = "move_down"
-"C-o" = "new_branch"
-"C-p" = "move_up"
-"C-u" = "half_page_up"
-"C-w" = "search_delete_word"
-"C-x" = "delete_worktree"
-"backspace" = "search_pop"
-"down" = "move_down"
-"end" = "cursor_end"
-"enter" = "open_branch"
-"esc" = "go_back"
-"home" = "cursor_start"
-"left" = "cursor_left"
-"pagedown" = "page_down"
-"pageup" = "page_up"
-"right" = "cursor_right"
-"up" = "move_up"
-
-[keys.new_branch_base]
-"A-G" = "move_bottom"
-"A-g" = "move_top"
-"C-d" = "half_page_down"
-"C-n" = "move_down"
-"C-p" = "move_up"
-"C-u" = "half_page_up"
-"C-w" = "search_delete_word"
-"backspace" = "search_pop"
-"down" = "move_down"
-"end" = "cursor_end"
-"enter" = "open_branch"
-"esc" = "go_back"
-"home" = "cursor_start"
-"left" = "cursor_left"
-"pagedown" = "page_down"
-"pageup" = "page_up"
-"right" = "cursor_right"
-"up" = "move_up"
-
-[keys.confirmation]
-"N" = "cancel"
+[keys.confirm_cancel]
 "enter" = "confirm"
 "esc" = "cancel"
-"n" = "cancel"
-"y" = "confirm"
+
+[keys.repo_select]
+"enter" = "open_repo"
+"esc" = "quit"
+"tab" = "enter_repo"
+
+[keys.branch_select]
+"C-o" = "new_branch"
+"C-x" = "delete_worktree"
+"enter" = "open_branch"
+"esc" = "go_back"
 
 ```
 

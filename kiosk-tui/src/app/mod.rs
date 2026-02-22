@@ -4,8 +4,10 @@ mod spawn;
 use crate::{components, keymap};
 use actions::{
     enter_branch_select, enter_branch_select_with_loading, handle_confirm_delete,
-    handle_delete_worktree, handle_go_back, handle_open_branch, handle_search_delete_word,
-    handle_search_pop, handle_search_push, handle_show_help, handle_start_new_branch,
+    handle_delete_worktree, handle_go_back, handle_open_branch, handle_search_delete_forward,
+    handle_search_delete_to_end, handle_search_delete_to_start, handle_search_delete_word,
+    handle_search_delete_word_forward, handle_search_pop, handle_search_push, handle_show_help,
+    handle_start_new_branch,
 };
 use crossterm::event::{self, Event, KeyEventKind};
 use fuzzy_matcher::{FuzzyMatcher, skim::SkimMatcherV2};
@@ -27,6 +29,7 @@ use ratatui::{
 };
 use spawn::spawn_repo_discovery;
 use std::{
+    fmt::Write as _,
     path::PathBuf,
     sync::{
         Arc,
@@ -134,7 +137,7 @@ pub fn run(
 
 fn draw(
     f: &mut Frame,
-    state: &AppState,
+    state: &mut AppState,
     theme: &crate::theme::Theme,
     keys: &kiosk_core::config::KeysConfig,
     spinner_start: &Instant,
@@ -152,14 +155,17 @@ fn draw(
         (f.area(), None)
     };
 
+    let page_rows = active_list_page_rows(f.area(), main_area, &state.mode);
+    state.set_active_list_page_rows(page_rows);
+
     match &state.mode {
         Mode::RepoSelect => components::repo_list::draw(f, main_area, state, theme, keys),
         Mode::BranchSelect => components::branch_picker::draw(f, main_area, state, theme, keys),
-        Mode::NewBranchBase => {
+        Mode::SelectBaseBranch => {
             components::branch_picker::draw(f, main_area, state, theme, keys);
             components::new_branch::draw(f, state, theme);
         }
-        Mode::ConfirmDelete { .. } => {
+        Mode::ConfirmWorktreeDelete { .. } => {
             components::branch_picker::draw(f, main_area, state, theme, keys);
             draw_confirm_delete_dialog(f, main_area, state, theme, keys);
         }
@@ -172,11 +178,11 @@ fn draw(
                 Mode::BranchSelect => {
                     components::branch_picker::draw(f, main_area, state, theme, keys);
                 }
-                Mode::NewBranchBase => {
+                Mode::SelectBaseBranch => {
                     components::branch_picker::draw(f, main_area, state, theme, keys);
                     components::new_branch::draw(f, state, theme);
                 }
-                Mode::ConfirmDelete { .. } => {
+                Mode::ConfirmWorktreeDelete { .. } => {
                     components::branch_picker::draw(f, main_area, state, theme, keys);
                     draw_confirm_delete_dialog(f, main_area, state, theme, keys);
                 }
@@ -190,6 +196,27 @@ fn draw(
 
     if let Some(area) = error_area {
         components::error_bar::draw(f, area, state);
+    }
+}
+
+fn list_rows_from_list_area(list_area: Rect) -> usize {
+    usize::from(list_area.height.saturating_sub(2)).max(1)
+}
+
+fn active_list_page_rows(full_area: Rect, main_area: Rect, mode: &Mode) -> usize {
+    match mode {
+        Mode::RepoSelect | Mode::BranchSelect | Mode::ConfirmWorktreeDelete { .. } => {
+            let chunks =
+                Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(main_area);
+            list_rows_from_list_area(chunks[1])
+        }
+        Mode::SelectBaseBranch => {
+            let popup = components::centered_rect(60, 60, full_area);
+            let chunks = Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(popup);
+            list_rows_from_list_area(chunks[1])
+        }
+        Mode::Help { previous } => active_list_page_rows(full_area, main_area, previous),
+        Mode::Loading(_) => 1,
     }
 }
 
@@ -218,25 +245,12 @@ fn draw_loading(
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.accent));
 
-    // Centre vertically
-    let vertical = Layout::vertical([
-        Constraint::Percentage(45),
-        Constraint::Length(3),
-        Constraint::Percentage(45),
-    ])
-    .split(area);
-
-    let horizontal = Layout::horizontal([
-        Constraint::Percentage(25),
-        Constraint::Percentage(50),
-        Constraint::Percentage(25),
-    ])
-    .split(vertical[1]);
+    let centered = components::centered_rect(50, 10, area);
 
     let paragraph = Paragraph::new(text)
         .block(block)
         .alignment(ratatui::layout::Alignment::Center);
-    f.render_widget(paragraph, horizontal[1]);
+    f.render_widget(paragraph, centered);
 }
 
 fn draw_confirm_delete_dialog(
@@ -246,7 +260,7 @@ fn draw_confirm_delete_dialog(
     theme: &crate::theme::Theme,
     keys: &kiosk_core::config::KeysConfig,
 ) {
-    if let Mode::ConfirmDelete {
+    if let Mode::ConfirmWorktreeDelete {
         branch_name,
         has_session,
     } = &state.mode
@@ -257,10 +271,14 @@ fn draw_confirm_delete_dialog(
             "Delete worktree for branch "
         };
 
-        let confirm_key = KeysConfig::find_key(&keys.confirmation, &Command::Confirm)
-            .map_or("y".to_string(), |k| k.to_string());
-        let cancel_key = KeysConfig::find_key(&keys.confirmation, &Command::Cancel)
-            .map_or("Esc".to_string(), |k| k.to_string());
+        let keymap = keys.keymap_for_mode(&Mode::ConfirmWorktreeDelete {
+            branch_name: branch_name.clone(),
+            has_session: *has_session,
+        });
+        let confirm_key = KeysConfig::find_key(&keymap, &Command::Confirm)
+            .map_or("enter".to_string(), |k| k.to_string());
+        let cancel_key = KeysConfig::find_key(&keymap, &Command::Cancel)
+            .map_or("esc".to_string(), |k| k.to_string());
 
         let text = vec![
             Line::from(vec![
@@ -275,36 +293,27 @@ fn draw_confirm_delete_dialog(
             ]),
             Line::raw(""),
             Line::from(vec![
+                Span::raw("confirm ("),
                 Span::styled(&confirm_key, Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(")"),
                 Span::raw(" / "),
+                Span::raw("cancel ("),
                 Span::styled(&cancel_key, Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(")"),
             ]),
         ];
 
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(" Confirm Delete ")
+            .title(" Confirm delete ")
             .border_style(Style::default().fg(theme.accent));
 
-        // Centre the dialog
-        let vertical = Layout::vertical([
-            Constraint::Percentage(40),
-            Constraint::Length(5),
-            Constraint::Percentage(40),
-        ])
-        .split(area);
-
-        let horizontal = Layout::horizontal([
-            Constraint::Percentage(25),
-            Constraint::Percentage(50),
-            Constraint::Percentage(25),
-        ])
-        .split(vertical[1]);
+        let centered = components::centered_rect(50, 20, area);
 
         let paragraph = Paragraph::new(text)
             .block(block)
             .alignment(ratatui::layout::Alignment::Center);
-        f.render_widget(paragraph, horizontal[1]);
+        f.render_widget(paragraph, centered);
     }
 }
 
@@ -361,13 +370,14 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             } else {
                 state.clear_pending_worktree_delete_by_path(&worktree_path);
             }
+            let mut error_message = format!("Failed to remove worktree for {branch_name}: {error}");
             if let Err(e) = save_pending_worktree_deletes(&state.pending_worktree_deletes) {
-                state.error = Some(format!("Failed to persist pending deletes: {e}"));
-            } else {
-                state.error = Some(format!(
-                    "Failed to remove worktree for {branch_name}: {error}"
-                ));
+                let _ = write!(
+                    error_message,
+                    " (also failed to persist pending deletes: {e})"
+                );
             }
+            state.error = Some(error_message);
             state.loading_branches = false;
             state.mode = Mode::BranchSelect;
         }
@@ -440,8 +450,8 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
         }
         AppEvent::GitError(msg) => {
             // Return to the appropriate mode
-            if state.new_branch_base.is_some() {
-                state.new_branch_base = None;
+            if state.base_branch_selection.is_some() {
+                state.base_branch_selection = None;
                 state.mode = Mode::BranchSelect;
             } else {
                 state.mode = Mode::BranchSelect;
@@ -454,17 +464,39 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
 }
 
 fn handle_movement_actions(action: &Action, state: &mut AppState) -> bool {
+    let page_rows_usize = state.active_list_page_rows();
+    let page_rows: i32 = page_rows_usize.try_into().unwrap_or(i32::MAX);
+    let page_step = page_rows.max(1);
+    let half_page_step = (page_step / 2).max(1);
+
     let Some(list) = state.active_list_mut() else {
         return false;
     };
-    let list_len: i32 = list.filtered.len().try_into().unwrap_or(i32::MAX);
     match action {
-        Action::HalfPageUp => list.move_selection(-list_len.min(10)),
-        Action::HalfPageDown => list.move_selection(list_len.min(10)),
-        Action::PageUp => list.move_selection(-list_len.min(25)),
-        Action::PageDown => list.move_selection(list_len.min(25)),
-        Action::MoveTop => list.move_to_top(),
-        Action::MoveBottom => list.move_to_bottom(),
+        Action::HalfPageUp => {
+            list.move_selection(-half_page_step);
+            list.update_scroll_offset_for_selection(-1, page_rows_usize);
+        }
+        Action::HalfPageDown => {
+            list.move_selection(half_page_step);
+            list.update_scroll_offset_for_selection(1, page_rows_usize);
+        }
+        Action::PageUp => {
+            list.move_selection(-page_step);
+            list.update_scroll_offset_for_selection(-1, page_rows_usize);
+        }
+        Action::PageDown => {
+            list.move_selection(page_step);
+            list.update_scroll_offset_for_selection(1, page_rows_usize);
+        }
+        Action::MoveTop => {
+            list.move_to_top();
+            list.update_scroll_offset_for_selection(-1, page_rows_usize);
+        }
+        Action::MoveBottom => {
+            list.move_to_bottom();
+            list.update_scroll_offset_for_selection(1, page_rows_usize);
+        }
         _ => return false,
     }
     true
@@ -482,6 +514,18 @@ fn handle_simple_actions(action: &Action, state: &mut AppState) -> bool {
         Action::CursorRight => {
             if let Some(list) = state.active_list_mut() {
                 list.cursor_right();
+            }
+            true
+        }
+        Action::CursorWordLeft => {
+            if let Some(list) = state.active_list_mut() {
+                list.cursor_word_left();
+            }
+            true
+        }
+        Action::CursorWordRight => {
+            if let Some(list) = state.active_list_mut() {
+                list.cursor_word_right();
             }
             true
         }
@@ -557,13 +601,19 @@ fn process_action<T: TmuxProvider + ?Sized + 'static>(
         }
 
         Action::MoveSelection(delta) => {
+            let page_rows = state.active_list_page_rows();
             if let Some(list) = state.active_list_mut() {
                 list.move_selection(delta);
+                list.update_scroll_offset_for_selection(delta, page_rows);
             }
         }
 
         Action::SearchPush(c) => handle_search_push(state, matcher, c),
         Action::SearchPop => handle_search_pop(state, matcher),
+        Action::SearchDeleteForward => handle_search_delete_forward(state, matcher),
+        Action::SearchDeleteWordForward => handle_search_delete_word_forward(state, matcher),
+        Action::SearchDeleteToStart => handle_search_delete_to_start(state, matcher),
+        Action::SearchDeleteToEnd => handle_search_delete_to_end(state, matcher),
 
         Action::DeleteWorktree => handle_delete_worktree(state),
         Action::ConfirmDeleteWorktree => handle_confirm_delete(state, git, tmux.as_ref(), sender),
@@ -583,6 +633,8 @@ fn process_action<T: TmuxProvider + ?Sized + 'static>(
         | Action::MoveBottom
         | Action::CursorLeft
         | Action::CursorRight
+        | Action::CursorWordLeft
+        | Action::CursorWordRight
         | Action::CursorStart
         | Action::CursorEnd
         | Action::CancelDeleteWorktree => {}
@@ -783,8 +835,8 @@ mod tests {
     fn test_go_back_from_new_branch_to_branch() {
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
-        state.mode = Mode::NewBranchBase;
-        state.new_branch_base = Some(kiosk_core::state::NewBranchFlow {
+        state.mode = Mode::SelectBaseBranch;
+        state.base_branch_selection = Some(kiosk_core::state::BaseBranchSelection {
             new_name: "feat".into(),
             bases: vec!["main".into()],
             list: SearchableList::new(1),
@@ -797,7 +849,7 @@ mod tests {
 
         process_action(Action::GoBack, &mut state, &git, &tmux, &matcher, &sender);
         assert_eq!(state.mode, Mode::BranchSelect);
-        assert!(state.new_branch_base.is_none());
+        assert!(state.base_branch_selection.is_none());
     }
 
     #[test]
@@ -942,6 +994,145 @@ mod tests {
     }
 
     #[test]
+    fn test_move_selection_updates_scroll_anchor() {
+        let repos: Vec<_> = (0..40).map(|i| make_repo(&format!("repo-{i}"))).collect();
+        let mut state = AppState::new(repos, None);
+        state.set_active_list_page_rows(20);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+
+        for _ in 0..25 {
+            process_action(
+                Action::MoveSelection(1),
+                &mut state,
+                &git,
+                &tmux,
+                &matcher,
+                &sender,
+            );
+        }
+
+        let selected = state.repo_list.selected.unwrap_or(0);
+        assert_eq!(selected, 25);
+        assert_eq!(
+            selected - state.repo_list.scroll_offset,
+            18,
+            "Selection should remain one row above bottom while scrolling down"
+        );
+    }
+
+    #[test]
+    fn test_page_movement_uses_active_list_page_rows() {
+        let repos: Vec<_> = (0..20).map(|i| make_repo(&format!("repo-{i}"))).collect();
+        let mut state = AppState::new(repos, None);
+        state.set_active_list_page_rows(8);
+        assert_eq!(state.repo_list.selected, Some(0));
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+
+        process_action(
+            Action::HalfPageDown,
+            &mut state,
+            &git,
+            &tmux,
+            &matcher,
+            &sender,
+        );
+        assert_eq!(state.repo_list.selected, Some(4));
+
+        process_action(Action::PageDown, &mut state, &git, &tmux, &matcher, &sender);
+        assert_eq!(state.repo_list.selected, Some(12));
+
+        process_action(Action::PageUp, &mut state, &git, &tmux, &matcher, &sender);
+        assert_eq!(state.repo_list.selected, Some(4));
+    }
+
+    #[test]
+    fn test_page_movement_clamps_to_bounds() {
+        let repos: Vec<_> = (0..6).map(|i| make_repo(&format!("repo-{i}"))).collect();
+        let mut state = AppState::new(repos, None);
+        state.set_active_list_page_rows(20);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+
+        process_action(Action::PageDown, &mut state, &git, &tmux, &matcher, &sender);
+        assert_eq!(state.repo_list.selected, Some(5));
+
+        process_action(
+            Action::HalfPageDown,
+            &mut state,
+            &git,
+            &tmux,
+            &matcher,
+            &sender,
+        );
+        assert_eq!(state.repo_list.selected, Some(5));
+
+        process_action(Action::PageUp, &mut state, &git, &tmux, &matcher, &sender);
+        assert_eq!(state.repo_list.selected, Some(0));
+
+        process_action(
+            Action::HalfPageUp,
+            &mut state,
+            &git,
+            &tmux,
+            &matcher,
+            &sender,
+        );
+        assert_eq!(state.repo_list.selected, Some(0));
+    }
+
+    #[test]
+    fn test_half_page_uses_viewport_rows_when_list_is_shorter() {
+        let repos: Vec<_> = (0..13).map(|i| make_repo(&format!("repo-{i}"))).collect();
+        let mut state = AppState::new(repos, None);
+        state.set_active_list_page_rows(20);
+        assert_eq!(state.repo_list.selected, Some(0));
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+
+        process_action(
+            Action::HalfPageDown,
+            &mut state,
+            &git,
+            &tmux,
+            &matcher,
+            &sender,
+        );
+        assert_eq!(
+            state.repo_list.selected,
+            Some(10),
+            "Half-page should move by half viewport rows (20/2)"
+        );
+
+        process_action(
+            Action::HalfPageDown,
+            &mut state,
+            &git,
+            &tmux,
+            &matcher,
+            &sender,
+        );
+        assert_eq!(
+            state.repo_list.selected,
+            Some(12),
+            "Should clamp to list end"
+        );
+    }
+
+    #[test]
     fn test_open_repo_returns_repo_path() {
         let repos = vec![make_repo("alpha"), make_repo("beta")];
         let mut state = AppState::new(repos, Some("hx".into()));
@@ -1030,9 +1221,9 @@ mod tests {
             &sender,
         );
 
-        assert_eq!(state.mode, Mode::NewBranchBase);
-        assert!(state.new_branch_base.is_some());
-        assert_eq!(state.new_branch_base.unwrap().new_name, "feat/new");
+        assert_eq!(state.mode, Mode::SelectBaseBranch);
+        assert!(state.base_branch_selection.is_some());
+        assert_eq!(state.base_branch_selection.unwrap().new_name, "feat/new");
     }
 
     #[test]
@@ -1134,7 +1325,7 @@ mod tests {
 
         assert_eq!(
             state.mode,
-            Mode::ConfirmDelete {
+            Mode::ConfirmWorktreeDelete {
                 branch_name: "dev".to_string(),
                 has_session: false,
             }
@@ -1173,7 +1364,7 @@ mod tests {
 
         assert_eq!(
             state.mode,
-            Mode::ConfirmDelete {
+            Mode::ConfirmWorktreeDelete {
                 branch_name: "dev".to_string(),
                 has_session: true,
             }
@@ -1190,7 +1381,7 @@ mod tests {
         });
         let mut state = AppState::new(repos, None);
         state.selected_repo_idx = Some(0);
-        state.mode = Mode::ConfirmDelete {
+        state.mode = Mode::ConfirmWorktreeDelete {
             branch_name: "dev".to_string(),
             has_session: true,
         };
@@ -1232,7 +1423,7 @@ mod tests {
         });
         let mut state = AppState::new(repos, None);
         state.selected_repo_idx = Some(0);
-        state.mode = Mode::ConfirmDelete {
+        state.mode = Mode::ConfirmWorktreeDelete {
             branch_name: "dev".to_string(),
             has_session: false,
         };

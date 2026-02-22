@@ -29,7 +29,7 @@ pub fn draw(f: &mut Frame, state: &AppState, theme: &crate::theme::Theme, keys: 
 
     // Create the main block
     let block = Block::default()
-        .title("Help — Keybindings")
+        .title("Help — key bindings")
         .title_style(
             Style::default()
                 .fg(theme.accent)
@@ -38,7 +38,6 @@ pub fn draw(f: &mut Frame, state: &AppState, theme: &crate::theme::Theme, keys: 
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.accent));
 
-    // For now, just render without scrolling - we can add scrolling later if needed
     let paragraph = Paragraph::new(help_content)
         .block(block)
         .wrap(ratatui::widgets::Wrap { trim: true });
@@ -50,41 +49,36 @@ pub fn draw(f: &mut Frame, state: &AppState, theme: &crate::theme::Theme, keys: 
 fn build_help_content(keys: &KeysConfig, current_mode: &Mode) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
 
-    // Instructions
     lines.push(Line::from(Span::styled(
         "Press C-h or Esc to close",
         Style::default().add_modifier(Modifier::ITALIC),
     )));
     lines.push(Line::from(""));
 
-    // General bindings section
-    lines.push(Line::from(Span::styled(
-        "General Commands:",
-        Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-    )));
-    lines.extend(format_key_section(&keys.general));
-    lines.push(Line::from(""));
-
-    // Mode-specific bindings
-    let (mode_title, mode_keymap) = match current_mode {
-        Mode::RepoSelect => ("Repository Selection:", &keys.repo_select),
-        Mode::BranchSelect => ("Branch Selection:", &keys.branch_select),
-        Mode::NewBranchBase => ("New Branch Base Selection:", &keys.new_branch_base),
-        Mode::ConfirmDelete { .. } => ("Confirmation:", &keys.confirmation),
-        Mode::Loading(_) => ("Loading:", &HashMap::new()), // No specific bindings
-        Mode::Help { .. } => ("General:", &keys.general),  // Shouldn't happen, but fallback
+    let mode_title = match current_mode {
+        Mode::RepoSelect => "Repository selection:",
+        Mode::BranchSelect => "Branch selection:",
+        Mode::SelectBaseBranch => "Base branch selection:",
+        Mode::ConfirmWorktreeDelete { .. } => "Delete confirmation:",
+        Mode::Loading(_) => "Loading:",
+        Mode::Help { .. } => "General:",
     };
 
     lines.push(Line::from(Span::styled(
         mode_title,
         Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
     )));
-    lines.extend(format_key_section(mode_keymap));
 
-    // Add search hint for search-enabled modes
+    let mode_keymap = if matches!(current_mode, Mode::Loading(_)) {
+        HashMap::new()
+    } else {
+        keys.keymap_for_mode(current_mode)
+    };
+    lines.extend(format_key_section(&mode_keymap));
+
     if matches!(
         current_mode,
-        Mode::RepoSelect | Mode::BranchSelect | Mode::NewBranchBase
+        Mode::RepoSelect | Mode::BranchSelect | Mode::SelectBaseBranch
     ) {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
@@ -108,7 +102,6 @@ fn format_key_section(keymap: &HashMap<KeyEvent, Command>) -> Vec<Line<'static>>
         return lines;
     }
 
-    // Convert to vector and sort by key display representation for consistent ordering
     let mut bindings: Vec<_> = keymap.iter().collect();
     bindings.sort_by(|a, b| a.0.to_string().cmp(&b.0.to_string()));
 
@@ -118,8 +111,6 @@ fn format_key_section(keymap: &HashMap<KeyEvent, Command>) -> Vec<Line<'static>>
         }
         let key_str = key_event.to_string();
         let description = command.description();
-
-        // Format as "  Key           Description"
         let line = format!("  {key_str:<13} {description}");
         lines.push(Line::from(line));
     }

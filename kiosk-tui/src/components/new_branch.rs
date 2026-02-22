@@ -9,7 +9,7 @@ use ratatui::{
 };
 
 pub fn draw(f: &mut Frame, state: &AppState, theme: &Theme) {
-    let Some(flow) = &state.new_branch_base else {
+    let Some(flow) = &state.base_branch_selection else {
         return;
     };
 
@@ -56,5 +56,6 @@ pub fn draw(f: &mut Frame, state: &AppState, theme: &Theme) {
 
     let mut list_state = ListState::default();
     list_state.select(flow.list.selected);
+    *list_state.offset_mut() = flow.list.scroll_offset;
     f.render_stateful_widget(list, chunks[1], &mut list_state);
 }

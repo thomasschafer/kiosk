@@ -126,6 +126,13 @@ fn wait_for_tmux_session(socket: &str, name: &str, timeout_ms: u64) -> bool {
     }
 }
 
+fn selected_line(screen: &str) -> Option<String> {
+    screen
+        .lines()
+        .find(|line| line.contains("▸ "))
+        .map(|line| line.trim().to_string())
+}
+
 struct TestEnv {
     tmp: tempfile::TempDir,
     config_dir: PathBuf,
@@ -180,6 +187,10 @@ impl TestEnv {
         fs::write(kiosk_config_dir.join("config.toml"), config).unwrap();
     }
 
+    fn config_file_path(&self) -> PathBuf {
+        self.config_dir.join("kiosk").join("config.toml")
+    }
+
     fn launch_kiosk(&self) {
         cleanup_session(&self.tmux_socket, &self.session_name);
         let binary = kiosk_binary();
@@ -201,6 +212,35 @@ impl TestEnv {
                     self.state_dir.to_string_lossy(),
                     self.bin_dir.to_string_lossy(),
                     binary.to_string_lossy()
+                ),
+            ])
+            .output()
+            .unwrap();
+        wait_ms(500);
+    }
+
+    fn launch_kiosk_with_config_arg(&self, config_path: &Path, fake_xdg_config_home: &Path) {
+        cleanup_session(&self.tmux_socket, &self.session_name);
+        let binary = kiosk_binary();
+        Command::new("tmux")
+            .args([
+                "-L",
+                &self.tmux_socket,
+                "new-session",
+                "-d",
+                "-s",
+                &self.session_name,
+                "-x",
+                "120",
+                "-y",
+                "30",
+                &format!(
+                    "XDG_CONFIG_HOME={} XDG_STATE_HOME={} KIOSK_NO_ALT_SCREEN=1 PATH={}:$PATH {} --config {} ; sleep 2",
+                    fake_xdg_config_home.to_string_lossy(),
+                    self.state_dir.to_string_lossy(),
+                    self.bin_dir.to_string_lossy(),
+                    binary.to_string_lossy(),
+                    config_path.to_string_lossy()
                 ),
             ])
             .output()
@@ -623,14 +663,14 @@ fn test_e2e_delete_worktree() {
         "Should show confirmation dialog: {screen}"
     );
 
-    // Press 'y' to confirm deletion
-    env.send("y");
+    // Press Enter to confirm deletion
+    env.send_special("Enter");
     wait_ms(500);
 
     // Just verify that we're back to the branch listing (the confirmation was processed)
     let screen = env.capture();
     assert!(
-        screen.contains("select branch") || !screen.contains("Confirm Delete"),
+        screen.contains("select branch") || !screen.contains("Confirm delete"),
         "Should return to branch listing after deletion: {screen}"
     );
 }
@@ -667,7 +707,7 @@ fn test_e2e_delete_worktree_indicator_persists_after_restart() {
     wait_for_screen(&env, 2500, |s| s.contains("select branch"));
     env.send("feat/persist-delete");
     env.send_special("C-x");
-    env.send("y");
+    env.send_special("Enter");
 
     let screen = wait_for_screen(&env, 2000, |s| s.contains("deleting"));
     assert!(
@@ -776,6 +816,99 @@ tab = "noop"
 }
 
 #[test]
+fn test_e2e_config_flag_overrides_xdg_config_home() {
+    let env = TestEnv::new("config-flag");
+    let search_dir = env.search_dir();
+
+    let repo = search_dir.join("flag-repo");
+    fs::create_dir_all(&repo).unwrap();
+    init_test_repo(&repo);
+
+    // Config that remaps EnterRepo from Tab to F1 in repo selection
+    let extra = r#"
+[keys.repo_select]
+F1 = "enter_repo"
+tab = "noop"
+"#;
+    env.write_config_with_extra(&search_dir, extra);
+
+    // Point XDG_CONFIG_HOME to a dir that does not contain kiosk/config.toml.
+    let fake_xdg = env.tmp.path().join("fake-xdg");
+    fs::create_dir_all(&fake_xdg).unwrap();
+
+    env.launch_kiosk_with_config_arg(&env.config_file_path(), &fake_xdg);
+
+    // Tab should be unbound by config loaded from --config.
+    env.send_special("Tab");
+    let screen = wait_for_screen(&env, 800, |s| s.contains("select branch"));
+    assert!(
+        !screen.contains("select branch"),
+        "Tab should not enter branch view when loading config from --config: {screen}"
+    );
+
+    // F1 should work if --config took effect
+    env.send_special("F1");
+    let screen = wait_for_screen(&env, 2500, |s| s.contains("select branch"));
+    assert!(
+        screen.contains("select branch"),
+        "F1 should enter repo when loading config from --config: {screen}"
+    );
+}
+
+#[test]
+fn test_e2e_modal_bindings_override_general() {
+    let env = TestEnv::new("modal-overrides-general");
+    let search_dir = env.search_dir();
+
+    let repo = search_dir.join("modal-repo");
+    fs::create_dir_all(&repo).unwrap();
+    init_test_repo(&repo);
+
+    // Create a branch and worktree for delete confirmation flow
+    run_git(&repo, &["branch", "feat/modal-test"]);
+    let wt_dir = search_dir
+        .join(WORKTREE_DIR_NAME)
+        .join("modal-repo--feat-modal-test");
+    fs::create_dir_all(&wt_dir).unwrap();
+    run_git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            &wt_dir.to_string_lossy(),
+            "feat/modal-test",
+        ],
+    );
+
+    // C-c quits generally, but should cancel inside modal due to [keys.modal].
+    let extra = r#"
+[keys.modal]
+C-c = "cancel"
+"#;
+    env.write_config_with_extra(&search_dir, extra);
+    env.launch_kiosk();
+
+    env.send_special("Tab");
+    wait_for_screen(&env, 2500, |s| s.contains("select branch"));
+    env.send("feat/modal-test");
+    env.send_special("C-x");
+
+    let screen = wait_for_screen(&env, 2000, |s| s.contains("Confirm delete"));
+    assert!(
+        screen.contains("Confirm delete"),
+        "Delete confirm dialog should be visible: {screen}"
+    );
+
+    // In modal, C-c should cancel dialog (not quit app).
+    env.send_special("C-c");
+    let screen = wait_for_screen(&env, 2000, |s| s.contains("select branch"));
+    assert!(
+        screen.contains("select branch") && !screen.contains("Confirm delete"),
+        "C-c should cancel modal and stay in branch view: {screen}"
+    );
+}
+
+#[test]
 fn test_e2e_help_esc_dismiss() {
     let env = TestEnv::new("help-esc");
     let search_dir = env.search_dir();
@@ -791,7 +924,7 @@ fn test_e2e_help_esc_dismiss() {
     env.send_special("C-h");
     let screen = env.capture();
     assert!(
-        screen.contains("Help") && screen.contains("Keybindings"),
+        screen.contains("Help") && screen.contains("key bindings"),
         "Help overlay should be visible: {screen}"
     );
 
@@ -799,7 +932,7 @@ fn test_e2e_help_esc_dismiss() {
     env.send_special("Escape");
     let screen = env.capture();
     assert!(
-        screen.contains("select repo") && !screen.contains("Keybindings"),
+        screen.contains("select repo") && !screen.contains("key bindings"),
         "Help should be dismissed by Esc: {screen}"
     );
 }
@@ -892,6 +1025,106 @@ fn test_e2e_dynamic_hints() {
     assert!(
         screen.contains("C-o: new branch") && screen.contains("C-x: delete worktree"),
         "Branch hints should show dynamic bindings: {screen}"
+    );
+}
+
+#[test]
+fn test_e2e_ctrl_u_clears_search_input() {
+    let env = TestEnv::new("ctrl-u-clears-search");
+    let search_dir = env.search_dir();
+
+    let repo_a = search_dir.join("alpha-repo");
+    let repo_b = search_dir.join("beta-repo");
+    fs::create_dir_all(&repo_a).unwrap();
+    fs::create_dir_all(&repo_b).unwrap();
+    init_test_repo(&repo_a);
+    init_test_repo(&repo_b);
+
+    env.write_config(&search_dir);
+    env.launch_kiosk();
+
+    env.send("zzzz-no-match");
+    let screen = env.capture();
+    assert!(
+        screen.contains("0 repos"),
+        "Search should filter to 0 repos: {screen}"
+    );
+
+    env.send_special("C-u");
+    let screen = env.capture();
+    assert!(
+        screen.contains("2 repos"),
+        "Ctrl+U should clear search and restore repo list: {screen}"
+    );
+}
+
+#[test]
+fn test_e2e_alt_j_and_alt_k_half_page_navigation() {
+    let env = TestEnv::new("alt-j-k-half-page");
+    let search_dir = env.search_dir();
+
+    for i in 0..30 {
+        let repo = search_dir.join(format!("half-page-{i:02}"));
+        fs::create_dir_all(&repo).unwrap();
+        init_test_repo(&repo);
+    }
+
+    env.write_config(&search_dir);
+    env.launch_kiosk();
+
+    let screen = env.capture();
+    let initial_selected =
+        selected_line(&screen).expect("Expected an initially selected repo line in UI");
+
+    env.send_special("M-j");
+    let screen = env.capture();
+    let after_down = selected_line(&screen).expect("Expected selected line after A-j");
+    assert_ne!(
+        after_down, initial_selected,
+        "Alt+j should move selection by half page. screen:\n{screen}"
+    );
+
+    env.send_special("M-k");
+    let screen = env.capture();
+    let after_up = selected_line(&screen).expect("Expected selected line after A-k");
+    assert_eq!(
+        after_up, initial_selected,
+        "Alt+k should move selection back by half page. screen:\n{screen}"
+    );
+}
+
+#[test]
+fn test_e2e_ctrl_v_and_alt_v_page_navigation() {
+    let env = TestEnv::new("ctrl-v-alt-v-page");
+    let search_dir = env.search_dir();
+
+    for i in 0..40 {
+        let repo = search_dir.join(format!("page-nav-{i:02}"));
+        fs::create_dir_all(&repo).unwrap();
+        init_test_repo(&repo);
+    }
+
+    env.write_config(&search_dir);
+    env.launch_kiosk();
+
+    let screen = env.capture();
+    let initial_selected =
+        selected_line(&screen).expect("Expected an initially selected repo line in UI");
+
+    env.send_special("C-v");
+    let screen = env.capture();
+    let after_page_down = selected_line(&screen).expect("Expected selected line after C-v");
+    assert_ne!(
+        after_page_down, initial_selected,
+        "Ctrl+v should move selection by page down. screen:\n{screen}"
+    );
+
+    env.send_special("M-v");
+    let screen = env.capture();
+    let after_page_up = selected_line(&screen).expect("Expected selected line after A-v");
+    assert_eq!(
+        after_page_up, initial_selected,
+        "Alt+v should move selection back by page up. screen:\n{screen}"
     );
 }
 

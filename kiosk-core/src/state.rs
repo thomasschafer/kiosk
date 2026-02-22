@@ -17,15 +17,41 @@ pub struct SearchableList {
     /// Index-score pairs, sorted by score descending
     pub filtered: Vec<(usize, i64)>,
     pub selected: Option<usize>,
+    pub scroll_offset: usize,
 }
 
 impl SearchableList {
+    fn prev_word_boundary(&self, from: usize) -> usize {
+        let bytes = self.search.as_bytes();
+        let mut cursor = from.min(bytes.len());
+        while cursor > 0 && bytes[cursor - 1].is_ascii_whitespace() {
+            cursor -= 1;
+        }
+        while cursor > 0 && !bytes[cursor - 1].is_ascii_whitespace() {
+            cursor -= 1;
+        }
+        cursor
+    }
+
+    fn next_word_boundary(&self, from: usize) -> usize {
+        let bytes = self.search.as_bytes();
+        let mut cursor = from.min(bytes.len());
+        while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+            cursor += 1;
+        }
+        while cursor < bytes.len() && !bytes[cursor].is_ascii_whitespace() {
+            cursor += 1;
+        }
+        cursor
+    }
+
     pub fn new(item_count: usize) -> Self {
         Self {
             search: String::new(),
             cursor: 0,
             filtered: (0..item_count).map(|i| (i, 0)).collect(),
             selected: if item_count > 0 { Some(0) } else { None },
+            scroll_offset: 0,
         }
     }
 
@@ -34,6 +60,7 @@ impl SearchableList {
         self.cursor = 0;
         self.filtered = (0..item_count).map(|i| (i, 0)).collect();
         self.selected = if item_count > 0 { Some(0) } else { None };
+        self.scroll_offset = 0;
     }
 
     /// Move selection by delta, clamping to bounds
@@ -66,6 +93,34 @@ impl SearchableList {
         }
     }
 
+    pub fn update_scroll_offset_for_selection(&mut self, direction: i32, viewport_rows: usize) {
+        let len = self.filtered.len();
+        if len == 0 {
+            self.scroll_offset = 0;
+            return;
+        }
+
+        let viewport_rows = viewport_rows.max(1);
+        let max_offset = len.saturating_sub(viewport_rows);
+        let selected = self.selected.unwrap_or(0).min(len - 1);
+
+        let offset = match direction.cmp(&0) {
+            std::cmp::Ordering::Greater => {
+                // While moving down, keep selection one row above the bottom edge until the true end.
+                let anchor_bottom = viewport_rows.saturating_sub(2);
+                selected.saturating_sub(anchor_bottom)
+            }
+            std::cmp::Ordering::Less => {
+                // While moving up, keep selection one row below the top edge until the true start.
+                let anchor_top = usize::from(viewport_rows > 1);
+                selected.saturating_sub(anchor_top)
+            }
+            std::cmp::Ordering::Equal => self.scroll_offset,
+        };
+
+        self.scroll_offset = offset.min(max_offset);
+    }
+
     /// Move cursor left by one char (UTF-8 safe)
     pub fn cursor_left(&mut self) {
         self.cursor = self.search[..self.cursor]
@@ -92,6 +147,14 @@ impl SearchableList {
         self.cursor = self.search.len();
     }
 
+    pub fn cursor_word_left(&mut self) {
+        self.cursor = self.prev_word_boundary(self.cursor);
+    }
+
+    pub fn cursor_word_right(&mut self) {
+        self.cursor = self.next_word_boundary(self.cursor);
+    }
+
     /// Insert a character at the current cursor position
     pub fn insert_char(&mut self, c: char) {
         self.search.insert(self.cursor, c);
@@ -113,25 +176,53 @@ impl SearchableList {
         }
     }
 
+    /// Remove the character at cursor position (UTF-8 safe)
+    pub fn delete_forward_char(&mut self) -> bool {
+        if self.cursor < self.search.len() {
+            let end = self.search[self.cursor..]
+                .char_indices()
+                .nth(1)
+                .map_or(self.search.len(), |(i, _)| self.cursor + i);
+            self.search.drain(self.cursor..end);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Delete word backwards from cursor position
     pub fn delete_word(&mut self) {
         if self.search.is_empty() || self.cursor == 0 {
             return;
         }
-        let bytes = self.search.as_bytes();
-        let mut new_cursor = self.cursor.min(bytes.len());
-
-        // Skip whitespace
-        while new_cursor > 0 && bytes[new_cursor - 1].is_ascii_whitespace() {
-            new_cursor -= 1;
-        }
-        // Delete non-whitespace
-        while new_cursor > 0 && !bytes[new_cursor - 1].is_ascii_whitespace() {
-            new_cursor -= 1;
-        }
+        let new_cursor = self.prev_word_boundary(self.cursor);
 
         self.search.drain(new_cursor..self.cursor);
         self.cursor = new_cursor;
+    }
+
+    /// Delete word forwards from cursor position
+    pub fn delete_word_forward(&mut self) {
+        if self.search.is_empty() || self.cursor >= self.search.len() {
+            return;
+        }
+        let end = self.next_word_boundary(self.cursor);
+        self.search.drain(self.cursor..end);
+    }
+
+    pub fn delete_to_start(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+        self.search.drain(..self.cursor);
+        self.cursor = 0;
+    }
+
+    pub fn delete_to_end(&mut self) {
+        if self.cursor >= self.search.len() {
+            return;
+        }
+        self.search.truncate(self.cursor);
     }
 }
 
@@ -224,11 +315,11 @@ impl BranchEntry {
 pub enum Mode {
     RepoSelect,
     BranchSelect,
-    NewBranchBase,
+    SelectBaseBranch,
     /// Blocking loading state — shows spinner, no input except Ctrl+C
     Loading(String),
     /// Confirmation dialog for worktree deletion
-    ConfirmDelete {
+    ConfirmWorktreeDelete {
         branch_name: String,
         has_session: bool,
     },
@@ -238,9 +329,40 @@ pub enum Mode {
     },
 }
 
+impl Mode {
+    pub(crate) fn supports_text_edit(&self) -> bool {
+        matches!(
+            self,
+            Mode::RepoSelect | Mode::BranchSelect | Mode::SelectBaseBranch
+        )
+    }
+
+    pub(crate) fn supports_list_navigation(&self) -> bool {
+        matches!(
+            self,
+            Mode::RepoSelect | Mode::BranchSelect | Mode::SelectBaseBranch
+        )
+    }
+
+    pub(crate) fn supports_modal_actions(&self) -> bool {
+        matches!(
+            self,
+            Mode::SelectBaseBranch | Mode::ConfirmWorktreeDelete { .. }
+        )
+    }
+
+    pub(crate) fn supports_repo_select_actions(&self) -> bool {
+        matches!(self, Mode::RepoSelect)
+    }
+
+    pub(crate) fn supports_branch_select_actions(&self) -> bool {
+        matches!(self, Mode::BranchSelect)
+    }
+}
+
 /// The new-branch flow state
 #[derive(Debug, Clone)]
-pub struct NewBranchFlow {
+pub struct BaseBranchSelection {
     /// The new branch name (what the user typed)
     pub new_name: String,
     /// Base branches to pick from
@@ -259,12 +381,13 @@ pub struct AppState {
     pub branches: Vec<BranchEntry>,
     pub branch_list: SearchableList,
 
-    pub new_branch_base: Option<NewBranchFlow>,
+    pub base_branch_selection: Option<BaseBranchSelection>,
 
     pub split_command: Option<String>,
     pub mode: Mode,
     pub loading_branches: bool,
     pub error: Option<String>,
+    active_list_page_rows: usize,
     pub pending_worktree_deletes: Vec<PendingWorktreeDelete>,
 }
 
@@ -278,11 +401,12 @@ impl AppState {
             selected_repo_idx: None,
             branches: Vec::new(),
             branch_list: SearchableList::new(0),
-            new_branch_base: None,
+            base_branch_selection: None,
             split_command,
             mode: Mode::RepoSelect,
             loading_branches: false,
             error: None,
+            active_list_page_rows: 10,
             pending_worktree_deletes: Vec::new(),
         }
     }
@@ -295,11 +419,12 @@ impl AppState {
             selected_repo_idx: None,
             branches: Vec::new(),
             branch_list: SearchableList::new(0),
-            new_branch_base: None,
+            base_branch_selection: None,
             split_command,
             mode: Mode::Loading(loading_message.to_string()),
             loading_branches: false,
             error: None,
+            active_list_page_rows: 10,
             pending_worktree_deletes: Vec::new(),
         }
     }
@@ -309,7 +434,7 @@ impl AppState {
         match self.mode {
             Mode::RepoSelect => Some(&mut self.repo_list),
             Mode::BranchSelect => Some(&mut self.branch_list),
-            Mode::NewBranchBase => self.new_branch_base.as_mut().map(|f| &mut f.list),
+            Mode::SelectBaseBranch => self.base_branch_selection.as_mut().map(|f| &mut f.list),
             _ => None,
         }
     }
@@ -319,7 +444,7 @@ impl AppState {
         match self.mode {
             Mode::RepoSelect => Some(&self.repo_list),
             Mode::BranchSelect => Some(&self.branch_list),
-            Mode::NewBranchBase => self.new_branch_base.as_ref().map(|f| &f.list),
+            Mode::SelectBaseBranch => self.base_branch_selection.as_ref().map(|f| &f.list),
             _ => None,
         }
     }
@@ -328,6 +453,14 @@ impl AppState {
         self.pending_worktree_deletes
             .iter()
             .any(|pending| pending.repo_path == repo_path && pending.branch_name == branch_name)
+    }
+
+    pub fn set_active_list_page_rows(&mut self, rows: usize) {
+        self.active_list_page_rows = rows.max(1);
+    }
+
+    pub fn active_list_page_rows(&self) -> usize {
+        self.active_list_page_rows.max(1)
     }
 
     pub fn mark_pending_worktree_delete(&mut self, pending: PendingWorktreeDelete) {
@@ -594,6 +727,87 @@ mod tests {
 
         assert!(state.clear_pending_worktree_delete_by_path(&worktree_path));
         assert!(!state.is_branch_pending_delete(&repo_path, "dev"));
+    }
+
+    #[test]
+    fn test_scroll_anchor_behavior_down_then_up() {
+        let mut list = SearchableList::new(100);
+        let viewport_rows = 20;
+
+        // Move down into the middle: selection should be anchored one row above bottom.
+        for _ in 0..25 {
+            list.move_selection(1);
+            list.update_scroll_offset_for_selection(1, viewport_rows);
+        }
+        let selected = list.selected.unwrap_or(0);
+        assert_eq!(selected - list.scroll_offset, 18);
+
+        // Move to bottom: selection may reach the actual bottom row.
+        for _ in 0..200 {
+            list.move_selection(1);
+            list.update_scroll_offset_for_selection(1, viewport_rows);
+        }
+        let selected = list.selected.unwrap_or(0);
+        assert_eq!(selected, 99);
+        assert_eq!(selected - list.scroll_offset, 19);
+
+        // Move up: keep viewport stationary first, then anchor one below top.
+        list.move_selection(-1);
+        list.update_scroll_offset_for_selection(-1, viewport_rows);
+        let selected = list.selected.unwrap_or(0);
+        assert_eq!(selected, 98);
+        assert_eq!(selected - list.scroll_offset, 18);
+
+        for _ in 0..17 {
+            list.move_selection(-1);
+            list.update_scroll_offset_for_selection(-1, viewport_rows);
+        }
+        let selected = list.selected.unwrap_or(0);
+        assert_eq!(selected, 81);
+        assert_eq!(selected - list.scroll_offset, 1);
+
+        list.move_selection(-1);
+        list.update_scroll_offset_for_selection(-1, viewport_rows);
+        let selected = list.selected.unwrap_or(0);
+        assert_eq!(selected, 80);
+        assert_eq!(selected - list.scroll_offset, 1);
+    }
+
+    #[test]
+    fn test_prev_word_boundary_edges() {
+        let mut list = SearchableList::new(0);
+        list.search = "alpha   beta".to_string();
+
+        assert_eq!(list.prev_word_boundary(0), 0);
+        assert_eq!(list.prev_word_boundary(list.search.len()), 8);
+        assert_eq!(list.prev_word_boundary(7), 0);
+        assert_eq!(list.prev_word_boundary(usize::MAX), 8);
+    }
+
+    #[test]
+    fn test_next_word_boundary_edges() {
+        let mut list = SearchableList::new(0);
+        list.search = "alpha   beta".to_string();
+
+        assert_eq!(list.next_word_boundary(0), 5);
+        assert_eq!(list.next_word_boundary(5), 12);
+        assert_eq!(
+            list.next_word_boundary(list.search.len()),
+            list.search.len()
+        );
+        assert_eq!(list.next_word_boundary(usize::MAX), list.search.len());
+    }
+
+    #[test]
+    fn test_word_boundary_empty_and_spaces_only() {
+        let empty = SearchableList::new(0);
+        assert_eq!(empty.prev_word_boundary(3), 0);
+        assert_eq!(empty.next_word_boundary(3), 0);
+
+        let mut spaces = SearchableList::new(0);
+        spaces.search = "   ".to_string();
+        assert_eq!(spaces.prev_word_boundary(3), 0);
+        assert_eq!(spaces.next_word_boundary(0), 3);
     }
 
     #[test]

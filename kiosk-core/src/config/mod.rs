@@ -65,6 +65,7 @@ pub struct Config {
     pub theme: ThemeConfig,
 
     /// Key binding configuration.
+    /// To unbind an inherited key mapping, assign it to `noop`.
     #[serde(default)]
     pub keys: KeysConfig,
 }

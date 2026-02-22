@@ -2,7 +2,7 @@ use fuzzy_matcher::{FuzzyMatcher, skim::SkimMatcherV2};
 use kiosk_core::{
     git::GitProvider,
     pending_delete::{PendingWorktreeDelete, save_pending_worktree_deletes},
-    state::{AppState, Mode, NewBranchFlow, SearchableList, worktree_dir},
+    state::{AppState, BaseBranchSelection, Mode, SearchableList, worktree_dir},
     tmux::TmuxProvider,
 };
 use std::sync::Arc;
@@ -20,11 +20,11 @@ pub(super) fn handle_go_back(state: &mut AppState) {
             state.branch_list.search.clear();
             state.branch_list.cursor = 0;
         }
-        Mode::NewBranchBase => {
-            state.new_branch_base = None;
+        Mode::SelectBaseBranch => {
+            state.base_branch_selection = None;
             state.mode = Mode::BranchSelect;
         }
-        Mode::ConfirmDelete { .. } => {
+        Mode::ConfirmWorktreeDelete { .. } => {
             state.mode = Mode::BranchSelect;
         }
         Mode::Help { previous } => {
@@ -59,12 +59,12 @@ pub(super) fn handle_start_new_branch(state: &mut AppState, git: &Arc<dyn GitPro
     let bases = git.list_branches(&repo.path);
     let list = SearchableList::new(bases.len());
 
-    state.new_branch_base = Some(NewBranchFlow {
+    state.base_branch_selection = Some(BaseBranchSelection {
         new_name: state.branch_list.search.clone(),
         bases,
         list,
     });
-    state.mode = Mode::NewBranchBase;
+    state.mode = Mode::SelectBaseBranch;
 }
 
 pub(super) fn handle_delete_worktree(state: &mut AppState) {
@@ -84,7 +84,7 @@ pub(super) fn handle_delete_worktree(state: &mut AppState) {
         } else if branch.is_current {
             state.error = Some("Cannot delete the current branch's worktree".to_string());
         } else {
-            state.mode = Mode::ConfirmDelete {
+            state.mode = Mode::ConfirmWorktreeDelete {
                 branch_name: branch.name.clone(),
                 has_session: branch.has_session,
             };
@@ -98,7 +98,7 @@ pub(super) fn handle_confirm_delete<T: TmuxProvider + ?Sized>(
     tmux: &T,
     sender: &EventSender,
 ) {
-    if let Mode::ConfirmDelete {
+    if let Mode::ConfirmWorktreeDelete {
         branch_name,
         has_session,
     } = &state.mode
@@ -193,8 +193,8 @@ pub(super) fn handle_open_branch(
                 }
             }
         }
-        Mode::NewBranchBase => {
-            if let Some(flow) = &state.new_branch_base
+        Mode::SelectBaseBranch => {
+            if let Some(flow) = &state.base_branch_selection
                 && let Some(sel) = flow.list.selected
                 && let Some(&(idx, _)) = flow.list.filtered.get(sel)
             {
@@ -224,7 +224,10 @@ pub(super) fn handle_open_branch(
                 }
             }
         }
-        Mode::RepoSelect | Mode::ConfirmDelete { .. } | Mode::Loading(_) | Mode::Help { .. } => {}
+        Mode::RepoSelect
+        | Mode::ConfirmWorktreeDelete { .. }
+        | Mode::Loading(_)
+        | Mode::Help { .. } => {}
     }
     None
 }
@@ -279,6 +282,34 @@ pub(super) fn handle_search_delete_word(state: &mut AppState, matcher: &SkimMatc
     update_active_filter(state, matcher);
 }
 
+pub(super) fn handle_search_delete_forward(state: &mut AppState, matcher: &SkimMatcherV2) {
+    if let Some(list) = state.active_list_mut() {
+        list.delete_forward_char();
+    }
+    update_active_filter(state, matcher);
+}
+
+pub(super) fn handle_search_delete_word_forward(state: &mut AppState, matcher: &SkimMatcherV2) {
+    if let Some(list) = state.active_list_mut() {
+        list.delete_word_forward();
+    }
+    update_active_filter(state, matcher);
+}
+
+pub(super) fn handle_search_delete_to_start(state: &mut AppState, matcher: &SkimMatcherV2) {
+    if let Some(list) = state.active_list_mut() {
+        list.delete_to_start();
+    }
+    update_active_filter(state, matcher);
+}
+
+pub(super) fn handle_search_delete_to_end(state: &mut AppState, matcher: &SkimMatcherV2) {
+    if let Some(list) = state.active_list_mut() {
+        list.delete_to_end();
+    }
+    update_active_filter(state, matcher);
+}
+
 fn update_active_filter(state: &mut AppState, matcher: &SkimMatcherV2) {
     match state.mode {
         Mode::RepoSelect => {
@@ -289,8 +320,8 @@ fn update_active_filter(state: &mut AppState, matcher: &SkimMatcherV2) {
             let names: Vec<String> = state.branches.iter().map(|b| b.name.clone()).collect();
             apply_fuzzy_filter(&mut state.branch_list, &names, matcher);
         }
-        Mode::NewBranchBase => {
-            if let Some(flow) = &mut state.new_branch_base {
+        Mode::SelectBaseBranch => {
+            if let Some(flow) = &mut state.base_branch_selection {
                 let bases = flow.bases.clone();
                 apply_fuzzy_filter(&mut flow.list, &bases, matcher);
             }
@@ -320,4 +351,5 @@ fn apply_fuzzy_filter(list: &mut SearchableList, items: &[String], matcher: &Ski
     } else {
         Some(0)
     };
+    list.scroll_offset = 0;
 }

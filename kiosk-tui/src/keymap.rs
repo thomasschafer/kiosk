@@ -13,29 +13,14 @@ pub fn resolve_action(
     let mut our_key: KeyEvent = key.into();
     our_key.canonicalize();
 
-    // Check general bindings first
-    if let Some(command) = keys.general.get(&our_key)
-        && let Some(action) = command_to_action(command, state)
+    // Help can always be dismissed with Esc
+    if matches!(state.mode, Mode::Help { .. })
+        && our_key == KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)
     {
-        return Some(action);
+        return Some(Action::ShowHelp);
     }
 
-    // Check mode-specific bindings
-    let mode_keymap = match state.mode {
-        Mode::RepoSelect => &keys.repo_select,
-        Mode::BranchSelect => &keys.branch_select,
-        Mode::NewBranchBase => &keys.new_branch_base,
-        Mode::ConfirmDelete { .. } => &keys.confirmation,
-        Mode::Help { .. } => {
-            // Help can be dismissed with C-h (ShowHelp toggle) or Esc
-            if our_key == KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE) {
-                return Some(Action::ShowHelp);
-            }
-            &keys.general
-        }
-        Mode::Loading(_) => return None, // Only general bindings work in loading mode
-    };
-
+    let mode_keymap = keys.keymap_for_mode(&state.mode);
     if let Some(command) = mode_keymap.get(&our_key)
         && let Some(action) = command_to_action(command, state)
     {
@@ -62,7 +47,7 @@ fn command_to_action(command: &Command, state: &AppState) -> Option<Action> {
         Command::OpenRepo => Some(Action::OpenRepo),
         Command::EnterRepo => Some(Action::EnterRepo),
         Command::OpenBranch => {
-            // Special logic for branch select mode - if search is non-empty and no matches, start new branch flow
+            // In branch-select mode, Enter with non-empty search and no matches starts new branch flow.
             if let Mode::BranchSelect = state.mode
                 && !state.branch_list.search.is_empty()
                 && state.branch_list.filtered.is_empty()
@@ -74,7 +59,6 @@ fn command_to_action(command: &Command, state: &AppState) -> Option<Action> {
         Command::GoBack => Some(Action::GoBack),
         Command::NewBranch => Some(Action::StartNewBranchFlow),
         Command::DeleteWorktree => {
-            // Only available in branch select mode with 'd' key (handled specially in old version)
             if let Mode::BranchSelect = state.mode {
                 Some(Action::DeleteWorktree)
             } else {
@@ -89,18 +73,26 @@ fn command_to_action(command: &Command, state: &AppState) -> Option<Action> {
         Command::PageDown => Some(Action::PageDown),
         Command::MoveTop => Some(Action::MoveTop),
         Command::MoveBottom => Some(Action::MoveBottom),
-        Command::SearchPop => Some(Action::SearchPop),
-        Command::SearchDeleteWord => Some(Action::SearchDeleteWord),
-        Command::CursorLeft => Some(Action::CursorLeft),
-        Command::CursorRight => Some(Action::CursorRight),
-        Command::CursorStart => Some(Action::CursorStart),
-        Command::CursorEnd => Some(Action::CursorEnd),
+        Command::DeleteBackwardChar => Some(Action::SearchPop),
+        Command::DeleteForwardChar => Some(Action::SearchDeleteForward),
+        Command::DeleteBackwardWord => Some(Action::SearchDeleteWord),
+        Command::DeleteForwardWord => Some(Action::SearchDeleteWordForward),
+        Command::DeleteToStart => Some(Action::SearchDeleteToStart),
+        Command::DeleteToEnd => Some(Action::SearchDeleteToEnd),
+        Command::MoveCursorLeft => Some(Action::CursorLeft),
+        Command::MoveCursorRight => Some(Action::CursorRight),
+        Command::MoveCursorWordLeft => Some(Action::CursorWordLeft),
+        Command::MoveCursorWordRight => Some(Action::CursorWordRight),
+        Command::MoveCursorStart => Some(Action::CursorStart),
+        Command::MoveCursorEnd => Some(Action::CursorEnd),
         Command::Confirm => match state.mode {
-            Mode::ConfirmDelete { .. } => Some(Action::ConfirmDeleteWorktree),
+            Mode::ConfirmWorktreeDelete { .. } => Some(Action::ConfirmDeleteWorktree),
+            Mode::SelectBaseBranch => Some(Action::OpenBranch),
             _ => None,
         },
         Command::Cancel => match state.mode {
-            Mode::ConfirmDelete { .. } => Some(Action::CancelDeleteWorktree),
+            Mode::ConfirmWorktreeDelete { .. } => Some(Action::CancelDeleteWorktree),
+            Mode::SelectBaseBranch => Some(Action::GoBack),
             _ => None,
         },
     }
@@ -110,6 +102,6 @@ fn command_to_action(command: &Command, state: &AppState) -> Option<Action> {
 fn can_search_in_mode(mode: &Mode) -> bool {
     matches!(
         mode,
-        Mode::RepoSelect | Mode::BranchSelect | Mode::NewBranchBase
+        Mode::RepoSelect | Mode::BranchSelect | Mode::SelectBaseBranch
     )
 }

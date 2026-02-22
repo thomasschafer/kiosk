@@ -96,106 +96,67 @@ Secondary accent color (default: "cyan").
 
 Success/positive color (default: "green").
 
-#### `keys`
+### `[keys]` section
 
 Key binding configuration.
+To unbind an inherited key mapping, assign it to `noop`.
+
+Defaults are shown below.
+
+```toml
+[keys.general]
+"C-c" = "quit"
+"C-h" = "show_help"
+
+[keys.text_edit]
+"A-b" = "move_cursor_word_left"
+"A-backspace" = "delete_backward_word"
+"A-d" = "delete_forward_word"
+"A-f" = "move_cursor_word_right"
+"A-left" = "move_cursor_word_left"
+"A-right" = "move_cursor_word_right"
+"C-a" = "move_cursor_start"
+"C-d" = "delete_forward_char"
+"C-e" = "move_cursor_end"
+"C-k" = "delete_to_end"
+"C-u" = "delete_to_start"
+"C-w" = "delete_backward_word"
+"backspace" = "delete_backward_char"
+"del" = "delete_forward_char"
+"end" = "move_cursor_end"
+"home" = "move_cursor_start"
+"left" = "move_cursor_left"
+"right" = "move_cursor_right"
+
+[keys.list_navigation]
+"A-G" = "move_bottom"
+"A-g" = "move_top"
+"A-j" = "half_page_down"
+"A-k" = "half_page_up"
+"A-v" = "page_up"
+"C-n" = "move_down"
+"C-p" = "move_up"
+"C-v" = "page_down"
+"down" = "move_down"
+"pagedown" = "page_down"
+"pageup" = "page_up"
+"up" = "move_up"
+
+[keys.repo_select]
+"enter" = "open_repo"
+"esc" = "quit"
+"tab" = "enter_repo"
+
+[keys.branch_select]
+"C-o" = "new_branch"
+"C-x" = "delete_worktree"
+"enter" = "open_branch"
+"esc" = "go_back"
+
+[keys.modal]
+"enter" = "confirm"
+"esc" = "cancel"
+
+```
 
 <!-- CONFIG END -->
-
-
-## Keybindings
-
-<!-- KEYS START -->
-### General
-
-| Key | Action |
-|-----|--------|
-| C-c | Quit the application |
-| C-h | Show help |
-
-### Repository Selection
-
-| Key | Action |
-|-----|--------|
-| A-G | Move to bottom |
-| A-g | Move to top |
-| C-d | Half page down |
-| C-n | Move down |
-| C-p | Move up |
-| C-u | Half page up |
-| C-w | Delete word |
-| backspace | Delete search character |
-| down | Move down |
-| end | Cursor to end |
-| enter | Open repository in tmux |
-| esc | Quit the application |
-| home | Cursor to start |
-| left | Cursor left |
-| pagedown | Page down |
-| pageup | Page up |
-| right | Cursor right |
-| tab | Browse branches |
-| up | Move up |
-
-### Branch Selection
-
-| Key | Action |
-|-----|--------|
-| A-G | Move to bottom |
-| A-g | Move to top |
-| C-d | Half page down |
-| C-n | Move down |
-| C-o | New branch |
-| C-p | Move up |
-| C-u | Half page up |
-| C-w | Delete word |
-| C-x | Delete worktree |
-| backspace | Delete search character |
-| down | Move down |
-| end | Cursor to end |
-| enter | Open branch in tmux |
-| esc | Go back |
-| home | Cursor to start |
-| left | Cursor left |
-| pagedown | Page down |
-| pageup | Page up |
-| right | Cursor right |
-| up | Move up |
-
-### New Branch Base Selection
-
-| Key | Action |
-|-----|--------|
-| A-G | Move to bottom |
-| A-g | Move to top |
-| C-d | Half page down |
-| C-n | Move down |
-| C-p | Move up |
-| C-u | Half page up |
-| C-w | Delete word |
-| backspace | Delete search character |
-| down | Move down |
-| end | Cursor to end |
-| enter | Open branch in tmux |
-| esc | Go back |
-| home | Cursor to start |
-| left | Cursor left |
-| pagedown | Page down |
-| pageup | Page up |
-| right | Cursor right |
-| up | Move up |
-
-### Confirmation
-
-| Key | Action |
-|-----|--------|
-| N | Cancel |
-| enter | Confirm |
-| esc | Cancel |
-| n | Cancel |
-| y | Confirm |
-
-### Search
-
-In list modes (Repository, Branch, and New Branch Base Selection), any printable character will start or continue search filtering.
-<!-- KEYS END -->

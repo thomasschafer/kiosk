@@ -1,6 +1,6 @@
 use crate::theme::Theme;
 use kiosk_core::config::{Command, KeysConfig};
-use kiosk_core::state::AppState;
+use kiosk_core::state::{AppState, Mode};
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
@@ -86,16 +86,18 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, keys: &K
 
     let mut list_state = ListState::default();
     list_state.select(state.repo_list.selected);
+    *list_state.offset_mut() = state.repo_list.scroll_offset;
     f.render_stateful_widget(list, chunks[1], &mut list_state);
 }
 
 fn build_repo_hints(keys: &KeysConfig) -> String {
+    let keymap = keys.keymap_for_mode(&Mode::RepoSelect);
     let mut hints = Vec::new();
 
-    if let Some(key) = KeysConfig::find_key(&keys.repo_select, &Command::OpenRepo) {
+    if let Some(key) = KeysConfig::find_key(&keymap, &Command::OpenRepo) {
         hints.push(format!("{key}: open"));
     }
-    if let Some(key) = KeysConfig::find_key(&keys.repo_select, &Command::EnterRepo) {
+    if let Some(key) = KeysConfig::find_key(&keymap, &Command::EnterRepo) {
         hints.push(format!("{key}: branches"));
     }
 

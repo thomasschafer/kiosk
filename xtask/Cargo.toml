@@ -7,9 +7,11 @@ publish = false
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
+kiosk-core = { workspace = true }
 syn = { version = "2", features = ["full", "parsing"] }
 quote = "1"
-kiosk-core = { path = "../kiosk-core" }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
 
 [lints]
 workspace = true

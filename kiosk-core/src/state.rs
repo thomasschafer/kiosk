@@ -20,6 +20,30 @@ pub struct SearchableList {
 }
 
 impl SearchableList {
+    fn prev_word_boundary(&self, from: usize) -> usize {
+        let bytes = self.search.as_bytes();
+        let mut cursor = from.min(bytes.len());
+        while cursor > 0 && bytes[cursor - 1].is_ascii_whitespace() {
+            cursor -= 1;
+        }
+        while cursor > 0 && !bytes[cursor - 1].is_ascii_whitespace() {
+            cursor -= 1;
+        }
+        cursor
+    }
+
+    fn next_word_boundary(&self, from: usize) -> usize {
+        let bytes = self.search.as_bytes();
+        let mut cursor = from.min(bytes.len());
+        while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+            cursor += 1;
+        }
+        while cursor < bytes.len() && !bytes[cursor].is_ascii_whitespace() {
+            cursor += 1;
+        }
+        cursor
+    }
+
     pub fn new(item_count: usize) -> Self {
         Self {
             search: String::new(),
@@ -92,6 +116,14 @@ impl SearchableList {
         self.cursor = self.search.len();
     }
 
+    pub fn cursor_word_left(&mut self) {
+        self.cursor = self.prev_word_boundary(self.cursor);
+    }
+
+    pub fn cursor_word_right(&mut self) {
+        self.cursor = self.next_word_boundary(self.cursor);
+    }
+
     /// Insert a character at the current cursor position
     pub fn insert_char(&mut self, c: char) {
         self.search.insert(self.cursor, c);
@@ -113,25 +145,53 @@ impl SearchableList {
         }
     }
 
+    /// Remove the character at cursor position (UTF-8 safe)
+    pub fn delete_forward_char(&mut self) -> bool {
+        if self.cursor < self.search.len() {
+            let end = self.search[self.cursor..]
+                .char_indices()
+                .nth(1)
+                .map_or(self.search.len(), |(i, _)| self.cursor + i);
+            self.search.drain(self.cursor..end);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Delete word backwards from cursor position
     pub fn delete_word(&mut self) {
         if self.search.is_empty() || self.cursor == 0 {
             return;
         }
-        let bytes = self.search.as_bytes();
-        let mut new_cursor = self.cursor.min(bytes.len());
-
-        // Skip whitespace
-        while new_cursor > 0 && bytes[new_cursor - 1].is_ascii_whitespace() {
-            new_cursor -= 1;
-        }
-        // Delete non-whitespace
-        while new_cursor > 0 && !bytes[new_cursor - 1].is_ascii_whitespace() {
-            new_cursor -= 1;
-        }
+        let new_cursor = self.prev_word_boundary(self.cursor);
 
         self.search.drain(new_cursor..self.cursor);
         self.cursor = new_cursor;
+    }
+
+    /// Delete word forwards from cursor position
+    pub fn delete_word_forward(&mut self) {
+        if self.search.is_empty() || self.cursor >= self.search.len() {
+            return;
+        }
+        let end = self.next_word_boundary(self.cursor);
+        self.search.drain(self.cursor..end);
+    }
+
+    pub fn delete_to_start(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+        self.search.drain(..self.cursor);
+        self.cursor = 0;
+    }
+
+    pub fn delete_to_end(&mut self) {
+        if self.cursor >= self.search.len() {
+            return;
+        }
+        self.search.truncate(self.cursor);
     }
 }
 
@@ -265,6 +325,7 @@ pub struct AppState {
     pub mode: Mode,
     pub loading_branches: bool,
     pub error: Option<String>,
+    active_list_page_rows: usize,
     pub pending_worktree_deletes: Vec<PendingWorktreeDelete>,
 }
 
@@ -283,6 +344,7 @@ impl AppState {
             mode: Mode::RepoSelect,
             loading_branches: false,
             error: None,
+            active_list_page_rows: 10,
             pending_worktree_deletes: Vec::new(),
         }
     }
@@ -300,6 +362,7 @@ impl AppState {
             mode: Mode::Loading(loading_message.to_string()),
             loading_branches: false,
             error: None,
+            active_list_page_rows: 10,
             pending_worktree_deletes: Vec::new(),
         }
     }
@@ -328,6 +391,14 @@ impl AppState {
         self.pending_worktree_deletes
             .iter()
             .any(|pending| pending.repo_path == repo_path && pending.branch_name == branch_name)
+    }
+
+    pub fn set_active_list_page_rows(&mut self, rows: usize) {
+        self.active_list_page_rows = rows.max(1);
+    }
+
+    pub fn active_list_page_rows(&self) -> usize {
+        self.active_list_page_rows.max(1)
     }
 
     pub fn mark_pending_worktree_delete(&mut self, pending: PendingWorktreeDelete) {

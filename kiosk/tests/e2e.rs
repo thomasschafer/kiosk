@@ -126,6 +126,13 @@ fn wait_for_tmux_session(socket: &str, name: &str, timeout_ms: u64) -> bool {
     }
 }
 
+fn selected_line(screen: &str) -> Option<String> {
+    screen
+        .lines()
+        .find(|line| line.contains("▸ "))
+        .map(|line| line.trim().to_string())
+}
+
 struct TestEnv {
     tmp: tempfile::TempDir,
     config_dir: PathBuf,
@@ -1016,6 +1023,71 @@ fn test_e2e_dynamic_hints() {
     assert!(
         screen.contains("C-o: new branch") && screen.contains("C-x: delete worktree"),
         "Branch hints should show dynamic bindings: {screen}"
+    );
+}
+
+#[test]
+fn test_e2e_ctrl_u_clears_search_input() {
+    let env = TestEnv::new("ctrl-u-clears-search");
+    let search_dir = env.search_dir();
+
+    let repo_a = search_dir.join("alpha-repo");
+    let repo_b = search_dir.join("beta-repo");
+    fs::create_dir_all(&repo_a).unwrap();
+    fs::create_dir_all(&repo_b).unwrap();
+    init_test_repo(&repo_a);
+    init_test_repo(&repo_b);
+
+    env.write_config(&search_dir);
+    env.launch_kiosk();
+
+    env.send("zzzz-no-match");
+    let screen = env.capture();
+    assert!(
+        screen.contains("0 repos"),
+        "Search should filter to 0 repos: {screen}"
+    );
+
+    env.send_special("C-u");
+    let screen = env.capture();
+    assert!(
+        screen.contains("2 repos"),
+        "Ctrl+U should clear search and restore repo list: {screen}"
+    );
+}
+
+#[test]
+fn test_e2e_ctrl_f_and_ctrl_b_half_page_navigation() {
+    let env = TestEnv::new("ctrl-f-b-half-page");
+    let search_dir = env.search_dir();
+
+    for i in 0..30 {
+        let repo = search_dir.join(format!("half-page-{i:02}"));
+        fs::create_dir_all(&repo).unwrap();
+        init_test_repo(&repo);
+    }
+
+    env.write_config(&search_dir);
+    env.launch_kiosk();
+
+    let screen = env.capture();
+    let initial_selected =
+        selected_line(&screen).expect("Expected an initially selected repo line in UI");
+
+    env.send_special("C-f");
+    let screen = env.capture();
+    let after_down = selected_line(&screen).expect("Expected selected line after C-f");
+    assert_ne!(
+        after_down, initial_selected,
+        "Ctrl+F should move selection by half page. screen:\n{screen}"
+    );
+
+    env.send_special("C-b");
+    let screen = env.capture();
+    let after_up = selected_line(&screen).expect("Expected selected line after C-b");
+    assert_eq!(
+        after_up, initial_selected,
+        "Ctrl+B should move selection back by half page. screen:\n{screen}"
     );
 }
 

@@ -1,6 +1,6 @@
 use crate::keyboard::{KeyCode, KeyEvent, KeyModifiers};
 use crate::state::Mode;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::str::FromStr;
 
@@ -34,9 +34,15 @@ pub enum Command {
 
     // Text-edit commands
     DeleteBackwardChar,
+    DeleteForwardChar,
     DeleteBackwardWord,
+    DeleteForwardWord,
+    DeleteToStart,
+    DeleteToEnd,
     MoveCursorLeft,
     MoveCursorRight,
+    MoveCursorWordLeft,
+    MoveCursorWordRight,
     MoveCursorStart,
     MoveCursorEnd,
 
@@ -68,9 +74,15 @@ impl FromStr for Command {
             "move_top" => Ok(Command::MoveTop),
             "move_bottom" => Ok(Command::MoveBottom),
             "delete_backward_char" => Ok(Command::DeleteBackwardChar),
+            "delete_forward_char" => Ok(Command::DeleteForwardChar),
             "delete_backward_word" => Ok(Command::DeleteBackwardWord),
+            "delete_forward_word" => Ok(Command::DeleteForwardWord),
+            "delete_to_start" => Ok(Command::DeleteToStart),
+            "delete_to_end" => Ok(Command::DeleteToEnd),
             "move_cursor_left" => Ok(Command::MoveCursorLeft),
             "move_cursor_right" => Ok(Command::MoveCursorRight),
+            "move_cursor_word_left" => Ok(Command::MoveCursorWordLeft),
+            "move_cursor_word_right" => Ok(Command::MoveCursorWordRight),
             "move_cursor_start" => Ok(Command::MoveCursorStart),
             "move_cursor_end" => Ok(Command::MoveCursorEnd),
             "confirm" => Ok(Command::Confirm),
@@ -101,15 +113,30 @@ impl std::fmt::Display for Command {
             Command::MoveTop => "move_top",
             Command::MoveBottom => "move_bottom",
             Command::DeleteBackwardChar => "delete_backward_char",
+            Command::DeleteForwardChar => "delete_forward_char",
             Command::DeleteBackwardWord => "delete_backward_word",
+            Command::DeleteForwardWord => "delete_forward_word",
+            Command::DeleteToStart => "delete_to_start",
+            Command::DeleteToEnd => "delete_to_end",
             Command::MoveCursorLeft => "move_cursor_left",
             Command::MoveCursorRight => "move_cursor_right",
+            Command::MoveCursorWordLeft => "move_cursor_word_left",
+            Command::MoveCursorWordRight => "move_cursor_word_right",
             Command::MoveCursorStart => "move_cursor_start",
             Command::MoveCursorEnd => "move_cursor_end",
             Command::Confirm => "confirm",
             Command::Cancel => "cancel",
         };
         write!(f, "{s}")
+    }
+}
+
+impl Serialize for Command {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
     }
 }
 
@@ -135,9 +162,15 @@ impl Command {
             Command::MoveTop => "Move to top",
             Command::MoveBottom => "Move to bottom",
             Command::DeleteBackwardChar => "Delete backward char",
+            Command::DeleteForwardChar => "Delete forward char",
             Command::DeleteBackwardWord => "Delete backward word",
+            Command::DeleteForwardWord => "Delete forward word",
+            Command::DeleteToStart => "Delete to start of line",
+            Command::DeleteToEnd => "Delete to end of line",
             Command::MoveCursorLeft => "Move cursor left",
             Command::MoveCursorRight => "Move cursor right",
+            Command::MoveCursorWordLeft => "Move cursor word left",
+            Command::MoveCursorWordRight => "Move cursor word right",
             Command::MoveCursorStart => "Move cursor to start",
             Command::MoveCursorEnd => "Move cursor to end",
             Command::Confirm => "Confirm",
@@ -149,8 +182,18 @@ impl Command {
 /// Key bindings for a specific layer/mode
 pub type KeyMap = HashMap<KeyEvent, Command>;
 
+#[derive(Debug, Clone, Copy)]
+enum Layer {
+    General,
+    TextEdit,
+    ListNavigation,
+    Modal,
+    RepoSelect,
+    BranchSelect,
+}
+
 /// Complete key binding configuration, composed from reusable layers.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct KeysConfig {
     pub general: KeyMap,
     pub text_edit: KeyMap,
@@ -184,12 +227,26 @@ impl Default for KeysConfig {
 }
 
 impl KeysConfig {
-    const REPO_SELECT_ORDER: &[&str] = &["general", "text_edit", "list_navigation", "repo_select"];
-    const BRANCH_SELECT_ORDER: &[&str] =
-        &["general", "text_edit", "list_navigation", "branch_select"];
-    const NEW_BRANCH_BASE_ORDER: &[&str] = &["general", "text_edit", "list_navigation", "modal"];
-    const CONFIRM_DELETE_ORDER: &[&str] = &["general", "modal"];
-    const GENERAL_ONLY_ORDER: &[&str] = &["general"];
+    const REPO_SELECT_ORDER: &[Layer] = &[
+        Layer::General,
+        Layer::TextEdit,
+        Layer::ListNavigation,
+        Layer::RepoSelect,
+    ];
+    const BRANCH_SELECT_ORDER: &[Layer] = &[
+        Layer::General,
+        Layer::TextEdit,
+        Layer::ListNavigation,
+        Layer::BranchSelect,
+    ];
+    const NEW_BRANCH_BASE_ORDER: &[Layer] = &[
+        Layer::General,
+        Layer::TextEdit,
+        Layer::ListNavigation,
+        Layer::Modal,
+    ];
+    const CONFIRM_DELETE_ORDER: &[Layer] = &[Layer::General, Layer::Modal];
+    const GENERAL_ONLY_ORDER: &[Layer] = &[Layer::General];
 
     pub fn new() -> Self {
         Self {
@@ -206,14 +263,14 @@ impl KeysConfig {
     pub fn keymap_for_mode(&self, mode: &Mode) -> KeyMap {
         let mut combined = KeyMap::new();
         for layer in Self::layer_order_for_mode(mode) {
-            self.apply_named_layer(&mut combined, layer);
+            Self::apply_layer(&mut combined, self.layer(*layer));
         }
 
         combined
     }
 
     /// Return layer precedence for a mode from lowest to highest priority.
-    pub fn layer_order_for_mode(mode: &Mode) -> &'static [&'static str] {
+    fn layer_order_for_mode(mode: &Mode) -> &'static [Layer] {
         match mode {
             Mode::RepoSelect => Self::REPO_SELECT_ORDER,
             Mode::BranchSelect => Self::BRANCH_SELECT_ORDER,
@@ -223,16 +280,12 @@ impl KeysConfig {
         }
     }
 
-    /// Return keymap layers in canonical documentation order.
-    pub fn doc_sections(&self) -> [(&'static str, &KeyMap); 6] {
-        [
-            ("general", &self.general),
-            ("text_edit", &self.text_edit),
-            ("list_navigation", &self.list_navigation),
-            ("modal", &self.modal),
-            ("repo_select", &self.repo_select),
-            ("branch_select", &self.branch_select),
-        ]
+    #[cfg(test)]
+    fn layer_order_names_for_mode(mode: &Mode) -> Vec<&'static str> {
+        Self::layer_order_for_mode(mode)
+            .iter()
+            .map(|layer| Self::layer_name(*layer))
+            .collect()
     }
 
     /// Find the first key bound to a given command in a keymap.
@@ -257,17 +310,27 @@ impl KeysConfig {
         }
     }
 
-    fn apply_named_layer(&self, base: &mut KeyMap, layer_name: &str) {
-        let layer = match layer_name {
-            "general" => &self.general,
-            "text_edit" => &self.text_edit,
-            "list_navigation" => &self.list_navigation,
-            "modal" => &self.modal,
-            "repo_select" => &self.repo_select,
-            "branch_select" => &self.branch_select,
-            _ => unreachable!("unknown keymap layer: {layer_name}"),
-        };
-        Self::apply_layer(base, layer);
+    fn layer(&self, layer: Layer) -> &KeyMap {
+        match layer {
+            Layer::General => &self.general,
+            Layer::TextEdit => &self.text_edit,
+            Layer::ListNavigation => &self.list_navigation,
+            Layer::Modal => &self.modal,
+            Layer::RepoSelect => &self.repo_select,
+            Layer::BranchSelect => &self.branch_select,
+        }
+    }
+
+    #[cfg(test)]
+    fn layer_name(layer: Layer) -> &'static str {
+        match layer {
+            Layer::General => "general",
+            Layer::TextEdit => "text_edit",
+            Layer::ListNavigation => "list_navigation",
+            Layer::Modal => "modal",
+            Layer::RepoSelect => "repo_select",
+            Layer::BranchSelect => "branch_select",
+        }
     }
 
     fn default_general() -> KeyMap {
@@ -290,8 +353,32 @@ impl KeysConfig {
             Command::DeleteBackwardChar,
         );
         map.insert(
+            KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE),
+            Command::DeleteForwardChar,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+            Command::DeleteForwardChar,
+        );
+        map.insert(
             KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
             Command::DeleteBackwardWord,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT),
+            Command::DeleteBackwardWord,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::ALT),
+            Command::DeleteForwardWord,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+            Command::DeleteToStart,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL),
+            Command::DeleteToEnd,
         );
         map.insert(
             KeyEvent::new(KeyCode::Left, KeyModifiers::NONE),
@@ -302,11 +389,35 @@ impl KeysConfig {
             Command::MoveCursorRight,
         );
         map.insert(
+            KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT),
+            Command::MoveCursorWordLeft,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Left, KeyModifiers::ALT),
+            Command::MoveCursorWordLeft,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT),
+            Command::MoveCursorWordRight,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Right, KeyModifiers::ALT),
+            Command::MoveCursorWordRight,
+        );
+        map.insert(
             KeyEvent::new(KeyCode::Home, KeyModifiers::NONE),
             Command::MoveCursorStart,
         );
         map.insert(
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
+            Command::MoveCursorStart,
+        );
+        map.insert(
             KeyEvent::new(KeyCode::End, KeyModifiers::NONE),
+            Command::MoveCursorEnd,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL),
             Command::MoveCursorEnd,
         );
         map
@@ -331,11 +442,11 @@ impl KeysConfig {
             Command::MoveDown,
         );
         map.insert(
-            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL),
             Command::HalfPageDown,
         );
         map.insert(
-            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL),
             Command::HalfPageUp,
         );
         map.insert(
@@ -426,7 +537,6 @@ impl KeysConfig {
     /// Keep `Noop` values so higher-precedence layers can explicitly unbind inherited mappings.
     fn from_raw(raw: &KeysConfigRaw) -> Result<Self, String> {
         let mut config = Self::default();
-
         config.general.extend(Self::parse_keymap(&raw.general)?);
         config.text_edit.extend(Self::parse_keymap(&raw.text_edit)?);
         config
@@ -647,40 +757,57 @@ mod tests {
     #[test]
     fn test_layer_order_is_exported_for_docs() {
         assert_eq!(
-            KeysConfig::layer_order_for_mode(&Mode::RepoSelect),
-            &["general", "text_edit", "list_navigation", "repo_select"]
+            KeysConfig::layer_order_names_for_mode(&Mode::RepoSelect),
+            vec!["general", "text_edit", "list_navigation", "repo_select"]
         );
         assert_eq!(
-            KeysConfig::layer_order_for_mode(&Mode::NewBranchBase),
-            &["general", "text_edit", "list_navigation", "modal"]
+            KeysConfig::layer_order_names_for_mode(&Mode::NewBranchBase),
+            vec!["general", "text_edit", "list_navigation", "modal"]
         );
         assert_eq!(
-            KeysConfig::layer_order_for_mode(&Mode::ConfirmDelete {
+            KeysConfig::layer_order_names_for_mode(&Mode::ConfirmDelete {
                 branch_name: "x".to_string(),
                 has_session: false,
             }),
-            &["general", "modal"]
+            vec!["general", "modal"]
         );
     }
 
     #[test]
-    fn test_doc_sections_order() {
-        let keys = KeysConfig::default();
-        let names: Vec<_> = keys
-            .doc_sections()
-            .into_iter()
-            .map(|(name, _)| name)
-            .collect();
+    fn test_default_search_bindings_take_priority() {
+        let config = KeysConfig::default();
+        let ctrl_u = KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL);
+        let ctrl_d = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL);
+        let ctrl_f = KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL);
+        let ctrl_b = KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL);
+
         assert_eq!(
-            names,
-            vec![
-                "general",
-                "text_edit",
-                "list_navigation",
-                "modal",
-                "repo_select",
-                "branch_select",
-            ]
+            config
+                .keymap_for_mode(&Mode::RepoSelect)
+                .get(&ctrl_u)
+                .cloned(),
+            Some(Command::DeleteToStart)
+        );
+        assert_eq!(
+            config
+                .keymap_for_mode(&Mode::RepoSelect)
+                .get(&ctrl_d)
+                .cloned(),
+            Some(Command::DeleteForwardChar)
+        );
+        assert_eq!(
+            config
+                .keymap_for_mode(&Mode::RepoSelect)
+                .get(&ctrl_f)
+                .cloned(),
+            Some(Command::HalfPageDown)
+        );
+        assert_eq!(
+            config
+                .keymap_for_mode(&Mode::RepoSelect)
+                .get(&ctrl_b)
+                .cloned(),
+            Some(Command::HalfPageUp)
         );
     }
 

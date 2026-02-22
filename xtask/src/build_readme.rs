@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use kiosk_core::config::{KeysConfig, keys::KeyMap};
+use kiosk_core::config::KeysConfig;
 use quote::ToTokens;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
@@ -203,21 +203,39 @@ fn resolve_module_path(source_path: &Path, item_mod: &ItemMod) -> Option<std::pa
 }
 
 fn generate_default_keys_toml() -> String {
+    #[derive(serde::Serialize)]
+    struct KeysWrapper<'a> {
+        keys: &'a KeysConfig,
+    }
+
     let keys = KeysConfig::default();
+    let wrapped = KeysWrapper { keys: &keys };
+    let value = toml::Value::try_from(&wrapped).expect("default keys config should serialize");
+    let section_table = value
+        .get("keys")
+        .and_then(toml::Value::as_table)
+        .expect("serialized keys should contain [keys] table");
     let mut out = String::new();
 
-    for (section, keymap) in keys.doc_sections() {
-        write_keymap_section(&mut out, section, keymap);
+    for (section, section_value) in section_table {
+        write_keymap_section(&mut out, section, section_value);
     }
 
     out
 }
 
-fn write_keymap_section(out: &mut String, section: &str, keymap: &KeyMap) {
+fn write_keymap_section(out: &mut String, section: &str, section_value: &toml::Value) {
     let _ = writeln!(out, "[keys.{section}]");
-    let mut entries: Vec<_> = keymap
+    let mut entries: Vec<_> = section_value
+        .as_table()
+        .expect("key section should serialize as a table")
         .iter()
-        .map(|(key, command)| (key.to_string(), command.to_string()))
+        .map(|(key, command)| {
+            (
+                key.clone(),
+                command.as_str().unwrap_or_default().to_string(),
+            )
+        })
         .collect();
     entries.sort_unstable();
     for (key, command) in entries {

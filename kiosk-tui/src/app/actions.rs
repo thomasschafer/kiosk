@@ -279,6 +279,34 @@ pub(super) fn handle_search_delete_word(state: &mut AppState, matcher: &SkimMatc
     update_active_filter(state, matcher);
 }
 
+pub(super) fn handle_search_delete_forward(state: &mut AppState, matcher: &SkimMatcherV2) {
+    if let Some(list) = state.active_list_mut() {
+        list.delete_forward_char();
+    }
+    update_active_filter(state, matcher);
+}
+
+pub(super) fn handle_search_delete_word_forward(state: &mut AppState, matcher: &SkimMatcherV2) {
+    if let Some(list) = state.active_list_mut() {
+        list.delete_word_forward();
+    }
+    update_active_filter(state, matcher);
+}
+
+pub(super) fn handle_search_delete_to_start(state: &mut AppState, matcher: &SkimMatcherV2) {
+    if let Some(list) = state.active_list_mut() {
+        list.delete_to_start();
+    }
+    update_active_filter(state, matcher);
+}
+
+pub(super) fn handle_search_delete_to_end(state: &mut AppState, matcher: &SkimMatcherV2) {
+    if let Some(list) = state.active_list_mut() {
+        list.delete_to_end();
+    }
+    update_active_filter(state, matcher);
+}
+
 fn update_active_filter(state: &mut AppState, matcher: &SkimMatcherV2) {
     match state.mode {
         Mode::RepoSelect => {

@@ -103,25 +103,23 @@ Key binding configuration.
 Defaults are shown below.
 
 ```toml
+[keys.branch_select]
+"C-o" = "new_branch"
+"C-x" = "delete_worktree"
+"enter" = "open_branch"
+"esc" = "go_back"
+
 [keys.general]
 "C-c" = "quit"
 "C-h" = "show_help"
 
-[keys.text_edit]
-"C-w" = "delete_backward_word"
-"backspace" = "delete_backward_char"
-"end" = "move_cursor_end"
-"home" = "move_cursor_start"
-"left" = "move_cursor_left"
-"right" = "move_cursor_right"
-
 [keys.list_navigation]
 "A-G" = "move_bottom"
 "A-g" = "move_top"
-"C-d" = "half_page_down"
+"C-b" = "half_page_up"
+"C-f" = "half_page_down"
 "C-n" = "move_down"
 "C-p" = "move_up"
-"C-u" = "half_page_up"
 "down" = "move_down"
 "pagedown" = "page_down"
 "pageup" = "page_up"
@@ -136,11 +134,25 @@ Defaults are shown below.
 "esc" = "quit"
 "tab" = "enter_repo"
 
-[keys.branch_select]
-"C-o" = "new_branch"
-"C-x" = "delete_worktree"
-"enter" = "open_branch"
-"esc" = "go_back"
+[keys.text_edit]
+"A-b" = "move_cursor_word_left"
+"A-backspace" = "delete_backward_word"
+"A-d" = "delete_forward_word"
+"A-f" = "move_cursor_word_right"
+"A-left" = "move_cursor_word_left"
+"A-right" = "move_cursor_word_right"
+"C-a" = "move_cursor_start"
+"C-d" = "delete_forward_char"
+"C-e" = "move_cursor_end"
+"C-k" = "delete_to_end"
+"C-u" = "delete_to_start"
+"C-w" = "delete_backward_word"
+"backspace" = "delete_backward_char"
+"del" = "delete_forward_char"
+"end" = "move_cursor_end"
+"home" = "move_cursor_start"
+"left" = "move_cursor_left"
+"right" = "move_cursor_right"
 
 ```
 

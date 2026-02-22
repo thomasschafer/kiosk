@@ -60,7 +60,15 @@ fn run_tui(config: &config::Config) -> Result<()> {
 
     let theme = Theme::from_config(&config.theme);
 
-    let mut terminal = ratatui::init();
+    let mut terminal = if should_disable_alt_screen() {
+        // Inline viewport keeps drawing in the primary screen buffer, which makes
+        // tmux capture-pane output usable for automation/debugging.
+        ratatui::init_with_options(ratatui::TerminalOptions {
+            viewport: ratatui::Viewport::Inline(30),
+        })
+    } else {
+        ratatui::init()
+    };
     let result = kiosk_tui::run(
         &mut terminal,
         &mut state,
@@ -88,6 +96,16 @@ fn run_tui(config: &config::Config) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn should_disable_alt_screen() -> bool {
+    match std::env::var("KIOSK_NO_ALT_SCREEN") {
+        Ok(value) => {
+            let value = value.trim().to_ascii_lowercase();
+            !matches!(value.as_str(), "" | "0" | "false" | "no" | "off")
+        }
+        Err(_) => false,
+    }
 }
 
 fn clean_orphaned_worktrees(

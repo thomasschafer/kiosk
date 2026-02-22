@@ -86,13 +86,13 @@ fn command_to_action(command: &Command, state: &AppState) -> Option<Action> {
         Command::MoveCursorStart => Some(Action::CursorStart),
         Command::MoveCursorEnd => Some(Action::CursorEnd),
         Command::Confirm => match state.mode {
-            Mode::ConfirmDelete { .. } => Some(Action::ConfirmDeleteWorktree),
-            Mode::NewBranchBase => Some(Action::OpenBranch),
+            Mode::ConfirmWorktreeDelete { .. } => Some(Action::ConfirmDeleteWorktree),
+            Mode::SelectBaseBranch => Some(Action::OpenBranch),
             _ => None,
         },
         Command::Cancel => match state.mode {
-            Mode::ConfirmDelete { .. } => Some(Action::CancelDeleteWorktree),
-            Mode::NewBranchBase => Some(Action::GoBack),
+            Mode::ConfirmWorktreeDelete { .. } => Some(Action::CancelDeleteWorktree),
+            Mode::SelectBaseBranch => Some(Action::GoBack),
             _ => None,
         },
     }
@@ -102,6 +102,6 @@ fn command_to_action(command: &Command, state: &AppState) -> Option<Action> {
 fn can_search_in_mode(mode: &Mode) -> bool {
     matches!(
         mode,
-        Mode::RepoSelect | Mode::BranchSelect | Mode::NewBranchBase
+        Mode::RepoSelect | Mode::BranchSelect | Mode::SelectBaseBranch
     )
 }

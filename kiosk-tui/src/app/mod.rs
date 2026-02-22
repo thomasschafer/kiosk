@@ -161,11 +161,11 @@ fn draw(
     match &state.mode {
         Mode::RepoSelect => components::repo_list::draw(f, main_area, state, theme, keys),
         Mode::BranchSelect => components::branch_picker::draw(f, main_area, state, theme, keys),
-        Mode::NewBranchBase => {
+        Mode::SelectBaseBranch => {
             components::branch_picker::draw(f, main_area, state, theme, keys);
             components::new_branch::draw(f, state, theme);
         }
-        Mode::ConfirmDelete { .. } => {
+        Mode::ConfirmWorktreeDelete { .. } => {
             components::branch_picker::draw(f, main_area, state, theme, keys);
             draw_confirm_delete_dialog(f, main_area, state, theme, keys);
         }
@@ -178,11 +178,11 @@ fn draw(
                 Mode::BranchSelect => {
                     components::branch_picker::draw(f, main_area, state, theme, keys);
                 }
-                Mode::NewBranchBase => {
+                Mode::SelectBaseBranch => {
                     components::branch_picker::draw(f, main_area, state, theme, keys);
                     components::new_branch::draw(f, state, theme);
                 }
-                Mode::ConfirmDelete { .. } => {
+                Mode::ConfirmWorktreeDelete { .. } => {
                     components::branch_picker::draw(f, main_area, state, theme, keys);
                     draw_confirm_delete_dialog(f, main_area, state, theme, keys);
                 }
@@ -205,12 +205,12 @@ fn list_rows_from_list_area(list_area: Rect) -> usize {
 
 fn active_list_page_rows(full_area: Rect, main_area: Rect, mode: &Mode) -> usize {
     match mode {
-        Mode::RepoSelect | Mode::BranchSelect | Mode::ConfirmDelete { .. } => {
+        Mode::RepoSelect | Mode::BranchSelect | Mode::ConfirmWorktreeDelete { .. } => {
             let chunks =
                 Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(main_area);
             list_rows_from_list_area(chunks[1])
         }
-        Mode::NewBranchBase => {
+        Mode::SelectBaseBranch => {
             let popup = components::centered_rect(60, 60, full_area);
             let chunks = Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(popup);
             list_rows_from_list_area(chunks[1])
@@ -260,7 +260,7 @@ fn draw_confirm_delete_dialog(
     theme: &crate::theme::Theme,
     keys: &kiosk_core::config::KeysConfig,
 ) {
-    if let Mode::ConfirmDelete {
+    if let Mode::ConfirmWorktreeDelete {
         branch_name,
         has_session,
     } = &state.mode
@@ -271,7 +271,7 @@ fn draw_confirm_delete_dialog(
             "Delete worktree for branch "
         };
 
-        let keymap = keys.keymap_for_mode(&Mode::ConfirmDelete {
+        let keymap = keys.keymap_for_mode(&Mode::ConfirmWorktreeDelete {
             branch_name: branch_name.clone(),
             has_session: *has_session,
         });
@@ -450,8 +450,8 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
         }
         AppEvent::GitError(msg) => {
             // Return to the appropriate mode
-            if state.new_branch_base.is_some() {
-                state.new_branch_base = None;
+            if state.base_branch_selection.is_some() {
+                state.base_branch_selection = None;
                 state.mode = Mode::BranchSelect;
             } else {
                 state.mode = Mode::BranchSelect;
@@ -816,8 +816,8 @@ mod tests {
     fn test_go_back_from_new_branch_to_branch() {
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
-        state.mode = Mode::NewBranchBase;
-        state.new_branch_base = Some(kiosk_core::state::NewBranchFlow {
+        state.mode = Mode::SelectBaseBranch;
+        state.base_branch_selection = Some(kiosk_core::state::BaseBranchSelection {
             new_name: "feat".into(),
             bases: vec!["main".into()],
             list: SearchableList::new(1),
@@ -830,7 +830,7 @@ mod tests {
 
         process_action(Action::GoBack, &mut state, &git, &tmux, &matcher, &sender);
         assert_eq!(state.mode, Mode::BranchSelect);
-        assert!(state.new_branch_base.is_none());
+        assert!(state.base_branch_selection.is_none());
     }
 
     #[test]
@@ -1130,9 +1130,9 @@ mod tests {
             &sender,
         );
 
-        assert_eq!(state.mode, Mode::NewBranchBase);
-        assert!(state.new_branch_base.is_some());
-        assert_eq!(state.new_branch_base.unwrap().new_name, "feat/new");
+        assert_eq!(state.mode, Mode::SelectBaseBranch);
+        assert!(state.base_branch_selection.is_some());
+        assert_eq!(state.base_branch_selection.unwrap().new_name, "feat/new");
     }
 
     #[test]
@@ -1234,7 +1234,7 @@ mod tests {
 
         assert_eq!(
             state.mode,
-            Mode::ConfirmDelete {
+            Mode::ConfirmWorktreeDelete {
                 branch_name: "dev".to_string(),
                 has_session: false,
             }
@@ -1273,7 +1273,7 @@ mod tests {
 
         assert_eq!(
             state.mode,
-            Mode::ConfirmDelete {
+            Mode::ConfirmWorktreeDelete {
                 branch_name: "dev".to_string(),
                 has_session: true,
             }
@@ -1290,7 +1290,7 @@ mod tests {
         });
         let mut state = AppState::new(repos, None);
         state.selected_repo_idx = Some(0);
-        state.mode = Mode::ConfirmDelete {
+        state.mode = Mode::ConfirmWorktreeDelete {
             branch_name: "dev".to_string(),
             has_session: true,
         };
@@ -1332,7 +1332,7 @@ mod tests {
         });
         let mut state = AppState::new(repos, None);
         state.selected_repo_idx = Some(0);
-        state.mode = Mode::ConfirmDelete {
+        state.mode = Mode::ConfirmWorktreeDelete {
             branch_name: "dev".to_string(),
             has_session: false,
         };

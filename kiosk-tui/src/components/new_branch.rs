@@ -9,7 +9,7 @@ use ratatui::{
 };
 
 pub fn draw(f: &mut Frame, state: &AppState, theme: &Theme) {
-    let Some(flow) = &state.new_branch_base else {
+    let Some(flow) = &state.base_branch_selection else {
         return;
     };
 

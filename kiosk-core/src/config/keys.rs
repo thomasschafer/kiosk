@@ -227,26 +227,26 @@ impl Default for KeysConfig {
 }
 
 impl KeysConfig {
-    const REPO_SELECT_ORDER: &[Layer] = &[
+    const REPO_SELECT_LAYERS: &[Layer] = &[
         Layer::General,
         Layer::TextEdit,
         Layer::ListNavigation,
         Layer::RepoSelect,
     ];
-    const BRANCH_SELECT_ORDER: &[Layer] = &[
+    const BRANCH_SELECT_LAYERS: &[Layer] = &[
         Layer::General,
         Layer::TextEdit,
         Layer::ListNavigation,
         Layer::BranchSelect,
     ];
-    const NEW_BRANCH_BASE_ORDER: &[Layer] = &[
+    const SELECT_BASE_BRANCH_LAYERS: &[Layer] = &[
         Layer::General,
         Layer::TextEdit,
         Layer::ListNavigation,
         Layer::Modal,
     ];
-    const CONFIRM_DELETE_ORDER: &[Layer] = &[Layer::General, Layer::Modal];
-    const GENERAL_ONLY_ORDER: &[Layer] = &[Layer::General];
+    const CONFIRM_WORKTREE_DELETE_LAYERS: &[Layer] = &[Layer::General, Layer::Modal];
+    const GENERAL_ONLY_LAYERS: &[Layer] = &[Layer::General];
 
     pub fn new() -> Self {
         Self {
@@ -272,11 +272,11 @@ impl KeysConfig {
     /// Return layer precedence for a mode from lowest to highest priority.
     fn layer_order_for_mode(mode: &Mode) -> &'static [Layer] {
         match mode {
-            Mode::RepoSelect => Self::REPO_SELECT_ORDER,
-            Mode::BranchSelect => Self::BRANCH_SELECT_ORDER,
-            Mode::NewBranchBase => Self::NEW_BRANCH_BASE_ORDER,
-            Mode::ConfirmDelete { .. } => Self::CONFIRM_DELETE_ORDER,
-            Mode::Help { .. } | Mode::Loading(_) => Self::GENERAL_ONLY_ORDER,
+            Mode::RepoSelect => Self::REPO_SELECT_LAYERS,
+            Mode::BranchSelect => Self::BRANCH_SELECT_LAYERS,
+            Mode::SelectBaseBranch => Self::SELECT_BASE_BRANCH_LAYERS,
+            Mode::ConfirmWorktreeDelete { .. } => Self::CONFIRM_WORKTREE_DELETE_LAYERS,
+            Mode::Help { .. } | Mode::Loading(_) => Self::GENERAL_ONLY_LAYERS,
         }
     }
 
@@ -718,7 +718,7 @@ mod tests {
         };
 
         let config = KeysConfig::from_raw(&raw).unwrap();
-        let map = config.keymap_for_mode(&Mode::ConfirmDelete {
+        let map = config.keymap_for_mode(&Mode::ConfirmWorktreeDelete {
             branch_name: "x".to_string(),
             has_session: false,
         });
@@ -746,7 +746,7 @@ mod tests {
         };
 
         let config = KeysConfig::from_raw(&raw).unwrap();
-        let map = config.keymap_for_mode(&Mode::ConfirmDelete {
+        let map = config.keymap_for_mode(&Mode::ConfirmWorktreeDelete {
             branch_name: "x".to_string(),
             has_session: false,
         });
@@ -761,11 +761,11 @@ mod tests {
             vec!["general", "text_edit", "list_navigation", "repo_select"]
         );
         assert_eq!(
-            KeysConfig::layer_order_names_for_mode(&Mode::NewBranchBase),
+            KeysConfig::layer_order_names_for_mode(&Mode::SelectBaseBranch),
             vec!["general", "text_edit", "list_navigation", "modal"]
         );
         assert_eq!(
-            KeysConfig::layer_order_names_for_mode(&Mode::ConfirmDelete {
+            KeysConfig::layer_order_names_for_mode(&Mode::ConfirmWorktreeDelete {
                 branch_name: "x".to_string(),
                 has_session: false,
             }),

@@ -58,8 +58,8 @@ fn build_help_content(keys: &KeysConfig, current_mode: &Mode) -> Vec<Line<'stati
     let mode_title = match current_mode {
         Mode::RepoSelect => "Repository Selection:",
         Mode::BranchSelect => "Branch Selection:",
-        Mode::NewBranchBase => "New Branch Base Selection:",
-        Mode::ConfirmDelete { .. } => "Confirmation:",
+        Mode::SelectBaseBranch => "Base Branch Selection:",
+        Mode::ConfirmWorktreeDelete { .. } => "Delete Confirmation:",
         Mode::Loading(_) => "Loading:",
         Mode::Help { .. } => "General:",
     };
@@ -78,7 +78,7 @@ fn build_help_content(keys: &KeysConfig, current_mode: &Mode) -> Vec<Line<'stati
 
     if matches!(
         current_mode,
-        Mode::RepoSelect | Mode::BranchSelect | Mode::NewBranchBase
+        Mode::RepoSelect | Mode::BranchSelect | Mode::SelectBaseBranch
     ) {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(

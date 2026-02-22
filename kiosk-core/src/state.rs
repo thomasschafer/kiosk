@@ -284,11 +284,11 @@ impl BranchEntry {
 pub enum Mode {
     RepoSelect,
     BranchSelect,
-    NewBranchBase,
+    SelectBaseBranch,
     /// Blocking loading state — shows spinner, no input except Ctrl+C
     Loading(String),
     /// Confirmation dialog for worktree deletion
-    ConfirmDelete {
+    ConfirmWorktreeDelete {
         branch_name: String,
         has_session: bool,
     },
@@ -300,7 +300,7 @@ pub enum Mode {
 
 /// The new-branch flow state
 #[derive(Debug, Clone)]
-pub struct NewBranchFlow {
+pub struct BaseBranchSelection {
     /// The new branch name (what the user typed)
     pub new_name: String,
     /// Base branches to pick from
@@ -319,7 +319,7 @@ pub struct AppState {
     pub branches: Vec<BranchEntry>,
     pub branch_list: SearchableList,
 
-    pub new_branch_base: Option<NewBranchFlow>,
+    pub base_branch_selection: Option<BaseBranchSelection>,
 
     pub split_command: Option<String>,
     pub mode: Mode,
@@ -339,7 +339,7 @@ impl AppState {
             selected_repo_idx: None,
             branches: Vec::new(),
             branch_list: SearchableList::new(0),
-            new_branch_base: None,
+            base_branch_selection: None,
             split_command,
             mode: Mode::RepoSelect,
             loading_branches: false,
@@ -357,7 +357,7 @@ impl AppState {
             selected_repo_idx: None,
             branches: Vec::new(),
             branch_list: SearchableList::new(0),
-            new_branch_base: None,
+            base_branch_selection: None,
             split_command,
             mode: Mode::Loading(loading_message.to_string()),
             loading_branches: false,
@@ -372,7 +372,7 @@ impl AppState {
         match self.mode {
             Mode::RepoSelect => Some(&mut self.repo_list),
             Mode::BranchSelect => Some(&mut self.branch_list),
-            Mode::NewBranchBase => self.new_branch_base.as_mut().map(|f| &mut f.list),
+            Mode::SelectBaseBranch => self.base_branch_selection.as_mut().map(|f| &mut f.list),
             _ => None,
         }
     }
@@ -382,7 +382,7 @@ impl AppState {
         match self.mode {
             Mode::RepoSelect => Some(&self.repo_list),
             Mode::BranchSelect => Some(&self.branch_list),
-            Mode::NewBranchBase => self.new_branch_base.as_ref().map(|f| &f.list),
+            Mode::SelectBaseBranch => self.base_branch_selection.as_ref().map(|f| &f.list),
             _ => None,
         }
     }

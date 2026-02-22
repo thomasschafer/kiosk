@@ -1,7 +1,7 @@
 use crate::keyboard::{KeyCode, KeyEvent, KeyModifiers};
 use crate::state::Mode;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::str::FromStr;
 
 /// Commands that can be bound to keys
@@ -185,12 +185,35 @@ pub type KeyMap = HashMap<KeyEvent, Command>;
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum Layer {
+    // Layer precedence source of truth: earlier variants are lower precedence.
     General,
     TextEdit,
     ListNavigation,
-    Modal,
     RepoSelect,
     BranchSelect,
+    Modal,
+}
+
+impl Layer {
+    const ORDER_ASC: [Layer; 6] = [
+        Layer::General,
+        Layer::TextEdit,
+        Layer::ListNavigation,
+        Layer::RepoSelect,
+        Layer::BranchSelect,
+        Layer::Modal,
+    ];
+
+    fn section_name(self) -> &'static str {
+        match self {
+            Layer::General => "general",
+            Layer::TextEdit => "text_edit",
+            Layer::ListNavigation => "list_navigation",
+            Layer::RepoSelect => "repo_select",
+            Layer::BranchSelect => "branch_select",
+            Layer::Modal => "modal",
+        }
+    }
 }
 
 /// Complete key binding configuration, composed from reusable layers.
@@ -228,42 +251,6 @@ impl Default for KeysConfig {
 }
 
 impl KeysConfig {
-    const REPO_SELECT_LAYERS: &[Layer] = &[
-        Layer::General,
-        Layer::TextEdit,
-        Layer::ListNavigation,
-        Layer::RepoSelect,
-    ];
-    const BRANCH_SELECT_LAYERS: &[Layer] = &[
-        Layer::General,
-        Layer::TextEdit,
-        Layer::ListNavigation,
-        Layer::BranchSelect,
-    ];
-    const SELECT_BASE_BRANCH_LAYERS: &[Layer] = &[
-        Layer::General,
-        Layer::TextEdit,
-        Layer::ListNavigation,
-        Layer::Modal,
-    ];
-    const CONFIRM_WORKTREE_DELETE_LAYERS: &[Layer] = &[Layer::General, Layer::Modal];
-    const GENERAL_ONLY_LAYERS: &[Layer] = &[Layer::General];
-    const ALL_LAYERS: &[Layer] = &[
-        Layer::General,
-        Layer::TextEdit,
-        Layer::ListNavigation,
-        Layer::Modal,
-        Layer::RepoSelect,
-        Layer::BranchSelect,
-    ];
-    const MODE_LAYER_ORDERS: &[&[Layer]] = &[
-        Self::REPO_SELECT_LAYERS,
-        Self::BRANCH_SELECT_LAYERS,
-        Self::SELECT_BASE_BRANCH_LAYERS,
-        Self::CONFIRM_WORKTREE_DELETE_LAYERS,
-        Self::GENERAL_ONLY_LAYERS,
-    ];
-
     pub fn new() -> Self {
         Self {
             general: Self::default_general(),
@@ -278,95 +265,29 @@ impl KeysConfig {
     /// Build the effective keymap for a given app mode.
     pub fn keymap_for_mode(&self, mode: &Mode) -> KeyMap {
         let mut combined = KeyMap::new();
-        for layer in Self::layer_order_for_mode(mode) {
-            Self::apply_layer(&mut combined, self.layer(*layer));
+        for layer in Layer::ORDER_ASC {
+            if Self::mode_uses_layer(mode, layer) {
+                Self::apply_layer(&mut combined, self.layer(layer));
+            }
         }
 
         combined
     }
 
-    /// Return layer precedence for a mode from lowest to highest priority.
-    fn layer_order_for_mode(mode: &Mode) -> &'static [Layer] {
-        match mode {
-            Mode::RepoSelect => Self::REPO_SELECT_LAYERS,
-            Mode::BranchSelect => Self::BRANCH_SELECT_LAYERS,
-            Mode::SelectBaseBranch => Self::SELECT_BASE_BRANCH_LAYERS,
-            Mode::ConfirmWorktreeDelete { .. } => Self::CONFIRM_WORKTREE_DELETE_LAYERS,
-            Mode::Help { .. } | Mode::Loading(_) => Self::GENERAL_ONLY_LAYERS,
-        }
-    }
-
     /// Return key-layer section names ordered from lowest to highest precedence.
-    ///
-    /// Order is derived from mode layer precedence definitions, not hardcoded names.
     pub fn docs_section_order_asc() -> Vec<&'static str> {
-        Self::docs_layer_order_asc()
+        Layer::ORDER_ASC
             .into_iter()
-            .map(Self::layer_name)
+            .map(Layer::section_name)
             .collect()
-    }
-
-    fn docs_layer_order_asc() -> Vec<Layer> {
-        let mut indegree: HashMap<Layer, usize> = Self::ALL_LAYERS
-            .iter()
-            .copied()
-            .map(|layer| (layer, 0))
-            .collect();
-        let mut outgoing: HashMap<Layer, Vec<Layer>> = Self::ALL_LAYERS
-            .iter()
-            .copied()
-            .map(|layer| (layer, Vec::new()))
-            .collect();
-        let mut seen_edges: HashSet<(Layer, Layer)> = HashSet::new();
-
-        for order in Self::MODE_LAYER_ORDERS {
-            for pair in order.windows(2) {
-                let from = pair[0];
-                let to = pair[1];
-                if seen_edges.insert((from, to)) {
-                    outgoing.entry(from).or_default().push(to);
-                    *indegree.entry(to).or_default() += 1;
-                }
-            }
-        }
-
-        let mut ready: Vec<Layer> = indegree
-            .iter()
-            .filter(|(_, count)| **count == 0)
-            .map(|(layer, _)| *layer)
-            .collect();
-        ready.sort_by_key(|layer| Self::layer_rank(*layer));
-
-        let mut low_to_high = Vec::with_capacity(Self::ALL_LAYERS.len());
-        while let Some(layer) = ready.first().copied() {
-            ready.remove(0);
-            low_to_high.push(layer);
-
-            if let Some(targets) = outgoing.get(&layer) {
-                for target in targets {
-                    if let Some(count) = indegree.get_mut(target) {
-                        *count = count.saturating_sub(1);
-                        if *count == 0 {
-                            ready.push(*target);
-                        }
-                    }
-                }
-            }
-            ready.sort_by_key(|next| Self::layer_rank(*next));
-        }
-
-        if low_to_high.len() != Self::ALL_LAYERS.len() {
-            return Self::ALL_LAYERS.to_vec();
-        }
-
-        low_to_high
     }
 
     #[cfg(test)]
     fn layer_order_names_for_mode(mode: &Mode) -> Vec<&'static str> {
-        Self::layer_order_for_mode(mode)
-            .iter()
-            .map(|layer| Self::layer_name(*layer))
+        Layer::ORDER_ASC
+            .into_iter()
+            .filter(|layer| Self::mode_uses_layer(mode, *layer))
+            .map(Layer::section_name)
             .collect()
     }
 
@@ -397,31 +318,30 @@ impl KeysConfig {
             Layer::General => &self.general,
             Layer::TextEdit => &self.text_edit,
             Layer::ListNavigation => &self.list_navigation,
-            Layer::Modal => &self.modal,
             Layer::RepoSelect => &self.repo_select,
             Layer::BranchSelect => &self.branch_select,
+            Layer::Modal => &self.modal,
         }
     }
 
-    fn layer_name(layer: Layer) -> &'static str {
-        match layer {
-            Layer::General => "general",
-            Layer::TextEdit => "text_edit",
-            Layer::ListNavigation => "list_navigation",
-            Layer::Modal => "modal",
-            Layer::RepoSelect => "repo_select",
-            Layer::BranchSelect => "branch_select",
-        }
-    }
-
-    fn layer_rank(layer: Layer) -> u8 {
-        match layer {
-            Layer::General => 0,
-            Layer::TextEdit => 1,
-            Layer::ListNavigation => 2,
-            Layer::RepoSelect => 3,
-            Layer::BranchSelect => 4,
-            Layer::Modal => 5,
+    fn mode_uses_layer(mode: &Mode, layer: Layer) -> bool {
+        match mode {
+            Mode::RepoSelect => matches!(
+                layer,
+                Layer::General | Layer::TextEdit | Layer::ListNavigation | Layer::RepoSelect
+            ),
+            Mode::BranchSelect => matches!(
+                layer,
+                Layer::General | Layer::TextEdit | Layer::ListNavigation | Layer::BranchSelect
+            ),
+            Mode::SelectBaseBranch => {
+                matches!(
+                    layer,
+                    Layer::General | Layer::TextEdit | Layer::ListNavigation | Layer::Modal
+                )
+            }
+            Mode::ConfirmWorktreeDelete { .. } => matches!(layer, Layer::General | Layer::Modal),
+            Mode::Help { .. } | Mode::Loading(_) => matches!(layer, Layer::General),
         }
     }
 

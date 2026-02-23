@@ -1,7 +1,7 @@
 pub mod keys;
 
 use anyhow::Result;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -82,49 +82,64 @@ pub struct SessionConfig {
     pub split_command: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
-#[serde(deny_unknown_fields)]
+// The struct must be defined outside the macro so that xtask's syn parser
+// can discover it for README doc generation.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(deny_unknown_fields, default)]
 pub struct ThemeConfig {
     /// Primary accent color (default: "magenta").
-    #[serde(
-        default = "ThemeConfig::default_accent",
-        deserialize_with = "deserialize_color"
-    )]
+    #[serde(deserialize_with = "deserialize_color")]
     pub accent: ThemeColor,
     /// Secondary accent color (default: "cyan").
-    #[serde(
-        default = "ThemeConfig::default_secondary",
-        deserialize_with = "deserialize_color"
-    )]
+    #[serde(deserialize_with = "deserialize_color")]
     pub secondary: ThemeColor,
     /// Success/positive color (default: "green").
-    #[serde(
-        default = "ThemeConfig::default_success",
-        deserialize_with = "deserialize_color"
-    )]
+    #[serde(deserialize_with = "deserialize_color")]
     pub success: ThemeColor,
+    /// Error color (default: "red").
+    #[serde(deserialize_with = "deserialize_color")]
+    pub error: ThemeColor,
+    /// Warning color (default: "yellow").
+    #[serde(deserialize_with = "deserialize_color")]
+    pub warning: ThemeColor,
+    /// Muted/dim text color (default: "`dark_gray`").
+    #[serde(deserialize_with = "deserialize_color")]
+    pub muted: ThemeColor,
+    /// Border color (default: "`dark_gray`").
+    #[serde(deserialize_with = "deserialize_color")]
+    pub border: ThemeColor,
+    /// Hint/key binding color (default: "blue").
+    #[serde(deserialize_with = "deserialize_color")]
+    pub hint: ThemeColor,
+    /// Foreground color for highlighted/selected items (default: "black").
+    #[serde(deserialize_with = "deserialize_color")]
+    pub highlight_fg: ThemeColor,
 }
 
-impl Default for ThemeConfig {
-    fn default() -> Self {
-        Self {
-            accent: Self::default_accent(),
-            secondary: Self::default_secondary(),
-            success: Self::default_success(),
+/// Single source of truth for theme defaults. Generates the `Default` impl
+/// so adding a field only requires updating one place (plus the struct above).
+macro_rules! theme_defaults {
+    ($($field:ident => $color:ident),* $(,)?) => {
+        impl Default for ThemeConfig {
+            fn default() -> Self {
+                Self {
+                    $($field: ThemeColor::Named(NamedColor::$color)),*
+                }
+            }
         }
-    }
+    };
 }
 
-impl ThemeConfig {
-    fn default_accent() -> ThemeColor {
-        ThemeColor::Named(NamedColor::Magenta)
-    }
-    fn default_secondary() -> ThemeColor {
-        ThemeColor::Named(NamedColor::Cyan)
-    }
-    fn default_success() -> ThemeColor {
-        ThemeColor::Named(NamedColor::Green)
-    }
+theme_defaults! {
+    accent       => Magenta,
+    secondary    => Cyan,
+    success      => Green,
+    error        => Red,
+    warning      => Yellow,
+    muted        => DarkGray,
+    border       => DarkGray,
+    hint         => Blue,
+    highlight_fg => Black,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -133,16 +148,73 @@ pub enum ThemeColor {
     Rgb(u8, u8, u8),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NamedColor {
-    Black,
-    Red,
-    Green,
-    Yellow,
-    Blue,
-    Magenta,
-    Cyan,
-    White,
+/// Single source of truth for every `NamedColor` variant, its canonical config
+/// string, and any accepted aliases. The macro generates the enum plus `all()`,
+/// `as_str()`, `resolve_alias()`, and `aliases()`.
+macro_rules! define_named_colors {
+    ($(
+        $variant:ident {
+            name: $name:literal
+            $(, aliases: [$($alias:literal),+ $(,)?])?
+        }
+    ),* $(,)?) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum NamedColor { $($variant),* }
+
+        impl NamedColor {
+            /// All named colours with their canonical config strings.
+            pub const fn all() -> &'static [(&'static str, NamedColor)] {
+                &[$(($name, NamedColor::$variant)),*]
+            }
+
+            pub const fn as_str(self) -> &'static str {
+                match self {
+                    $(NamedColor::$variant => $name),*
+                }
+            }
+
+            /// Resolve alternative spellings to canonical names.
+            pub fn resolve_alias(s: &str) -> &str {
+                match s {
+                    $($($($alias)|+ => $name,)?)*
+                    other => other,
+                }
+            }
+
+            /// All (alias, canonical) pairs for documentation.
+            pub const fn aliases() -> &'static [(&'static str, &'static str)] {
+                &[$($( $( ($alias, $name), )+ )?)*]
+            }
+        }
+    };
+}
+
+define_named_colors! {
+    Black   { name: "black" },
+    Red     { name: "red" },
+    Green   { name: "green" },
+    Yellow  { name: "yellow" },
+    Blue    { name: "blue" },
+    Magenta { name: "magenta" },
+    Cyan    { name: "cyan" },
+    White   { name: "white" },
+    Gray    { name: "gray", aliases: ["grey"] },
+    DarkGray { name: "dark_gray", aliases: ["darkgray", "dark_grey", "darkgrey"] },
+}
+
+impl std::fmt::Display for ThemeColor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Named(n) => f.write_str(n.as_str()),
+            Self::Rgb(r, g, b) => write!(f, "#{r:02x}{g:02x}{b:02x}"),
+        }
+    }
+}
+
+impl Serialize for ThemeColor {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_string())
+    }
 }
 
 impl ThemeColor {
@@ -155,18 +227,12 @@ impl ThemeColor {
             let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
             return Some(Self::Rgb(r, g, b));
         }
-        let named = match s.to_lowercase().as_str() {
-            "black" => NamedColor::Black,
-            "red" => NamedColor::Red,
-            "green" => NamedColor::Green,
-            "yellow" => NamedColor::Yellow,
-            "blue" => NamedColor::Blue,
-            "magenta" => NamedColor::Magenta,
-            "cyan" => NamedColor::Cyan,
-            "white" => NamedColor::White,
-            _ => return None,
-        };
-        Some(Self::Named(named))
+        let lower = s.to_lowercase();
+        let lookup = NamedColor::resolve_alias(&lower);
+        NamedColor::all()
+            .iter()
+            .find(|(name, _)| *name == lookup)
+            .map(|(_, color)| Self::Named(*color))
     }
 }
 
@@ -176,8 +242,10 @@ where
 {
     let s = String::deserialize(deserializer)?;
     ThemeColor::parse(&s).ok_or_else(|| {
+        let names: Vec<&str> = NamedColor::all().iter().map(|(name, _)| *name).collect();
         serde::de::Error::custom(format!(
-            "invalid color '{s}': expected a named color (black, red, green, yellow, blue, magenta, cyan, white) or hex (#rrggbb)"
+            "invalid color '{s}': expected a named color ({}) or hex (#rrggbb)",
+            names.join(", "),
         ))
     })
 }
@@ -302,6 +370,15 @@ unknown_field = true
         assert_eq!(config.theme.accent, ThemeColor::Named(NamedColor::Magenta));
         assert_eq!(config.theme.secondary, ThemeColor::Named(NamedColor::Cyan));
         assert_eq!(config.theme.success, ThemeColor::Named(NamedColor::Green));
+        assert_eq!(config.theme.error, ThemeColor::Named(NamedColor::Red));
+        assert_eq!(config.theme.warning, ThemeColor::Named(NamedColor::Yellow));
+        assert_eq!(config.theme.muted, ThemeColor::Named(NamedColor::DarkGray));
+        assert_eq!(config.theme.border, ThemeColor::Named(NamedColor::DarkGray));
+        assert_eq!(config.theme.hint, ThemeColor::Named(NamedColor::Blue));
+        assert_eq!(
+            config.theme.highlight_fg,
+            ThemeColor::Named(NamedColor::Black)
+        );
     }
 
     #[test]
@@ -350,6 +427,26 @@ accent = "notacolor"
             ThemeColor::parse("#ff0000"),
             Some(ThemeColor::Rgb(255, 0, 0))
         );
+        assert_eq!(
+            ThemeColor::parse("gray"),
+            Some(ThemeColor::Named(NamedColor::Gray))
+        );
+        assert_eq!(
+            ThemeColor::parse("grey"),
+            Some(ThemeColor::Named(NamedColor::Gray))
+        );
+        assert_eq!(
+            ThemeColor::parse("dark_gray"),
+            Some(ThemeColor::Named(NamedColor::DarkGray))
+        );
+        assert_eq!(
+            ThemeColor::parse("darkgray"),
+            Some(ThemeColor::Named(NamedColor::DarkGray))
+        );
+        assert_eq!(
+            ThemeColor::parse("dark_grey"),
+            Some(ThemeColor::Named(NamedColor::DarkGray))
+        );
         assert_eq!(ThemeColor::parse("notacolor"), None);
         assert_eq!(ThemeColor::parse("#fff"), None);
         assert_eq!(ThemeColor::parse("#zzzzzz"), None);
@@ -367,6 +464,43 @@ unknown = "bad"
 "#,
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_named_color_all_matches_as_str() {
+        for (name, color) in NamedColor::all() {
+            assert_eq!(
+                color.as_str(),
+                *name,
+                "NamedColor::{color:?} has mismatched all() and as_str()"
+            );
+        }
+    }
+
+    #[test]
+    fn test_named_color_all_are_parseable() {
+        for (name, color) in NamedColor::all() {
+            assert_eq!(
+                ThemeColor::parse(name),
+                Some(ThemeColor::Named(*color)),
+                "NamedColor canonical name '{name}' should parse"
+            );
+        }
+    }
+
+    #[test]
+    fn test_named_color_aliases_resolve() {
+        for (alias, canonical) in NamedColor::aliases() {
+            assert_eq!(
+                NamedColor::resolve_alias(alias),
+                *canonical,
+                "Alias '{alias}' should resolve to '{canonical}'"
+            );
+            assert!(
+                ThemeColor::parse(alias).is_some(),
+                "Alias '{alias}' should parse as a valid color"
+            );
+        }
     }
 
     #[test]

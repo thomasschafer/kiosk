@@ -22,7 +22,7 @@ use kiosk_core::{
 };
 use ratatui::{
     DefaultTerminal, Frame,
-    layout::{Constraint, Layout, Rect},
+    layout::{Alignment, Constraint, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
@@ -148,15 +148,27 @@ fn draw(
         return;
     }
 
+    let outer = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(f.area());
+
+    let content_area = outer[0];
+    let footer_area = outer[1];
+
     let (main_area, error_area) = if state.error.is_some() {
-        let chunks = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(f.area());
+        let chunks =
+            Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(content_area);
         (chunks[0], Some(chunks[1]))
     } else {
-        (f.area(), None)
+        (content_area, None)
     };
 
     let page_rows = active_list_page_rows(f.area(), main_area, &state.mode);
     state.set_active_list_page_rows(page_rows);
+
+    // Determine the effective mode for footer hints
+    let effective_mode = match &state.mode {
+        Mode::Help { previous } => previous.as_ref(),
+        other => other,
+    };
 
     match &state.mode {
         Mode::RepoSelect => components::repo_list::draw(f, main_area, state, theme, keys),
@@ -186,7 +198,8 @@ fn draw(
                     components::branch_picker::draw(f, main_area, state, theme, keys);
                     draw_confirm_delete_dialog(f, main_area, state, theme, keys);
                 }
-                _ => {}
+                // Loading is handled by the early-return guard; Help cannot nest.
+                Mode::Loading(_) | Mode::Help { .. } => {}
             }
             // Draw help overlay on top
             components::help::draw(f, state, theme, keys);
@@ -195,8 +208,42 @@ fn draw(
     }
 
     if let Some(area) = error_area {
-        components::error_bar::draw(f, area, state);
+        components::error_bar::draw(f, area, state, theme);
     }
+
+    // Footer with key hints
+    let footer_hints = build_footer_hints(effective_mode, keys);
+    let footer = Paragraph::new(Line::from(
+        footer_hints
+            .into_iter()
+            .enumerate()
+            .flat_map(|(i, (key, desc))| {
+                let mut spans = Vec::new();
+                if i > 0 {
+                    spans.push(Span::styled(" │ ", Style::default().fg(theme.border)));
+                }
+                spans.push(Span::styled(
+                    key,
+                    Style::default().fg(theme.hint).add_modifier(Modifier::BOLD),
+                ));
+                spans.push(Span::raw(format!(": {desc}")));
+                spans
+            })
+            .collect::<Vec<_>>(),
+    ))
+    .alignment(Alignment::Center);
+    f.render_widget(footer, footer_area);
+}
+
+fn build_footer_hints(mode: &Mode, keys: &KeysConfig) -> Vec<(String, &'static str)> {
+    let keymap = keys.keymap_for_mode(mode);
+    mode.footer_commands()
+        .iter()
+        .filter_map(|cmd| {
+            let key = KeysConfig::find_key(&keymap, cmd)?;
+            Some((key.to_string(), cmd.labels().hint))
+        })
+        .collect()
 }
 
 fn list_rows_from_list_area(list_area: Rect) -> usize {

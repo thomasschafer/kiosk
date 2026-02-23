@@ -6,26 +6,31 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
 };
 
+pub struct SearchBarStyle<'a> {
+    pub title: &'a str,
+    pub placeholder: &'a str,
+    pub border_color: Color,
+    pub muted_color: Color,
+}
+
 /// Render a search bar with visual cursor indicator
 pub fn draw(
     f: &mut Frame,
     area: Rect,
-    title: &str,
+    style: &SearchBarStyle<'_>,
     search_text: &str,
     cursor_pos: usize,
-    placeholder: &str,
-    border_color: ratatui::style::Color,
 ) {
     let search_block = Block::default()
         .borders(Borders::ALL)
-        .title(format!(" {title} "))
-        .border_style(Style::default().fg(border_color));
+        .title(format!(" {} ", style.title))
+        .border_style(Style::default().fg(style.border_color));
 
     if search_text.is_empty() {
-        let content = Line::from(Span::styled(
-            placeholder,
-            Style::default().fg(Color::DarkGray),
-        ));
+        let content = Line::from(vec![
+            Span::styled(style.placeholder, Style::default().fg(style.muted_color)),
+            Span::styled(" ", Style::default().add_modifier(Modifier::REVERSED)),
+        ]);
         f.render_widget(Paragraph::new(content).block(search_block), area);
     } else {
         // Split text at cursor position and render with a visible cursor

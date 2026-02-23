@@ -84,17 +84,22 @@ split_command = "hx"
 
 Color theme configuration.
 
-#### `accent`
+Colors can be a named color (`black`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `white`, `gray`, `dark_gray`) or a hex value (`#rrggbb`). Alternative spellings are also accepted: `grey` for `gray`, `darkgray` for `dark_gray`, `dark_grey` for `dark_gray`, `darkgrey` for `dark_gray`.
 
-Primary accent color (default: "magenta").
+Defaults:
 
-#### `secondary`
-
-Secondary accent color (default: "cyan").
-
-#### `success`
-
-Success/positive color (default: "green").
+```toml
+[theme]
+accent = "magenta"
+secondary = "cyan"
+success = "green"
+error = "red"
+warning = "yellow"
+muted = "dark_gray"
+border = "dark_gray"
+hint = "blue"
+highlight_fg = "black"
+```
 
 ### `[keys]` section
 

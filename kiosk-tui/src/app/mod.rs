@@ -25,7 +25,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, Padding, Paragraph, Wrap},
 };
 use spawn::spawn_repo_discovery;
 use std::{
@@ -311,7 +311,46 @@ fn draw_loading(
     f.render_widget(paragraph, centered);
 }
 
-const MIN_CONFIRM_DELETE_INNER_WIDTH: u16 = 40;
+/// Estimate visual line count when a `Line` is word-wrapped to `max_width` columns.
+/// Uses byte length as a width proxy, which is exact for ASCII and a safe overestimate
+/// for multi-byte UTF-8 (produces a taller dialog rather than clipping content).
+fn word_wrapped_line_count(line: &Line, max_width: u16) -> u16 {
+    let max_w = usize::from(max_width);
+    if max_w == 0 {
+        return 1;
+    }
+
+    let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+    if text.is_empty() {
+        return 1;
+    }
+
+    let mut lines: u16 = 1;
+    let mut col: usize = 0;
+
+    for (i, word) in text.split(' ').enumerate() {
+        let w = word.len();
+        let needed = if i == 0 || col == 0 { w } else { w + 1 };
+
+        if col + needed <= max_w {
+            col += needed;
+        } else if w <= max_w {
+            lines += 1;
+            col = w;
+        } else {
+            if col > 0 {
+                lines += 1;
+            }
+            col = w;
+            while col > max_w {
+                lines += 1;
+                col -= max_w;
+            }
+        }
+    }
+
+    lines
+}
 
 struct ConfirmDeleteDialogLayout {
     text: Vec<Line<'static>>,
@@ -367,25 +406,20 @@ fn confirm_delete_dialog_layout(
         Span::raw(")"),
     ]);
 
-    let max_line_width =
-        u16::try_from(message_line.width().max(hints_line.width())).unwrap_or(u16::MAX);
-    let max_inner = terminal_width * 80 / 100;
-    let inner_width = max_line_width.clamp(MIN_CONFIRM_DELETE_INNER_WIDTH, max_inner);
+    let width = components::dialog_width(terminal_width);
+    // 2 for borders + 2 for 1-cell padding on each side
+    let h_chrome: u16 = 4;
+    let v_chrome: u16 = 4;
+    let text_width = width.saturating_sub(h_chrome).max(1);
 
     let text = vec![message_line, blank_line, hints_line];
 
-    let content_height: u16 = text
-        .iter()
-        .map(|line| {
-            let w = u16::try_from(line.width()).unwrap_or(u16::MAX);
-            if w == 0 { 1 } else { w.div_ceil(inner_width) }
-        })
-        .sum();
+    let content_height: u16 = text.iter().map(|line| word_wrapped_line_count(line, text_width)).sum();
 
     ConfirmDeleteDialogLayout {
         text,
-        width: inner_width + 2,
-        height: content_height + 2,
+        width,
+        height: content_height + v_chrome,
     }
 }
 
@@ -423,7 +457,8 @@ fn draw_confirm_delete_dialog(
         let block = Block::default()
             .borders(Borders::ALL)
             .title(" Confirm delete ")
-            .border_style(Style::default().fg(theme.accent));
+            .border_style(Style::default().fg(theme.accent))
+            .padding(Padding::uniform(1));
 
         let centered = components::centered_fixed_rect(layout.width, layout.height, area);
         f.render_widget(Clear, centered);
@@ -2644,6 +2679,80 @@ mod tests {
         assert_eq!(state.session_activity.get("alpha"), Some(&500));
     }
 
+    // -- word_wrapped_line_count tests --
+
+    #[test]
+    fn test_word_wrap_single_line_no_wrap() {
+        let line = Line::raw("hello world");
+        assert_eq!(word_wrapped_line_count(&line, 20), 1);
+    }
+
+    #[test]
+    fn test_word_wrap_exact_fit() {
+        let line = Line::raw("hello world");
+        assert_eq!(word_wrapped_line_count(&line, 11), 1);
+    }
+
+    #[test]
+    fn test_word_wrap_breaks_at_word_boundary() {
+        let line = Line::raw("hello world");
+        assert_eq!(word_wrapped_line_count(&line, 10), 2);
+    }
+
+    #[test]
+    fn test_word_wrap_multiple_wraps() {
+        let line = Line::raw("one two three four");
+        // width 5: "one" (3) → col=3, "two" needs 4 → new line col=3,
+        //          "three" needs 6 > 5 → new line, oversized → col=5 then col=0... wait
+        // Actually: "three" len=5 fits on a new line exactly
+        // "four" needs 5 → new line col=4
+        assert_eq!(word_wrapped_line_count(&line, 5), 4);
+    }
+
+    #[test]
+    fn test_word_wrap_oversized_word() {
+        let line = Line::raw("abcdefghij");
+        // 10-char word on width 4: lines=1, col=10 → 10>4: lines=2, col=6 → 6>4: lines=3, col=2
+        assert_eq!(word_wrapped_line_count(&line, 4), 3);
+    }
+
+    #[test]
+    fn test_word_wrap_oversized_word_exact_multiple() {
+        let line = Line::raw("abcdefgh");
+        // 8-char word on width 4: lines=1, col=8 → 8>4: lines=2, col=4 → not >4, stop
+        assert_eq!(word_wrapped_line_count(&line, 4), 2);
+    }
+
+    #[test]
+    fn test_word_wrap_oversized_after_short_word() {
+        let line = Line::raw("hi abcdefghij");
+        // "hi" col=2, "abcdefghij" needs 11: 2+1+10=13 > 6, and 10 > 6, so:
+        // col>0 → lines=2, col=10, 10>6 → lines=3, col=4
+        assert_eq!(word_wrapped_line_count(&line, 6), 3);
+    }
+
+    #[test]
+    fn test_word_wrap_empty_line() {
+        let line = Line::raw("");
+        assert_eq!(word_wrapped_line_count(&line, 20), 1);
+    }
+
+    #[test]
+    fn test_word_wrap_zero_width() {
+        let line = Line::raw("hello");
+        assert_eq!(word_wrapped_line_count(&line, 0), 1);
+    }
+
+    #[test]
+    fn test_word_wrap_multi_span_line() {
+        let line = Line::from(vec![
+            Span::raw("hello "),
+            Span::styled("world", Style::default().fg(Color::Red)),
+        ]);
+        assert_eq!(word_wrapped_line_count(&line, 20), 1);
+        assert_eq!(word_wrapped_line_count(&line, 8), 2);
+    }
+
     // -- confirm_delete_dialog_layout sizing tests --
 
     #[test]
@@ -2651,12 +2760,10 @@ mod tests {
         let layout = confirm_delete_dialog_layout(
             "main", false, "enter", "esc", Color::Magenta, Color::Blue, 120,
         );
-        assert!(
-            layout.width >= MIN_CONFIRM_DELETE_INNER_WIDTH + 2,
-            "width {} should be at least min inner + borders",
-            layout.width
-        );
-        assert_eq!(layout.height, 5, "no wrapping needed for short branch");
+        // min(120*80/100, 80) = 80
+        assert_eq!(layout.width, 80, "width should be capped at 80");
+        // 3 content lines + 2 borders + 2 padding
+        assert_eq!(layout.height, 7, "no wrapping needed for short branch");
     }
 
     #[test]
@@ -2665,9 +2772,9 @@ mod tests {
         let layout = confirm_delete_dialog_layout(
             &long_name, false, "enter", "esc", Color::Magenta, Color::Blue, 120,
         );
-        // 80% of 120 = 96, plus 2 for borders
-        assert_eq!(layout.width, 98, "width should be capped at 80% of terminal + borders");
-        assert!(layout.height > 5, "long branch should cause wrapping, height={}", layout.height);
+        // min(120*80/100, 80) = 80
+        assert_eq!(layout.width, 80, "width should be capped at 80");
+        assert!(layout.height > 7, "long branch should cause wrapping, height={}", layout.height);
     }
 
     #[test]
@@ -2676,9 +2783,10 @@ mod tests {
         let layout = confirm_delete_dialog_layout(
             &long_name, false, "enter", "esc", Color::Magenta, Color::Blue, 80,
         );
-        assert!(layout.width <= 80, "dialog must fit within terminal width");
+        // min(80*80/100, 80) = 64
+        assert_eq!(layout.width, 64, "width should be 80% of terminal");
         assert!(
-            layout.height > 6,
+            layout.height > 8,
             "very long branch on narrow terminal needs more wrapping, height={}",
             layout.height,
         );
@@ -2693,16 +2801,16 @@ mod tests {
     }
 
     #[test]
-    fn test_confirm_delete_layout_session_wider_or_equal() {
+    fn test_confirm_delete_layout_session_same_width() {
         let without = confirm_delete_dialog_layout(
             "feature-branch", false, "enter", "esc", Color::Magenta, Color::Blue, 120,
         );
         let with = confirm_delete_dialog_layout(
             "feature-branch", true, "enter", "esc", Color::Magenta, Color::Blue, 120,
         );
-        assert!(
-            with.width >= without.width,
-            "with session ({}) should be >= without ({})",
+        assert_eq!(
+            with.width, without.width,
+            "width is content-independent: with session ({}) should equal without ({})",
             with.width,
             without.width,
         );
@@ -2710,15 +2818,12 @@ mod tests {
 
     #[test]
     fn test_confirm_delete_layout_exact_fit_no_wrap() {
-        // "Delete worktree for branch " = 27 chars, plus `"<name>"?`
-        // With inner_width = max_line_width (when below 80% of terminal and above min),
-        // no wrapping should occur.
-        // Target a message line width just above MIN_CONFIRM_DELETE_INNER_WIDTH.
-        // 27 + 2(quotes) + 1(?) = 30 fixed chars, so branch name of 12 chars → 42 total
+        // "Delete worktree for branch \"exactly-fits\"?" = 42 chars, well within
+        // text_width of 76 (80 - 4 chrome), so no wrapping should occur.
         let layout = confirm_delete_dialog_layout(
             "exactly-fits", false, "enter", "esc", Color::Magenta, Color::Blue, 120,
         );
-        assert_eq!(layout.height, 5, "exact fit should not wrap");
+        assert_eq!(layout.height, 7, "exact fit should not wrap");
     }
 
     // -- rendering tests --
@@ -2741,7 +2846,8 @@ mod tests {
         let block = Block::default()
             .borders(Borders::ALL)
             .title(" Confirm delete ")
-            .border_style(Style::default().fg(Color::Magenta));
+            .border_style(Style::default().fg(Color::Magenta))
+            .padding(Padding::uniform(1));
         let paragraph = Paragraph::new(layout.text.clone())
             .block(block)
             .wrap(Wrap { trim: false })
@@ -2775,6 +2881,24 @@ mod tests {
         let rendered = buf_to_string(&buf);
         let x_count = rendered.chars().filter(|c| *c == 'x').count();
         assert_eq!(x_count, 100, "all branch chars should be rendered:\n{rendered}");
+    }
+
+    #[test]
+    fn test_confirm_delete_render_narrow_terminal_hints_visible() {
+        // On a narrow terminal the hints line wraps; both "confirm" and "cancel"
+        // must still be fully rendered (this was the bug that motivated the
+        // word_wrapped_line_count fix).
+        let layout = confirm_delete_dialog_layout(
+            "feat/headless-cli", true, "enter", "esc", Color::Magenta, Color::Blue, 28,
+        );
+        let buf = render_dialog_to_buffer(&layout);
+        let rendered = buf_to_string(&buf);
+        assert!(rendered.contains("confirm"), "confirm hint missing:\n{rendered}");
+        assert!(rendered.contains("cancel"), "cancel hint missing:\n{rendered}");
+        assert!(
+            rendered.contains("feat/headless-cli"),
+            "branch name missing:\n{rendered}",
+        );
     }
 
     #[test]

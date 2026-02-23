@@ -24,6 +24,11 @@ pub fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
     .split(popup_layout[1])[1]
 }
 
+/// Standard dialog width: 80% of terminal width, capped at 80 columns.
+pub fn dialog_width(terminal_width: u16) -> u16 {
+    (terminal_width * 80 / 100).min(80)
+}
+
 /// Center a rect with a fixed width and height, clamped to fit within `r`.
 pub fn centered_fixed_rect(width: u16, height: u16, r: Rect) -> Rect {
     let clamped_width = width.min(r.width);

@@ -1,4 +1,5 @@
 pub mod action;
+pub mod agent;
 pub mod config;
 pub mod constants;
 pub mod event;
@@ -11,6 +12,7 @@ pub mod tmux;
 
 // Re-export commonly used types at crate root
 pub use action::Action;
+pub use agent::{AgentKind, AgentState};
 pub use config::Config;
 pub use event::AppEvent;
 pub use git::{GitProvider, Repo, Worktree};

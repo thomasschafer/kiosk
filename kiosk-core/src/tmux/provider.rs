@@ -1,5 +1,12 @@
 use std::path::Path;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaneInfo {
+    pub pane_index: u32,
+    pub command: String,
+    pub pid: u32,
+}
+
 pub trait TmuxProvider: Send + Sync {
     /// List sessions with their last activity timestamp (`session_name`, `unix_timestamp`)
     fn list_sessions_with_activity(&self) -> Vec<(String, u64)>;
@@ -45,4 +52,6 @@ pub trait TmuxProvider: Send + Sync {
     fn switch_to_session(&self, name: &str);
     fn kill_session(&self, name: &str);
     fn is_inside_tmux(&self) -> bool;
+    fn list_panes_detailed(&self, session: &str) -> Vec<PaneInfo>;
+    fn capture_pane_by_index(&self, session: &str, pane_index: u32, lines: u32) -> Option<String>;
 }

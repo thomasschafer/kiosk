@@ -1,8 +1,14 @@
-use kiosk_core::{event::AppEvent, git::GitProvider, state::BranchEntry};
+use kiosk_core::{
+    agent::{self, AgentKind},
+    event::AppEvent,
+    git::GitProvider,
+    state::BranchEntry,
+};
 use rayon::ThreadPoolBuilder;
 use std::{
     collections::HashMap,
     path::PathBuf,
+    process::Command,
     sync::{Arc, atomic::Ordering},
     thread,
 };
@@ -370,6 +376,57 @@ pub(super) fn spawn_tracking_worktree_creation(
                 session_name,
             }),
             Err(e) => sender.send(AppEvent::GitError(format!("{e}"))),
+        }
+    });
+}
+
+pub fn spawn_agent_status_detection<T: TmuxProvider + ?Sized + 'static>(
+    tmux: &Arc<T>,
+    sender: &EventSender,
+    sessions: Vec<(String, PathBuf)>, // (session_name, worktree_path) for sessions to check
+) {
+    let tmux = Arc::clone(tmux);
+    let sender = sender.clone();
+    thread::spawn(move || {
+        if sender.cancel.load(Ordering::Relaxed) {
+            return;
+        }
+
+        let mut states = Vec::new();
+
+        for (session_name, _worktree_path) in sessions {
+            // Get detailed pane info for this session
+            let panes = tmux.list_panes_detailed(&session_name);
+
+            for pane in panes {
+                // Check if pane command indicates an agent
+                let mut agent_kind = agent::detect::detect_agent_kind(&pane.command, None);
+
+                // If no agent found in pane command, try child processes
+                if agent_kind == AgentKind::Unknown
+                    && let Ok(output) = Command::new("pgrep")
+                        .args(["-P", &pane.pid.to_string(), "-a"])
+                        .output()
+                {
+                    let child_processes = String::from_utf8_lossy(&output.stdout);
+                    agent_kind =
+                        agent::detect::detect_agent_kind(&pane.command, Some(&child_processes));
+                }
+
+                // If we found an agent, detect its state
+                if agent_kind != AgentKind::Unknown
+                    && let Some(content) = tmux.capture_pane_by_index(&session_name, pane.pane_index, 30)
+                {
+                    let state = agent::detect::detect_state(&content, agent_kind);
+                    states.push((session_name.clone(), state));
+                    break; // Only need one agent per session
+                }
+            }
+        }
+
+        // Send the detected states
+        if !states.is_empty() {
+            sender.send(AppEvent::AgentStatesUpdated { states });
         }
     });
 }

@@ -1623,6 +1623,7 @@ mod tests {
                 is_default: false,
                 remote: None,
                 session_activity_ts: None,
+            agent_state: None,
             },
             BranchEntry {
                 name: "feat/test".to_string(),
@@ -1632,6 +1633,7 @@ mod tests {
                 is_default: false,
                 remote: Some("origin".to_string()),
                 session_activity_ts: None,
+            agent_state: None,
             },
         ];
         let rendered = format_branch_table(&rows);
@@ -2209,6 +2211,7 @@ mod tests {
             is_default: true,
             remote: None,
             session_activity_ts: Some(12345),
+            agent_state: None,
         };
 
         let output = BranchOutput::from(&entry);

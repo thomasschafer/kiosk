@@ -1,6 +1,6 @@
 use std::{collections::HashMap, path::PathBuf};
 
-use crate::git::{Repo, Worktree};
+use crate::{agent::AgentState, git::{Repo, Worktree}};
 
 /// Events that arrive asynchronously from background tasks.
 /// These get merged into the main event loop alongside keyboard input.
@@ -67,6 +67,11 @@ pub enum AppEvent {
     /// Session activity data loaded (from tmux, sent once)
     SessionActivityLoaded {
         session_activity: HashMap<String, u64>,
+    },
+
+    /// Agent states updated from background detection
+    AgentStatesUpdated {
+        states: Vec<(String, AgentState)>, // (session_name, state)
     },
 
     /// A background git operation failed

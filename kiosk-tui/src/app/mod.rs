@@ -676,6 +676,26 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
                 );
                 state.fetching_remotes = true;
                 spawn::spawn_git_fetch(git, sender, repo_path, local_names);
+
+                // Kick off agent status detection for sessions
+                let sessions_to_check: Vec<String> = state
+                    .branches
+                    .iter()
+                    .filter(|branch| branch.has_session)
+                    .filter_map(|branch| {
+                        branch
+                            .worktree_path
+                            .as_ref()
+                            .map(|path| state.repos[repo_idx].tmux_session_name(path))
+                    })
+                    .collect();
+
+                if !sessions_to_check.is_empty() {
+                    state.cancel_agent_poller();
+                    let cancel = Arc::new(AtomicBool::new(false));
+                    spawn_agent_status_poller(tmux, sender, sessions_to_check, Arc::clone(&cancel));
+                    state.agent_poller_cancel = Some(cancel);
+                }
             }
         }
         AppEvent::RemoteBranchesLoaded { branches } => {
@@ -698,6 +718,63 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
                     state.fetching_remotes = false;
                 }
                 extend_branches_deduped(state, branches);
+            }
+        }
+        AppEvent::ReposEnriched {
+            worktrees_by_repo,
+            session_activity,
+        } => {
+            state.session_activity = session_activity;
+
+            // Update worktrees for each repo
+            for (repo_path, worktrees) in worktrees_by_repo {
+                if let Some(repo) = state.repos.iter_mut().find(|r| r.path == repo_path) {
+                    repo.worktrees = worktrees;
+                }
+            }
+
+            // Track selected repo so we can update the index after re-sort
+            let selected_repo_path = state
+                .selected_repo_idx
+                .map(|idx| state.repos[idx].path.clone());
+
+            // Re-sort repos with full recency data
+            kiosk_core::state::sort_repos(
+                &mut state.repos,
+                state.current_repo_path.as_deref(),
+                &state.session_activity,
+            );
+
+            // Update selected_repo_idx to follow the same repo after re-sort
+            state.selected_repo_idx =
+                selected_repo_path.and_then(|path| state.repos.iter().position(|r| r.path == path));
+
+            let names: Vec<&str> = state.repos.iter().map(|r| r.name.as_str()).collect();
+            rebuild_filtered_preserving_search(&mut state.repo_list, &names);
+
+            if state.reconcile_pending_worktree_deletes() {
+                let _ = save_pending_worktree_deletes(&state.pending_worktree_deletes);
+            }
+        }
+        AppEvent::AgentStatesUpdated { states } => {
+            if state.mode == Mode::BranchSelect {
+                // Update agent states in-place — no re-sorting or filter changes
+                for (session_name, agent_state) in states {
+                    for branch in &mut state.branches {
+                        if branch.has_session
+                            && branch.worktree_path.as_ref().is_some_and(|path| {
+                                if let Some(repo_idx) = state.selected_repo_idx {
+                                    state.repos[repo_idx].tmux_session_name(path)
+                                        == session_name
+                                } else {
+                                    false
+                                }
+                            })
+                        {
+                            branch.agent_state = Some(agent_state);
+                        }
+                    }
+                }
             }
         }
         AppEvent::GitError(msg) => {
@@ -1069,6 +1146,7 @@ mod tests {
             remote: None,
             is_default: false,
             session_activity_ts: None,
+            agent_state: None,
         }];
         state.branch_list.reset(1);
 
@@ -1086,6 +1164,7 @@ mod tests {
                 remote: Some("origin".to_string()),
                 is_default: false,
                 session_activity_ts: None,
+            agent_state: None,
             },
             BranchEntry {
                 name: "feature-y".to_string(),
@@ -1095,6 +1174,7 @@ mod tests {
                 remote: Some("origin".to_string()),
                 is_default: false,
                 session_activity_ts: None,
+            agent_state: None,
             },
         ];
 
@@ -1129,6 +1209,7 @@ mod tests {
             remote: None,
             is_default: false,
             session_activity_ts: None,
+            agent_state: None,
         }];
         state.branch_list.reset(1);
         state.branch_list.input.text = "feat".to_string();
@@ -1151,6 +1232,7 @@ mod tests {
                     remote: Some("origin".to_string()),
                     is_default: false,
                     session_activity_ts: None,
+            agent_state: None,
                 }],
             },
             &mut state,
@@ -1353,6 +1435,7 @@ mod tests {
             remote: None,
             is_default: false,
             session_activity_ts: None,
+            agent_state: None,
         }];
         state.branch_list.filtered = vec![(0, 0)];
         state.branch_list.selected = Some(0);
@@ -1391,6 +1474,7 @@ mod tests {
             remote: None,
             is_default: false,
             session_activity_ts: None,
+            agent_state: None,
         }];
         state.branch_list.filtered = vec![(0, 0)];
         state.branch_list.selected = Some(0);
@@ -1631,6 +1715,7 @@ mod tests {
             remote: None,
             is_default: true,
             session_activity_ts: None,
+            agent_state: None,
         }];
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider {
@@ -1663,6 +1748,7 @@ mod tests {
             remote: None,
             is_default: false,
             session_activity_ts: None,
+            agent_state: None,
         }];
         state.branch_list.filtered = vec![(0, 0)];
         state.branch_list.selected = Some(0);
@@ -1694,6 +1780,7 @@ mod tests {
             remote: None,
             is_default: false,
             session_activity_ts: None,
+            agent_state: None,
         }];
         state.branch_list.filtered = vec![(0, 0)];
         state.branch_list.selected = Some(0);
@@ -1725,6 +1812,7 @@ mod tests {
             remote: None,
             is_default: false,
             session_activity_ts: None,
+            agent_state: None,
         }];
         state.branch_list.filtered = vec![(0, 0)];
         state.branch_list.selected = Some(0);
@@ -1761,6 +1849,7 @@ mod tests {
             remote: None,
             is_default: false,
             session_activity_ts: None,
+            agent_state: None,
         }];
         state.branch_list.filtered = vec![(0, 0)];
         state.branch_list.selected = Some(0);
@@ -1805,6 +1894,7 @@ mod tests {
             remote: None,
             is_default: false,
             session_activity_ts: None,
+            agent_state: None,
         }];
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
@@ -1850,6 +1940,7 @@ mod tests {
             remote: None,
             is_default: false,
             session_activity_ts: None,
+            agent_state: None,
         }];
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());

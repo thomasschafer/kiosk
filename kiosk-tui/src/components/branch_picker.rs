@@ -4,7 +4,7 @@ use kiosk_core::state::AppState;
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState},
 };
@@ -74,6 +74,18 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, _keys: &
                     Style::default().fg(theme.warning),
                 ));
             }
+            // Add agent status indicator if present
+            if let Some(agent_state) = branch.agent_state {
+                use kiosk_core::agent::AgentState;
+                let (icon, color) = match agent_state {
+                    AgentState::Running => ("⚡", theme.accent),
+                    AgentState::Waiting => ("⏳", Color::Yellow),
+                    AgentState::Idle => ("●", Color::DarkGray),
+                };
+                spans.push(Span::raw(" "));
+                spans.push(Span::styled(icon, Style::default().fg(color)));
+            }
+
             if branch.is_current {
                 spans.push(Span::styled(" *", Style::default().fg(theme.accent)));
             }

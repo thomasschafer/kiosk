@@ -1,4 +1,5 @@
 use crate::{
+    config::keys::Command,
     constants::{WORKTREE_DIR_DEDUP_MAX_ATTEMPTS, WORKTREE_DIR_NAME, WORKTREE_NAME_SEPARATOR},
     git::Repo,
     pending_delete::PendingWorktreeDelete,
@@ -428,6 +429,38 @@ pub enum Mode {
 }
 
 impl Mode {
+    /// Commands to show in the footer bar, in display order.
+    pub fn footer_commands(&self) -> &'static [Command] {
+        match self {
+            Mode::RepoSelect => &[
+                Command::OpenRepo,
+                Command::EnterRepo,
+                Command::ShowHelp,
+                Command::Quit,
+            ],
+            Mode::BranchSelect => &[
+                Command::GoBack,
+                Command::NewBranch,
+                Command::DeleteWorktree,
+                Command::ShowHelp,
+                Command::Quit,
+            ],
+            Mode::SelectBaseBranch => &[
+                Command::Cancel,
+                Command::Confirm,
+                Command::ShowHelp,
+                Command::Quit,
+            ],
+            Mode::ConfirmWorktreeDelete { .. } => &[
+                Command::Confirm,
+                Command::Cancel,
+                Command::ShowHelp,
+                Command::Quit,
+            ],
+            Mode::Loading(_) | Mode::Help { .. } => &[],
+        }
+    }
+
     pub(crate) fn supports_text_edit(&self) -> bool {
         matches!(
             self,

@@ -117,7 +117,7 @@ fn format_key_section(
             continue;
         }
         let key_str = key_event.to_string();
-        let description = command.description();
+        let description = command.labels().description;
         lines.push(Line::from(vec![
             Span::raw("  "),
             Span::styled(format!("{key_str:<13}"), Style::default().fg(hint_color)),

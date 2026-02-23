@@ -115,31 +115,25 @@ pub struct ThemeConfig {
         deserialize_with = "deserialize_color"
     )]
     pub warning: ThemeColor,
-    /// Muted/dim text color (default: "gray").
+    /// Muted/dim text color (default: "dark_gray").
     #[serde(
         default = "ThemeConfig::default_muted",
         deserialize_with = "deserialize_color"
     )]
     pub muted: ThemeColor,
-    /// Border color (default: "gray").
+    /// Border color (default: "dark_gray").
     #[serde(
         default = "ThemeConfig::default_border",
         deserialize_with = "deserialize_color"
     )]
     pub border: ThemeColor,
-    /// Title color (default: "blue").
-    #[serde(
-        default = "ThemeConfig::default_title",
-        deserialize_with = "deserialize_color"
-    )]
-    pub title: ThemeColor,
     /// Hint/key binding color (default: "blue").
     #[serde(
         default = "ThemeConfig::default_hint",
         deserialize_with = "deserialize_color"
     )]
     pub hint: ThemeColor,
-    /// Foreground color for highlighted/selected items (default: "white").
+    /// Foreground color for highlighted/selected items (default: "black").
     #[serde(
         default = "ThemeConfig::default_highlight_fg",
         deserialize_with = "deserialize_color"
@@ -157,7 +151,6 @@ impl Default for ThemeConfig {
             warning: Self::default_warning(),
             muted: Self::default_muted(),
             border: Self::default_border(),
-            title: Self::default_title(),
             hint: Self::default_hint(),
             highlight_fg: Self::default_highlight_fg(),
         }
@@ -181,19 +174,16 @@ impl ThemeConfig {
         ThemeColor::Named(NamedColor::Yellow)
     }
     fn default_muted() -> ThemeColor {
-        ThemeColor::Named(NamedColor::Gray)
+        ThemeColor::Named(NamedColor::DarkGray)
     }
     fn default_border() -> ThemeColor {
-        ThemeColor::Named(NamedColor::Gray)
-    }
-    fn default_title() -> ThemeColor {
-        ThemeColor::Named(NamedColor::Blue)
+        ThemeColor::Named(NamedColor::DarkGray)
     }
     fn default_hint() -> ThemeColor {
         ThemeColor::Named(NamedColor::Blue)
     }
     fn default_highlight_fg() -> ThemeColor {
-        ThemeColor::Named(NamedColor::White)
+        ThemeColor::Named(NamedColor::Black)
     }
 }
 
@@ -214,6 +204,7 @@ pub enum NamedColor {
     Cyan,
     White,
     Gray,
+    DarkGray,
 }
 
 impl NamedColor {
@@ -223,6 +214,7 @@ impl NamedColor {
             ("black", NamedColor::Black),
             ("blue", NamedColor::Blue),
             ("cyan", NamedColor::Cyan),
+            ("dark_gray", NamedColor::DarkGray),
             ("gray", NamedColor::Gray),
             ("green", NamedColor::Green),
             ("magenta", NamedColor::Magenta),
@@ -243,6 +235,7 @@ impl NamedColor {
             Self::Cyan => "cyan",
             Self::White => "white",
             Self::Gray => "gray",
+            Self::DarkGray => "dark_gray",
         }
     }
 }
@@ -276,6 +269,7 @@ impl ThemeColor {
         // Handle aliases not in the canonical list
         let lookup = match lower.as_str() {
             "grey" => "gray",
+            "darkgray" | "dark_grey" | "darkgrey" => "dark_gray",
             other => other,
         };
         NamedColor::all()
@@ -292,7 +286,7 @@ where
     let s = String::deserialize(deserializer)?;
     ThemeColor::parse(&s).ok_or_else(|| {
         serde::de::Error::custom(format!(
-            "invalid color '{s}': expected a named color (black, red, green, yellow, blue, magenta, cyan, white, gray/grey) or hex (#rrggbb)"
+            "invalid color '{s}': expected a named color (black, red, green, yellow, blue, magenta, cyan, white, gray/grey, dark_gray) or hex (#rrggbb)"
         ))
     })
 }
@@ -419,13 +413,18 @@ unknown_field = true
         assert_eq!(config.theme.success, ThemeColor::Named(NamedColor::Green));
         assert_eq!(config.theme.error, ThemeColor::Named(NamedColor::Red));
         assert_eq!(config.theme.warning, ThemeColor::Named(NamedColor::Yellow));
-        assert_eq!(config.theme.muted, ThemeColor::Named(NamedColor::Gray));
-        assert_eq!(config.theme.border, ThemeColor::Named(NamedColor::Gray));
-        assert_eq!(config.theme.title, ThemeColor::Named(NamedColor::Blue));
+        assert_eq!(
+            config.theme.muted,
+            ThemeColor::Named(NamedColor::DarkGray)
+        );
+        assert_eq!(
+            config.theme.border,
+            ThemeColor::Named(NamedColor::DarkGray)
+        );
         assert_eq!(config.theme.hint, ThemeColor::Named(NamedColor::Blue));
         assert_eq!(
             config.theme.highlight_fg,
-            ThemeColor::Named(NamedColor::White)
+            ThemeColor::Named(NamedColor::Black)
         );
     }
 
@@ -482,6 +481,18 @@ accent = "notacolor"
         assert_eq!(
             ThemeColor::parse("grey"),
             Some(ThemeColor::Named(NamedColor::Gray))
+        );
+        assert_eq!(
+            ThemeColor::parse("dark_gray"),
+            Some(ThemeColor::Named(NamedColor::DarkGray))
+        );
+        assert_eq!(
+            ThemeColor::parse("darkgray"),
+            Some(ThemeColor::Named(NamedColor::DarkGray))
+        );
+        assert_eq!(
+            ThemeColor::parse("dark_grey"),
+            Some(ThemeColor::Named(NamedColor::DarkGray))
         );
         assert_eq!(ThemeColor::parse("notacolor"), None);
         assert_eq!(ThemeColor::parse("#fff"), None);

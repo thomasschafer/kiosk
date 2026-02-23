@@ -148,27 +148,10 @@ fn draw(
         return;
     }
 
-    // 3-part layout: header + content + footer
-    let outer = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Min(1),
-        Constraint::Length(1),
-    ])
-    .split(f.area());
+    let outer = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(f.area());
 
-    let header_area = outer[0];
-    let content_area = outer[1];
-    let footer_area = outer[2];
-
-    // Header
-    let header = Paragraph::new(Span::styled(
-        "kiosk",
-        Style::default()
-            .fg(theme.title)
-            .add_modifier(Modifier::BOLD),
-    ))
-    .alignment(Alignment::Center);
-    f.render_widget(header, header_area);
+    let content_area = outer[0];
+    let footer_area = outer[1];
 
     let (main_area, error_area) = if state.error.is_some() {
         let chunks =
@@ -253,61 +236,14 @@ fn draw(
 }
 
 fn build_footer_hints(mode: &Mode, keys: &KeysConfig) -> Vec<(String, &'static str)> {
-    use kiosk_core::config::keys::Command;
-
     let keymap = keys.keymap_for_mode(mode);
-    let mut hints: Vec<(String, &str)> = Vec::new();
-
-    // Mode-specific hints
-    match mode {
-        Mode::RepoSelect => {
-            if let Some(k) = KeysConfig::find_key(&keymap, &Command::OpenRepo) {
-                hints.push((k.to_string(), "open"));
-            }
-            if let Some(k) = KeysConfig::find_key(&keymap, &Command::EnterRepo) {
-                hints.push((k.to_string(), "branches"));
-            }
-        }
-        Mode::BranchSelect => {
-            if let Some(k) = KeysConfig::find_key(&keymap, &Command::GoBack) {
-                hints.push((k.to_string(), "back"));
-            }
-            if let Some(k) = KeysConfig::find_key(&keymap, &Command::NewBranch) {
-                hints.push((k.to_string(), "new branch"));
-            }
-            if let Some(k) = KeysConfig::find_key(&keymap, &Command::DeleteWorktree) {
-                hints.push((k.to_string(), "delete worktree"));
-            }
-        }
-        Mode::SelectBaseBranch => {
-            if let Some(k) = KeysConfig::find_key(&keymap, &Command::Cancel) {
-                hints.push((k.to_string(), "cancel"));
-            }
-            if let Some(k) = KeysConfig::find_key(&keymap, &Command::Confirm) {
-                hints.push((k.to_string(), "confirm"));
-            }
-        }
-        Mode::ConfirmWorktreeDelete { .. } => {
-            if let Some(k) = KeysConfig::find_key(&keymap, &Command::Confirm) {
-                hints.push((k.to_string(), "confirm"));
-            }
-            if let Some(k) = KeysConfig::find_key(&keymap, &Command::Cancel) {
-                hints.push((k.to_string(), "cancel"));
-            }
-        }
-        // Loading is handled before footer rendering; Help delegates to previous mode.
-        Mode::Loading(_) | Mode::Help { .. } => {}
-    }
-
-    // Common hints
-    if let Some(k) = KeysConfig::find_key(&keymap, &Command::ShowHelp) {
-        hints.push((k.to_string(), "help"));
-    }
-    if let Some(k) = KeysConfig::find_key(&keymap, &Command::Quit) {
-        hints.push((k.to_string(), "quit"));
-    }
-
-    hints
+    mode.footer_commands()
+        .iter()
+        .filter_map(|cmd| {
+            let key = KeysConfig::find_key(&keymap, cmd)?;
+            Some((key.to_string(), cmd.labels().hint))
+        })
+        .collect()
 }
 
 fn list_rows_from_list_area(list_area: Rect) -> usize {

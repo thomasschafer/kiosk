@@ -4,179 +4,241 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::str::FromStr;
 
-/// Commands that can be bound to keys
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Command {
-    /// No-op: explicitly unbinds a key (removes inherited/default binding)
-    Noop,
-
-    // General commands
-    Quit,
-    ShowHelp,
-
-    // Navigation commands
-    OpenRepo,
-    EnterRepo,
-    OpenBranch,
-    GoBack,
-    NewBranch,
-    DeleteWorktree,
-
-    // List movement commands
-    MoveUp,
-    MoveDown,
-    HalfPageUp,
-    HalfPageDown,
-    PageUp,
-    PageDown,
-    MoveTop,
-    MoveBottom,
-
-    // Text-edit commands
-    DeleteBackwardChar,
-    DeleteForwardChar,
-    DeleteBackwardWord,
-    DeleteForwardWord,
-    DeleteToStart,
-    DeleteToEnd,
-    MoveCursorLeft,
-    MoveCursorRight,
-    MoveCursorWordLeft,
-    MoveCursorWordRight,
-    MoveCursorStart,
-    MoveCursorEnd,
-
-    // Generic confirm/cancel commands
-    Confirm,
-    Cancel,
+/// Labels for a command: short hint for footer bar, long description for help overlay.
+pub struct CommandLabels {
+    /// Short label for the footer bar.
+    pub hint: &'static str,
+    /// Full description for the help overlay.
+    pub description: &'static str,
 }
 
-impl FromStr for Command {
-    type Err = String;
+/// Single source of truth for every `Command` variant and its metadata.
+///
+/// Each entry defines: variant name, config string, optional parse aliases,
+/// footer hint, and help description. The macro generates the enum plus
+/// `FromStr`, `Display`, `Serialize`, and `labels()` — so adding a new
+/// command is a one-line change with no risk of forgetting a match arm.
+macro_rules! define_commands {
+    (
+        $(
+            $variant:ident {
+                config_name: $config_name:literal,
+                $(aliases: [$($alias:literal),+ $(,)?],)?
+                hint: $hint:literal,
+                description: $desc:literal,
+            }
+        ),* $(,)?
+    ) => {
+        /// Commands that can be bound to keys
+        #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+        pub enum Command { $($variant),* }
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "noop" | "none" | "unbound" => Ok(Command::Noop),
-            "quit" => Ok(Command::Quit),
-            "show_help" => Ok(Command::ShowHelp),
-            "open_repo" => Ok(Command::OpenRepo),
-            "enter_repo" => Ok(Command::EnterRepo),
-            "open_branch" => Ok(Command::OpenBranch),
-            "go_back" => Ok(Command::GoBack),
-            "new_branch" => Ok(Command::NewBranch),
-            "delete_worktree" => Ok(Command::DeleteWorktree),
-            "move_up" => Ok(Command::MoveUp),
-            "move_down" => Ok(Command::MoveDown),
-            "half_page_up" => Ok(Command::HalfPageUp),
-            "half_page_down" => Ok(Command::HalfPageDown),
-            "page_up" => Ok(Command::PageUp),
-            "page_down" => Ok(Command::PageDown),
-            "move_top" => Ok(Command::MoveTop),
-            "move_bottom" => Ok(Command::MoveBottom),
-            "delete_backward_char" => Ok(Command::DeleteBackwardChar),
-            "delete_forward_char" => Ok(Command::DeleteForwardChar),
-            "delete_backward_word" => Ok(Command::DeleteBackwardWord),
-            "delete_forward_word" => Ok(Command::DeleteForwardWord),
-            "delete_to_start" => Ok(Command::DeleteToStart),
-            "delete_to_end" => Ok(Command::DeleteToEnd),
-            "move_cursor_left" => Ok(Command::MoveCursorLeft),
-            "move_cursor_right" => Ok(Command::MoveCursorRight),
-            "move_cursor_word_left" => Ok(Command::MoveCursorWordLeft),
-            "move_cursor_word_right" => Ok(Command::MoveCursorWordRight),
-            "move_cursor_start" => Ok(Command::MoveCursorStart),
-            "move_cursor_end" => Ok(Command::MoveCursorEnd),
-            "confirm" => Ok(Command::Confirm),
-            "cancel" => Ok(Command::Cancel),
-            _ => Err(format!("Unknown command: {s}")),
+        impl FromStr for Command {
+            type Err = String;
+            fn from_str(s: &str) -> Result<Self, Self::Err> {
+                match s {
+                    $($config_name $($(| $alias)+)? => Ok(Command::$variant),)*
+                    _ => Err(format!("Unknown command: {s}")),
+                }
+            }
         }
-    }
-}
 
-impl std::fmt::Display for Command {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s = match self {
-            Command::Noop => "noop",
-            Command::Quit => "quit",
-            Command::ShowHelp => "show_help",
-            Command::OpenRepo => "open_repo",
-            Command::EnterRepo => "enter_repo",
-            Command::OpenBranch => "open_branch",
-            Command::GoBack => "go_back",
-            Command::NewBranch => "new_branch",
-            Command::DeleteWorktree => "delete_worktree",
-            Command::MoveUp => "move_up",
-            Command::MoveDown => "move_down",
-            Command::HalfPageUp => "half_page_up",
-            Command::HalfPageDown => "half_page_down",
-            Command::PageUp => "page_up",
-            Command::PageDown => "page_down",
-            Command::MoveTop => "move_top",
-            Command::MoveBottom => "move_bottom",
-            Command::DeleteBackwardChar => "delete_backward_char",
-            Command::DeleteForwardChar => "delete_forward_char",
-            Command::DeleteBackwardWord => "delete_backward_word",
-            Command::DeleteForwardWord => "delete_forward_word",
-            Command::DeleteToStart => "delete_to_start",
-            Command::DeleteToEnd => "delete_to_end",
-            Command::MoveCursorLeft => "move_cursor_left",
-            Command::MoveCursorRight => "move_cursor_right",
-            Command::MoveCursorWordLeft => "move_cursor_word_left",
-            Command::MoveCursorWordRight => "move_cursor_word_right",
-            Command::MoveCursorStart => "move_cursor_start",
-            Command::MoveCursorEnd => "move_cursor_end",
-            Command::Confirm => "confirm",
-            Command::Cancel => "cancel",
-        };
-        write!(f, "{s}")
-    }
-}
-
-impl Serialize for Command {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&self.to_string())
-    }
-}
-
-impl Command {
-    /// Get a human-readable description of the command for help display
-    pub fn description(&self) -> &'static str {
-        match self {
-            Command::Noop => "Unbound",
-            Command::Quit => "Quit the application",
-            Command::ShowHelp => "Show help",
-            Command::OpenRepo => "Open repository in tmux",
-            Command::EnterRepo => "Browse branches",
-            Command::OpenBranch => "Open branch in tmux",
-            Command::GoBack => "Go back",
-            Command::NewBranch => "New branch",
-            Command::DeleteWorktree => "Delete worktree",
-            Command::MoveUp => "Move up",
-            Command::MoveDown => "Move down",
-            Command::HalfPageUp => "Half page up",
-            Command::HalfPageDown => "Half page down",
-            Command::PageUp => "Page up",
-            Command::PageDown => "Page down",
-            Command::MoveTop => "Move to top",
-            Command::MoveBottom => "Move to bottom",
-            Command::DeleteBackwardChar => "Delete backward char",
-            Command::DeleteForwardChar => "Delete forward char",
-            Command::DeleteBackwardWord => "Delete backward word",
-            Command::DeleteForwardWord => "Delete forward word",
-            Command::DeleteToStart => "Delete to start of line",
-            Command::DeleteToEnd => "Delete to end of line",
-            Command::MoveCursorLeft => "Move cursor left",
-            Command::MoveCursorRight => "Move cursor right",
-            Command::MoveCursorWordLeft => "Move cursor word left",
-            Command::MoveCursorWordRight => "Move cursor word right",
-            Command::MoveCursorStart => "Move cursor to start",
-            Command::MoveCursorEnd => "Move cursor to end",
-            Command::Confirm => "Confirm",
-            Command::Cancel => "Cancel",
+        impl std::fmt::Display for Command {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(match self {
+                    $(Command::$variant => $config_name),*
+                })
+            }
         }
-    }
+
+        impl Serialize for Command {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                serializer.serialize_str(&self.to_string())
+            }
+        }
+
+        impl Command {
+            /// Get the labels (footer hint + help description) for this command.
+            pub fn labels(&self) -> CommandLabels {
+                match self {
+                    $(Command::$variant => CommandLabels {
+                        hint: $hint,
+                        description: $desc,
+                    }),*
+                }
+            }
+        }
+    };
+}
+
+define_commands! {
+    // Special
+    Noop {
+        config_name: "noop",
+        aliases: ["none", "unbound"],
+        hint: "unbound",
+        description: "Unbound",
+    },
+
+    // General
+    Quit {
+        config_name: "quit",
+        hint: "quit",
+        description: "Quit the application",
+    },
+    ShowHelp {
+        config_name: "show_help",
+        hint: "help",
+        description: "Show help",
+    },
+
+    // Navigation
+    OpenRepo {
+        config_name: "open_repo",
+        hint: "open",
+        description: "Open repository in tmux",
+    },
+    EnterRepo {
+        config_name: "enter_repo",
+        hint: "branches",
+        description: "Browse branches",
+    },
+    OpenBranch {
+        config_name: "open_branch",
+        hint: "open",
+        description: "Open branch in tmux",
+    },
+    GoBack {
+        config_name: "go_back",
+        hint: "back",
+        description: "Go back",
+    },
+    NewBranch {
+        config_name: "new_branch",
+        hint: "new branch",
+        description: "New branch",
+    },
+    DeleteWorktree {
+        config_name: "delete_worktree",
+        hint: "delete worktree",
+        description: "Delete worktree",
+    },
+
+    // List movement
+    MoveUp {
+        config_name: "move_up",
+        hint: "up",
+        description: "Move up",
+    },
+    MoveDown {
+        config_name: "move_down",
+        hint: "down",
+        description: "Move down",
+    },
+    HalfPageUp {
+        config_name: "half_page_up",
+        hint: "half page up",
+        description: "Half page up",
+    },
+    HalfPageDown {
+        config_name: "half_page_down",
+        hint: "half page down",
+        description: "Half page down",
+    },
+    PageUp {
+        config_name: "page_up",
+        hint: "page up",
+        description: "Page up",
+    },
+    PageDown {
+        config_name: "page_down",
+        hint: "page down",
+        description: "Page down",
+    },
+    MoveTop {
+        config_name: "move_top",
+        hint: "top",
+        description: "Move to top",
+    },
+    MoveBottom {
+        config_name: "move_bottom",
+        hint: "bottom",
+        description: "Move to bottom",
+    },
+
+    // Text editing
+    DeleteBackwardChar {
+        config_name: "delete_backward_char",
+        hint: "del char back",
+        description: "Delete backward char",
+    },
+    DeleteForwardChar {
+        config_name: "delete_forward_char",
+        hint: "del char fwd",
+        description: "Delete forward char",
+    },
+    DeleteBackwardWord {
+        config_name: "delete_backward_word",
+        hint: "del word back",
+        description: "Delete backward word",
+    },
+    DeleteForwardWord {
+        config_name: "delete_forward_word",
+        hint: "del word fwd",
+        description: "Delete forward word",
+    },
+    DeleteToStart {
+        config_name: "delete_to_start",
+        hint: "del to start",
+        description: "Delete to start of line",
+    },
+    DeleteToEnd {
+        config_name: "delete_to_end",
+        hint: "del to end",
+        description: "Delete to end of line",
+    },
+    MoveCursorLeft {
+        config_name: "move_cursor_left",
+        hint: "cursor left",
+        description: "Move cursor left",
+    },
+    MoveCursorRight {
+        config_name: "move_cursor_right",
+        hint: "cursor right",
+        description: "Move cursor right",
+    },
+    MoveCursorWordLeft {
+        config_name: "move_cursor_word_left",
+        hint: "word left",
+        description: "Move cursor word left",
+    },
+    MoveCursorWordRight {
+        config_name: "move_cursor_word_right",
+        hint: "word right",
+        description: "Move cursor word right",
+    },
+    MoveCursorStart {
+        config_name: "move_cursor_start",
+        hint: "cursor start",
+        description: "Move cursor to start",
+    },
+    MoveCursorEnd {
+        config_name: "move_cursor_end",
+        hint: "cursor end",
+        description: "Move cursor to end",
+    },
+
+    // Modal
+    Confirm {
+        config_name: "confirm",
+        hint: "confirm",
+        description: "Confirm",
+    },
+    Cancel {
+        config_name: "cancel",
+        hint: "cancel",
+        description: "Cancel",
+    },
 }
 
 /// Key bindings for a specific layer/mode
@@ -881,5 +943,160 @@ mod tests {
         assert_eq!(Command::from_str("noop").unwrap(), Command::Noop);
         assert_eq!(Command::from_str("none").unwrap(), Command::Noop);
         assert_eq!(Command::from_str("unbound").unwrap(), Command::Noop);
+    }
+
+    #[test]
+    fn test_every_command_roundtrips_through_display_and_from_str() {
+        let all_commands = [
+            Command::Noop,
+            Command::Quit,
+            Command::ShowHelp,
+            Command::OpenRepo,
+            Command::EnterRepo,
+            Command::OpenBranch,
+            Command::GoBack,
+            Command::NewBranch,
+            Command::DeleteWorktree,
+            Command::MoveUp,
+            Command::MoveDown,
+            Command::HalfPageUp,
+            Command::HalfPageDown,
+            Command::PageUp,
+            Command::PageDown,
+            Command::MoveTop,
+            Command::MoveBottom,
+            Command::DeleteBackwardChar,
+            Command::DeleteForwardChar,
+            Command::DeleteBackwardWord,
+            Command::DeleteForwardWord,
+            Command::DeleteToStart,
+            Command::DeleteToEnd,
+            Command::MoveCursorLeft,
+            Command::MoveCursorRight,
+            Command::MoveCursorWordLeft,
+            Command::MoveCursorWordRight,
+            Command::MoveCursorStart,
+            Command::MoveCursorEnd,
+            Command::Confirm,
+            Command::Cancel,
+        ];
+
+        for cmd in &all_commands {
+            let s = cmd.to_string();
+            let parsed = Command::from_str(&s).unwrap_or_else(|e| {
+                panic!("Command::{cmd:?} serializes as \"{s}\" but fails to parse back: {e}")
+            });
+            assert_eq!(
+                &parsed, cmd,
+                "Roundtrip failed for Command::{cmd:?} (serialized as \"{s}\")"
+            );
+        }
+    }
+
+    #[test]
+    fn test_every_command_has_non_empty_description() {
+        let all_commands = [
+            Command::Noop,
+            Command::Quit,
+            Command::ShowHelp,
+            Command::OpenRepo,
+            Command::EnterRepo,
+            Command::OpenBranch,
+            Command::GoBack,
+            Command::NewBranch,
+            Command::DeleteWorktree,
+            Command::MoveUp,
+            Command::MoveDown,
+            Command::HalfPageUp,
+            Command::HalfPageDown,
+            Command::PageUp,
+            Command::PageDown,
+            Command::MoveTop,
+            Command::MoveBottom,
+            Command::DeleteBackwardChar,
+            Command::DeleteForwardChar,
+            Command::DeleteBackwardWord,
+            Command::DeleteForwardWord,
+            Command::DeleteToStart,
+            Command::DeleteToEnd,
+            Command::MoveCursorLeft,
+            Command::MoveCursorRight,
+            Command::MoveCursorWordLeft,
+            Command::MoveCursorWordRight,
+            Command::MoveCursorStart,
+            Command::MoveCursorEnd,
+            Command::Confirm,
+            Command::Cancel,
+        ];
+
+        for cmd in &all_commands {
+            let labels = cmd.labels();
+            assert!(
+                !labels.description.is_empty(),
+                "Command::{cmd:?} has an empty description"
+            );
+        }
+    }
+
+    #[test]
+    fn test_footer_commands_all_have_hints() {
+        let modes: Vec<Mode> = vec![
+            Mode::RepoSelect,
+            Mode::BranchSelect,
+            Mode::SelectBaseBranch,
+            Mode::ConfirmWorktreeDelete {
+                branch_name: "x".into(),
+                has_session: false,
+            },
+        ];
+
+        for mode in &modes {
+            for cmd in mode.footer_commands() {
+                assert!(
+                    !cmd.labels().hint.is_empty(),
+                    "Command::{cmd:?} is in footer_commands for {mode:?} but has an empty hint"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_footer_commands_have_key_bindings() {
+        let keys = KeysConfig::default();
+        let modes: Vec<Mode> = vec![
+            Mode::RepoSelect,
+            Mode::BranchSelect,
+            Mode::SelectBaseBranch,
+            Mode::ConfirmWorktreeDelete {
+                branch_name: "x".into(),
+                has_session: false,
+            },
+        ];
+
+        for mode in &modes {
+            let keymap = keys.keymap_for_mode(mode);
+            for cmd in mode.footer_commands() {
+                assert!(
+                    KeysConfig::find_key(&keymap, cmd).is_some(),
+                    "Command::{cmd:?} is in footer_commands for {mode:?} but has no default key binding"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_loading_and_help_have_no_footer_commands() {
+        assert!(
+            Mode::Loading("test".into()).footer_commands().is_empty(),
+            "Loading mode should have no footer commands"
+        );
+        assert!(
+            Mode::Help {
+                previous: Box::new(Mode::RepoSelect)
+            }
+            .footer_commands()
+            .is_empty(),
+            "Help mode should have no footer commands"
+        );
     }
 }

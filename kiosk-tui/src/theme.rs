@@ -9,7 +9,6 @@ pub struct Theme {
     pub warning: Color,
     pub muted: Color,
     pub border: Color,
-    pub title: Color,
     pub hint: Color,
     pub highlight_fg: Color,
 }
@@ -24,7 +23,6 @@ impl Theme {
             warning: to_ratatui_color(&config.warning),
             muted: to_ratatui_color(&config.muted),
             border: to_ratatui_color(&config.border),
-            title: to_ratatui_color(&config.title),
             hint: to_ratatui_color(&config.hint),
             highlight_fg: to_ratatui_color(&config.highlight_fg),
         }
@@ -44,6 +42,7 @@ fn to_ratatui_color(color: &ThemeColor) -> Color {
             NamedColor::Cyan => Color::Cyan,
             NamedColor::White => Color::White,
             NamedColor::Gray => Color::Gray,
+            NamedColor::DarkGray => Color::DarkGray,
         },
     }
 }
@@ -61,11 +60,10 @@ mod tests {
         assert_eq!(theme.success, Color::Green);
         assert_eq!(theme.error, Color::Red);
         assert_eq!(theme.warning, Color::Yellow);
-        assert_eq!(theme.muted, Color::Gray);
-        assert_eq!(theme.border, Color::Gray);
-        assert_eq!(theme.title, Color::Blue);
+        assert_eq!(theme.muted, Color::DarkGray);
+        assert_eq!(theme.border, Color::DarkGray);
         assert_eq!(theme.hint, Color::Blue);
-        assert_eq!(theme.highlight_fg, Color::White);
+        assert_eq!(theme.highlight_fg, Color::Black);
     }
 
     #[test]
@@ -86,12 +84,12 @@ mod tests {
     }
 
     #[test]
-    fn test_theme_gray_color() {
+    fn test_theme_dark_gray_color() {
         let config = ThemeConfig {
-            muted: ThemeColor::Named(NamedColor::Gray),
+            muted: ThemeColor::Named(NamedColor::DarkGray),
             ..ThemeConfig::default()
         };
         let theme = Theme::from_config(&config);
-        assert_eq!(theme.muted, Color::Gray);
+        assert_eq!(theme.muted, Color::DarkGray);
     }
 }

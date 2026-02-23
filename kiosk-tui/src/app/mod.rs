@@ -390,18 +390,14 @@ fn confirm_delete_dialog_layout(
         Span::raw("confirm ("),
         Span::styled(
             confirm_key.to_string(),
-            Style::default()
-                .fg(hint_color)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(hint_color).add_modifier(Modifier::BOLD),
         ),
         Span::raw(")"),
         Span::raw(" / "),
         Span::raw("cancel ("),
         Span::styled(
             cancel_key.to_string(),
-            Style::default()
-                .fg(hint_color)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(hint_color).add_modifier(Modifier::BOLD),
         ),
         Span::raw(")"),
     ]);
@@ -414,7 +410,10 @@ fn confirm_delete_dialog_layout(
 
     let text = vec![message_line, blank_line, hints_line];
 
-    let content_height: u16 = text.iter().map(|line| word_wrapped_line_count(line, text_width)).sum();
+    let content_height: u16 = text
+        .iter()
+        .map(|line| word_wrapped_line_count(line, text_width))
+        .sum();
 
     ConfirmDeleteDialogLayout {
         text,
@@ -2758,7 +2757,13 @@ mod tests {
     #[test]
     fn test_confirm_delete_layout_short_branch() {
         let layout = confirm_delete_dialog_layout(
-            "main", false, "enter", "esc", Color::Magenta, Color::Blue, 120,
+            "main",
+            false,
+            "enter",
+            "esc",
+            Color::Magenta,
+            Color::Blue,
+            120,
         );
         // min(120*80/100, 80) = 80
         assert_eq!(layout.width, 80, "width should be capped at 80");
@@ -2770,18 +2775,34 @@ mod tests {
     fn test_confirm_delete_layout_long_branch() {
         let long_name = "a".repeat(100);
         let layout = confirm_delete_dialog_layout(
-            &long_name, false, "enter", "esc", Color::Magenta, Color::Blue, 120,
+            &long_name,
+            false,
+            "enter",
+            "esc",
+            Color::Magenta,
+            Color::Blue,
+            120,
         );
         // min(120*80/100, 80) = 80
         assert_eq!(layout.width, 80, "width should be capped at 80");
-        assert!(layout.height > 7, "long branch should cause wrapping, height={}", layout.height);
+        assert!(
+            layout.height > 7,
+            "long branch should cause wrapping, height={}",
+            layout.height
+        );
     }
 
     #[test]
     fn test_confirm_delete_layout_very_long_branch() {
         let long_name = "a".repeat(200);
         let layout = confirm_delete_dialog_layout(
-            &long_name, false, "enter", "esc", Color::Magenta, Color::Blue, 80,
+            &long_name,
+            false,
+            "enter",
+            "esc",
+            Color::Magenta,
+            Color::Blue,
+            80,
         );
         // min(80*80/100, 80) = 64
         assert_eq!(layout.width, 64, "width should be 80% of terminal");
@@ -2795,24 +2816,45 @@ mod tests {
     #[test]
     fn test_confirm_delete_layout_narrow_terminal() {
         let layout = confirm_delete_dialog_layout(
-            "main", false, "enter", "esc", Color::Magenta, Color::Blue, 50,
+            "main",
+            false,
+            "enter",
+            "esc",
+            Color::Magenta,
+            Color::Blue,
+            50,
         );
-        assert!(layout.width <= 50, "dialog width {} must fit in terminal", layout.width);
+        assert!(
+            layout.width <= 50,
+            "dialog width {} must fit in terminal",
+            layout.width
+        );
     }
 
     #[test]
     fn test_confirm_delete_layout_session_same_width() {
         let without = confirm_delete_dialog_layout(
-            "feature-branch", false, "enter", "esc", Color::Magenta, Color::Blue, 120,
+            "feature-branch",
+            false,
+            "enter",
+            "esc",
+            Color::Magenta,
+            Color::Blue,
+            120,
         );
         let with = confirm_delete_dialog_layout(
-            "feature-branch", true, "enter", "esc", Color::Magenta, Color::Blue, 120,
+            "feature-branch",
+            true,
+            "enter",
+            "esc",
+            Color::Magenta,
+            Color::Blue,
+            120,
         );
         assert_eq!(
             with.width, without.width,
             "width is content-independent: with session ({}) should equal without ({})",
-            with.width,
-            without.width,
+            with.width, without.width,
         );
     }
 
@@ -2821,7 +2863,13 @@ mod tests {
         // "Delete worktree for branch \"exactly-fits\"?" = 42 chars, well within
         // text_width of 76 (80 - 4 chrome), so no wrapping should occur.
         let layout = confirm_delete_dialog_layout(
-            "exactly-fits", false, "enter", "esc", Color::Magenta, Color::Blue, 120,
+            "exactly-fits",
+            false,
+            "enter",
+            "esc",
+            Color::Magenta,
+            Color::Blue,
+            120,
         );
         assert_eq!(layout.height, 7, "exact fit should not wrap");
     }
@@ -2861,26 +2909,53 @@ mod tests {
     #[test]
     fn test_confirm_delete_render_full_text_visible() {
         let layout = confirm_delete_dialog_layout(
-            "main", false, "enter", "esc", Color::Magenta, Color::Blue, 120,
+            "main",
+            false,
+            "enter",
+            "esc",
+            Color::Magenta,
+            Color::Blue,
+            120,
         );
         let buf = render_dialog_to_buffer(&layout);
         let rendered = buf_to_string(&buf);
-        assert!(rendered.contains("main"), "branch name missing:\n{rendered}");
-        assert!(rendered.contains("Delete worktree"), "action text missing:\n{rendered}");
-        assert!(rendered.contains("confirm"), "confirm hint missing:\n{rendered}");
-        assert!(rendered.contains("cancel"), "cancel hint missing:\n{rendered}");
+        assert!(
+            rendered.contains("main"),
+            "branch name missing:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("Delete worktree"),
+            "action text missing:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("confirm"),
+            "confirm hint missing:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("cancel"),
+            "cancel hint missing:\n{rendered}"
+        );
     }
 
     #[test]
     fn test_confirm_delete_render_wrapping() {
         let long_name = "x".repeat(100);
         let layout = confirm_delete_dialog_layout(
-            &long_name, false, "enter", "esc", Color::Magenta, Color::Blue, 120,
+            &long_name,
+            false,
+            "enter",
+            "esc",
+            Color::Magenta,
+            Color::Blue,
+            120,
         );
         let buf = render_dialog_to_buffer(&layout);
         let rendered = buf_to_string(&buf);
         let x_count = rendered.chars().filter(|c| *c == 'x').count();
-        assert_eq!(x_count, 100, "all branch chars should be rendered:\n{rendered}");
+        assert_eq!(
+            x_count, 100,
+            "all branch chars should be rendered:\n{rendered}"
+        );
     }
 
     #[test]
@@ -2889,12 +2964,24 @@ mod tests {
         // must still be fully rendered (this was the bug that motivated the
         // word_wrapped_line_count fix).
         let layout = confirm_delete_dialog_layout(
-            "feat/headless-cli", true, "enter", "esc", Color::Magenta, Color::Blue, 28,
+            "feat/headless-cli",
+            true,
+            "enter",
+            "esc",
+            Color::Magenta,
+            Color::Blue,
+            28,
         );
         let buf = render_dialog_to_buffer(&layout);
         let rendered = buf_to_string(&buf);
-        assert!(rendered.contains("confirm"), "confirm hint missing:\n{rendered}");
-        assert!(rendered.contains("cancel"), "cancel hint missing:\n{rendered}");
+        assert!(
+            rendered.contains("confirm"),
+            "confirm hint missing:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("cancel"),
+            "cancel hint missing:\n{rendered}"
+        );
         assert!(
             rendered.contains("feat/headless-cli"),
             "branch name missing:\n{rendered}",
@@ -2904,7 +2991,13 @@ mod tests {
     #[test]
     fn test_confirm_delete_render_border_positions() {
         let layout = confirm_delete_dialog_layout(
-            "main", false, "enter", "esc", Color::Magenta, Color::Blue, 120,
+            "main",
+            false,
+            "enter",
+            "esc",
+            Color::Magenta,
+            Color::Blue,
+            120,
         );
         let buf = render_dialog_to_buffer(&layout);
         let w = layout.width;

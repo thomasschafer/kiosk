@@ -1707,18 +1707,13 @@ fn test_e2e_delete_confirm_dialog_long_branch() {
     let long_branch = "feat/this-is-a-very-long-branch-name-that-will-exceed-the-dialog-width";
 
     run_git(&repo, &["branch", long_branch]);
-    let wt_dir = search_dir
-        .join(WORKTREE_DIR_NAME)
-        .join("long-dialog-repo--feat-this-is-a-very-long-branch-name-that-will-exceed-the-dialog-width");
+    let wt_dir = search_dir.join(WORKTREE_DIR_NAME).join(
+        "long-dialog-repo--feat-this-is-a-very-long-branch-name-that-will-exceed-the-dialog-width",
+    );
     fs::create_dir_all(&wt_dir).unwrap();
     run_git(
         &repo,
-        &[
-            "worktree",
-            "add",
-            &wt_dir.to_string_lossy(),
-            long_branch,
-        ],
+        &["worktree", "add", &wt_dir.to_string_lossy(), long_branch],
     );
 
     env.write_config(&search_dir);

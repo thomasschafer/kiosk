@@ -102,10 +102,10 @@ pub struct ThemeConfig {
     /// Warning color (default: "yellow").
     #[serde(deserialize_with = "deserialize_color")]
     pub warning: ThemeColor,
-    /// Muted/dim text color (default: "dark_gray").
+    /// Muted/dim text color (default: "`dark_gray`").
     #[serde(deserialize_with = "deserialize_color")]
     pub muted: ThemeColor,
-    /// Border color (default: "dark_gray").
+    /// Border color (default: "`dark_gray`").
     #[serde(deserialize_with = "deserialize_color")]
     pub border: ThemeColor,
     /// Hint/key binding color (default: "blue").

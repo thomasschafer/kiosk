@@ -1694,3 +1694,65 @@ fn test_e2e_branch_ordering() {
         "mmm-worktree (has worktree) should appear before aaa-plain. Screen:\n{screen}"
     );
 }
+
+#[test]
+fn test_e2e_delete_confirm_dialog_long_branch() {
+    let env = TestEnv::new("delete-dialog-long");
+    let search_dir = env.search_dir();
+
+    let repo = search_dir.join("long-dialog-repo");
+    fs::create_dir_all(&repo).unwrap();
+    init_test_repo(&repo);
+
+    let long_branch = "feat/this-is-a-very-long-branch-name-that-will-exceed-the-dialog-width";
+
+    run_git(&repo, &["branch", long_branch]);
+    let wt_dir = search_dir
+        .join(WORKTREE_DIR_NAME)
+        .join("long-dialog-repo--feat-this-is-a-very-long-branch-name-that-will-exceed-the-dialog-width");
+    fs::create_dir_all(&wt_dir).unwrap();
+    run_git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            &wt_dir.to_string_lossy(),
+            long_branch,
+        ],
+    );
+
+    env.write_config(&search_dir);
+    env.launch_kiosk();
+
+    // Enter the repo
+    env.send_special("Tab");
+    wait_for_screen(&env, 2500, |s| s.contains("select branch"));
+
+    // Search for and select the branch with worktree
+    env.send("exceed-the-dialog-width");
+    wait_ms(200);
+
+    // Trigger delete
+    env.send_special("C-x");
+
+    let screen = wait_for_screen(&env, 2000, |s| s.contains("Confirm delete"));
+    assert!(
+        screen.contains("Confirm delete"),
+        "Should show confirmation dialog: {screen}"
+    );
+    // The tail of the branch name should be visible (would have been truncated with the old fixed width)
+    assert!(
+        screen.contains("exceed-the-dialog-width"),
+        "Long branch name tail should be visible in dialog: {screen}"
+    );
+
+    // Cancel the dialog
+    env.send_special("Escape");
+    wait_ms(300);
+
+    let screen = env.capture();
+    assert!(
+        !screen.contains("Confirm delete"),
+        "Dialog should be dismissed after cancel: {screen}"
+    );
+}

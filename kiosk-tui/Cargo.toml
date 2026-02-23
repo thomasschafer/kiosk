@@ -17,6 +17,7 @@ crossterm = "0.29"
 fuzzy-matcher = "0.3"
 kiosk-core.workspace = true
 ratatui = "0.30"
+unicode-width = "0.1"
 
 [lints]
 workspace = true

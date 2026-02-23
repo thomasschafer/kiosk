@@ -164,11 +164,7 @@ fn dispatch_command(
     tmux: &Arc<dyn TmuxProvider>,
 ) -> crate::cli::CliResult<()> {
     match command {
-        Some(Commands::Clean {
-            dry_run,
-            yes,
-            json,
-        }) => {
+        Some(Commands::Clean { dry_run, yes, json }) => {
             let search_dirs = config.resolved_search_dirs();
             clean_orphaned_worktrees(&search_dirs, git.as_ref(), dry_run, yes, json)
                 .map_err(crate::cli::CliError::from)

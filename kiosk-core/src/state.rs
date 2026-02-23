@@ -253,7 +253,14 @@ impl BranchEntry {
         branch_names: &[String],
         active_sessions: &[String],
     ) -> Vec<Self> {
-        Self::build_entries(repo, branch_names, active_sessions, None, &HashMap::new(), None)
+        Self::build_entries(
+            repo,
+            branch_names,
+            active_sessions,
+            None,
+            &HashMap::new(),
+            None,
+        )
     }
 
     /// Build sorted branch entries from a repo's branches, worktrees, and active tmux sessions.
@@ -282,8 +289,14 @@ impl BranchEntry {
         session_activity: &HashMap<String, u64>,
         cwd: Option<&Path>,
     ) -> Vec<Self> {
-        let mut entries =
-            Self::build_entries(repo, branch_names, active_sessions, default_branch, session_activity, cwd);
+        let mut entries = Self::build_entries(
+            repo,
+            branch_names,
+            active_sessions,
+            default_branch,
+            session_activity,
+            cwd,
+        );
         Self::sort_entries(&mut entries);
         entries
     }

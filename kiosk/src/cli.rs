@@ -476,10 +476,13 @@ pub fn cmd_status(
         println!("path: {}", output.path.display());
         println!("attached: {}", output.attached);
         println!("clients: {}", output.clients);
-        println!("source: {}", match output.source {
-            StatusSource::Live => "live",
-            StatusSource::Log => "log",
-        });
+        println!(
+            "source: {}",
+            match output.source {
+                StatusSource::Live => "live",
+                StatusSource::Log => "log",
+            }
+        );
         println!("output:\n{}", output.output);
     }
 
@@ -541,8 +544,7 @@ pub fn cmd_sessions(
     json: bool,
 ) -> CliResult<()> {
     let repos = discover_all_with_worktrees(config, git);
-    let active_sessions: HashSet<String> =
-        tmux.list_session_names().into_iter().collect();
+    let active_sessions: HashSet<String> = tmux.list_session_names().into_iter().collect();
     let mut output = Vec::new();
 
     for repo in &repos {
@@ -1476,10 +1478,7 @@ mod tests {
         );
 
         let tmux = MockTmuxProvider {
-            sessions: Mutex::new(vec![
-                "demo".to_string(),
-                "unrelated-session".to_string(),
-            ]),
+            sessions: Mutex::new(vec!["demo".to_string(), "unrelated-session".to_string()]),
             ..Default::default()
         };
 

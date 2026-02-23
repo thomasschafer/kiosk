@@ -113,7 +113,9 @@ impl TmuxProvider for CliTmuxProvider {
         let enter = Command::new("tmux")
             .args(["send-keys", "-t", &target, "Enter"])
             .output()
-            .with_context(|| format!("failed to execute tmux send-keys Enter for session {session}"))?;
+            .with_context(|| {
+                format!("failed to execute tmux send-keys Enter for session {session}")
+            })?;
         if !enter.status.success() {
             let stderr = String::from_utf8_lossy(&enter.stderr);
             bail!("tmux send-keys Enter failed: {}", stderr.trim());

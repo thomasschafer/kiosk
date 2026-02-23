@@ -1835,7 +1835,14 @@ fn test_e2e_headless_open_log_and_status_log_fallback() {
         .output();
     wait_ms(500);
 
-    let status_output = env.run_cli(&["status", &repo_name, &branch_name, "--json", "--lines", "50"]);
+    let status_output = env.run_cli(&[
+        "status",
+        &repo_name,
+        &branch_name,
+        "--json",
+        "--lines",
+        "50",
+    ]);
     assert!(
         status_output.status.success(),
         "status should succeed via log fallback: {}",
@@ -1867,10 +1874,7 @@ fn test_e2e_headless_error_unknown_repo() {
     env.write_config(&search_dir);
 
     let output = env.run_cli(&["branches", "nonexistent-repo", "--json"]);
-    assert!(
-        !output.status.success(),
-        "should fail for unknown repo"
-    );
+    assert!(!output.status.success(), "should fail for unknown repo");
     assert_eq!(
         output.status.code(),
         Some(1),
@@ -1903,10 +1907,7 @@ fn test_e2e_headless_error_unknown_branch() {
         "--no-switch",
         "--json",
     ]);
-    assert!(
-        !output.status.success(),
-        "should fail for unknown branch"
-    );
+    assert!(!output.status.success(), "should fail for unknown branch");
     assert_eq!(
         output.status.code(),
         Some(1),
@@ -1933,12 +1934,7 @@ fn test_e2e_headless_error_delete_no_worktree() {
     run_git(&repo, &["branch", "feat/no-worktree"]);
     env.write_config(&search_dir);
 
-    let output = env.run_cli(&[
-        "delete",
-        "del-nowt-repo",
-        "feat/no-worktree",
-        "--json",
-    ]);
+    let output = env.run_cli(&["delete", "del-nowt-repo", "feat/no-worktree", "--json"]);
     assert!(
         !output.status.success(),
         "should fail when branch has no worktree"

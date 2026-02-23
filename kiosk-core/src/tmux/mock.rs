@@ -1,4 +1,4 @@
-use super::provider::TmuxProvider;
+use super::provider::{PaneInfo, TmuxProvider};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::Path;
@@ -20,6 +20,8 @@ pub struct MockTmuxProvider {
     pub capture_pane_result: Mutex<Option<Result<String>>>,
     pub send_keys_result: Mutex<Option<Result<()>>>,
     pub pipe_pane_result: Mutex<Option<Result<()>>>,
+    pub pane_info: HashMap<String, Vec<PaneInfo>>,
+    pub pane_content: HashMap<(String, u32), String>,
 }
 
 impl TmuxProvider for MockTmuxProvider {
@@ -148,5 +150,15 @@ impl TmuxProvider for MockTmuxProvider {
 
     fn pane_count(&self, _session: &str) -> anyhow::Result<usize> {
         Ok(1)
+    }
+
+    fn list_panes_detailed(&self, session: &str) -> Vec<PaneInfo> {
+        self.pane_info.get(session).cloned().unwrap_or_default()
+    }
+
+    fn capture_pane_by_index(&self, session: &str, pane_index: u32, _lines: u32) -> Option<String> {
+        self.pane_content
+            .get(&(session.to_string(), pane_index))
+            .cloned()
     }
 }

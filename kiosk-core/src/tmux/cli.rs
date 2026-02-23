@@ -1,4 +1,4 @@
-use super::provider::TmuxProvider;
+use super::provider::{PaneInfo, TmuxProvider};
 use anyhow::{Context, Result, bail};
 use std::{path::Path, process::Command};
 
@@ -298,11 +298,71 @@ impl TmuxProvider for CliTmuxProvider {
     fn is_inside_tmux(&self) -> bool {
         std::env::var("TMUX").is_ok()
     }
+
+    fn list_panes_detailed(&self, session: &str) -> Vec<PaneInfo> {
+        let output = Command::new("tmux")
+            .args([
+                "list-panes",
+                "-t",
+                &format!("={session}"),
+                "-F",
+                "#{pane_index}|#{pane_current_command}|#{pane_pid}",
+            ])
+            .output();
+
+        let Ok(output) = output else {
+            return Vec::new();
+        };
+
+        if !output.status.success() {
+            return Vec::new();
+        }
+
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| {
+                let parts: Vec<&str> = line.split('|').collect();
+                if parts.len() == 3 {
+                    let pane_index = parts[0].parse().ok()?;
+                    let command = parts[1].to_string();
+                    let pid = parts[2].parse().ok()?;
+                    Some(PaneInfo {
+                        pane_index,
+                        command,
+                        pid,
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    fn capture_pane_by_index(&self, session: &str, pane_index: u32, lines: u32) -> Option<String> {
+        let output = Command::new("tmux")
+            .args([
+                "capture-pane",
+                "-t",
+                &format!("={session}:{pane_index}"),
+                "-p",
+                "-S",
+                &format!("-{lines}"),
+            ])
+            .output()
+            .ok()?;
+
+        if output.status.success() {
+            Some(String::from_utf8_lossy(&output.stdout).to_string())
+        } else {
+            None
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::create_session_commands;
+    use crate::tmux::provider::PaneInfo;
 
     #[test]
     fn test_create_session_commands_with_split_command_uses_split_window_command_arg() {
@@ -337,5 +397,38 @@ mod tests {
     fn test_create_session_commands_without_split_command() {
         let commands = create_session_commands("demo", "/tmp/demo", None);
         assert_eq!(commands.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_pane_info() {
+        // Test parsing a single line
+        let test_line = "0|bash|12345";
+        let parts: Vec<&str> = test_line.split('|').collect();
+        assert_eq!(parts.len(), 3);
+
+        let pane_info = PaneInfo {
+            pane_index: 0,
+            command: "bash".to_string(),
+            pid: 12345,
+        };
+
+        assert_eq!(pane_info.pane_index, 0);
+        assert_eq!(pane_info.command, "bash");
+        assert_eq!(pane_info.pid, 12345);
+    }
+
+    #[test]
+    fn test_parse_pane_info_with_complex_command() {
+        let test_line = "1|claude-code --verbose|67890";
+        let parts: Vec<&str> = test_line.split('|').collect();
+        assert_eq!(parts.len(), 3);
+
+        let pane_info = PaneInfo {
+            pane_index: 1,
+            command: "claude-code --verbose".to_string(),
+            pid: 67890,
+        };
+
+        assert_eq!(pane_info.command, "claude-code --verbose");
     }
 }

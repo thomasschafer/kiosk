@@ -17,6 +17,7 @@ bitflags = "2"
 crossterm = "0.29"
 dirs = "6"
 log = "0.4"
+regex = "1"
 serde.workspace = true
 toml = "1.0"
 unicode-segmentation = "1"

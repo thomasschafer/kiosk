@@ -1,4 +1,5 @@
 use crate::{
+    agent::AgentState,
     config::keys::{Command, FlattenedKeybindingRow},
     constants::{WORKTREE_DIR_DEDUP_MAX_ATTEMPTS, WORKTREE_DIR_NAME, WORKTREE_NAME_SEPARATOR},
     git::Repo,
@@ -369,6 +370,8 @@ pub struct BranchEntry {
     pub remote: Option<String>,
     /// Last activity timestamp for the session (if any)
     pub session_activity_ts: Option<u64>,
+    /// State of any AI agent running in the session
+    pub agent_state: Option<AgentState>,
 }
 
 impl BranchEntry {
@@ -468,6 +471,7 @@ impl BranchEntry {
                     is_default,
                     remote: None,
                     session_activity_ts,
+                    agent_state: None,
                 }
             })
             .collect()
@@ -493,6 +497,7 @@ impl BranchEntry {
                 is_default: false,
                 remote: Some(remote.to_string()),
                 session_activity_ts: None,
+                agent_state: None,
             })
             .collect()
     }
@@ -1937,6 +1942,7 @@ mod tests {
                 is_default: false,
                 remote: Some("origin".to_string()),
                 session_activity_ts: None,
+                agent_state: None,
             },
             BranchEntry {
                 name: "zzz-local".to_string(),
@@ -1946,6 +1952,7 @@ mod tests {
                 is_default: false,
                 remote: None,
                 session_activity_ts: None,
+                agent_state: None,
             },
             BranchEntry {
                 name: "mmm-local".to_string(),
@@ -1955,6 +1962,7 @@ mod tests {
                 is_default: false,
                 remote: None,
                 session_activity_ts: None,
+                agent_state: None,
             },
         ];
 
@@ -2143,6 +2151,7 @@ mod tests {
             is_default: false,
             remote: None,
             session_activity_ts: Some(12345),
+                agent_state: None,
         };
 
         let json = serde_json::to_string(&entry).unwrap();

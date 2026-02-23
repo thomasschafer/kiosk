@@ -28,10 +28,7 @@ pub fn draw(
 
     if search_text.is_empty() {
         let content = Line::from(vec![
-            Span::styled(
-                style.placeholder,
-                Style::default().fg(style.muted_color),
-            ),
+            Span::styled(style.placeholder, Style::default().fg(style.muted_color)),
             Span::styled(" ", Style::default().add_modifier(Modifier::REVERSED)),
         ]);
         f.render_widget(Paragraph::new(content).block(search_block), area);

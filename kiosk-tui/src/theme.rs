@@ -19,7 +19,17 @@ macro_rules! define_theme {
     };
 }
 
-define_theme!(accent, secondary, success, error, warning, muted, border, hint, highlight_fg);
+define_theme!(
+    accent,
+    secondary,
+    success,
+    error,
+    warning,
+    muted,
+    border,
+    hint,
+    highlight_fg
+);
 
 fn to_ratatui_color(color: &ThemeColor) -> Color {
     match color {

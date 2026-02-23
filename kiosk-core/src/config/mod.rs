@@ -372,14 +372,8 @@ unknown_field = true
         assert_eq!(config.theme.success, ThemeColor::Named(NamedColor::Green));
         assert_eq!(config.theme.error, ThemeColor::Named(NamedColor::Red));
         assert_eq!(config.theme.warning, ThemeColor::Named(NamedColor::Yellow));
-        assert_eq!(
-            config.theme.muted,
-            ThemeColor::Named(NamedColor::DarkGray)
-        );
-        assert_eq!(
-            config.theme.border,
-            ThemeColor::Named(NamedColor::DarkGray)
-        );
+        assert_eq!(config.theme.muted, ThemeColor::Named(NamedColor::DarkGray));
+        assert_eq!(config.theme.border, ThemeColor::Named(NamedColor::DarkGray));
         assert_eq!(config.theme.hint, ThemeColor::Named(NamedColor::Blue));
         assert_eq!(
             config.theme.highlight_fg,

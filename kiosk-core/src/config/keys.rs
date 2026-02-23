@@ -30,7 +30,7 @@ macro_rules! define_commands {
         ),* $(,)?
     ) => {
         /// Commands that can be bound to keys
-        #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+        #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
         pub enum Command { $($variant),* }
 
         impl FromStr for Command {
@@ -166,37 +166,7 @@ define_commands! {
         description: "Move to bottom",
     },
 
-    // Text editing
-    DeleteBackwardChar {
-        config_name: "delete_backward_char",
-        hint: "del char back",
-        description: "Delete backward char",
-    },
-    DeleteForwardChar {
-        config_name: "delete_forward_char",
-        hint: "del char fwd",
-        description: "Delete forward char",
-    },
-    DeleteBackwardWord {
-        config_name: "delete_backward_word",
-        hint: "del word back",
-        description: "Delete backward word",
-    },
-    DeleteForwardWord {
-        config_name: "delete_forward_word",
-        hint: "del word fwd",
-        description: "Delete forward word",
-    },
-    DeleteToStart {
-        config_name: "delete_to_start",
-        hint: "del to start",
-        description: "Delete to start of line",
-    },
-    DeleteToEnd {
-        config_name: "delete_to_end",
-        hint: "del to end",
-        description: "Delete to end of line",
-    },
+    // Text editing — cursor movement (char → word → line)
     MoveCursorLeft {
         config_name: "move_cursor_left",
         hint: "cursor left",
@@ -226,6 +196,38 @@ define_commands! {
         config_name: "move_cursor_end",
         hint: "cursor end",
         description: "Move cursor to end",
+    },
+
+    // Text editing — deletion (char → word → line)
+    DeleteBackwardChar {
+        config_name: "delete_backward_char",
+        hint: "del char back",
+        description: "Delete backward char",
+    },
+    DeleteForwardChar {
+        config_name: "delete_forward_char",
+        hint: "del char fwd",
+        description: "Delete forward char",
+    },
+    DeleteBackwardWord {
+        config_name: "delete_backward_word",
+        hint: "del word back",
+        description: "Delete backward word",
+    },
+    DeleteForwardWord {
+        config_name: "delete_forward_word",
+        hint: "del word fwd",
+        description: "Delete forward word",
+    },
+    DeleteToStart {
+        config_name: "delete_to_start",
+        hint: "del to start",
+        description: "Delete to start of line",
+    },
+    DeleteToEnd {
+        config_name: "delete_to_end",
+        hint: "del to end",
+        description: "Delete to end of line",
     },
 
     // Modal
@@ -374,12 +376,16 @@ impl KeysConfig {
                 name: layer.section_name(),
                 entries: Self::entries_for_layer(self.layer(layer)),
             })
+            .filter(|section| !section.entries.is_empty())
             .collect()
     }
 
     /// Build sectioned and flattened keybinding data for a mode.
+    /// Sections are returned in descending precedence order (highest first)
+    /// so the most relevant bindings appear at the top of the help overlay.
     pub fn catalog_for_mode(&self, mode: &Mode) -> ModeKeybindingCatalog {
-        let sections = self.sections_for_mode(mode);
+        let mut sections = self.sections_for_mode(mode);
+        sections.reverse();
         let flattened = sections
             .iter()
             .enumerate()
@@ -459,7 +465,11 @@ impl KeysConfig {
             })
             .collect();
 
-        entries.sort_by(|a, b| a.key.to_string().cmp(&b.key.to_string()));
+        entries.sort_by(|a, b| {
+            a.command
+                .cmp(&b.command)
+                .then_with(|| a.key.to_string().cmp(&b.key.to_string()))
+        });
         entries
     }
 
@@ -990,6 +1000,43 @@ mod tests {
     }
 
     #[test]
+    fn test_sections_for_mode_omits_fully_unbound_layers() {
+        let raw = KeysConfigRaw {
+            general: {
+                let mut map = HashMap::new();
+                map.insert("C-c".to_string(), "noop".to_string());
+                map.insert("C-h".to_string(), "noop".to_string());
+                map
+            },
+            text_edit: HashMap::new(),
+            list_navigation: HashMap::new(),
+            modal: HashMap::new(),
+            repo_select: {
+                let mut map = HashMap::new();
+                map.insert("enter".to_string(), "open_repo".to_string());
+                map
+            },
+            branch_select: HashMap::new(),
+        };
+
+        let config = KeysConfig::from_raw(&raw).unwrap();
+        let section_names: Vec<&str> = config
+            .sections_for_mode(&Mode::RepoSelect)
+            .iter()
+            .map(|s| s.name)
+            .collect();
+
+        assert!(
+            !section_names.contains(&"general"),
+            "Fully-unbound general layer should be omitted"
+        );
+        assert!(
+            section_names.contains(&"repo_select"),
+            "Layer with bindings should be present"
+        );
+    }
+
+    #[test]
     fn test_catalog_for_mode_flattened_order_is_deterministic() {
         let config = KeysConfig::default();
         let catalog = config.catalog_for_mode(&Mode::RepoSelect);
@@ -1001,19 +1048,24 @@ mod tests {
             .collect();
         assert_eq!(
             section_names,
-            vec!["general", "text_edit", "list_navigation", "repo_select"]
+            vec!["repo_select", "list_navigation", "text_edit", "general"]
         );
 
         let mut previous_section_index = 0;
+        let mut previous_command: Option<Command> = None;
         let mut previous_key = String::new();
         for row in &catalog.flattened {
-            if row.section_index == previous_section_index {
-                assert!(previous_key <= row.key_display);
-            } else {
+            if row.section_index != previous_section_index {
                 assert_eq!(row.section_index, previous_section_index + 1);
                 previous_section_index = row.section_index;
+                previous_command = None;
                 previous_key.clear();
+            } else if previous_command.as_ref() == Some(&row.command) {
+                assert!(previous_key <= row.key_display);
+            } else {
+                assert!(previous_command.as_ref() <= Some(&row.command));
             }
+            previous_command = Some(row.command.clone());
             previous_key = row.key_display.clone();
         }
     }

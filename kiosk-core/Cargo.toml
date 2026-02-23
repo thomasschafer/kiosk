@@ -21,6 +21,7 @@ toml = "1.0"
 unicode-segmentation = "1"
 
 [dev-dependencies]
+serde_json.workspace = true
 tempfile = "3"
 
 [lints]

@@ -135,13 +135,36 @@ impl GitProvider for CliGitProvider {
     }
 
     fn remove_worktree(&self, worktree_path: &Path) -> Result<()> {
+        let canonical =
+            std::fs::canonicalize(worktree_path).unwrap_or_else(|_| worktree_path.to_path_buf());
         let output = Command::new("git")
-            .args(["worktree", "remove", &worktree_path.to_string_lossy()])
+            .env("LC_ALL", "C")
+            .args(["worktree", "remove", &canonical.to_string_lossy()])
             .output()?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
+            if stderr.contains("is not a working tree") {
+                if canonical.exists() {
+                    std::fs::remove_dir_all(&canonical)?;
+                }
+                return Ok(());
+            }
             anyhow::bail!("git worktree remove failed: {stderr}");
+        }
+
+        Ok(())
+    }
+
+    fn prune_worktrees(&self, repo_path: &Path) -> Result<()> {
+        let output = Command::new("git")
+            .args(["worktree", "prune", "--expire", "now"])
+            .current_dir(repo_path)
+            .output()?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("git worktree prune failed: {stderr}");
         }
 
         Ok(())

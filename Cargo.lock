@@ -678,6 +678,8 @@ dependencies = [
  "kiosk-core",
  "kiosk-tui",
  "ratatui",
+ "serde",
+ "serde_json",
  "tempfile",
 ]
 
@@ -690,6 +692,7 @@ dependencies = [
  "crossterm",
  "dirs",
  "serde",
+ "serde_json",
  "tempfile",
  "toml 1.0.3+spec-1.1.0",
  "unicode-segmentation",

@@ -19,6 +19,7 @@ pub trait GitProvider: Send + Sync {
         worktree_path: &Path,
     ) -> Result<()>;
     fn remove_worktree(&self, worktree_path: &Path) -> Result<()>;
+    fn prune_worktrees(&self, repo_path: &Path) -> Result<()>;
     /// Create a local tracking branch from a remote branch and add a worktree for it
     fn create_tracking_branch_and_worktree(
         &self,

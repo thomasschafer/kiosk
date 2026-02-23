@@ -1,33 +1,25 @@
 use kiosk_core::config::{NamedColor, ThemeColor};
 use ratatui::style::Color;
 
-pub struct Theme {
-    pub accent: Color,
-    pub secondary: Color,
-    pub success: Color,
-    pub error: Color,
-    pub warning: Color,
-    pub muted: Color,
-    pub border: Color,
-    pub hint: Color,
-    pub highlight_fg: Color,
+/// Generates `Theme` and `from_config` from a list of field names,
+/// mirroring `ThemeConfig` without manual repetition.
+macro_rules! define_theme {
+    ($($field:ident),* $(,)?) => {
+        pub struct Theme {
+            $(pub $field: Color,)*
+        }
+
+        impl Theme {
+            pub fn from_config(config: &kiosk_core::config::ThemeConfig) -> Self {
+                Self {
+                    $($field: to_ratatui_color(&config.$field),)*
+                }
+            }
+        }
+    };
 }
 
-impl Theme {
-    pub fn from_config(config: &kiosk_core::config::ThemeConfig) -> Self {
-        Self {
-            accent: to_ratatui_color(&config.accent),
-            secondary: to_ratatui_color(&config.secondary),
-            success: to_ratatui_color(&config.success),
-            error: to_ratatui_color(&config.error),
-            warning: to_ratatui_color(&config.warning),
-            muted: to_ratatui_color(&config.muted),
-            border: to_ratatui_color(&config.border),
-            hint: to_ratatui_color(&config.hint),
-            highlight_fg: to_ratatui_color(&config.highlight_fg),
-        }
-    }
-}
+define_theme!(accent, secondary, success, error, warning, muted, border, hint, highlight_fg);
 
 fn to_ratatui_color(color: &ThemeColor) -> Color {
     match color {

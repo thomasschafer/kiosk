@@ -212,16 +212,21 @@ fn resolve_module_path(source_path: &Path, item_mod: &ItemMod) -> Option<std::pa
 fn generate_theme_docs() -> Result<String> {
     let mut docs = String::new();
 
-    // List available colours (auto-generated from NamedColor::all())
+    // List available colours and aliases (auto-generated from NamedColor)
     let color_names: Vec<&str> = NamedColor::all().iter().map(|(name, _)| *name).collect();
+    let alias_notes: Vec<String> = NamedColor::aliases()
+        .iter()
+        .map(|(alias, canonical)| format!("`{alias}` for `{canonical}`"))
+        .collect();
     let _ = writeln!(
         docs,
-        "Colors can be a named color ({}) or a hex value (`#rrggbb`). `grey` is also accepted as an alias for `gray`.\n",
+        "Colors can be a named color ({}) or a hex value (`#rrggbb`). Alternative spellings are also accepted: {}.\n",
         color_names
             .iter()
             .map(|n| format!("`{n}`"))
             .collect::<Vec<_>>()
-            .join(", ")
+            .join(", "),
+        alias_notes.join(", "),
     );
 
     // Generate default TOML

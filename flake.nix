@@ -25,7 +25,6 @@
               clippy
               gcc
             ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
-              pkgs.darwin.apple_sdk.frameworks.Security
               pkgs.libiconv
             ];
           };
@@ -44,7 +43,6 @@
             cargoLock.lockFile = ./Cargo.lock;
             cargoBuildFlags = [ "-p" "kiosk" ];
             buildInputs = pkgs.lib.optionals pkgs.stdenv.isDarwin [
-              pkgs.darwin.apple_sdk.frameworks.Security
               pkgs.libiconv
             ];
             doCheck = false;

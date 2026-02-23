@@ -4,8 +4,7 @@ use ratatui::{
     Frame,
     layout::{Constraint, Layout},
     style::{Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState},
 };
 
 pub fn draw(f: &mut Frame, state: &AppState, theme: &Theme) {
@@ -18,20 +17,19 @@ pub fn draw(f: &mut Frame, state: &AppState, theme: &Theme) {
 
     let chunks = Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(area);
 
-    let search_text = if flow.list.search.is_empty() {
-        Line::from(Span::styled(
-            "Select base branch...",
-            Style::default().fg(theme.muted),
-        ))
-    } else {
-        Line::from(flow.list.search.as_str())
-    };
-    let title = format!(" New branch \"{}\" — pick base ", flow.new_name);
-    let search_block = Block::default()
-        .borders(Borders::ALL)
-        .title(title)
-        .border_style(Style::default().fg(theme.success));
-    f.render_widget(Paragraph::new(search_text).block(search_block), chunks[0]);
+    let title = format!("New branch \"{}\" — pick base", flow.new_name);
+    super::search_bar::draw(
+        f,
+        chunks[0],
+        &super::search_bar::SearchBarStyle {
+            title: &title,
+            placeholder: "Select base branch...",
+            border_color: theme.success,
+            muted_color: theme.muted,
+        },
+        &flow.list.search,
+        flow.list.cursor,
+    );
 
     let items: Vec<ListItem> = flow
         .list

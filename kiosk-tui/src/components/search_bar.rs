@@ -27,10 +27,13 @@ pub fn draw(
         .border_style(Style::default().fg(style.border_color));
 
     if search_text.is_empty() {
-        let content = Line::from(Span::styled(
-            style.placeholder,
-            Style::default().fg(style.muted_color),
-        ));
+        let content = Line::from(vec![
+            Span::styled(
+                style.placeholder,
+                Style::default().fg(style.muted_color),
+            ),
+            Span::styled(" ", Style::default().add_modifier(Modifier::REVERSED)),
+        ]);
         f.render_widget(Paragraph::new(content).block(search_block), area);
     } else {
         // Split text at cursor position and render with a visible cursor

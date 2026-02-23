@@ -175,7 +175,7 @@ pub fn cmd_branches(
     repo.worktrees = git.list_worktrees(&repo.path);
 
     let local = git.list_branches(&repo.path);
-    let active_sessions = tmux.list_sessions();
+    let active_sessions = tmux.list_session_names();
     let mut entries = BranchEntry::build(&repo, &local, &active_sessions);
     let remote = BranchEntry::build_remote(&git.list_remote_branches(&repo.path), &local);
     entries.extend(remote);
@@ -451,7 +451,8 @@ pub fn cmd_sessions(
     json: bool,
 ) -> CliResult<()> {
     let repos = git.discover_repos(&config.resolved_search_dirs());
-    let active_sessions: HashSet<String> = tmux.list_sessions().into_iter().collect();
+    let active_sessions: HashSet<String> =
+        tmux.list_session_names().into_iter().collect();
     let mut output = Vec::new();
 
     for mut repo in repos {
@@ -494,7 +495,7 @@ pub fn cmd_delete(
     let mut repo = repo.clone();
     repo.worktrees = git.list_worktrees(&repo.path);
     let local = git.list_branches(&repo.path);
-    let sessions = tmux.list_sessions();
+    let sessions = tmux.list_session_names();
     let entries = BranchEntry::build_sorted(&repo, &local, &sessions);
 
     let entry = entries
@@ -1055,14 +1056,18 @@ mod tests {
                 worktree_path: Some(PathBuf::from("/tmp/repo")),
                 has_session: false,
                 is_current: true,
+                is_default: false,
                 is_remote: false,
+                session_activity_ts: None,
             },
             BranchEntry {
                 name: "feat/test".to_string(),
                 worktree_path: None,
                 has_session: false,
                 is_current: false,
+                is_default: false,
                 is_remote: true,
+                session_activity_ts: None,
             },
         ];
         let rendered = format_branch_table(&rows);

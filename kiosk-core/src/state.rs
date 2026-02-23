@@ -246,20 +246,27 @@ pub struct BranchEntry {
 }
 
 impl BranchEntry {
-    /// Build branch entries from a repo's branches, worktrees, and active tmux sessions.
+    /// Build branch entries from a repo's branches, worktrees, and active tmux sessions
+    /// (unsorted).
     pub fn build(
         repo: &crate::git::Repo,
         branch_names: &[String],
         active_sessions: &[String],
     ) -> Vec<Self> {
-        Self::build_sorted_with_activity(
-            repo,
-            branch_names,
-            active_sessions,
-            None,
-            &HashMap::new(),
-            None,
-        )
+        Self::build_entries(repo, branch_names, active_sessions, None, &HashMap::new(), None)
+    }
+
+    /// Build sorted branch entries from a repo's branches, worktrees, and active tmux sessions.
+    ///
+    /// Sorted by: sessions first, then worktrees, then alphabetical.
+    pub fn build_sorted(
+        repo: &crate::git::Repo,
+        branch_names: &[String],
+        active_sessions: &[String],
+    ) -> Vec<Self> {
+        let mut entries = Self::build(repo, branch_names, active_sessions);
+        Self::sort_entries(&mut entries);
+        entries
     }
 
     /// Build sorted branch entries with activity timestamps and default branch info.
@@ -268,6 +275,20 @@ impl BranchEntry {
     /// When it matches a worktree path, that worktree's branch is marked as current.
     /// Falls back to the main worktree's branch when `cwd` is `None` or doesn't match.
     pub fn build_sorted_with_activity(
+        repo: &crate::git::Repo,
+        branch_names: &[String],
+        active_sessions: &[String],
+        default_branch: Option<&str>,
+        session_activity: &HashMap<String, u64>,
+        cwd: Option<&Path>,
+    ) -> Vec<Self> {
+        let mut entries =
+            Self::build_entries(repo, branch_names, active_sessions, default_branch, session_activity, cwd);
+        Self::sort_entries(&mut entries);
+        entries
+    }
+
+    fn build_entries(
         repo: &crate::git::Repo,
         branch_names: &[String],
         active_sessions: &[String],
@@ -311,19 +332,6 @@ impl BranchEntry {
                 }
             })
             .collect()
-    }
-
-    /// Build sorted branch entries from a repo's branches, worktrees, and active tmux sessions.
-    ///
-    /// Sorted by: sessions first, then worktrees, then alphabetical.
-    pub fn build_sorted(
-        repo: &crate::git::Repo,
-        branch_names: &[String],
-        active_sessions: &[String],
-    ) -> Vec<Self> {
-        let mut entries = Self::build(repo, branch_names, active_sessions);
-        Self::sort_entries(&mut entries);
-        entries
     }
 
     /// Build remote-only branch entries, skipping branches that already exist locally.

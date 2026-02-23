@@ -3,6 +3,13 @@ use std::path::Path;
 pub trait TmuxProvider: Send + Sync {
     /// List sessions with their last activity timestamp (`session_name`, `unix_timestamp`)
     fn list_sessions_with_activity(&self) -> Vec<(String, u64)>;
+    /// List session names only, discarding activity timestamps.
+    fn list_session_names(&self) -> Vec<String> {
+        self.list_sessions_with_activity()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect()
+    }
     fn session_exists(&self, name: &str) -> bool;
     fn create_session(
         &self,

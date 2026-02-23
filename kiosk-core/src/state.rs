@@ -4,6 +4,7 @@ use crate::{
     git::Repo,
     pending_delete::PendingWorktreeDelete,
 };
+use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
@@ -228,7 +229,7 @@ impl SearchableList {
 }
 
 /// Rich branch entry with worktree and session metadata
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct BranchEntry {
     pub name: String,
@@ -245,17 +246,14 @@ pub struct BranchEntry {
 }
 
 impl BranchEntry {
-    /// Build sorted branch entries from a repo's branches, worktrees, and active tmux sessions.
-    ///
-    /// Ordering: current first, then by session recency,
-    /// then worktrees without sessions, then remaining branches.
-    /// For default-branch awareness use [`Self::build_sorted_with_activity`].
-    pub fn build_sorted(
+    /// Build branch entries from a repo's branches, worktrees, and active tmux sessions
+    /// (unsorted).
+    pub fn build(
         repo: &crate::git::Repo,
         branch_names: &[String],
         active_sessions: &[String],
     ) -> Vec<Self> {
-        Self::build_sorted_with_activity(
+        Self::build_entries(
             repo,
             branch_names,
             active_sessions,
@@ -265,12 +263,45 @@ impl BranchEntry {
         )
     }
 
+    /// Build sorted branch entries from a repo's branches, worktrees, and active tmux sessions.
+    ///
+    /// Sorted by: sessions first, then worktrees, then alphabetical.
+    pub fn build_sorted(
+        repo: &crate::git::Repo,
+        branch_names: &[String],
+        active_sessions: &[String],
+    ) -> Vec<Self> {
+        let mut entries = Self::build(repo, branch_names, active_sessions);
+        Self::sort_entries(&mut entries);
+        entries
+    }
+
     /// Build sorted branch entries with activity timestamps and default branch info.
     ///
     /// `cwd` is the user's current working directory (resolved to a repo/worktree root).
     /// When it matches a worktree path, that worktree's branch is marked as current.
     /// Falls back to the main worktree's branch when `cwd` is `None` or doesn't match.
     pub fn build_sorted_with_activity(
+        repo: &crate::git::Repo,
+        branch_names: &[String],
+        active_sessions: &[String],
+        default_branch: Option<&str>,
+        session_activity: &HashMap<String, u64>,
+        cwd: Option<&Path>,
+    ) -> Vec<Self> {
+        let mut entries = Self::build_entries(
+            repo,
+            branch_names,
+            active_sessions,
+            default_branch,
+            session_activity,
+            cwd,
+        );
+        Self::sort_entries(&mut entries);
+        entries
+    }
+
+    fn build_entries(
         repo: &crate::git::Repo,
         branch_names: &[String],
         active_sessions: &[String],
@@ -289,7 +320,7 @@ impl BranchEntry {
             .or_else(|| repo.worktrees.first())
             .and_then(|wt| wt.branch.as_deref());
 
-        let mut entries: Vec<Self> = branch_names
+        branch_names
             .iter()
             .map(|name| {
                 let worktree_path = wt_by_branch.get(name.as_str()).map(|wt| wt.path.clone());
@@ -313,10 +344,7 @@ impl BranchEntry {
                     session_activity_ts,
                 }
             })
-            .collect();
-
-        Self::sort_entries(&mut entries);
-        entries
+            .collect()
     }
 
     /// Build remote-only branch entries, skipping branches that already exist locally.
@@ -339,7 +367,7 @@ impl BranchEntry {
             .collect()
     }
 
-    pub(crate) fn sort_entries(entries: &mut [Self]) {
+    pub fn sort_entries(entries: &mut [Self]) {
         entries.sort_by(|a, b| {
             // Remote branches always sort after local
             a.is_remote
@@ -1565,5 +1593,22 @@ mod tests {
             assert!(!entry.is_current);
             assert!(entry.worktree_path.is_none());
         }
+    }
+
+    #[test]
+    fn test_branch_entry_serde_round_trip() {
+        let entry = BranchEntry {
+            name: "feat/test".to_string(),
+            worktree_path: Some(PathBuf::from("/tmp/repo-feat-test")),
+            has_session: true,
+            is_current: false,
+            is_default: false,
+            is_remote: false,
+            session_activity_ts: Some(12345),
+        };
+
+        let json = serde_json::to_string(&entry).unwrap();
+        let decoded: BranchEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, entry);
     }
 }

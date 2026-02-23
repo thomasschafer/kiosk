@@ -1,13 +1,92 @@
 # kiosk
 
-Git-aware tmux session manager.
+Git-aware tmux session manager. Search for the repo you want, and optionally select a branch or create a new one. If a session already exists, you jump straight in - if it doesn't, a new session is created, with a new worktree if needed.
 
 ![kiosk preview](media/preview.png)
 
-Search for the repo you want, and optionally select a branch: if a session already exists you jump straight in. If one doesn't, a new session is created, with a new worktree if needed.
-
 Worktrees are created in `.kiosk_worktrees/` in the parent directory of the given repository. For instance, if you set `search_dirs = ["~/Development"]`, then worktrees are created at `~/Development/.kiosk_worktrees/`.
 
+
+## Usage
+
+### Humans
+
+Add something like this to your `tmux.conf`:
+
+```tmux
+bind-key f popup -xC -yC -w90% -h90% -E "kiosk"
+```
+
+Then `<prefix> f` opens the switcher in a popup.
+
+- You'll start in the repo view. You'll see all repos in the folders defined in your config, and you can fuzzy search across them. Enter opens the repo with the primary checkout, tab opens the branch view.
+- From the branch view, you can again fuzzy match across branches. Enter opens a session in a worktree on that branch, either attaching to an existing session if one exists, or creating a new one otherwise.
+
+### AI agents
+
+You (agent or human) can also use kiosk as a CLI, using subcommands when you want non-interactive control. The following are some examples, but see `kiosk --help` for a complete list of commands and options.
+
+<details>
+
+#### Examples
+
+```bash
+# List repos
+kiosk list --json
+
+# List branches with metadata
+kiosk branches my-project --json
+
+# Create a new branch, worktree, and tmux session (without attaching)
+kiosk open my-project --new-branch feat/thing --base main --no-switch --json
+
+# Launch a command in the session (the command is typed and Enter is sent automatically)
+kiosk open my-project feat/thing --no-switch --run "your-command-here" --log --json
+
+# Send a follow-up command to an existing session
+kiosk send my-project feat/thing --command "another-command" --json
+
+# Check session status
+kiosk status my-project feat/thing --json
+
+# List active kiosk sessions
+kiosk sessions --json
+
+# Non-interactive cleanup of orphaned worktrees
+kiosk clean --yes --json
+
+# Delete a specific worktree and session when done
+kiosk delete my-project feat/thing --force --json
+```
+
+#### Polling for completion
+
+`--run` dispatches a command asynchronously. To wait for it to finish, poll with `status`:
+
+```bash
+# Launch a long-running command with logging enabled
+kiosk open my-project feat/thing --no-switch --run "cargo test" --log --json
+
+# Poll until the command completes (check output for your expected marker)
+while true; do
+  output=$(kiosk status my-project feat/thing --json --lines 5)
+  echo "$output" | grep -q 'test result' && break
+  sleep 2
+done
+
+# After the session exits, --log preserves the output for retrieval via status
+kiosk status my-project feat/thing --json --lines 200
+```
+
+#### Session naming
+
+Kiosk names tmux sessions deterministically:
+- Main checkout: `<repo-name>` (dots replaced with `_`)
+- Branch worktree: `<repo-name>--<branch>` (with `/` replaced by `-`, `.` replaced by `_`)
+
+The `open --json` response includes the exact session name in the `session` field.
+
+</details>
 
 ## Installing
 
@@ -26,16 +105,6 @@ Ensure you have the Rust toolchain installed, then pull down the repo and run:
 ```sh
 cargo install --path kiosk
 ```
-
-## Usage with tmux
-
-Add to your `tmux.conf`:
-
-```tmux
-bind-key F popup -xC -yC -w90% -h90% -E "kiosk"
-```
-
-Then `<prefix> F` opens the switcher in a popup.
 
 
 ## Configuration

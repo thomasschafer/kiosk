@@ -92,7 +92,18 @@ struct RepoOutput {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct BranchOutput {
+    name: String,
+    worktree_path: Option<PathBuf>,
+    has_session: bool,
+    is_current: bool,
+    is_remote: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 struct OpenOutput {
+    repo: String,
+    branch: Option<String>,
     session: String,
     path: PathBuf,
     created: bool,
@@ -104,7 +115,15 @@ struct StatusOutput {
     path: PathBuf,
     attached: bool,
     clients: usize,
+    source: StatusSource,
     output: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum StatusSource {
+    Live,
+    Log,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -142,6 +161,26 @@ pub fn resolve_repo_exact<'a>(repos: &'a [Repo], name: &str) -> CliResult<&'a Re
     })
 }
 
+fn resolve_repo_with_worktrees(
+    config: &Config,
+    git: &dyn GitProvider,
+    name: &str,
+) -> CliResult<Repo> {
+    let repos = git.discover_repos(&config.resolved_search_dirs());
+    let repo = resolve_repo_exact(&repos, name)?;
+    let mut repo = repo.clone();
+    repo.worktrees = git.list_worktrees(&repo.path);
+    Ok(repo)
+}
+
+fn discover_all_with_worktrees(config: &Config, git: &dyn GitProvider) -> Vec<Repo> {
+    let mut repos = git.discover_repos(&config.resolved_search_dirs());
+    for repo in &mut repos {
+        repo.worktrees = git.list_worktrees(&repo.path);
+    }
+    repos
+}
+
 pub fn cmd_list(config: &Config, git: &dyn GitProvider, json: bool) -> CliResult<()> {
     let repos = git.discover_repos(&config.resolved_search_dirs());
     let output: Vec<RepoOutput> = repos
@@ -168,11 +207,7 @@ pub fn cmd_branches(
     repo: &str,
     json: bool,
 ) -> CliResult<()> {
-    let repos = git.discover_repos(&config.resolved_search_dirs());
-    let repo = resolve_repo_exact(&repos, repo)?;
-
-    let mut repo = repo.clone();
-    repo.worktrees = git.list_worktrees(&repo.path);
+    let repo = resolve_repo_with_worktrees(config, git, repo)?;
 
     let local = git.list_branches(&repo.path);
     let active_sessions = tmux.list_session_names();
@@ -181,8 +216,10 @@ pub fn cmd_branches(
     entries.extend(remote);
     BranchEntry::sort_entries(&mut entries);
 
+    let output: Vec<BranchOutput> = entries.iter().map(BranchOutput::from).collect();
+
     if json {
-        print_json(&entries)?;
+        print_json(&output)?;
     } else {
         print!("{}", format_branch_table(&entries));
     }
@@ -206,6 +243,13 @@ pub fn cmd_open(
     }
 
     Ok(())
+}
+
+struct ResolvedWorktree {
+    path: PathBuf,
+    session_name: String,
+    created: bool,
+    branch: Option<String>,
 }
 
 fn is_worktree_already_used_error(error: &anyhow::Error) -> bool {
@@ -248,7 +292,6 @@ where
     })
 }
 
-#[allow(clippy::too_many_lines)]
 fn open_internal(
     config: &Config,
     git: &dyn GitProvider,
@@ -274,16 +317,55 @@ fn open_internal(
         ));
     }
 
-    let repos = git.discover_repos(&config.resolved_search_dirs());
-    let repo = resolve_repo_exact(&repos, &args.repo)?;
+    let repo = resolve_repo_with_worktrees(config, git, &args.repo)?;
+    let mut resolved = resolve_worktree_for_open(git, &repo, args)?;
 
-    let mut repo = repo.clone();
-    repo.worktrees = git.list_worktrees(&repo.path);
+    if !tmux.session_exists(&resolved.session_name) {
+        tmux.create_session(
+            &resolved.session_name,
+            &resolved.path,
+            config.session.split_command.as_deref(),
+        )
+        .map_err(CliError::from)?;
+        resolved.created = true;
+    }
+
+    if args.log {
+        let log_path = log_path_for_session(&resolved.session_name)?;
+        if let Some(parent) = log_path.parent() {
+            fs::create_dir_all(parent).map_err(|e| CliError::system(e.to_string()))?;
+        }
+        tmux.pipe_pane(&resolved.session_name, &log_path)
+            .map_err(CliError::from)?;
+    }
+
+    if let Some(command) = &args.run {
+        tmux.send_keys(&resolved.session_name, command)
+            .map_err(CliError::from)?;
+    }
+
+    if !args.no_switch {
+        tmux.switch_to_session(&resolved.session_name);
+    }
+
+    Ok(OpenOutput {
+        repo: repo.name,
+        branch: resolved.branch,
+        session: resolved.session_name,
+        path: resolved.path,
+        created: resolved.created,
+    })
+}
+
+fn resolve_worktree_for_open(
+    git: &dyn GitProvider,
+    repo: &Repo,
+    args: &OpenArgs,
+) -> CliResult<ResolvedWorktree> {
     let local = git.list_branches(&repo.path);
     let remote = git.list_remote_branches(&repo.path);
 
-    let mut created = false;
-    let (worktree_path, session_name) = if let Some(new_branch) = &args.new_branch {
+    if let Some(new_branch) = &args.new_branch {
         if local.iter().any(|branch| branch == new_branch)
             || remote.iter().any(|branch| branch == new_branch)
         {
@@ -299,77 +381,65 @@ fn open_internal(
             return Err(CliError::user(format!("base branch '{base}' not found")));
         }
 
-        let wt = worktree_dir(&repo, new_branch).map_err(CliError::from)?;
+        let wt = worktree_dir(repo, new_branch).map_err(CliError::from)?;
         run_with_stale_worktree_retry(git, &repo.path, || {
             git.create_branch_and_worktree(&repo.path, new_branch, base, &wt)
         })?;
-        created = true;
         let session = repo.tmux_session_name(&wt);
-        (wt, session)
+        Ok(ResolvedWorktree {
+            path: wt,
+            session_name: session,
+            created: true,
+            branch: Some(new_branch.clone()),
+        })
     } else if let Some(branch) = &args.branch {
-        if let Some(existing) = find_worktree_by_branch(&repo, branch) {
+        if let Some(existing) = find_worktree_by_branch(repo, branch) {
             let session = repo.tmux_session_name(&existing);
-            (existing, session)
+            Ok(ResolvedWorktree {
+                path: existing,
+                session_name: session,
+                created: false,
+                branch: Some(branch.clone()),
+            })
         } else if local.iter().any(|name| name == branch) {
-            let wt = worktree_dir(&repo, branch).map_err(CliError::from)?;
+            let wt = worktree_dir(repo, branch).map_err(CliError::from)?;
             run_with_stale_worktree_retry(git, &repo.path, || {
                 git.add_worktree(&repo.path, branch, &wt)
             })?;
-            created = true;
             let session = repo.tmux_session_name(&wt);
-            (wt, session)
+            Ok(ResolvedWorktree {
+                path: wt,
+                session_name: session,
+                created: true,
+                branch: Some(branch.clone()),
+            })
         } else if remote.iter().any(|name| name == branch) {
-            let wt = worktree_dir(&repo, branch).map_err(CliError::from)?;
+            let wt = worktree_dir(repo, branch).map_err(CliError::from)?;
             run_with_stale_worktree_retry(git, &repo.path, || {
                 git.create_tracking_branch_and_worktree(&repo.path, branch, &wt)
             })?;
-            created = true;
             let session = repo.tmux_session_name(&wt);
-            (wt, session)
+            Ok(ResolvedWorktree {
+                path: wt,
+                session_name: session,
+                created: true,
+                branch: Some(branch.clone()),
+            })
         } else {
-            return Err(CliError::user(format!(
+            Err(CliError::user(format!(
                 "branch '{branch}' not found. Use --new-branch to create it"
-            )));
+            )))
         }
     } else {
         let wt = repo.path.clone();
         let session = repo.tmux_session_name(&wt);
-        (wt, session)
-    };
-
-    if !tmux.session_exists(&session_name) {
-        tmux.create_session(
-            &session_name,
-            &worktree_path,
-            config.session.split_command.as_deref(),
-        )
-        .map_err(CliError::from)?;
-        created = true;
+        Ok(ResolvedWorktree {
+            path: wt,
+            session_name: session,
+            created: false,
+            branch: None,
+        })
     }
-
-    if args.log {
-        let log_path = log_path_for_session(&session_name)?;
-        if let Some(parent) = log_path.parent() {
-            fs::create_dir_all(parent).map_err(|e| CliError::system(e.to_string()))?;
-        }
-        tmux.pipe_pane(&session_name, &log_path)
-            .map_err(CliError::from)?;
-    }
-
-    if let Some(command) = &args.run {
-        tmux.send_keys(&session_name, command)
-            .map_err(CliError::from)?;
-    }
-
-    if !args.no_switch {
-        tmux.switch_to_session(&session_name);
-    }
-
-    Ok(OpenOutput {
-        session: session_name,
-        path: worktree_path,
-        created,
-    })
 }
 
 pub fn cmd_status(
@@ -387,6 +457,10 @@ pub fn cmd_status(
         println!("path: {}", output.path.display());
         println!("attached: {}", output.attached);
         println!("clients: {}", output.clients);
+        println!("source: {}", match output.source {
+            StatusSource::Live => "live",
+            StatusSource::Log => "log",
+        });
         println!("output:\n{}", output.output);
     }
 
@@ -399,11 +473,7 @@ fn status_internal(
     tmux: &dyn TmuxProvider,
     args: &StatusArgs,
 ) -> CliResult<StatusOutput> {
-    let repos = git.discover_repos(&config.resolved_search_dirs());
-    let repo = resolve_repo_exact(&repos, &args.repo)?;
-
-    let mut repo = repo.clone();
-    repo.worktrees = git.list_worktrees(&repo.path);
+    let repo = resolve_repo_with_worktrees(config, git, &args.repo)?;
 
     let worktree_path = if let Some(branch) = &args.branch {
         find_worktree_by_branch(&repo, branch)
@@ -416,12 +486,12 @@ fn status_internal(
     let session_name = repo.tmux_session_name(&worktree_path);
     let session_exists = tmux.session_exists(&session_name);
 
-    let (output, clients) = if session_exists {
+    let (output, clients, source) = if session_exists {
         let captured = tmux
             .capture_pane(&session_name, lines)
             .map_err(CliError::from)?;
         let clients = tmux.list_clients(&session_name);
-        (captured, clients)
+        (captured, clients, StatusSource::Live)
     } else {
         let log_path = log_path_for_session(&session_name)?;
         if !log_path.exists() {
@@ -432,7 +502,7 @@ fn status_internal(
         let log = fs::read_to_string(&log_path)
             .with_context(|| format!("failed to read log file {}", log_path.display()))
             .map_err(CliError::from)?;
-        (tail_lines(&log, lines), Vec::new())
+        (tail_lines(&log, lines), Vec::new(), StatusSource::Log)
     };
 
     Ok(StatusOutput {
@@ -440,6 +510,7 @@ fn status_internal(
         path: worktree_path,
         attached: !clients.is_empty(),
         clients: clients.len(),
+        source,
         output,
     })
 }
@@ -450,13 +521,12 @@ pub fn cmd_sessions(
     tmux: &dyn TmuxProvider,
     json: bool,
 ) -> CliResult<()> {
-    let repos = git.discover_repos(&config.resolved_search_dirs());
+    let repos = discover_all_with_worktrees(config, git);
     let active_sessions: HashSet<String> =
         tmux.list_session_names().into_iter().collect();
     let mut output = Vec::new();
 
-    for mut repo in repos {
-        repo.worktrees = git.list_worktrees(&repo.path);
+    for repo in &repos {
         for worktree in &repo.worktrees {
             let session = repo.tmux_session_name(&worktree.path);
             if !active_sessions.contains(&session) {
@@ -489,11 +559,7 @@ pub fn cmd_delete(
     tmux: &dyn TmuxProvider,
     args: &DeleteArgs,
 ) -> CliResult<()> {
-    let repos = git.discover_repos(&config.resolved_search_dirs());
-    let repo = resolve_repo_exact(&repos, &args.repo)?;
-
-    let mut repo = repo.clone();
-    repo.worktrees = git.list_worktrees(&repo.path);
+    let repo = resolve_repo_with_worktrees(config, git, &args.repo)?;
     let local = git.list_branches(&repo.path);
     let sessions = tmux.list_session_names();
     let entries = BranchEntry::build_sorted(&repo, &local, &sessions);
@@ -567,6 +633,18 @@ pub fn cmd_delete(
     }
 
     Ok(())
+}
+
+impl From<&BranchEntry> for BranchOutput {
+    fn from(entry: &BranchEntry) -> Self {
+        Self {
+            name: entry.name.clone(),
+            worktree_path: entry.worktree_path.clone(),
+            has_session: entry.has_session,
+            is_current: entry.is_current,
+            is_remote: entry.is_remote,
+        }
+    }
 }
 
 fn find_worktree_by_branch(repo: &Repo, branch: &str) -> Option<PathBuf> {
@@ -813,6 +891,8 @@ mod tests {
         .unwrap();
 
         assert!(!output.created);
+        assert_eq!(output.repo, "demo");
+        assert_eq!(output.branch.as_deref(), Some("feat/test"));
         assert_eq!(output.session, "demo--feat-test");
         assert!(tmux.created_sessions.lock().unwrap().is_empty());
     }
@@ -1017,6 +1097,7 @@ mod tests {
 
         assert!(output.attached);
         assert_eq!(output.clients, 1);
+        assert_eq!(output.source, StatusSource::Live);
         assert!(output.output.contains("line a"));
     }
 
@@ -1104,5 +1185,442 @@ mod tests {
              repo--feat  repo  feat/test   /tmp/repo-feat  false\n\
              repo        repo  (detached)  /tmp/repo       true\n"
         );
+    }
+
+    fn main_worktree() -> Worktree {
+        Worktree {
+            path: PathBuf::from("/tmp/demo"),
+            branch: Some("main".to_string()),
+            is_main: true,
+        }
+    }
+
+    fn demo_git(worktrees: Vec<Worktree>, branches: Vec<String>) -> MockGitProvider {
+        MockGitProvider {
+            repos: vec![repo("/tmp/demo", "demo")],
+            worktrees,
+            branches,
+            ..Default::default()
+        }
+    }
+
+    // --- cmd_list tests ---
+
+    #[test]
+    fn list_returns_discovered_repos_as_json() {
+        let config = test_config();
+        let git = MockGitProvider {
+            repos: vec![repo("/tmp/alpha", "alpha"), repo("/tmp/beta", "beta")],
+            ..Default::default()
+        };
+
+        let result = cmd_list(&config, &git, true);
+        assert!(result.is_ok());
+    }
+
+    // --- cmd_branches tests ---
+
+    #[test]
+    fn branches_returns_error_for_unknown_repo() {
+        let config = test_config();
+        let git = MockGitProvider::default();
+        let tmux = MockTmuxProvider::default();
+
+        let error = cmd_branches(&config, &git, &tmux, "nonexistent", false).unwrap_err();
+        assert_eq!(error.code(), 1);
+        assert!(error.message().contains("nonexistent"));
+    }
+
+    #[test]
+    fn branches_json_uses_branch_output_struct() {
+        let config = test_config();
+        let git = demo_git(vec![main_worktree()], vec!["main".to_string()]);
+        let tmux = MockTmuxProvider::default();
+
+        let result = cmd_branches(&config, &git, &tmux, "demo", true);
+        assert!(result.is_ok());
+    }
+
+    // --- cmd_delete tests ---
+
+    #[test]
+    fn delete_rejects_current_branch() {
+        let config = test_config();
+        let git = demo_git(vec![main_worktree()], vec!["main".to_string()]);
+        let tmux = MockTmuxProvider::default();
+
+        let error = cmd_delete(
+            &config,
+            &git,
+            &tmux,
+            &DeleteArgs {
+                repo: "demo".to_string(),
+                branch: "main".to_string(),
+                force: false,
+                json: false,
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code(), 1);
+        assert!(error.message().contains("current branch"));
+    }
+
+    #[test]
+    fn delete_rejects_branch_without_worktree() {
+        let config = test_config();
+        let git = demo_git(
+            vec![main_worktree()],
+            vec!["main".to_string(), "feat/no-wt".to_string()],
+        );
+        let tmux = MockTmuxProvider::default();
+
+        let error = cmd_delete(
+            &config,
+            &git,
+            &tmux,
+            &DeleteArgs {
+                repo: "demo".to_string(),
+                branch: "feat/no-wt".to_string(),
+                force: false,
+                json: false,
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code(), 1);
+        assert!(error.message().contains("no worktree"));
+    }
+
+    #[test]
+    fn delete_rejects_attached_session_without_force() {
+        let config = test_config();
+        let git = demo_git(
+            vec![
+                main_worktree(),
+                Worktree {
+                    path: PathBuf::from("/tmp/.kiosk_worktrees/demo--feat-del"),
+                    branch: Some("feat/del".to_string()),
+                    is_main: false,
+                },
+            ],
+            vec!["main".to_string(), "feat/del".to_string()],
+        );
+
+        let tmux = MockTmuxProvider {
+            sessions: Mutex::new(vec!["demo--feat-del".to_string()]),
+            clients: HashMap::from([(
+                "demo--feat-del".to_string(),
+                vec!["/dev/pts/0".to_string()],
+            )]),
+            ..Default::default()
+        };
+
+        let error = cmd_delete(
+            &config,
+            &git,
+            &tmux,
+            &DeleteArgs {
+                repo: "demo".to_string(),
+                branch: "feat/del".to_string(),
+                force: false,
+                json: false,
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code(), 1);
+        assert!(error.message().contains("attached"));
+        assert!(error.message().contains("--force"));
+    }
+
+    #[test]
+    fn delete_with_force_kills_attached_session() {
+        let config = test_config();
+        let git = demo_git(
+            vec![
+                main_worktree(),
+                Worktree {
+                    path: PathBuf::from("/tmp/.kiosk_worktrees/demo--feat-del"),
+                    branch: Some("feat/del".to_string()),
+                    is_main: false,
+                },
+            ],
+            vec!["main".to_string(), "feat/del".to_string()],
+        );
+
+        let tmux = MockTmuxProvider {
+            sessions: Mutex::new(vec!["demo--feat-del".to_string()]),
+            clients: HashMap::from([(
+                "demo--feat-del".to_string(),
+                vec!["/dev/pts/0".to_string()],
+            )]),
+            ..Default::default()
+        };
+
+        let result = cmd_delete(
+            &config,
+            &git,
+            &tmux,
+            &DeleteArgs {
+                repo: "demo".to_string(),
+                branch: "feat/del".to_string(),
+                force: true,
+                json: false,
+            },
+        );
+
+        assert!(result.is_ok());
+        assert_eq!(
+            tmux.killed_sessions.lock().unwrap().as_slice(),
+            &["demo--feat-del".to_string()]
+        );
+    }
+
+    #[test]
+    fn delete_unknown_branch_returns_user_error() {
+        let config = test_config();
+        let git = demo_git(vec![main_worktree()], vec!["main".to_string()]);
+        let tmux = MockTmuxProvider::default();
+
+        let error = cmd_delete(
+            &config,
+            &git,
+            &tmux,
+            &DeleteArgs {
+                repo: "demo".to_string(),
+                branch: "nonexistent".to_string(),
+                force: false,
+                json: false,
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code(), 1);
+        assert!(error.message().contains("nonexistent"));
+    }
+
+    // --- cmd_sessions tests ---
+
+    #[test]
+    fn sessions_only_returns_matching_worktree_sessions() {
+        let config = test_config();
+        let git = demo_git(
+            vec![
+                main_worktree(),
+                Worktree {
+                    path: PathBuf::from("/tmp/.kiosk_worktrees/demo--feat"),
+                    branch: Some("feat".to_string()),
+                    is_main: false,
+                },
+            ],
+            vec![],
+        );
+
+        let tmux = MockTmuxProvider {
+            sessions: Mutex::new(vec![
+                "demo".to_string(),
+                "unrelated-session".to_string(),
+            ]),
+            ..Default::default()
+        };
+
+        let result = cmd_sessions(&config, &git, &tmux, false);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn sessions_reports_attached_status() {
+        let config = test_config();
+        let git = demo_git(vec![main_worktree()], vec![]);
+
+        let tmux = MockTmuxProvider {
+            sessions: Mutex::new(vec!["demo".to_string()]),
+            clients: HashMap::from([("demo".to_string(), vec!["/dev/pts/0".to_string()])]),
+            ..Default::default()
+        };
+
+        let result = cmd_sessions(&config, &git, &tmux, false);
+        assert!(result.is_ok());
+    }
+
+    // --- status tests ---
+
+    #[test]
+    fn status_returns_error_when_no_session_and_no_log() {
+        let config = test_config();
+        let git = demo_git(vec![main_worktree()], vec![]);
+        let tmux = MockTmuxProvider::default();
+
+        let result = status_internal(
+            &config,
+            &git,
+            &tmux,
+            &StatusArgs {
+                repo: "demo".to_string(),
+                branch: None,
+                json: false,
+                lines: Some(10),
+            },
+        );
+
+        let error = result.unwrap_err();
+        assert_eq!(error.code(), 1);
+        assert!(error.message().contains("does not exist"));
+    }
+
+    #[test]
+    fn status_returns_error_for_nonexistent_branch_worktree() {
+        let config = test_config();
+        let git = demo_git(vec![main_worktree()], vec![]);
+        let tmux = MockTmuxProvider::default();
+
+        let error = status_internal(
+            &config,
+            &git,
+            &tmux,
+            &StatusArgs {
+                repo: "demo".to_string(),
+                branch: Some("nonexistent".to_string()),
+                json: false,
+                lines: Some(10),
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code(), 1);
+        assert!(error.message().contains("no worktree"));
+    }
+
+    // --- log_path_for_session validation tests ---
+
+    #[test]
+    fn log_path_rejects_empty_session() {
+        assert!(log_path_for_session("").is_err());
+    }
+
+    #[test]
+    fn log_path_rejects_dot_prefix() {
+        assert!(log_path_for_session(".hidden").is_err());
+    }
+
+    #[test]
+    fn log_path_rejects_path_traversal() {
+        assert!(log_path_for_session("..").is_err());
+        assert!(log_path_for_session("foo/..").is_err());
+        assert!(log_path_for_session("foo/../bar").is_err());
+    }
+
+    #[test]
+    fn log_path_rejects_slashes() {
+        assert!(log_path_for_session("foo/bar").is_err());
+        assert!(log_path_for_session("foo\\bar").is_err());
+    }
+
+    #[test]
+    fn log_path_accepts_valid_session_names() {
+        assert!(log_path_for_session("demo").is_ok());
+        assert!(log_path_for_session("repo--feat-test").is_ok());
+        assert!(log_path_for_session("my_repo").is_ok());
+    }
+
+    // --- open output field tests ---
+
+    #[test]
+    fn open_output_includes_repo_and_branch() {
+        let config = test_config();
+        let git = demo_git(vec![main_worktree()], vec![]);
+        let tmux = MockTmuxProvider {
+            sessions: Mutex::new(Vec::new()),
+            inside_tmux: true,
+            ..Default::default()
+        };
+
+        let output = open_internal(
+            &config,
+            &git,
+            &tmux,
+            &OpenArgs {
+                repo: "demo".to_string(),
+                branch: None,
+                new_branch: None,
+                base: None,
+                no_switch: true,
+                run: None,
+                log: false,
+                json: false,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(output.repo, "demo");
+        assert!(output.branch.is_none());
+    }
+
+    #[test]
+    fn open_output_branch_field_set_when_branch_specified() {
+        let config = test_config();
+        let git = demo_git(
+            vec![
+                main_worktree(),
+                Worktree {
+                    path: PathBuf::from("/tmp/.kiosk_worktrees/demo--feat-x"),
+                    branch: Some("feat/x".to_string()),
+                    is_main: false,
+                },
+            ],
+            vec!["main".to_string(), "feat/x".to_string()],
+        );
+        let tmux = MockTmuxProvider {
+            sessions: Mutex::new(vec!["demo--feat-x".to_string()]),
+            inside_tmux: true,
+            ..Default::default()
+        };
+
+        let output = open_internal(
+            &config,
+            &git,
+            &tmux,
+            &OpenArgs {
+                repo: "demo".to_string(),
+                branch: Some("feat/x".to_string()),
+                new_branch: None,
+                base: None,
+                no_switch: true,
+                run: None,
+                log: false,
+                json: false,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(output.repo, "demo");
+        assert_eq!(output.branch.as_deref(), Some("feat/x"));
+    }
+
+    // --- BranchOutput conversion test ---
+
+    #[test]
+    fn branch_output_from_entry_omits_internal_fields() {
+        let entry = BranchEntry {
+            name: "feat/test".to_string(),
+            worktree_path: Some(PathBuf::from("/tmp/wt")),
+            has_session: true,
+            is_current: false,
+            is_default: true,
+            is_remote: false,
+            session_activity_ts: Some(12345),
+        };
+
+        let output = BranchOutput::from(&entry);
+        assert_eq!(output.name, "feat/test");
+        assert_eq!(output.worktree_path, Some(PathBuf::from("/tmp/wt")));
+        assert!(output.has_session);
+        assert!(!output.is_current);
+        assert!(!output.is_remote);
+
+        let json = serde_json::to_value(&output).unwrap();
+        assert!(json.get("is_default").is_none());
+        assert!(json.get("session_activity_ts").is_none());
     }
 }

@@ -1648,3 +1648,347 @@ fn test_e2e_headless_open_is_idempotent() {
             .output();
     }
 }
+
+#[test]
+fn test_e2e_headless_sessions_json() {
+    let env = TestEnv::new("headless-sessions");
+    let search_dir = env.search_dir();
+    let id = unique_id();
+    let repo_name = format!("sessions-repo-{id}");
+    let repo = search_dir.join(&repo_name);
+    fs::create_dir_all(&repo).unwrap();
+    init_test_repo(&repo);
+    env.write_config(&search_dir);
+
+    let open_output = env.run_cli(&["open", &repo_name, "main", "--no-switch", "--json"]);
+    assert!(
+        open_output.status.success(),
+        "open should succeed: {}",
+        String::from_utf8_lossy(&open_output.stderr)
+    );
+    let open_json: Value = serde_json::from_slice(&open_output.stdout).unwrap();
+    let session = open_json["session"].as_str().unwrap().to_string();
+    assert!(
+        wait_for_tmux_session(None, &session, 5000),
+        "tmux session {session} should exist"
+    );
+
+    let sessions_output = env.run_cli(&["sessions", "--json"]);
+    assert!(
+        sessions_output.status.success(),
+        "sessions should succeed: {}",
+        String::from_utf8_lossy(&sessions_output.stderr)
+    );
+    let sessions_json: Value = serde_json::from_slice(&sessions_output.stdout).unwrap();
+    let sessions = sessions_json.as_array().unwrap();
+    let matching = sessions
+        .iter()
+        .find(|s| s["session"].as_str() == Some(&session));
+    assert!(
+        matching.is_some(),
+        "sessions output should include {session}: {sessions_json}"
+    );
+    let entry = matching.unwrap();
+    assert_eq!(entry["repo"].as_str(), Some(repo_name.as_str()));
+    assert!(
+        entry["attached"].is_boolean(),
+        "attached should be a boolean"
+    );
+
+    let _ = Command::new("tmux")
+        .args(["kill-session", "-t", &session])
+        .output();
+}
+
+#[test]
+fn test_e2e_headless_open_json_includes_repo_and_branch() {
+    let env = TestEnv::new("headless-open-fields");
+    let search_dir = env.search_dir();
+    let id = unique_id();
+    let repo_name = format!("fields-repo-{id}");
+    let repo = search_dir.join(&repo_name);
+    fs::create_dir_all(&repo).unwrap();
+    init_test_repo(&repo);
+    env.write_config(&search_dir);
+
+    let output = env.run_cli(&["open", &repo_name, "main", "--no-switch", "--json"]);
+    assert!(
+        output.status.success(),
+        "open should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["repo"].as_str(), Some(repo_name.as_str()));
+    assert_eq!(json["branch"].as_str(), Some("main"));
+
+    if let Some(session) = json["session"].as_str() {
+        let _ = Command::new("tmux")
+            .args(["kill-session", "-t", session])
+            .output();
+    }
+}
+
+#[test]
+fn test_e2e_headless_status_source_field() {
+    let env = TestEnv::new("headless-status-source");
+    let search_dir = env.search_dir();
+    let id = unique_id();
+    let repo_name = format!("source-repo-{id}");
+    let repo = search_dir.join(&repo_name);
+    fs::create_dir_all(&repo).unwrap();
+    init_test_repo(&repo);
+    env.write_config(&search_dir);
+
+    let open_output = env.run_cli(&["open", &repo_name, "main", "--no-switch", "--json"]);
+    assert!(
+        open_output.status.success(),
+        "open should succeed: {}",
+        String::from_utf8_lossy(&open_output.stderr)
+    );
+    let open_json: Value = serde_json::from_slice(&open_output.stdout).unwrap();
+    let session = open_json["session"].as_str().unwrap().to_string();
+    assert!(
+        wait_for_tmux_session(None, &session, 5000),
+        "tmux session {session} should exist"
+    );
+
+    let status_output = env.run_cli(&["status", &repo_name, "--json"]);
+    assert!(
+        status_output.status.success(),
+        "status should succeed: {}",
+        String::from_utf8_lossy(&status_output.stderr)
+    );
+    let status_json: Value = serde_json::from_slice(&status_output.stdout).unwrap();
+    assert_eq!(
+        status_json["source"].as_str(),
+        Some("live"),
+        "source should be 'live' for an active session: {status_json}"
+    );
+
+    let _ = Command::new("tmux")
+        .args(["kill-session", "-t", &session])
+        .output();
+}
+
+#[test]
+fn test_e2e_headless_open_log_and_status_log_fallback() {
+    let env = TestEnv::new("headless-log-fallback");
+    let search_dir = env.search_dir();
+    let id = unique_id();
+    let repo_name = format!("log-repo-{id}");
+    let branch_name = format!("feat/log-{id}");
+    let repo = search_dir.join(&repo_name);
+    fs::create_dir_all(&repo).unwrap();
+    init_test_repo(&repo);
+    env.write_config(&search_dir);
+    let mut cleanup = BranchCleanupGuard {
+        bin: kiosk_binary(),
+        config_dir: env.config_dir.clone(),
+        state_dir: env.state_dir.clone(),
+        repo: repo_name.clone(),
+        branch: branch_name.clone(),
+        enabled: true,
+    };
+
+    let open_output = env.run_cli(&[
+        "open",
+        &repo_name,
+        "--new-branch",
+        &branch_name,
+        "--base",
+        "main",
+        "--no-switch",
+        "--log",
+        "--run",
+        "echo LOG_MARKER_TEST",
+        "--json",
+    ]);
+    assert!(
+        open_output.status.success(),
+        "open with --log should succeed: {}",
+        String::from_utf8_lossy(&open_output.stderr)
+    );
+    let open_json: Value = serde_json::from_slice(&open_output.stdout).unwrap();
+    let session = open_json["session"].as_str().unwrap().to_string();
+    assert!(
+        wait_for_tmux_session(None, &session, 5000),
+        "tmux session {session} should exist"
+    );
+
+    // Wait for the command to produce output in the log
+    wait_ms(2000);
+
+    // Kill the session so status falls back to the log file
+    let _ = Command::new("tmux")
+        .args(["kill-session", "-t", &session])
+        .output();
+    wait_ms(500);
+
+    let status_output = env.run_cli(&["status", &repo_name, &branch_name, "--json", "--lines", "50"]);
+    assert!(
+        status_output.status.success(),
+        "status should succeed via log fallback: {}",
+        String::from_utf8_lossy(&status_output.stderr)
+    );
+    let status_json: Value = serde_json::from_slice(&status_output.stdout).unwrap();
+    assert_eq!(
+        status_json["source"].as_str(),
+        Some("log"),
+        "source should be 'log' when falling back to log file: {status_json}"
+    );
+    let log_output = status_json["output"].as_str().unwrap_or_default();
+    assert!(
+        log_output.contains("LOG_MARKER_TEST"),
+        "log output should contain the marker: {log_output}"
+    );
+
+    cleanup.disable();
+    let _ = env.run_cli(&["delete", &repo_name, &branch_name, "--force", "--json"]);
+}
+
+#[test]
+fn test_e2e_headless_error_unknown_repo() {
+    let env = TestEnv::new("headless-error-repo");
+    let search_dir = env.search_dir();
+    let repo = search_dir.join("exists-repo");
+    fs::create_dir_all(&repo).unwrap();
+    init_test_repo(&repo);
+    env.write_config(&search_dir);
+
+    let output = env.run_cli(&["branches", "nonexistent-repo", "--json"]);
+    assert!(
+        !output.status.success(),
+        "should fail for unknown repo"
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "exit code should be 1 for user error"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let error_json: Value = serde_json::from_str(stderr.trim()).unwrap();
+    assert!(
+        error_json["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("nonexistent-repo"),
+        "JSON error should mention the repo name: {error_json}"
+    );
+}
+
+#[test]
+fn test_e2e_headless_error_unknown_branch() {
+    let env = TestEnv::new("headless-error-branch");
+    let search_dir = env.search_dir();
+    let repo = search_dir.join("err-branch-repo");
+    fs::create_dir_all(&repo).unwrap();
+    init_test_repo(&repo);
+    env.write_config(&search_dir);
+
+    let output = env.run_cli(&[
+        "open",
+        "err-branch-repo",
+        "nonexistent-branch",
+        "--no-switch",
+        "--json",
+    ]);
+    assert!(
+        !output.status.success(),
+        "should fail for unknown branch"
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "exit code should be 1 for user error"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let error_json: Value = serde_json::from_str(stderr.trim()).unwrap();
+    assert!(
+        error_json["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("nonexistent-branch"),
+        "JSON error should mention the branch name: {error_json}"
+    );
+}
+
+#[test]
+fn test_e2e_headless_error_delete_no_worktree() {
+    let env = TestEnv::new("headless-error-del-nowt");
+    let search_dir = env.search_dir();
+    let repo = search_dir.join("del-nowt-repo");
+    fs::create_dir_all(&repo).unwrap();
+    init_test_repo(&repo);
+    run_git(&repo, &["branch", "feat/no-worktree"]);
+    env.write_config(&search_dir);
+
+    let output = env.run_cli(&[
+        "delete",
+        "del-nowt-repo",
+        "feat/no-worktree",
+        "--json",
+    ]);
+    assert!(
+        !output.status.success(),
+        "should fail when branch has no worktree"
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "exit code should be 1 for user error"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let error_json: Value = serde_json::from_str(stderr.trim()).unwrap();
+    assert!(
+        error_json["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no worktree"),
+        "JSON error should mention 'no worktree': {error_json}"
+    );
+}
+
+#[test]
+fn test_e2e_headless_branches_json_stable_schema() {
+    let env = TestEnv::new("headless-branches-schema");
+    let search_dir = env.search_dir();
+    let repo = search_dir.join("schema-repo");
+    fs::create_dir_all(&repo).unwrap();
+    init_test_repo(&repo);
+    run_git(&repo, &["branch", "feat/schema-test"]);
+    env.write_config(&search_dir);
+
+    let output = env.run_cli(&["branches", "schema-repo", "--json"]);
+    assert!(
+        output.status.success(),
+        "branches should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let branches = json.as_array().unwrap();
+    assert!(!branches.is_empty());
+
+    let first = &branches[0];
+    assert!(first.get("name").is_some(), "should have 'name' field");
+    assert!(
+        first.get("has_session").is_some(),
+        "should have 'has_session' field"
+    );
+    assert!(
+        first.get("is_current").is_some(),
+        "should have 'is_current' field"
+    );
+    assert!(
+        first.get("is_remote").is_some(),
+        "should have 'is_remote' field"
+    );
+    // Internal fields should NOT be exposed
+    assert!(
+        first.get("is_default").is_none(),
+        "should NOT have internal 'is_default' field"
+    );
+    assert!(
+        first.get("session_activity_ts").is_none(),
+        "should NOT have internal 'session_activity_ts' field"
+    );
+}

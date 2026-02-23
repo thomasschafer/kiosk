@@ -100,13 +100,23 @@ impl TmuxProvider for CliTmuxProvider {
 
     fn send_keys(&self, session: &str, keys: &str) -> Result<()> {
         let target = format!("={session}:0.0");
-        let output = Command::new("tmux")
-            .args(["send-keys", "-t", &target, keys, "Enter"])
+        // Use -l (literal) so tmux doesn't interpret words like "Enter" or "Escape"
+        // as special key names, then send Enter separately to submit.
+        let literal = Command::new("tmux")
+            .args(["send-keys", "-t", &target, "-l", keys])
             .output()
             .with_context(|| format!("failed to execute tmux send-keys for session {session}"))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
+        if !literal.status.success() {
+            let stderr = String::from_utf8_lossy(&literal.stderr);
             bail!("tmux send-keys failed: {}", stderr.trim());
+        }
+        let enter = Command::new("tmux")
+            .args(["send-keys", "-t", &target, "Enter"])
+            .output()
+            .with_context(|| format!("failed to execute tmux send-keys Enter for session {session}"))?;
+        if !enter.status.success() {
+            let stderr = String::from_utf8_lossy(&enter.stderr);
+            bail!("tmux send-keys Enter failed: {}", stderr.trim());
         }
         Ok(())
     }

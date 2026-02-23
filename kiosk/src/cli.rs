@@ -74,7 +74,15 @@ pub struct StatusArgs {
     pub repo: String,
     pub branch: Option<String>,
     pub json: bool,
-    pub lines: Option<usize>,
+    pub lines: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct SendArgs {
+    pub repo: String,
+    pub branch: Option<String>,
+    pub command: String,
+    pub json: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -141,6 +149,12 @@ struct DeleteOutput {
     repo: String,
     branch: String,
     session: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SendOutput {
+    session: String,
+    command: String,
 }
 
 pub fn resolve_repo_exact<'a>(repos: &'a [Repo], name: &str) -> CliResult<&'a Repo> {
@@ -433,11 +447,16 @@ fn resolve_worktree_for_open(
     } else {
         let wt = repo.path.clone();
         let session = repo.tmux_session_name(&wt);
+        let branch = repo
+            .worktrees
+            .iter()
+            .find(|w| w.is_main)
+            .and_then(|w| w.branch.clone());
         Ok(ResolvedWorktree {
             path: wt,
             session_name: session,
             created: false,
-            branch: None,
+            branch,
         })
     }
 }
@@ -482,7 +501,7 @@ fn status_internal(
         repo.path.clone()
     };
 
-    let lines = args.lines.unwrap_or(50).max(1);
+    let lines = args.lines.max(1);
     let session_name = repo.tmux_session_name(&worktree_path);
     let session_exists = tmux.session_exists(&session_name);
 
@@ -630,6 +649,45 @@ pub fn cmd_delete(
         print_json(&output)?;
     } else {
         println!("deleted: {} {}", repo.name, args.branch);
+    }
+
+    Ok(())
+}
+
+pub fn cmd_send(
+    config: &Config,
+    git: &dyn GitProvider,
+    tmux: &dyn TmuxProvider,
+    args: &SendArgs,
+) -> CliResult<()> {
+    let repo = resolve_repo_with_worktrees(config, git, &args.repo)?;
+
+    let worktree_path = if let Some(branch) = &args.branch {
+        find_worktree_by_branch(&repo, branch)
+            .ok_or_else(|| CliError::user(format!("no worktree for branch '{branch}'")))?
+    } else {
+        repo.path.clone()
+    };
+
+    let session_name = repo.tmux_session_name(&worktree_path);
+    if !tmux.session_exists(&session_name) {
+        return Err(CliError::user(format!(
+            "session '{session_name}' does not exist"
+        )));
+    }
+
+    tmux.send_keys(&session_name, &args.command)
+        .map_err(CliError::from)?;
+
+    let output = SendOutput {
+        session: session_name,
+        command: args.command.clone(),
+    };
+
+    if args.json {
+        print_json(&output)?;
+    } else {
+        println!("sent to session: {}", output.session);
     }
 
     Ok(())
@@ -1090,7 +1148,7 @@ mod tests {
                 repo: "demo".to_string(),
                 branch: None,
                 json: false,
-                lines: Some(10),
+                lines: 10,
             },
         )
         .unwrap();
@@ -1460,7 +1518,7 @@ mod tests {
                 repo: "demo".to_string(),
                 branch: None,
                 json: false,
-                lines: Some(10),
+                lines: 10,
             },
         );
 
@@ -1483,7 +1541,7 @@ mod tests {
                 repo: "demo".to_string(),
                 branch: Some("nonexistent".to_string()),
                 json: false,
-                lines: Some(10),
+                lines: 10,
             },
         )
         .unwrap_err();
@@ -1554,7 +1612,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(output.repo, "demo");
-        assert!(output.branch.is_none());
+        assert_eq!(output.branch.as_deref(), Some("main"));
     }
 
     #[test]
@@ -1622,5 +1680,58 @@ mod tests {
         let json = serde_json::to_value(&output).unwrap();
         assert!(json.get("is_default").is_none());
         assert!(json.get("session_activity_ts").is_none());
+    }
+
+    // --- cmd_send tests ---
+
+    #[test]
+    fn send_sends_keys_to_existing_session() {
+        let config = test_config();
+        let git = demo_git(vec![main_worktree()], vec![]);
+        let tmux = MockTmuxProvider {
+            sessions: Mutex::new(vec!["demo".to_string()]),
+            ..Default::default()
+        };
+
+        let result = cmd_send(
+            &config,
+            &git,
+            &tmux,
+            &SendArgs {
+                repo: "demo".to_string(),
+                branch: None,
+                command: "echo hello".to_string(),
+                json: false,
+            },
+        );
+
+        assert!(result.is_ok());
+        assert_eq!(
+            tmux.sent_keys.lock().unwrap().as_slice(),
+            &[("demo".to_string(), "echo hello".to_string())]
+        );
+    }
+
+    #[test]
+    fn send_returns_error_when_session_does_not_exist() {
+        let config = test_config();
+        let git = demo_git(vec![main_worktree()], vec![]);
+        let tmux = MockTmuxProvider::default();
+
+        let error = cmd_send(
+            &config,
+            &git,
+            &tmux,
+            &SendArgs {
+                repo: "demo".to_string(),
+                branch: None,
+                command: "echo hello".to_string(),
+                json: false,
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code(), 1);
+        assert!(error.message().contains("does not exist"));
     }
 }

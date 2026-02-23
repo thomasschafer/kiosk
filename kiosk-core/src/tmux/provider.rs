@@ -20,7 +20,8 @@ pub trait TmuxProvider: Send + Sync {
     fn capture_pane(&self, session: &str, lines: usize) -> anyhow::Result<String>;
     /// Send keys to the target session's primary pane.
     ///
-    /// Implementations may append `Enter` to submit the provided keys as a command.
+    /// Implementations always append `Enter` after the supplied keys to execute
+    /// them as a command.
     fn send_keys(&self, session: &str, keys: &str) -> anyhow::Result<()>;
     fn pipe_pane(&self, session: &str, log_path: &Path) -> anyhow::Result<()>;
     fn list_clients(&self, session: &str) -> Vec<String>;

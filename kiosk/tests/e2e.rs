@@ -144,6 +144,20 @@ struct TestEnv {
     tmux_socket: String,
 }
 
+struct SessionCleanupGuard {
+    session: Option<String>,
+}
+
+impl Drop for SessionCleanupGuard {
+    fn drop(&mut self) {
+        if let Some(session) = self.session.take() {
+            let _ = Command::new("tmux")
+                .args(["kill-session", "-t", &session])
+                .output();
+        }
+    }
+}
+
 struct BranchCleanupGuard {
     bin: PathBuf,
     config_dir: PathBuf,
@@ -1624,6 +1638,8 @@ fn test_e2e_headless_open_is_idempotent() {
     init_test_repo(&repo);
     env.write_config(&search_dir);
 
+    let mut guard = SessionCleanupGuard { session: None };
+
     let first = env.run_cli(&["open", &repo_name, "main", "--no-switch", "--json"]);
     assert!(
         first.status.success(),
@@ -1632,6 +1648,7 @@ fn test_e2e_headless_open_is_idempotent() {
     );
     let first_json: Value = serde_json::from_slice(&first.stdout).unwrap();
     assert_eq!(first_json["created"], Value::Bool(true));
+    guard.session = first_json["session"].as_str().map(String::from);
 
     let second = env.run_cli(&["open", &repo_name, "main", "--no-switch", "--json"]);
     assert!(
@@ -1641,12 +1658,6 @@ fn test_e2e_headless_open_is_idempotent() {
     );
     let second_json: Value = serde_json::from_slice(&second.stdout).unwrap();
     assert_eq!(second_json["created"], Value::Bool(false));
-
-    if let Some(session) = second_json["session"].as_str() {
-        let _ = Command::new("tmux")
-            .args(["kill-session", "-t", session])
-            .output();
-    }
 }
 
 #[test]

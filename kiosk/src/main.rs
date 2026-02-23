@@ -34,6 +34,12 @@ enum Commands {
         /// List orphaned worktrees without removing them
         #[arg(long)]
         dry_run: bool,
+        /// Skip interactive confirmation and remove immediately
+        #[arg(long)]
+        yes: bool,
+        /// Output result as JSON (dry-run unless --yes is also set)
+        #[arg(long)]
+        json: bool,
     },
     /// List discovered repositories
     List {
@@ -43,6 +49,7 @@ enum Commands {
     },
     /// List branches for a repository
     Branches {
+        /// Repository name (as shown by 'kiosk list')
         repo: String,
         /// Output result as JSON
         #[arg(long)]
@@ -50,7 +57,9 @@ enum Commands {
     },
     /// Open or create a worktree and tmux session
     Open {
+        /// Repository name (as shown by 'kiosk list')
         repo: String,
+        /// Existing branch to open (as shown by 'kiosk branches')
         branch: Option<String>,
         /// Create a new branch with this name
         #[arg(long)]
@@ -61,10 +70,10 @@ enum Commands {
         /// Create session without switching to it (required outside tmux)
         #[arg(long)]
         no_switch: bool,
-        /// Command to execute in the session after creation
+        /// Command to execute in the session after creation (typed and Enter sent automatically). Use --log to preserve output after session exit
         #[arg(long)]
         run: Option<String>,
-        /// Enable logging of all session output to a file
+        /// Enable logging of session output. Logs are stored in `$XDG_STATE_HOME/kiosk/logs/` (default: `~/.local/state/kiosk/logs/`)
         #[arg(long)]
         log: bool,
         /// Output result as JSON
@@ -73,14 +82,16 @@ enum Commands {
     },
     /// Show status for a session
     Status {
+        /// Repository name (as shown by 'kiosk list')
         repo: String,
+        /// Branch name (omit for main checkout)
         branch: Option<String>,
         /// Output result as JSON
         #[arg(long)]
         json: bool,
         /// Number of lines to include in output
-        #[arg(long)]
-        lines: Option<usize>,
+        #[arg(long, default_value_t = 50)]
+        lines: usize,
     },
     /// List active kiosk sessions
     Sessions {
@@ -90,11 +101,26 @@ enum Commands {
     },
     /// Delete a worktree and session
     Delete {
+        /// Repository name (as shown by 'kiosk list')
         repo: String,
+        /// Branch whose worktree and session to delete
         branch: String,
         /// Force deletion even if the session is attached
         #[arg(long)]
         force: bool,
+        /// Output result as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Send a command to an existing session
+    Send {
+        /// Repository name (as shown by 'kiosk list')
+        repo: String,
+        /// Branch name (omit for main checkout)
+        branch: Option<String>,
+        /// Command to send (typed and Enter sent automatically)
+        #[arg(long)]
+        command: String,
         /// Output result as JSON
         #[arg(long)]
         json: bool,
@@ -116,15 +142,40 @@ fn main() -> ExitCode {
     let git: Arc<dyn GitProvider> = Arc::new(CliGitProvider);
     let tmux: Arc<dyn TmuxProvider> = Arc::new(CliTmuxProvider);
 
-    let result = match cli.command {
-        Some(Commands::Clean { dry_run }) => {
+    let result = dispatch_command(cli.command, &config, &git, &tmux);
+
+    match result {
+        Ok(()) => ExitCode::from(0),
+        Err(error) => {
+            crate::cli::print_error(&error, json_errors);
+            let code: u8 = match error.code() {
+                1 => 1,
+                _ => 2,
+            };
+            ExitCode::from(code)
+        }
+    }
+}
+
+fn dispatch_command(
+    command: Option<Commands>,
+    config: &config::Config,
+    git: &Arc<dyn GitProvider>,
+    tmux: &Arc<dyn TmuxProvider>,
+) -> crate::cli::CliResult<()> {
+    match command {
+        Some(Commands::Clean {
+            dry_run,
+            yes,
+            json,
+        }) => {
             let search_dirs = config.resolved_search_dirs();
-            clean_orphaned_worktrees(&search_dirs, git.as_ref(), dry_run)
+            clean_orphaned_worktrees(&search_dirs, git.as_ref(), dry_run, yes, json)
                 .map_err(crate::cli::CliError::from)
         }
-        Some(Commands::List { json }) => crate::cli::cmd_list(&config, git.as_ref(), json),
+        Some(Commands::List { json }) => crate::cli::cmd_list(config, git.as_ref(), json),
         Some(Commands::Branches { repo, json }) => {
-            crate::cli::cmd_branches(&config, git.as_ref(), tmux.as_ref(), &repo, json)
+            crate::cli::cmd_branches(config, git.as_ref(), tmux.as_ref(), &repo, json)
         }
         Some(Commands::Open {
             repo,
@@ -146,7 +197,7 @@ fn main() -> ExitCode {
                 log,
                 json,
             };
-            crate::cli::cmd_open(&config, git.as_ref(), tmux.as_ref(), &args)
+            crate::cli::cmd_open(config, git.as_ref(), tmux.as_ref(), &args)
         }
         Some(Commands::Status {
             repo,
@@ -160,10 +211,24 @@ fn main() -> ExitCode {
                 json,
                 lines,
             };
-            crate::cli::cmd_status(&config, git.as_ref(), tmux.as_ref(), &args)
+            crate::cli::cmd_status(config, git.as_ref(), tmux.as_ref(), &args)
+        }
+        Some(Commands::Send {
+            repo,
+            branch,
+            command,
+            json,
+        }) => {
+            let args = crate::cli::SendArgs {
+                repo,
+                branch,
+                command,
+                json,
+            };
+            crate::cli::cmd_send(config, git.as_ref(), tmux.as_ref(), &args)
         }
         Some(Commands::Sessions { json }) => {
-            crate::cli::cmd_sessions(&config, git.as_ref(), tmux.as_ref(), json)
+            crate::cli::cmd_sessions(config, git.as_ref(), tmux.as_ref(), json)
         }
         Some(Commands::Delete {
             repo,
@@ -177,21 +242,9 @@ fn main() -> ExitCode {
                 force,
                 json,
             };
-            crate::cli::cmd_delete(&config, git.as_ref(), tmux.as_ref(), &args)
+            crate::cli::cmd_delete(config, git.as_ref(), tmux.as_ref(), &args)
         }
-        None => run_tui(&config, &git, &tmux).map_err(crate::cli::CliError::from),
-    };
-
-    match result {
-        Ok(()) => ExitCode::from(0),
-        Err(error) => {
-            crate::cli::print_error(&error, json_errors);
-            let code: u8 = match error.code() {
-                1 => 1,
-                _ => 2,
-            };
-            ExitCode::from(code)
-        }
+        None => run_tui(config, git, tmux).map_err(crate::cli::CliError::from),
     }
 }
 
@@ -324,9 +377,11 @@ fn command_wants_json(command: Option<&Commands>) -> bool {
             | Commands::Sessions { json }
             | Commands::Open { json, .. }
             | Commands::Status { json, .. }
-            | Commands::Delete { json, .. },
+            | Commands::Delete { json, .. }
+            | Commands::Clean { json, .. }
+            | Commands::Send { json, .. },
         ) => *json,
-        Some(Commands::Clean { .. }) | None => false,
+        None => false,
     }
 }
 
@@ -344,6 +399,8 @@ fn clean_orphaned_worktrees(
     search_dirs: &[(std::path::PathBuf, u16)],
     git: &dyn GitProvider,
     dry_run: bool,
+    yes: bool,
+    json: bool,
 ) -> Result<()> {
     let mut orphaned_worktrees = Vec::new();
 
@@ -365,6 +422,27 @@ fn clean_orphaned_worktrees(
         }
     }
 
+    if json {
+        let should_remove = yes && !dry_run;
+        let mut removed = Vec::new();
+        if should_remove {
+            for worktree in &orphaned_worktrees {
+                if remove_worktree(worktree).is_ok() {
+                    removed.push(worktree.clone());
+                }
+            }
+        }
+        let orphaned: Vec<String> = orphaned_worktrees
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect();
+        let removed: Vec<String> = removed.iter().map(|p| p.display().to_string()).collect();
+        let output = serde_json::json!({ "orphaned": orphaned, "removed": removed });
+        println!("{output}");
+        clean_prunable_worktree_metadata(search_dirs, git, dry_run || !yes);
+        return Ok(());
+    }
+
     if orphaned_worktrees.is_empty() {
         println!("No orphaned worktree directories found.");
     } else {
@@ -375,6 +453,13 @@ fn clean_orphaned_worktrees(
 
         if dry_run {
             println!("\n(Dry run - no changes made. Run without --dry-run to remove them.)");
+        } else if yes {
+            for worktree in orphaned_worktrees {
+                match remove_worktree(&worktree) {
+                    Ok(()) => println!("Removed: {}", worktree.display()),
+                    Err(e) => eprintln!("Failed to remove {}: {}", worktree.display(), e),
+                }
+            }
         } else {
             // Prompt for confirmation
             print!("\nRemove these orphaned worktrees? (y/N): ");
@@ -384,7 +469,6 @@ fn clean_orphaned_worktrees(
             io::stdin().read_line(&mut input)?;
 
             if input.trim().to_lowercase() == "y" {
-                // Remove the worktrees
                 for worktree in orphaned_worktrees {
                     match remove_worktree(&worktree) {
                         Ok(()) => println!("Removed: {}", worktree.display()),
@@ -408,7 +492,9 @@ fn clean_prunable_worktree_metadata(
 ) {
     let repos = git.discover_repos(search_dirs);
     if repos.is_empty() {
-        println!("No repositories discovered for worktree metadata prune.");
+        if !dry_run {
+            println!("No repositories discovered for worktree metadata prune.");
+        }
         return;
     }
 

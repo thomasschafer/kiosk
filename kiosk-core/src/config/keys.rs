@@ -367,14 +367,19 @@ impl KeysConfig {
         combined
     }
 
-    /// Build keybinding sections for a mode without applying higher-layer overrides.
+    /// Build keybinding sections for a mode, filtering out entries that are
+    /// overridden or unbound by higher-priority layers in the effective keymap.
     pub fn sections_for_mode(&self, mode: &Mode) -> Vec<KeybindingSection> {
+        let effective = self.keymap_for_mode(mode);
         Layer::ORDER_ASC
             .into_iter()
             .filter(|layer| Self::mode_uses_layer(mode, *layer))
             .map(|layer| KeybindingSection {
                 name: layer.section_name(),
-                entries: Self::entries_for_layer(self.layer(layer)),
+                entries: Self::entries_for_layer(self.layer(layer))
+                    .into_iter()
+                    .filter(|e| effective.get(&e.key) == Some(&e.command))
+                    .collect(),
             })
             .filter(|section| !section.entries.is_empty())
             .collect()
@@ -1000,6 +1005,50 @@ mod tests {
     }
 
     #[test]
+    fn test_sections_for_mode_hides_entries_overridden_by_higher_layer_noop() {
+        let raw = KeysConfigRaw {
+            general: HashMap::new(),
+            text_edit: HashMap::new(),
+            list_navigation: HashMap::new(),
+            modal: HashMap::new(),
+            repo_select: HashMap::new(),
+            branch_select: {
+                let mut map = HashMap::new();
+                // Override the inherited list_navigation C-n binding with noop
+                map.insert("C-n".to_string(), "noop".to_string());
+                map
+            },
+        };
+
+        let config = KeysConfig::from_raw(&raw).unwrap();
+        let sections = config.sections_for_mode(&Mode::BranchSelect);
+
+        let list_nav = sections
+            .iter()
+            .find(|s| s.name == "list_navigation")
+            .expect("list_navigation section should exist");
+
+        assert!(
+            !list_nav
+                .entries
+                .iter()
+                .any(|e| e.command == Command::MoveDown
+                    && e.key == KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL)),
+            "C-n -> MoveDown should be hidden when overridden by higher-layer noop"
+        );
+
+        // The 'down' key binding for MoveDown should still be present
+        assert!(
+            list_nav
+                .entries
+                .iter()
+                .any(|e| e.command == Command::MoveDown
+                    && e.key == KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+            "down -> MoveDown should still be shown (not overridden)"
+        );
+    }
+
+    #[test]
     fn test_sections_for_mode_omits_fully_unbound_layers() {
         let raw = KeysConfigRaw {
             general: {
@@ -1058,8 +1107,6 @@ mod tests {
             if row.section_index != previous_section_index {
                 assert_eq!(row.section_index, previous_section_index + 1);
                 previous_section_index = row.section_index;
-                previous_command = None;
-                previous_key.clear();
             } else if previous_command.as_ref() == Some(&row.command) {
                 assert!(previous_key <= row.key_display);
             } else {

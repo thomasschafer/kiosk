@@ -1044,7 +1044,7 @@ fn test_e2e_help_esc_dismiss() {
     env.send_special("C-h");
     let screen = env.capture();
     assert!(
-        screen.contains("help - key bindings") && screen.contains("general:"),
+        screen.contains("help - key bindings") && screen.contains("repo select:"),
         "Help overlay should be visible: {screen}"
     );
 
@@ -1178,7 +1178,7 @@ fn test_e2e_help_rapid_down_only_hits_visual_bottom_at_true_end() {
         let (selected_row, body_rows, selected_line) = help_view_detail(&env.capture());
         if selected_row + 1 == body_rows {
             assert!(
-                selected_line.contains("Go back"),
+                selected_line.contains("Show help"),
                 "Bottom row should only be the true end in branch help, got: {selected_line}"
             );
         }
@@ -1320,7 +1320,9 @@ fn test_e2e_alt_j_and_alt_k_half_page_navigation() {
     env.write_config(&search_dir);
     env.launch_kiosk();
 
-    let screen = env.capture();
+    let screen = wait_for_screen(&env, 2500, |s| {
+        s.contains("30 repos") && s.contains("[main]")
+    });
     let initial_selected =
         selected_line(&screen).expect("Expected an initially selected repo line in UI");
 
@@ -1355,7 +1357,9 @@ fn test_e2e_ctrl_v_and_alt_v_page_navigation() {
     env.write_config(&search_dir);
     env.launch_kiosk();
 
-    let screen = env.capture();
+    let screen = wait_for_screen(&env, 2500, |s| {
+        s.contains("40 repos") && s.contains("[main]")
+    });
     let initial_selected =
         selected_line(&screen).expect("Expected an initially selected repo line in UI");
 

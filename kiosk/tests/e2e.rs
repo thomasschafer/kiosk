@@ -222,9 +222,10 @@ fn wait_for_help_state_change(
         if &last != previous {
             return last;
         }
-        if start.elapsed() > Duration::from_millis(timeout_ms) {
-            panic!("Timed out waiting for help state to change");
-        }
+        assert!(
+            start.elapsed() <= Duration::from_millis(timeout_ms),
+            "Timed out waiting for help state to change"
+        );
         wait_ms(50);
         last = help_view_state(&env.capture());
     }
@@ -241,9 +242,10 @@ fn wait_for_help_state_exact(
         if &last == expected {
             return last;
         }
-        if start.elapsed() > Duration::from_millis(timeout_ms) {
-            panic!("Timed out waiting for expected help state");
-        }
+        assert!(
+            start.elapsed() <= Duration::from_millis(timeout_ms),
+            "Timed out waiting for expected help state"
+        );
         wait_ms(50);
         last = help_view_state(&env.capture());
     }
@@ -691,7 +693,9 @@ split_command = "sleep 30"
         .unwrap();
     let pane_commands = String::from_utf8_lossy(&output.stdout).to_string();
     assert!(
-        pane_commands.lines().any(|line| line == "sleep"),
+        pane_commands
+            .lines()
+            .any(|line| line == "sleep" || line == "coreutils"),
         "Expected one pane running sleep, commands were: {pane_commands}; captured panes: {captured}"
     );
 

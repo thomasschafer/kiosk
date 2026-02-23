@@ -1,4 +1,3 @@
-use super::list_state::{identity_visual_indices, visual_list_state_from_logical};
 use crate::theme::Theme;
 use kiosk_core::config::KeysConfig;
 use kiosk_core::state::AppState;
@@ -123,14 +122,8 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, _keys: &
         )
         .highlight_symbol("▸ ");
 
-    let indices = identity_visual_indices(state.branch_list.filtered.len());
-    let (selected, offset) = visual_list_state_from_logical(
-        &indices,
-        state.branch_list.selected,
-        state.branch_list.scroll_offset,
-    );
     let mut list_state = ListState::default();
-    list_state.select(selected);
-    *list_state.offset_mut() = offset;
+    list_state.select(state.branch_list.selected);
+    *list_state.offset_mut() = state.branch_list.scroll_offset;
     f.render_stateful_widget(list, chunks[1], &mut list_state);
 }

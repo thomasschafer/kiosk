@@ -1198,6 +1198,44 @@ mod tests {
     }
 
     #[test]
+    fn test_catalog_for_mode_excludes_noop_from_flattened_rows() {
+        let raw = KeysConfigRaw {
+            general: {
+                let mut map = HashMap::new();
+                map.insert("C-c".to_string(), "noop".to_string());
+                map.insert("C-h".to_string(), "show_help".to_string());
+                map
+            },
+            text_edit: HashMap::new(),
+            list_navigation: HashMap::new(),
+            modal: HashMap::new(),
+            repo_select: HashMap::new(),
+            branch_select: HashMap::new(),
+        };
+
+        let config = KeysConfig::from_raw(&raw).unwrap();
+        let catalog = config.catalog_for_mode(&Mode::RepoSelect);
+
+        for row in &catalog.flattened {
+            assert_ne!(
+                row.command,
+                Command::Noop,
+                "Flattened rows should not contain Noop entries, found: {}",
+                row.key_display
+            );
+        }
+
+        // Verify C-h (show_help) IS present
+        assert!(
+            catalog
+                .flattened
+                .iter()
+                .any(|r| r.command == Command::ShowHelp),
+            "Non-noop commands should still be in flattened rows"
+        );
+    }
+
+    #[test]
     fn test_footer_commands_all_have_hints() {
         let modes: Vec<Mode> = vec![
             Mode::RepoSelect,

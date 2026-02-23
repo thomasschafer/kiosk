@@ -8,6 +8,35 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, ListState},
 };
 
+enum HelpLayoutEntry {
+    SectionHeader(&'static str),
+    Blank,
+    Row(usize),
+}
+
+fn compute_help_layout(overlay: &HelpOverlayState) -> Vec<HelpLayoutEntry> {
+    let mut entries = Vec::new();
+    let mut current_section: Option<&'static str> = None;
+
+    for (row_idx, _) in overlay.list.filtered.iter().copied() {
+        let Some(row) = overlay.rows.get(row_idx) else {
+            continue;
+        };
+
+        if current_section != Some(row.section_name) {
+            if current_section.is_some() {
+                entries.push(HelpLayoutEntry::Blank);
+            }
+            current_section = Some(row.section_name);
+            entries.push(HelpLayoutEntry::SectionHeader(row.section_name));
+        }
+
+        entries.push(HelpLayoutEntry::Row(row_idx));
+    }
+
+    entries
+}
+
 /// Help overlay showing keybindings.
 pub fn draw(f: &mut Frame, state: &AppState, theme: &crate::theme::Theme, _keys: &KeysConfig) {
     let Some(overlay) = state.help_overlay.as_ref() else {
@@ -37,6 +66,10 @@ pub fn draw(f: &mut Frame, state: &AppState, theme: &crate::theme::Theme, _keys:
         .selected
         .and_then(|selected| row_item_indices.get(selected))
         .copied();
+    // For the help overlay, scroll_offset is already in visual-row space
+    // (computed by update_help_scroll_offset), unlike other lists where it's
+    // a logical item index. This is because the help list has non-selectable
+    // visual rows (section headers, blank separators) that shift the mapping.
     let list_offset = overlay.list.scroll_offset;
     let title = format!(" {} bindings (esc: close) ", overlay.list.filtered.len());
     let list = List::new(items)
@@ -74,66 +107,50 @@ fn build_visible_items(
         return (vec![item], Vec::new());
     }
 
-    let mut items = Vec::new();
+    let layout = compute_help_layout(overlay);
+    let mut items = Vec::with_capacity(layout.len());
     let mut row_item_indices = Vec::new();
-    let mut current_section: Option<&'static str> = None;
 
-    for (row_idx, _) in overlay.list.filtered.iter().copied() {
-        let Some(row) = overlay.rows.get(row_idx) else {
-            continue;
-        };
-
-        if current_section != Some(row.section_name) {
-            if current_section.is_some() {
+    for entry in &layout {
+        match entry {
+            HelpLayoutEntry::Blank => {
                 items.push(ListItem::new(Line::from("")));
             }
-            current_section = Some(row.section_name);
-            items.push(ListItem::new(Line::from(Span::styled(
-                format!("{}:", row.section_name.replace('_', " ")),
-                Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-            ))));
+            HelpLayoutEntry::SectionHeader(name) => {
+                items.push(ListItem::new(Line::from(Span::styled(
+                    format!("{}:", name.replace('_', " ")),
+                    Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+                ))));
+            }
+            HelpLayoutEntry::Row(row_idx) => {
+                let row = &overlay.rows[*row_idx];
+                row_item_indices.push(items.len());
+                items.push(ListItem::new(Line::from(vec![
+                    Span::styled(
+                        format!("{:<13}", row.key_display),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(format!(" {}", row.description)),
+                    Span::styled(
+                        format!("  ({})", row.command),
+                        Style::default().fg(muted_color),
+                    ),
+                ])));
+            }
         }
-
-        row_item_indices.push(items.len());
-        items.push(ListItem::new(Line::from(vec![
-            Span::styled(
-                format!("{:<13}", row.key_display),
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(format!(" {}", row.description)),
-            Span::styled(
-                format!("  ({})", row.command),
-                Style::default().fg(muted_color),
-            ),
-        ])));
     }
 
     (items, row_item_indices)
 }
 
 pub(crate) fn help_visual_metrics(overlay: &HelpOverlayState) -> (Vec<usize>, usize) {
-    let mut row_item_indices = Vec::new();
-    let mut current_section: Option<&'static str> = None;
-    let mut visual_index = 0usize;
-
-    for (row_idx, _) in overlay.list.filtered.iter().copied() {
-        let Some(row) = overlay.rows.get(row_idx) else {
-            continue;
-        };
-
-        if current_section != Some(row.section_name) {
-            if current_section.is_some() {
-                visual_index += 1;
-            }
-            current_section = Some(row.section_name);
-            visual_index += 1;
-        }
-
-        row_item_indices.push(visual_index);
-        visual_index += 1;
-    }
-
-    (row_item_indices, visual_index)
+    let layout = compute_help_layout(overlay);
+    let row_item_indices = layout
+        .iter()
+        .enumerate()
+        .filter_map(|(i, entry)| matches!(entry, HelpLayoutEntry::Row(_)).then_some(i))
+        .collect();
+    (row_item_indices, layout.len())
 }
 
 #[cfg(test)]
@@ -321,6 +338,101 @@ mod tests {
             visual_row_in_view < items.len().saturating_sub(1),
             "Selection should not anchor to visual bottom too early in help list"
         );
+    }
+
+    #[test]
+    fn test_build_visible_items_empty_filter_shows_no_matching_message() {
+        let rows = vec![FlattenedKeybindingRow {
+            section_index: 0,
+            section_name: "general",
+            key_display: "C-c".to_string(),
+            command: Command::Quit,
+            description: Command::Quit.labels().description,
+        }];
+        let mut list = SearchableList::new(rows.len());
+        list.filtered = vec![];
+        list.selected = None;
+        let overlay = HelpOverlayState { list, rows };
+
+        let (items, row_item_indices) = build_visible_items(&overlay, Color::DarkGray);
+        assert_eq!(items.len(), 1, "Should have exactly one 'no matches' item");
+        assert!(
+            row_item_indices.is_empty(),
+            "No selectable rows when filter is empty"
+        );
+    }
+
+    #[test]
+    fn test_build_visible_items_single_section_no_blank_separator() {
+        let rows = vec![
+            FlattenedKeybindingRow {
+                section_index: 0,
+                section_name: "general",
+                key_display: "C-c".to_string(),
+                command: Command::Quit,
+                description: Command::Quit.labels().description,
+            },
+            FlattenedKeybindingRow {
+                section_index: 0,
+                section_name: "general",
+                key_display: "C-h".to_string(),
+                command: Command::ShowHelp,
+                description: Command::ShowHelp.labels().description,
+            },
+        ];
+        let mut list = SearchableList::new(rows.len());
+        list.selected = Some(0);
+        let overlay = HelpOverlayState { list, rows };
+
+        let (items, row_item_indices) = build_visible_items(&overlay, Color::DarkGray);
+        // Should be: section header + 2 rows = 3 items, no blank separators
+        assert_eq!(items.len(), 3, "Single section: header + 2 rows");
+        assert_eq!(row_item_indices, vec![1, 2]);
+    }
+
+    #[test]
+    fn test_help_visual_metrics_single_section() {
+        let rows = vec![
+            FlattenedKeybindingRow {
+                section_index: 0,
+                section_name: "general",
+                key_display: "C-c".to_string(),
+                command: Command::Quit,
+                description: Command::Quit.labels().description,
+            },
+            FlattenedKeybindingRow {
+                section_index: 0,
+                section_name: "general",
+                key_display: "C-h".to_string(),
+                command: Command::ShowHelp,
+                description: Command::ShowHelp.labels().description,
+            },
+        ];
+        let overlay = HelpOverlayState {
+            list: SearchableList::new(rows.len()),
+            rows,
+        };
+        let (indices, total_visual_rows) = help_visual_metrics(&overlay);
+        assert_eq!(indices, vec![1, 2]);
+        assert_eq!(total_visual_rows, 3);
+    }
+
+    #[test]
+    fn test_help_visual_metrics_empty_filter() {
+        let rows = vec![FlattenedKeybindingRow {
+            section_index: 0,
+            section_name: "general",
+            key_display: "C-c".to_string(),
+            command: Command::Quit,
+            description: Command::Quit.labels().description,
+        }];
+        let mut list = SearchableList::new(rows.len());
+        list.filtered = vec![];
+        list.selected = None;
+        let overlay = HelpOverlayState { list, rows };
+        let (indices, total_visual_rows) = help_visual_metrics(&overlay);
+        assert!(indices.is_empty());
+        assert_eq!(total_visual_rows, 0);
     }
 
     #[test]

@@ -119,18 +119,15 @@ fn strip_ansi_codes(content: &str) -> String {
     while let Some(c) = chars.next() {
         if c == '\x1B' {
             // Check for CSI sequence (ESC + '[')
-            if let Some(next) = chars.next() {
-                if next == '[' {
-                    // Skip parameter bytes (0x30-0x3F) and intermediate bytes (0x20-0x2F)
-                    // until we hit the final byte (0x40-0x7E)
-                    for c in chars.by_ref() {
-                        if c.is_ascii() && (0x40..=0x7E).contains(&(c as u8)) {
-                            break;
-                        }
+            if let Some('[') = chars.next() {
+                // Skip parameter bytes and intermediate bytes until final byte (0x40-0x7E)
+                for c in chars.by_ref() {
+                    if c.is_ascii() && (0x40..=0x7E).contains(&(c as u8)) {
+                        break;
                     }
                 }
-                // else: lone ESC or other escape — drop both bytes
             }
+            // else: lone ESC or other escape — drop both bytes
         } else {
             out.push(c);
         }

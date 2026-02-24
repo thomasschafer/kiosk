@@ -75,9 +75,23 @@ fn use_real_agents() -> bool {
     std::env::var("KIOSK_E2E_REAL_AGENTS").is_ok_and(|v| v == "1" || v == "true")
 }
 
+/// Build a PATH that includes common agent install locations (e.g. ~/.local/bin).
+/// Agents installed via npm --prefix or curl installers often land outside the
+/// default PATH visible to non-interactive shells / test harnesses.
+fn agent_path() -> String {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let extra = format!("{home}/.local/bin");
+    match std::env::var("PATH") {
+        Ok(path) if !path.contains(&extra) => format!("{extra}:{path}"),
+        Ok(path) => path,
+        Err(_) => extra,
+    }
+}
+
 fn has_binary(name: &str) -> bool {
     Command::new("which")
         .arg(name)
+        .env("PATH", agent_path())
         .output()
         .is_ok_and(|o| o.status.success())
 }
@@ -191,20 +205,31 @@ impl AgentTestEnvDefault {
             .unwrap();
         assert!(status.success(), "Failed to create tmux session");
 
-        // Send agent command — use --print for safe non-interactive mode
+        // Ensure agent binaries are on PATH inside the tmux session
+        let path = agent_path();
         Command::new("tmux")
             .args([
                 "send-keys",
                 "-t",
                 &self.kiosk_session,
-                &format!("{bin} --print 'Say hello in one word'"),
+                &format!("export PATH='{path}'"),
                 "Enter",
             ])
             .status()
             .unwrap();
+        wait_ms(200);
 
-        // Real agents need more startup time
-        wait_ms(5000);
+        // Launch agent interactively in the temp repo dir.
+        // This is safe: the repo is a temp dir with only a README.md.
+        // The agent will reach its idle prompt without making any changes.
+        Command::new("tmux")
+            .args(["send-keys", "-t", &self.kiosk_session, bin, "Enter"])
+            .status()
+            .unwrap();
+
+        // Real agents need time to start up and reach idle prompt
+        // Claude Code takes ~12s, Codex ~5s
+        wait_ms(15000);
     }
 
     fn launch_fake_agent(&self, agent: AgentKind, state: FakeState) {

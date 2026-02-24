@@ -1,13 +1,13 @@
 use super::{AgentKind, AgentState};
-use regex::Regex;
 
 /// Detect the kind of agent from tmux pane command or child process arguments
 pub fn detect_agent_kind(pane_command: &str, child_process_args: Option<&str>) -> AgentKind {
     // Check pane command first
-    if pane_command.to_lowercase().contains("claude") {
+    let cmd_lower = pane_command.to_lowercase();
+    if cmd_lower.contains("claude") {
         return AgentKind::ClaudeCode;
     }
-    if pane_command.to_lowercase().contains("codex") {
+    if cmd_lower.contains("codex") {
         return AgentKind::Codex;
     }
 
@@ -25,146 +25,117 @@ pub fn detect_agent_kind(pane_command: &str, child_process_args: Option<&str>) -
     AgentKind::Unknown
 }
 
-/// Detect agent state from terminal content, dispatching to agent-specific detectors
+// ---------------------------------------------------------------------------
+// Pattern constants
+// ---------------------------------------------------------------------------
+
+const BRAILLE_SPINNERS: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+const CLAUDE_RUNNING_PATTERNS: &[&str] = &["esc to interrupt", "ctrl+c to interrupt"];
+
+const CLAUDE_WAITING_PATTERNS: &[&str] = &[
+    "yes, allow",
+    "yes, and always allow",
+    "yes, and don't ask again",
+    "allow once",
+    "allow always",
+    "(y/n)",
+    "[y/n]",
+    "enter to select",
+    "esc to cancel",
+    "❯ 1.",
+    "do you trust the files",
+];
+
+const CODEX_RUNNING_PATTERNS: &[&str] = &["esc to interrupt", "working", "thinking"];
+
+const CODEX_WAITING_PATTERNS: &[&str] = &[
+    "yes, proceed",
+    "press enter to confirm",
+    "(y/n)",
+    "[y/n]",
+    "approve",
+    "allow",
+    "❯ 1.",
+    "enter to select",
+    "esc to cancel",
+];
+
+// ---------------------------------------------------------------------------
+// State detection
+// ---------------------------------------------------------------------------
+
+/// Detect agent state from terminal content, dispatching to agent-specific detectors.
+/// Content is ANSI-stripped and lowercased once here; per-agent functions receive clean input.
 pub fn detect_state(content: &str, kind: AgentKind) -> AgentState {
-    let clean_content = strip_ansi_codes(content);
-    let last_lines = get_last_non_empty_lines(&clean_content, 30);
+    let clean = strip_ansi_codes(content);
+    let last_lines = get_last_non_empty_lines(&clean, 30);
+    let lowered = last_lines.to_lowercase();
 
     match kind {
-        AgentKind::Codex => detect_codex_state(&last_lines),
-        AgentKind::ClaudeCode | AgentKind::Unknown => detect_claude_code_state(&last_lines), // Fallback to Claude Code
+        AgentKind::ClaudeCode => {
+            detect_agent_state(&lowered, CLAUDE_RUNNING_PATTERNS, CLAUDE_WAITING_PATTERNS)
+        }
+        AgentKind::Codex => {
+            detect_agent_state(&lowered, CODEX_RUNNING_PATTERNS, CODEX_WAITING_PATTERNS)
+        }
+        AgentKind::Unknown => AgentState::Idle,
     }
 }
 
-/// Detect Claude Code agent state from terminal content
-pub fn detect_claude_code_state(content: &str) -> AgentState {
-    let content_lower = content.to_lowercase();
-
-    // Check for Running patterns
-    if contains_running_patterns(&content_lower) {
+/// Generic agent state detection: checks running patterns (+ braille spinners),
+/// then waiting patterns, then defaults to Idle.
+fn detect_agent_state(
+    content: &str,
+    running_patterns: &[&str],
+    waiting_patterns: &[&str],
+) -> AgentState {
+    if matches_any(content, running_patterns) || contains_braille_spinner(content) {
         return AgentState::Running;
     }
-
-    // Check for Waiting patterns
-    if contains_waiting_patterns(&content_lower) {
+    if matches_any(content, waiting_patterns) {
         return AgentState::Waiting;
     }
-
-    // Default to Idle
     AgentState::Idle
 }
 
-/// Detect Codex agent state from terminal content
-pub fn detect_codex_state(content: &str) -> AgentState {
-    let content_lower = content.to_lowercase();
-
-    // Check for Running patterns
-    if contains_codex_running_patterns(&content_lower) {
-        return AgentState::Running;
-    }
-
-    // Check for Waiting patterns
-    if contains_codex_waiting_patterns(&content_lower) {
-        return AgentState::Waiting;
-    }
-
-    // Default to Idle
-    AgentState::Idle
+fn matches_any(content: &str, patterns: &[&str]) -> bool {
+    patterns.iter().any(|p| content.contains(p))
 }
 
-fn contains_running_patterns(content: &str) -> bool {
-    let running_patterns = ["esc to interrupt", "ctrl+c to interrupt"];
-
-    // Check for text patterns
-    for pattern in &running_patterns {
-        if content.contains(pattern) {
-            return true;
-        }
-    }
-
-    // Check for braille spinner characters
-    let braille_spinners = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-    for spinner in &braille_spinners {
-        if content.contains(*spinner) {
-            return true;
-        }
-    }
-
-    false
+fn contains_braille_spinner(content: &str) -> bool {
+    content.chars().any(|c| BRAILLE_SPINNERS.contains(&c))
 }
 
-fn contains_waiting_patterns(content: &str) -> bool {
-    let waiting_patterns = [
-        "yes, allow",
-        "yes, and always allow",
-        "yes, and don't ask again",
-        "allow once",
-        "allow always",
-        "(y/n)",
-        "[y/n]",
-        "enter to select",
-        "esc to cancel",
-        "❯ 1.",
-        "do you trust the files",
-    ];
+// ---------------------------------------------------------------------------
+// Text helpers
+// ---------------------------------------------------------------------------
 
-    for pattern in &waiting_patterns {
-        if content.contains(pattern) {
-            return true;
-        }
-    }
-
-    false
-}
-
-fn contains_codex_running_patterns(content: &str) -> bool {
-    let running_patterns = ["esc to interrupt", "working", "thinking"];
-
-    // Check for text patterns
-    for pattern in &running_patterns {
-        if content.contains(pattern) {
-            return true;
-        }
-    }
-
-    // Check for braille spinner characters
-    let braille_spinners = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-    for spinner in &braille_spinners {
-        if content.contains(*spinner) {
-            return true;
-        }
-    }
-
-    false
-}
-
-fn contains_codex_waiting_patterns(content: &str) -> bool {
-    let waiting_patterns = [
-        "yes, proceed",
-        "press enter to confirm",
-        "(y/n)",
-        "[y/n]",
-        "approve",
-        "allow",
-        "❯ 1.",
-        "enter to select",
-        "esc to cancel",
-    ];
-
-    for pattern in &waiting_patterns {
-        if content.contains(pattern) {
-            return true;
-        }
-    }
-
-    false
-}
-
-/// Strip ANSI escape codes from terminal content
+/// Strip ANSI escape codes from terminal content without regex.
+/// Scans for ESC[ sequences and skips to the terminating byte.
 fn strip_ansi_codes(content: &str) -> String {
-    // Simple regex to match common ANSI escape sequences
-    let re = Regex::new(r"\x1B\[[0-9;]*[mGKHfJABCDnsu]").unwrap();
-    re.replace_all(content, "").to_string()
+    let mut out = String::with_capacity(content.len());
+    let mut chars = content.chars();
+    while let Some(c) = chars.next() {
+        if c == '\x1B' {
+            // Check for CSI sequence (ESC + '[')
+            if let Some(next) = chars.next() {
+                if next == '[' {
+                    // Skip parameter bytes (0x30-0x3F) and intermediate bytes (0x20-0x2F)
+                    // until we hit the final byte (0x40-0x7E)
+                    for c in chars.by_ref() {
+                        if c.is_ascii() && (0x40..=0x7E).contains(&(c as u8)) {
+                            break;
+                        }
+                    }
+                }
+                // else: lone ESC or other escape — drop both bytes
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// Get the last N non-empty lines from content
@@ -174,18 +145,15 @@ fn get_last_non_empty_lines(content: &str, count: usize) -> String {
         .filter(|line| !line.trim().is_empty())
         .collect();
 
-    let start_idx = if lines.len() > count {
-        lines.len() - count
-    } else {
-        0
-    };
-
+    let start_idx = lines.len().saturating_sub(count);
     lines[start_idx..].join("\n")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- detect_agent_kind ---------------------------------------------------
 
     #[test]
     fn test_detect_agent_kind_claude_in_command() {
@@ -223,89 +191,138 @@ mod tests {
         );
     }
 
+    // -- detect_state (full pipeline: ANSI strip + lowercase + detect) -------
+
     #[test]
-    fn test_claude_code_running_state() {
+    fn test_claude_running() {
         assert_eq!(
-            detect_claude_code_state("Processing... esc to interrupt"),
+            detect_state("Processing... esc to interrupt", AgentKind::ClaudeCode),
             AgentState::Running
         );
         assert_eq!(
-            detect_claude_code_state("Working hard ⠋ please wait"),
+            detect_state("Working hard ⠋ please wait", AgentKind::ClaudeCode),
             AgentState::Running
         );
         assert_eq!(
-            detect_claude_code_state("Press ctrl+c to interrupt the process"),
+            detect_state(
+                "Press ctrl+c to interrupt the process",
+                AgentKind::ClaudeCode
+            ),
             AgentState::Running
         );
     }
 
     #[test]
-    fn test_claude_code_waiting_state() {
+    fn test_claude_waiting() {
         assert_eq!(
-            detect_claude_code_state("Do you want to proceed? (Y/n)"),
+            detect_state("Do you want to proceed? (Y/n)", AgentKind::ClaudeCode),
             AgentState::Waiting
         );
         assert_eq!(
-            detect_claude_code_state("Yes, allow this action\nNo, cancel"),
+            detect_state("Yes, allow this action\nNo, cancel", AgentKind::ClaudeCode),
             AgentState::Waiting
         );
         assert_eq!(
-            detect_claude_code_state("❯ 1. Option A\n  2. Option B\nEnter to select"),
+            detect_state(
+                "❯ 1. Option A\n  2. Option B\nEnter to select",
+                AgentKind::ClaudeCode
+            ),
             AgentState::Waiting
         );
         assert_eq!(
-            detect_claude_code_state("Do you trust the files in this directory?"),
+            detect_state(
+                "Do you trust the files in this directory?",
+                AgentKind::ClaudeCode
+            ),
             AgentState::Waiting
         );
     }
 
     #[test]
-    fn test_claude_code_idle_state() {
-        assert_eq!(detect_claude_code_state("$ "), AgentState::Idle);
+    fn test_claude_idle() {
         assert_eq!(
-            detect_claude_code_state("Welcome to Claude Code\n> "),
+            detect_state("$ ", AgentKind::ClaudeCode),
             AgentState::Idle
         );
-        assert_eq!(detect_claude_code_state(""), AgentState::Idle);
-    }
-
-    #[test]
-    fn test_codex_running_state() {
         assert_eq!(
-            detect_codex_state("Codex is working on your request... esc to interrupt"),
-            AgentState::Running
+            detect_state("Welcome to Claude Code\n> ", AgentKind::ClaudeCode),
+            AgentState::Idle
         );
         assert_eq!(
-            detect_codex_state("Thinking ⠙ about your question"),
-            AgentState::Running
-        );
-        assert_eq!(
-            detect_codex_state("Processing files\nworking..."),
-            AgentState::Running
+            detect_state("", AgentKind::ClaudeCode),
+            AgentState::Idle
         );
     }
 
     #[test]
-    fn test_codex_waiting_state() {
+    fn test_codex_running() {
         assert_eq!(
-            detect_codex_state("Do you want to proceed? Yes, proceed / No"),
+            detect_state(
+                "Codex is working on your request... esc to interrupt",
+                AgentKind::Codex
+            ),
+            AgentState::Running
+        );
+        assert_eq!(
+            detect_state("Thinking ⠙ about your question", AgentKind::Codex),
+            AgentState::Running
+        );
+        assert_eq!(
+            detect_state("Processing files\nworking...", AgentKind::Codex),
+            AgentState::Running
+        );
+    }
+
+    #[test]
+    fn test_codex_waiting() {
+        assert_eq!(
+            detect_state(
+                "Do you want to proceed? Yes, proceed / No",
+                AgentKind::Codex
+            ),
             AgentState::Waiting
         );
         assert_eq!(
-            detect_codex_state("Press enter to confirm your choice"),
+            detect_state("Press enter to confirm your choice", AgentKind::Codex),
             AgentState::Waiting
         );
         assert_eq!(
-            detect_codex_state("Please approve this action: [y/n]"),
+            detect_state("Please approve this action: [y/n]", AgentKind::Codex),
             AgentState::Waiting
         );
     }
 
     #[test]
-    fn test_codex_idle_state() {
-        assert_eq!(detect_codex_state("> "), AgentState::Idle);
-        assert_eq!(detect_codex_state("Codex ready\n> "), AgentState::Idle);
+    fn test_codex_idle() {
+        assert_eq!(
+            detect_state("> ", AgentKind::Codex),
+            AgentState::Idle
+        );
+        assert_eq!(
+            detect_state("Codex ready\n> ", AgentKind::Codex),
+            AgentState::Idle
+        );
     }
+
+    // -- Unknown kind returns Idle -------------------------------------------
+
+    #[test]
+    fn test_unknown_always_idle() {
+        assert_eq!(
+            detect_state("esc to interrupt", AgentKind::Unknown),
+            AgentState::Idle
+        );
+        assert_eq!(
+            detect_state("(Y/n)", AgentKind::Unknown),
+            AgentState::Idle
+        );
+        assert_eq!(
+            detect_state("", AgentKind::Unknown),
+            AgentState::Idle
+        );
+    }
+
+    // -- ANSI stripping ------------------------------------------------------
 
     #[test]
     fn test_strip_ansi_codes() {
@@ -318,42 +335,47 @@ mod tests {
     }
 
     #[test]
-    fn test_get_last_non_empty_lines() {
-        let content = "Line 1\n\nLine 3\n\nLine 5\nLine 6\n\n";
-        assert_eq!(get_last_non_empty_lines(content, 2), "Line 5\nLine 6");
-        assert_eq!(
-            get_last_non_empty_lines(content, 10), // More than available
-            "Line 1\nLine 3\nLine 5\nLine 6"
-        );
-    }
-
-    #[test]
     fn test_detect_state_with_ansi_codes() {
-        let content_with_ansi = "\x1B[32mProcessing...\x1B[0m esc to interrupt";
         assert_eq!(
-            detect_state(content_with_ansi, AgentKind::ClaudeCode),
+            detect_state(
+                "\x1B[32mProcessing...\x1B[0m esc to interrupt",
+                AgentKind::ClaudeCode
+            ),
             AgentState::Running
         );
     }
 
     #[test]
-    fn test_detect_state_unknown_fallback() {
-        let content = "Do you want to proceed? (Y/n)";
+    fn test_mixed_case_ansi_pipeline() {
         assert_eq!(
-            detect_state(content, AgentKind::Unknown),
+            detect_state(
+                "\x1B[1mYES, ALLOW\x1B[0m this action",
+                AgentKind::ClaudeCode
+            ),
             AgentState::Waiting
+        );
+    }
+
+    // -- Helpers -------------------------------------------------------------
+
+    #[test]
+    fn test_get_last_non_empty_lines() {
+        let content = "Line 1\n\nLine 3\n\nLine 5\nLine 6\n\n";
+        assert_eq!(get_last_non_empty_lines(content, 2), "Line 5\nLine 6");
+        assert_eq!(
+            get_last_non_empty_lines(content, 10),
+            "Line 1\nLine 3\nLine 5\nLine 6"
         );
     }
 
     #[test]
     fn test_braille_spinner_detection() {
-        for spinner in ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'] {
-            let content = format!("Loading {} please wait", spinner);
+        for spinner in BRAILLE_SPINNERS {
+            let content = format!("Loading {spinner} please wait");
             assert_eq!(
-                detect_claude_code_state(&content),
+                detect_state(&content, AgentKind::ClaudeCode),
                 AgentState::Running,
-                "Failed to detect running state for spinner: {}",
-                spinner
+                "Failed for spinner: {spinner}",
             );
         }
     }
@@ -361,21 +383,27 @@ mod tests {
     #[test]
     fn test_case_insensitive_detection() {
         assert_eq!(
-            detect_claude_code_state("ESC TO INTERRUPT"),
+            detect_state("ESC TO INTERRUPT", AgentKind::ClaudeCode),
             AgentState::Running
         );
-        assert_eq!(detect_claude_code_state("Yes, Allow"), AgentState::Waiting);
+        assert_eq!(
+            detect_state("Yes, Allow", AgentKind::ClaudeCode),
+            AgentState::Waiting
+        );
     }
 
     #[test]
     fn test_empty_content() {
-        assert_eq!(detect_claude_code_state(""), AgentState::Idle);
-        assert_eq!(detect_codex_state(""), AgentState::Idle);
+        assert_eq!(detect_state("", AgentKind::ClaudeCode), AgentState::Idle);
+        assert_eq!(detect_state("", AgentKind::Codex), AgentState::Idle);
         assert_eq!(detect_state("", AgentKind::Unknown), AgentState::Idle);
     }
 
     #[test]
     fn test_only_whitespace_content() {
-        assert_eq!(detect_claude_code_state("   \n\n  \t  "), AgentState::Idle);
+        assert_eq!(
+            detect_state("   \n\n  \t  ", AgentKind::ClaudeCode),
+            AgentState::Idle
+        );
     }
 }

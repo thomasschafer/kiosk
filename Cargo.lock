@@ -827,7 +827,6 @@ dependencies = [
  "crossterm",
  "dirs",
  "log",
- "regex",
  "serde",
  "serde_json",
  "tempfile",

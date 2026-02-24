@@ -58,6 +58,7 @@ impl From<anyhow::Error> for CliError {
 }
 
 #[derive(Debug, Clone)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct OpenArgs {
     pub repo: String,
     pub branch: Option<String>,
@@ -65,6 +66,9 @@ pub struct OpenArgs {
     pub base: Option<String>,
     pub no_switch: bool,
     pub run: Option<String>,
+    pub wait: bool,
+    pub wait_timeout: Option<u64>,
+    pub wait_pane: usize,
     pub log: bool,
     pub json: bool,
 }
@@ -148,6 +152,8 @@ struct OpenOutput {
     session: String,
     path: PathBuf,
     created: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    wait: Option<WaitOutput>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -427,9 +433,37 @@ fn open_internal(
             .map_err(CliError::from)?;
     }
 
+    let wait_result = if args.wait {
+        if args.run.is_none() {
+            return Err(CliError::user("--wait requires --run"));
+        }
+        Some(wait_for_idle(
+            tmux,
+            &resolved.session_name,
+            args.wait_pane,
+            args.wait_timeout,
+        ))
+    } else {
+        None
+    };
+
     if !args.no_switch {
         tmux.switch_to_session(&resolved.session_name);
     }
+
+    let wait_output = match wait_result {
+        Some(Ok(output)) => Some(output),
+        Some(Err(e)) if e.message() == "wait timeout" => Some(WaitOutput {
+            idle: false,
+            timed_out: true,
+            pane_command: tmux
+                .pane_current_command(&resolved.session_name, &args.wait_pane.to_string())
+                .unwrap_or_else(|_| "unknown".to_string()),
+            exit_code: None,
+        }),
+        Some(Err(e)) => return Err(e),
+        None => None,
+    };
 
     Ok(OpenOutput {
         repo: repo.name,
@@ -437,6 +471,7 @@ fn open_internal(
         session: resolved.session_name,
         path: resolved.path,
         created: resolved.created,
+        wait: wait_output,
     })
 }
 
@@ -1081,6 +1116,49 @@ pub fn cmd_panes(
     Ok(())
 }
 
+const KNOWN_SHELLS: &[&str] = &["bash", "zsh", "fish", "sh", "dash", "ash"];
+
+/// Core wait loop: blocks until the pane's foreground process is a shell, or timeout.
+/// Returns `Ok(WaitOutput)` on idle, `Err` on timeout or failure.
+fn wait_for_idle(
+    tmux: &dyn TmuxProvider,
+    session_name: &str,
+    pane: usize,
+    timeout: Option<u64>,
+) -> CliResult<WaitOutput> {
+    let pane_str = pane.to_string();
+    let start_time = std::time::Instant::now();
+    let timeout_duration = timeout.map(std::time::Duration::from_secs);
+
+    loop {
+        if let Some(dur) = timeout_duration
+            && start_time.elapsed() >= dur
+        {
+            return Err(CliError::user("wait timeout"));
+        }
+
+        match tmux.pane_current_command(session_name, &pane_str) {
+            Ok(command) => {
+                if KNOWN_SHELLS.iter().any(|&shell| command == shell) {
+                    return Ok(WaitOutput {
+                        idle: true,
+                        timed_out: false,
+                        pane_command: command,
+                        exit_code: None,
+                    });
+                }
+            }
+            Err(e) => {
+                return Err(CliError::system(format!(
+                    "failed to get pane current command: {e}"
+                )));
+            }
+        }
+
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+}
+
 pub fn cmd_wait(
     config: &Config,
     git: &dyn GitProvider,
@@ -1103,61 +1181,32 @@ pub fn cmd_wait(
         )));
     }
 
-    let pane_str = &args.pane.to_string();
-    let start_time = std::time::Instant::now();
-    let timeout_duration = args.timeout.map(std::time::Duration::from_secs);
-
-    let known_shells = ["bash", "zsh", "fish", "sh", "dash", "ash"];
-
-    loop {
-        if let Some(timeout) = timeout_duration
-            && start_time.elapsed() >= timeout
-        {
+    match wait_for_idle(tmux, &session_name, args.pane, args.timeout) {
+        Ok(output) => {
+            if args.json {
+                print_json(&output)?;
+            } else {
+                println!("pane idle (shell detected)");
+            }
+            Ok(())
+        }
+        Err(e) if e.message() == "wait timeout" => {
             let output = WaitOutput {
                 idle: false,
                 timed_out: true,
                 pane_command: tmux
-                    .pane_current_command(&session_name, pane_str)
+                    .pane_current_command(&session_name, &args.pane.to_string())
                     .unwrap_or_else(|_| "unknown".to_string()),
                 exit_code: None,
             };
-
             if args.json {
                 print_json(&output)?;
             } else {
                 println!("timeout reached");
             }
-            return Err(CliError::user("wait timeout"));
+            Err(e)
         }
-
-        match tmux.pane_current_command(&session_name, pane_str) {
-            Ok(command) => {
-                let is_shell = known_shells.iter().any(|&shell| command == shell);
-
-                if is_shell {
-                    let output = WaitOutput {
-                        idle: true,
-                        timed_out: false,
-                        pane_command: command,
-                        exit_code: None,
-                    };
-
-                    if args.json {
-                        print_json(&output)?;
-                    } else {
-                        println!("pane idle (shell detected)");
-                    }
-                    return Ok(());
-                }
-            }
-            Err(e) => {
-                return Err(CliError::system(format!(
-                    "failed to get pane current command: {e}"
-                )));
-            }
-        }
-
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        Err(e) => Err(e),
     }
 }
 
@@ -1300,6 +1349,9 @@ mod tests {
                 run: None,
                 log: false,
                 json: false,
+                wait: false,
+                wait_timeout: None,
+                wait_pane: 0,
             },
         )
         .unwrap();
@@ -1342,6 +1394,9 @@ mod tests {
                 run: None,
                 log: false,
                 json: false,
+                wait: false,
+                wait_timeout: None,
+                wait_pane: 0,
             },
         )
         .unwrap_err();
@@ -1380,6 +1435,9 @@ mod tests {
                 run: Some("echo MARKER".to_string()),
                 log: false,
                 json: false,
+                wait: false,
+                wait_timeout: None,
+                wait_pane: 0,
             },
         )
         .unwrap();
@@ -1425,6 +1483,9 @@ mod tests {
                 run: None,
                 log: false,
                 json: false,
+                wait: false,
+                wait_timeout: None,
+                wait_pane: 0,
             },
         )
         .unwrap();
@@ -1468,6 +1529,9 @@ mod tests {
                 run: None,
                 log: false,
                 json: false,
+                wait: false,
+                wait_timeout: None,
+                wait_pane: 0,
             },
         )
         .unwrap_err();
@@ -1969,6 +2033,9 @@ mod tests {
                 run: None,
                 log: false,
                 json: false,
+                wait: false,
+                wait_timeout: None,
+                wait_pane: 0,
             },
         )
         .unwrap();
@@ -2010,12 +2077,120 @@ mod tests {
                 run: None,
                 log: false,
                 json: false,
+                wait: false,
+                wait_timeout: None,
+                wait_pane: 0,
             },
         )
         .unwrap();
 
         assert_eq!(output.repo, "demo");
         assert_eq!(output.branch.as_deref(), Some("feat/x"));
+    }
+
+    // --- open --wait tests ---
+
+    #[test]
+    fn open_with_wait_includes_wait_output() {
+        let config = test_config();
+        let git = demo_git(vec![main_worktree()], vec![]);
+        let tmux = MockTmuxProvider {
+            sessions: Mutex::new(Vec::new()),
+            inside_tmux: true,
+            ..Default::default()
+        };
+
+        let output = open_internal(
+            &config,
+            &git,
+            &tmux,
+            &OpenArgs {
+                repo: "demo".to_string(),
+                branch: None,
+                new_branch: None,
+                base: None,
+                no_switch: true,
+                run: Some("cargo test".to_string()),
+                wait: true,
+                wait_timeout: Some(5),
+                wait_pane: 0,
+                log: false,
+                json: true,
+            },
+        )
+        .unwrap();
+
+        let wait = output.wait.expect("wait output should be present");
+        assert!(wait.idle);
+        assert!(!wait.timed_out);
+        assert_eq!(wait.pane_command, "zsh");
+    }
+
+    #[test]
+    fn open_without_wait_has_no_wait_output() {
+        let config = test_config();
+        let git = demo_git(vec![main_worktree()], vec![]);
+        let tmux = MockTmuxProvider {
+            sessions: Mutex::new(Vec::new()),
+            inside_tmux: true,
+            ..Default::default()
+        };
+
+        let output = open_internal(
+            &config,
+            &git,
+            &tmux,
+            &OpenArgs {
+                repo: "demo".to_string(),
+                branch: None,
+                new_branch: None,
+                base: None,
+                no_switch: true,
+                run: Some("echo hi".to_string()),
+                wait: false,
+                wait_timeout: None,
+                wait_pane: 0,
+                log: false,
+                json: false,
+            },
+        )
+        .unwrap();
+
+        assert!(output.wait.is_none());
+    }
+
+    #[test]
+    fn open_wait_without_run_errors() {
+        let config = test_config();
+        let git = demo_git(vec![main_worktree()], vec![]);
+        let tmux = MockTmuxProvider {
+            sessions: Mutex::new(Vec::new()),
+            inside_tmux: true,
+            ..Default::default()
+        };
+
+        let result = open_internal(
+            &config,
+            &git,
+            &tmux,
+            &OpenArgs {
+                repo: "demo".to_string(),
+                branch: None,
+                new_branch: None,
+                base: None,
+                no_switch: true,
+                run: None,
+                wait: true,
+                wait_timeout: None,
+                wait_pane: 0,
+                log: false,
+                json: false,
+            },
+        );
+
+        let error = result.unwrap_err();
+        assert_eq!(error.code(), 1);
+        assert!(error.message().contains("--wait requires --run"));
     }
 
     // --- BranchOutput conversion test ---

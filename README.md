@@ -81,17 +81,19 @@ kiosk delete my-project feat/thing --force --json
 
 #### Waiting for completion
 
-`--run` dispatches a command asynchronously. Use `wait` to block until the pane is idle:
+Use `--wait` on `open` to block until the command finishes:
 
 ```bash
-# Launch a long-running command with logging enabled
-kiosk open my-project feat/thing --no-switch --run "cargo test" --log --json
-
-# Wait until the command finishes (detects when the shell prompt returns)
-kiosk wait my-project feat/thing --timeout 300 --json
-
-# Read the output
+# Launch, wait for completion, then read output — all in one
+kiosk open my-project feat/thing --no-switch --run "cargo test" --wait --wait-timeout 300 --log --json
 kiosk log my-project feat/thing --tail 200 --json
+```
+
+Or use the standalone `wait` command for commands sent later:
+
+```bash
+kiosk send my-project feat/thing --command "cargo test"
+kiosk wait my-project feat/thing --timeout 300 --json
 ```
 
 #### Session naming

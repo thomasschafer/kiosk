@@ -73,6 +73,15 @@ enum Commands {
         /// Command to execute in the session after creation (typed and Enter sent automatically). Use --log to preserve output after session exit
         #[arg(long)]
         run: Option<String>,
+        /// Block until the command from --run finishes (pane returns to shell). Requires --run
+        #[arg(long, requires = "run")]
+        wait: bool,
+        /// Timeout in seconds for --wait
+        #[arg(long)]
+        wait_timeout: Option<u64>,
+        /// Target pane index for --wait (default: 0)
+        #[arg(long, default_value_t = 0)]
+        wait_pane: usize,
         /// Enable logging of session output. Logs are stored in `$XDG_STATE_HOME/kiosk/logs/` (default: `~/.local/state/kiosk/logs/`)
         #[arg(long)]
         log: bool,
@@ -279,6 +288,9 @@ fn dispatch_command(
             base,
             no_switch,
             run,
+            wait,
+            wait_timeout,
+            wait_pane,
             log,
             json,
         }) => {
@@ -289,6 +301,9 @@ fn dispatch_command(
                 base,
                 no_switch,
                 run,
+                wait,
+                wait_timeout,
+                wait_pane,
                 log,
                 json,
             };

@@ -2161,7 +2161,7 @@ mod tests {
     fn test_send_keys_mode() {
         let config = test_config();
         let git = demo_git(vec![main_worktree()], vec![]);
-        let mut tmux = MockTmuxProvider::default();
+        let tmux = MockTmuxProvider::default();
         tmux.sessions.lock().unwrap().push("demo".to_string());
 
         let result = cmd_send(
@@ -2190,7 +2190,7 @@ mod tests {
     fn test_send_text_mode() {
         let config = test_config();
         let git = demo_git(vec![main_worktree()], vec![]);
-        let mut tmux = MockTmuxProvider::default();
+        let tmux = MockTmuxProvider::default();
         tmux.sessions.lock().unwrap().push("demo".to_string());
 
         let result = cmd_send(
@@ -2219,7 +2219,7 @@ mod tests {
     fn test_panes_command() {
         let config = test_config();
         let git = demo_git(vec![main_worktree()], vec![]);
-        let mut tmux = MockTmuxProvider::default();
+        let tmux = MockTmuxProvider::default();
         tmux.sessions.lock().unwrap().push("demo".to_string());
 
         let result = cmd_panes(
@@ -2243,7 +2243,7 @@ mod tests {
     fn test_wait_command() {
         let config = test_config();
         let git = demo_git(vec![main_worktree()], vec![]);
-        let mut tmux = MockTmuxProvider::default();
+        let tmux = MockTmuxProvider::default();
         tmux.sessions.lock().unwrap().push("demo".to_string());
 
         let result = cmd_wait(
@@ -2299,7 +2299,7 @@ mod tests {
     fn test_status_with_pane() {
         let config = test_config();
         let git = demo_git(vec![main_worktree()], vec![]);
-        let mut tmux = MockTmuxProvider::default();
+        let tmux = MockTmuxProvider::default();
         tmux.sessions.lock().unwrap().push("demo".to_string());
         *tmux.capture_output.lock().unwrap() = "test output".to_string();
 

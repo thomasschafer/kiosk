@@ -223,28 +223,9 @@ impl TmuxProvider for CliTmuxProvider {
     fn pane_count(&self, session: &str) -> Result<usize> {
         let output = Command::new("tmux")
             .args([
-                "display-message",
-                "-t",
-                &format!("={session}"),
-                "-p",
-                "#{session_windows}",
-            ])
-            .output()
-            .with_context(|| {
-                format!("failed to execute tmux display-message for session {session}")
-            })?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            bail!("tmux display-message failed: {}", stderr.trim());
-        }
-
-        // Get number of panes in all windows for this session
-        let output = Command::new("tmux")
-            .args([
                 "list-panes",
                 "-t",
                 &format!("={session}"),
-                "-a",
                 "-F",
                 "#{pane_index}",
             ])

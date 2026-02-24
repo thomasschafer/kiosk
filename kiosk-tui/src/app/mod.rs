@@ -7,10 +7,8 @@ use actions::{
     handle_delete_worktree, handle_go_back, handle_open_branch, handle_search_delete_forward,
     handle_search_delete_to_end, handle_search_delete_to_start, handle_search_delete_word,
     handle_search_delete_word_forward, handle_search_pop, handle_search_push, handle_setup_add_dir,
-    handle_setup_continue, handle_setup_delete_forward, handle_setup_delete_to_end,
-    handle_setup_delete_to_start, handle_setup_delete_word, handle_setup_delete_word_forward,
-    handle_setup_move_selection, handle_setup_search_pop, handle_setup_search_push,
-    handle_setup_tab_complete, handle_show_help, handle_start_new_branch,
+    handle_setup_continue, handle_setup_move_selection, handle_setup_tab_complete,
+    handle_show_help, handle_start_new_branch,
 };
 use crossterm::event::{self, Event, KeyEventKind};
 use fuzzy_matcher::{FuzzyMatcher, skim::SkimMatcherV2};
@@ -484,10 +482,7 @@ fn draw_confirm_delete_dialog(
 /// Rebuild a `SearchableList`'s filtered entries from new item names while preserving
 /// the current search text, cursor position, and selection (clamped to bounds).
 fn rebuild_filtered_preserving_search(list: &mut SearchableList, names: &[&str]) {
-    let prev_search = list.search.clone();
-    let prev_cursor = list.cursor;
-
-    if prev_search.is_empty() {
+    if list.input.text.is_empty() {
         list.filtered = (0..names.len()).map(|i| (i, 0)).collect();
     } else {
         let matcher = SkimMatcherV2::default();
@@ -496,16 +491,13 @@ fn rebuild_filtered_preserving_search(list: &mut SearchableList, names: &[&str])
             .enumerate()
             .filter_map(|(i, name)| {
                 matcher
-                    .fuzzy_match(name, &prev_search)
+                    .fuzzy_match(name, &list.input.text)
                     .map(|score| (i, score))
             })
             .collect();
         scored.sort_by(|a, b| b.1.cmp(&a.1));
         list.filtered = scored;
     }
-
-    list.search = prev_search;
-    list.cursor = prev_cursor;
     if let Some(sel) = list.selected {
         if sel >= list.filtered.len() {
             list.selected = if list.filtered.is_empty() {
@@ -784,97 +776,40 @@ fn update_help_scroll_offset(
 
 /// Handle simple cursor and error actions
 fn handle_simple_actions(action: &Action, state: &mut AppState) -> bool {
-    // Setup mode cursor movement
-    if matches!(
-        state.mode,
-        Mode::Setup(kiosk_core::state::SetupStep::SearchDirs)
-    ) && let Some(setup) = &mut state.setup
-    {
-        match action {
-            Action::CursorLeft => {
-                if setup.cursor > 0 {
-                    setup.cursor = setup.input[..setup.cursor]
-                        .char_indices()
-                        .next_back()
-                        .map_or(0, |(i, _)| i);
-                }
-                return true;
-            }
-            Action::CursorRight => {
-                if setup.cursor < setup.input.len() {
-                    setup.cursor = setup.input[setup.cursor..]
-                        .char_indices()
-                        .nth(1)
-                        .map_or(setup.input.len(), |(i, _)| setup.cursor + i);
-                }
-                return true;
-            }
-            Action::CursorStart => {
-                setup.cursor = 0;
-                return true;
-            }
-            Action::CursorEnd => {
-                setup.cursor = setup.input.len();
-                return true;
-            }
-            Action::CursorWordLeft => {
-                let before = &setup.input[..setup.cursor];
-                setup.cursor = before
-                    .rfind(|c: char| c == '/' || c.is_whitespace())
-                    .map_or(0, |i| {
-                        i + before[i..].chars().next().map_or(0, char::len_utf8)
-                    });
-                return true;
-            }
-            Action::CursorWordRight => {
-                if setup.cursor < setup.input.len() {
-                    let after = &setup.input[setup.cursor..];
-                    setup.cursor = after
-                        .find(|c: char| c == '/' || c.is_whitespace())
-                        .map_or(setup.input.len(), |i| {
-                            setup.cursor + i + after[i..].chars().next().map_or(0, char::len_utf8)
-                        });
-                }
-                return true;
-            }
-            _ => {}
-        }
-    }
-
     match action {
         Action::CursorLeft => {
-            if let Some(list) = state.active_list_mut() {
-                list.cursor_left();
+            if let Some(input) = state.active_text_input() {
+                input.cursor_left();
             }
             true
         }
         Action::CursorRight => {
-            if let Some(list) = state.active_list_mut() {
-                list.cursor_right();
+            if let Some(input) = state.active_text_input() {
+                input.cursor_right();
             }
             true
         }
         Action::CursorWordLeft => {
-            if let Some(list) = state.active_list_mut() {
-                list.cursor_word_left();
+            if let Some(input) = state.active_text_input() {
+                input.cursor_word_left();
             }
             true
         }
         Action::CursorWordRight => {
-            if let Some(list) = state.active_list_mut() {
-                list.cursor_word_right();
+            if let Some(input) = state.active_text_input() {
+                input.cursor_word_right();
             }
             true
         }
         Action::CursorStart => {
-            if let Some(list) = state.active_list_mut() {
-                list.cursor_start();
+            if let Some(input) = state.active_text_input() {
+                input.cursor_start();
             }
             true
         }
         Action::CursorEnd => {
-            if let Some(list) = state.active_list_mut() {
-                list.cursor_end();
+            if let Some(input) = state.active_text_input() {
+                input.cursor_end();
             }
             true
         }
@@ -905,11 +840,6 @@ fn process_action<T: TmuxProvider + ?Sized + 'static>(
     if handle_movement_actions(&action, state) || handle_simple_actions(&action, state) {
         return None;
     }
-
-    let is_setup_search_dirs = matches!(
-        state.mode,
-        Mode::Setup(kiosk_core::state::SetupStep::SearchDirs)
-    );
 
     match action {
         Action::Quit => return Some(OpenAction::Quit),
@@ -949,7 +879,10 @@ fn process_action<T: TmuxProvider + ?Sized + 'static>(
         }
 
         Action::MoveSelection(delta) => {
-            if is_setup_search_dirs {
+            if matches!(
+                state.mode,
+                Mode::Setup(kiosk_core::state::SetupStep::SearchDirs)
+            ) {
                 handle_setup_move_selection(state, delta);
             } else {
                 if let Some(list) = state.active_list_mut() {
@@ -961,46 +894,22 @@ fn process_action<T: TmuxProvider + ?Sized + 'static>(
         }
 
         Action::SearchPush(c) => {
-            if is_setup_search_dirs {
-                handle_setup_search_push(state, c);
-            } else {
-                handle_search_push(state, ctx.matcher, c);
-            }
+            handle_search_push(state, ctx.matcher, c);
         }
         Action::SearchPop => {
-            if is_setup_search_dirs {
-                handle_setup_search_pop(state);
-            } else {
-                handle_search_pop(state, ctx.matcher);
-            }
+            handle_search_pop(state, ctx.matcher);
         }
         Action::SearchDeleteForward => {
-            if is_setup_search_dirs {
-                handle_setup_delete_forward(state);
-            } else {
-                handle_search_delete_forward(state, ctx.matcher);
-            }
+            handle_search_delete_forward(state, ctx.matcher);
         }
         Action::SearchDeleteWordForward => {
-            if is_setup_search_dirs {
-                handle_setup_delete_word_forward(state);
-            } else {
-                handle_search_delete_word_forward(state, ctx.matcher);
-            }
+            handle_search_delete_word_forward(state, ctx.matcher);
         }
         Action::SearchDeleteToStart => {
-            if is_setup_search_dirs {
-                handle_setup_delete_to_start(state);
-            } else {
-                handle_search_delete_to_start(state, ctx.matcher);
-            }
+            handle_search_delete_to_start(state, ctx.matcher);
         }
         Action::SearchDeleteToEnd => {
-            if is_setup_search_dirs {
-                handle_setup_delete_to_end(state);
-            } else {
-                handle_search_delete_to_end(state, ctx.matcher);
-            }
+            handle_search_delete_to_end(state, ctx.matcher);
         }
 
         Action::DeleteWorktree => handle_delete_worktree(state),
@@ -1009,11 +918,7 @@ fn process_action<T: TmuxProvider + ?Sized + 'static>(
         }
 
         Action::SearchDeleteWord => {
-            if is_setup_search_dirs {
-                handle_setup_delete_word(state);
-            } else {
-                handle_search_delete_word(state, ctx.matcher);
-            }
+            handle_search_delete_word(state, ctx.matcher);
         }
 
         Action::ShowHelp => handle_show_help(state, ctx.keys),
@@ -1207,8 +1112,8 @@ mod tests {
             session_activity_ts: None,
         }];
         state.branch_list.reset(1);
-        state.branch_list.search = "feat".to_string();
-        state.branch_list.cursor = 4;
+        state.branch_list.input.text = "feat".to_string();
+        state.branch_list.input.cursor = 4;
         // With search "feat", main shouldn't match
         state.branch_list.filtered = vec![];
         state.branch_list.selected = None;
@@ -1497,7 +1402,7 @@ mod tests {
         let ctx = default_ctx(&git, &tmux, &keys, &matcher, &sender);
 
         process_action(Action::SearchPush('a'), &mut state, &ctx);
-        assert_eq!(state.repo_list.search, "a");
+        assert_eq!(state.repo_list.input.text, "a");
         // "alpha" matches "a", "beta" also matches "a" — but both should be present
         assert!(!state.repo_list.filtered.is_empty());
     }
@@ -1666,7 +1571,7 @@ mod tests {
         let mut state = AppState::new(repos, None);
         state.mode = Mode::BranchSelect;
         state.selected_repo_idx = Some(0);
-        state.branch_list.search = String::new(); // empty
+        state.branch_list.input.text = String::new(); // empty
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider {
             branches: vec!["main".into()],
@@ -1698,7 +1603,7 @@ mod tests {
         let mut state = AppState::new(repos, None);
         state.mode = Mode::BranchSelect;
         state.selected_repo_idx = Some(0);
-        state.branch_list.search = "feat/new".to_string();
+        state.branch_list.input.text = "feat/new".to_string();
         state.branches = vec![BranchEntry {
             name: "main".into(),
             worktree_path: Some(PathBuf::from("/tmp/alpha")),
@@ -2025,8 +1930,8 @@ mod tests {
         // "café" = 5 bytes: c(1) a(1) f(1) é(2)
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
-        state.repo_list.search = "café".to_string();
-        state.repo_list.cursor = state.repo_list.search.len(); // 5 (byte len)
+        state.repo_list.input.text = "café".to_string();
+        state.repo_list.input.cursor = state.repo_list.input.text.len(); // 5 (byte len)
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
@@ -2037,27 +1942,27 @@ mod tests {
 
         // Move left from end should skip over the 2-byte 'é'
         process_action(Action::CursorLeft, &mut state, &ctx);
-        assert_eq!(state.repo_list.cursor, 3); // before 'é' (byte offset of 'é')
+        assert_eq!(state.repo_list.input.cursor, 3); // before 'é' (byte offset of 'é')
 
         // Move left again should land before 'f'
         process_action(Action::CursorLeft, &mut state, &ctx);
-        assert_eq!(state.repo_list.cursor, 2);
+        assert_eq!(state.repo_list.input.cursor, 2);
 
         // Move right should skip over 'f' (1 byte)
         process_action(Action::CursorRight, &mut state, &ctx);
-        assert_eq!(state.repo_list.cursor, 3);
+        assert_eq!(state.repo_list.input.cursor, 3);
 
         // Move right should skip over 'é' (2 bytes)
         process_action(Action::CursorRight, &mut state, &ctx);
-        assert_eq!(state.repo_list.cursor, 5);
+        assert_eq!(state.repo_list.input.cursor, 5);
     }
 
     #[test]
     fn test_backspace_multibyte() {
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
-        state.repo_list.search = "café".to_string();
-        state.repo_list.cursor = state.repo_list.search.len(); // 5
+        state.repo_list.input.text = "café".to_string();
+        state.repo_list.input.cursor = state.repo_list.input.text.len(); // 5
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
@@ -2068,16 +1973,16 @@ mod tests {
 
         // Backspace should remove 'é' (2 bytes)
         process_action(Action::SearchPop, &mut state, &ctx);
-        assert_eq!(state.repo_list.search, "caf");
-        assert_eq!(state.repo_list.cursor, 3);
+        assert_eq!(state.repo_list.input.text, "caf");
+        assert_eq!(state.repo_list.input.cursor, 3);
     }
 
     #[test]
     fn test_cursor_movement_in_search() {
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
-        state.repo_list.search = "hello".to_string();
-        state.repo_list.cursor = 5; // at end
+        state.repo_list.input.text = "hello".to_string();
+        state.repo_list.input.cursor = 5; // at end
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
@@ -2088,19 +1993,19 @@ mod tests {
 
         // Move cursor left
         process_action(Action::CursorLeft, &mut state, &ctx);
-        assert_eq!(state.repo_list.cursor, 4);
+        assert_eq!(state.repo_list.input.cursor, 4);
 
         // Move cursor to start
         process_action(Action::CursorStart, &mut state, &ctx);
-        assert_eq!(state.repo_list.cursor, 0);
+        assert_eq!(state.repo_list.input.cursor, 0);
 
         // Move cursor to end
         process_action(Action::CursorEnd, &mut state, &ctx);
-        assert_eq!(state.repo_list.cursor, 5);
+        assert_eq!(state.repo_list.input.cursor, 5);
 
         // Move cursor right at end stays at end
         process_action(Action::CursorRight, &mut state, &ctx);
-        assert_eq!(state.repo_list.cursor, 5);
+        assert_eq!(state.repo_list.input.cursor, 5);
     }
 
     // ── update_help_scroll_offset direct tests ──
@@ -2570,7 +2475,7 @@ mod tests {
             process_action(Action::SearchPush(c), &mut state, &ctx);
         }
 
-        let help_cursor = |s: &AppState| s.help_overlay.as_ref().map_or(0, |o| o.list.cursor);
+        let help_cursor = |s: &AppState| s.help_overlay.as_ref().map_or(0, |o| o.list.input.cursor);
         assert_eq!(help_cursor(&state), 11); // at end
 
         // Cursor left
@@ -2623,26 +2528,32 @@ mod tests {
         }
 
         let overlay = state.help_overlay.as_ref().expect("overlay");
-        assert_eq!(overlay.list.search, "café");
-        assert_eq!(overlay.list.cursor, "café".len()); // 5 bytes
+        assert_eq!(overlay.list.input.text, "café");
+        assert_eq!(overlay.list.input.cursor, "café".len()); // 5 bytes
 
         // Backspace should remove 'é' (2 bytes)
         process_action(Action::SearchPop, &mut state, &ctx);
         let overlay = state.help_overlay.as_ref().expect("overlay");
-        assert_eq!(overlay.list.search, "caf");
-        assert_eq!(overlay.list.cursor, 3);
+        assert_eq!(overlay.list.input.text, "caf");
+        assert_eq!(overlay.list.input.cursor, 3);
 
         // Cursor left and right should handle multibyte correctly
         process_action(Action::SearchPush('ñ'), &mut state, &ctx);
         let overlay = state.help_overlay.as_ref().expect("overlay");
-        assert_eq!(overlay.list.search, "cafñ");
+        assert_eq!(overlay.list.input.text, "cafñ");
 
         process_action(Action::CursorLeft, &mut state, &ctx);
-        let cursor = state.help_overlay.as_ref().map_or(0, |o| o.list.cursor);
+        let cursor = state
+            .help_overlay
+            .as_ref()
+            .map_or(0, |o| o.list.input.cursor);
         assert_eq!(cursor, 3, "Cursor should be before 'ñ'");
 
         process_action(Action::CursorRight, &mut state, &ctx);
-        let cursor = state.help_overlay.as_ref().map_or(0, |o| o.list.cursor);
+        let cursor = state
+            .help_overlay
+            .as_ref()
+            .map_or(0, |o| o.list.input.cursor);
         assert_eq!(cursor, "cafñ".len(), "Cursor should be after 'ñ'");
     }
 
@@ -2653,8 +2564,8 @@ mod tests {
         state.mode = Mode::RepoSelect;
 
         // Simulate user typing "al" in search
-        state.repo_list.search = "al".to_string();
-        state.repo_list.cursor = 2;
+        state.repo_list.input.text = "al".to_string();
+        state.repo_list.input.cursor = 2;
         let matcher = SkimMatcherV2::default();
         state.repo_list.filtered = state
             .repos
@@ -2692,8 +2603,8 @@ mod tests {
         );
 
         // Search text and cursor must be preserved
-        assert_eq!(state.repo_list.search, "al");
-        assert_eq!(state.repo_list.cursor, 2);
+        assert_eq!(state.repo_list.input.text, "al");
+        assert_eq!(state.repo_list.input.cursor, 2);
         // "alpha" and "delta" match "al"; the others don't
         assert!(
             !state.repo_list.filtered.is_empty(),
@@ -2746,8 +2657,8 @@ mod tests {
         assert!(state.repos[0].worktrees.len() <= 1);
 
         // Simulate user typing in search
-        state.repo_list.search = "bet".to_string();
-        state.repo_list.cursor = 3;
+        state.repo_list.input.text = "bet".to_string();
+        state.repo_list.input.cursor = 3;
         let matcher = SkimMatcherV2::default();
         state.repo_list.filtered = state
             .repos
@@ -2800,8 +2711,8 @@ mod tests {
         assert_eq!(beta.worktrees.len(), 1);
 
         // Search state preserved
-        assert_eq!(state.repo_list.search, "bet");
-        assert_eq!(state.repo_list.cursor, 3);
+        assert_eq!(state.repo_list.input.text, "bet");
+        assert_eq!(state.repo_list.input.cursor, 3);
 
         // Session activity updated
         assert_eq!(state.session_activity.get("alpha"), Some(&500));

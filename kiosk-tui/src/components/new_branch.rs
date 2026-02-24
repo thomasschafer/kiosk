@@ -27,8 +27,8 @@ pub fn draw(f: &mut Frame, state: &AppState, theme: &Theme) {
             border_color: theme.tertiary,
             muted_color: theme.muted,
         },
-        &flow.list.search,
-        flow.list.cursor,
+        &flow.list.input.text,
+        flow.list.input.cursor,
     );
 
     let items: Vec<ListItem> = flow

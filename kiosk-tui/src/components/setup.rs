@@ -105,8 +105,8 @@ fn draw_search_dirs(f: &mut Frame, state: &AppState, theme: &Theme) {
             border_color: theme.accent,
             muted_color: theme.muted,
         },
-        &setup.input,
-        setup.cursor,
+        &setup.input.text,
+        setup.input.cursor,
     );
 
     // Completions dropdown

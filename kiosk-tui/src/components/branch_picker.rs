@@ -29,8 +29,8 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, _keys: &
             border_color: theme.secondary,
             muted_color: theme.muted,
         },
-        &state.branch_list.search,
-        state.branch_list.cursor,
+        &state.branch_list.input.text,
+        state.branch_list.input.cursor,
     );
 
     // Branch list
@@ -88,11 +88,11 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, _keys: &
             "Loading branches...",
             Style::default().fg(theme.muted),
         )])));
-    } else if state.branch_list.filtered.is_empty() && !state.branch_list.search.is_empty() {
+    } else if state.branch_list.filtered.is_empty() && !state.branch_list.input.text.is_empty() {
         items.push(ListItem::new(Line::from(vec![
             Span::styled("+ Create branch ", Style::default().fg(theme.success)),
             Span::styled(
-                format!("\"{}\"", state.branch_list.search),
+                format!("\"{}\"", state.branch_list.input.text),
                 Style::default()
                     .fg(theme.success)
                     .add_modifier(Modifier::BOLD),

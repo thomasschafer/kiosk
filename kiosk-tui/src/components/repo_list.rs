@@ -22,8 +22,8 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, _keys: &
             border_color: theme.accent,
             muted_color: theme.muted,
         },
-        &state.repo_list.search,
-        state.repo_list.cursor,
+        &state.repo_list.input.text,
+        state.repo_list.input.cursor,
     );
 
     // Repo list

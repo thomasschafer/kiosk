@@ -21,8 +21,7 @@ pub(super) fn handle_go_back(state: &mut AppState) {
     match state.mode.clone() {
         Mode::BranchSelect => {
             state.mode = Mode::RepoSelect;
-            state.branch_list.search.clear();
-            state.branch_list.cursor = 0;
+            state.branch_list.input.clear();
         }
         Mode::SelectBaseBranch => {
             state.base_branch_selection = None;
@@ -56,7 +55,7 @@ pub(super) fn handle_show_help(state: &mut AppState, keys: &KeysConfig) {
 }
 
 pub(super) fn handle_start_new_branch(state: &mut AppState) {
-    if state.branch_list.search.is_empty() {
+    if state.branch_list.input.text.is_empty() {
         state.error = Some("Type a branch name first".to_string());
         return;
     }
@@ -78,7 +77,7 @@ pub(super) fn handle_start_new_branch(state: &mut AppState) {
     let list = SearchableList::new(bases.len());
 
     state.base_branch_selection = Some(BaseBranchSelection {
-        new_name: state.branch_list.search.clone(),
+        new_name: state.branch_list.input.text.clone(),
         bases,
         list,
     });
@@ -282,52 +281,61 @@ pub(super) fn enter_branch_select_with_loading<T: TmuxProvider + ?Sized + 'stati
 }
 
 pub(super) fn handle_search_push(state: &mut AppState, matcher: &SkimMatcherV2, c: char) {
-    if let Some(list) = state.active_list_mut() {
-        list.insert_char(c);
+    if let Some(input) = state.active_text_input() {
+        input.insert_char(c);
     }
-    update_active_filter(state, matcher);
+    post_text_edit(state, matcher);
 }
 
 pub(super) fn handle_search_pop(state: &mut AppState, matcher: &SkimMatcherV2) {
-    if let Some(list) = state.active_list_mut() {
-        list.backspace();
+    if let Some(input) = state.active_text_input() {
+        input.backspace();
     }
-    update_active_filter(state, matcher);
+    post_text_edit(state, matcher);
 }
 
 pub(super) fn handle_search_delete_word(state: &mut AppState, matcher: &SkimMatcherV2) {
-    if let Some(list) = state.active_list_mut() {
-        list.delete_word();
+    if let Some(input) = state.active_text_input() {
+        input.delete_word();
     }
-    update_active_filter(state, matcher);
+    post_text_edit(state, matcher);
 }
 
 pub(super) fn handle_search_delete_forward(state: &mut AppState, matcher: &SkimMatcherV2) {
-    if let Some(list) = state.active_list_mut() {
-        list.delete_forward_char();
+    if let Some(input) = state.active_text_input() {
+        input.delete_forward_char();
     }
-    update_active_filter(state, matcher);
+    post_text_edit(state, matcher);
 }
 
 pub(super) fn handle_search_delete_word_forward(state: &mut AppState, matcher: &SkimMatcherV2) {
-    if let Some(list) = state.active_list_mut() {
-        list.delete_word_forward();
+    if let Some(input) = state.active_text_input() {
+        input.delete_word_forward();
     }
-    update_active_filter(state, matcher);
+    post_text_edit(state, matcher);
 }
 
 pub(super) fn handle_search_delete_to_start(state: &mut AppState, matcher: &SkimMatcherV2) {
-    if let Some(list) = state.active_list_mut() {
-        list.delete_to_start();
+    if let Some(input) = state.active_text_input() {
+        input.delete_to_start();
     }
-    update_active_filter(state, matcher);
+    post_text_edit(state, matcher);
 }
 
 pub(super) fn handle_search_delete_to_end(state: &mut AppState, matcher: &SkimMatcherV2) {
-    if let Some(list) = state.active_list_mut() {
-        list.delete_to_end();
+    if let Some(input) = state.active_text_input() {
+        input.delete_to_end();
     }
-    update_active_filter(state, matcher);
+    post_text_edit(state, matcher);
+}
+
+/// Dispatch post-edit updates: setup completions or fuzzy filter.
+fn post_text_edit(state: &mut AppState, matcher: &SkimMatcherV2) {
+    if matches!(state.mode, Mode::Setup(SetupStep::SearchDirs)) {
+        update_setup_completions(state);
+    } else {
+        update_active_filter(state, matcher);
+    }
 }
 
 // ── Setup action handlers ──
@@ -353,16 +361,16 @@ pub(super) fn handle_setup_add_dir(state: &mut AppState) -> Option<super::OpenAc
         } else {
             format!("{completion}/")
         };
-        setup.input = with_slash;
-        setup.cursor = setup.input.len();
+        setup.input.text = with_slash;
+        setup.input.cursor = setup.input.text.len();
         setup.completions.clear();
         setup.selected_completion = None;
         update_setup_completions(state);
         return None;
     }
 
-    let input = setup.input.trim().to_string();
-    if input.is_empty() {
+    let input_text = setup.input.text.trim().to_string();
+    if input_text.is_empty() {
         if setup.dirs.is_empty() {
             state.error = Some("Add at least one directory".to_string());
             return None;
@@ -371,11 +379,10 @@ pub(super) fn handle_setup_add_dir(state: &mut AppState) -> Option<super::OpenAc
         return Some(super::OpenAction::SetupComplete);
     }
 
-    if !setup.dirs.contains(&input) {
-        setup.dirs.push(input);
+    if !setup.dirs.contains(&input_text) {
+        setup.dirs.push(input_text);
     }
     setup.input.clear();
-    setup.cursor = 0;
     setup.completions.clear();
     setup.selected_completion = None;
     None
@@ -388,7 +395,7 @@ pub(super) fn handle_setup_tab_complete(state: &mut AppState) {
 
     // Generate completions if not already present
     if setup.completions.is_empty() {
-        setup.completions = crate::components::path_input::complete(&setup.input);
+        setup.completions = crate::components::path_input::complete(&setup.input.text);
         if !setup.completions.is_empty() {
             setup.selected_completion = Some(0);
         }
@@ -398,8 +405,8 @@ pub(super) fn handle_setup_tab_complete(state: &mut AppState) {
     if setup.completions.len() == 1 {
         // Single match: complete fully and append /
         let c = setup.completions[0].clone();
-        setup.input = if c.ends_with('/') { c } else { format!("{c}/") };
-        setup.cursor = setup.input.len();
+        setup.input.text = if c.ends_with('/') { c } else { format!("{c}/") };
+        setup.input.cursor = setup.input.text.len();
         setup.completions.clear();
         setup.selected_completion = None;
         // Re-generate completions for new input
@@ -409,106 +416,16 @@ pub(super) fn handle_setup_tab_complete(state: &mut AppState) {
 
     // Multiple: fill to common prefix
     let common = crate::components::path_input::common_prefix(&setup.completions);
-    if !common.is_empty() && common != setup.input {
-        setup.input = common;
-        setup.cursor = setup.input.len();
-        setup.completions = crate::components::path_input::complete(&setup.input);
+    if !common.is_empty() && common != setup.input.text {
+        setup.input.text = common;
+        setup.input.cursor = setup.input.text.len();
+        setup.completions = crate::components::path_input::complete(&setup.input.text);
         setup.selected_completion = if setup.completions.is_empty() {
             None
         } else {
             Some(0)
         };
     }
-}
-
-pub(super) fn handle_setup_search_push(state: &mut AppState, c: char) {
-    let Some(setup) = &mut state.setup else {
-        return;
-    };
-    setup.input.insert(setup.cursor, c);
-    setup.cursor += c.len_utf8();
-    update_setup_completions(state);
-}
-
-pub(super) fn handle_setup_search_pop(state: &mut AppState) {
-    let Some(setup) = &mut state.setup else {
-        return;
-    };
-    if setup.cursor > 0 && !setup.input.is_empty() {
-        let new_cursor = setup.input[..setup.cursor]
-            .char_indices()
-            .next_back()
-            .map_or(0, |(i, _)| i);
-        setup.input.drain(new_cursor..setup.cursor);
-        setup.cursor = new_cursor;
-    }
-    update_setup_completions(state);
-}
-
-pub(super) fn handle_setup_delete_forward(state: &mut AppState) {
-    let Some(setup) = &mut state.setup else {
-        return;
-    };
-    if setup.cursor < setup.input.len() {
-        let next = setup.input[setup.cursor..]
-            .char_indices()
-            .nth(1)
-            .map_or(setup.input.len(), |(i, _)| setup.cursor + i);
-        setup.input.drain(setup.cursor..next);
-    }
-    update_setup_completions(state);
-}
-
-pub(super) fn handle_setup_delete_word(state: &mut AppState) {
-    let Some(setup) = &mut state.setup else {
-        return;
-    };
-    if setup.cursor == 0 {
-        return;
-    }
-    let before = &setup.input[..setup.cursor];
-    let new_cursor = before
-        .rfind(|c: char| c == '/' || c.is_whitespace())
-        .map_or(0, |i| {
-            i + before[i..].chars().next().map_or(0, char::len_utf8)
-        });
-    setup.input.drain(new_cursor..setup.cursor);
-    setup.cursor = new_cursor;
-    update_setup_completions(state);
-}
-
-pub(super) fn handle_setup_delete_word_forward(state: &mut AppState) {
-    let Some(setup) = &mut state.setup else {
-        return;
-    };
-    if setup.cursor >= setup.input.len() {
-        return;
-    }
-    let after = &setup.input[setup.cursor..];
-    let end = after
-        .find(|c: char| c == '/' || c.is_whitespace())
-        .map_or(setup.input.len(), |i| {
-            setup.cursor + i + after[i..].chars().next().map_or(0, char::len_utf8)
-        });
-    setup.input.drain(setup.cursor..end);
-    update_setup_completions(state);
-}
-
-pub(super) fn handle_setup_delete_to_start(state: &mut AppState) {
-    let Some(setup) = &mut state.setup else {
-        return;
-    };
-    setup.input.drain(..setup.cursor);
-    setup.cursor = 0;
-    update_setup_completions(state);
-}
-
-pub(super) fn handle_setup_delete_to_end(state: &mut AppState) {
-    let Some(setup) = &mut state.setup else {
-        return;
-    };
-    setup.input.truncate(setup.cursor);
-    update_setup_completions(state);
 }
 
 pub(super) fn handle_setup_move_selection(state: &mut AppState, delta: i32) {
@@ -534,7 +451,7 @@ fn update_setup_completions(state: &mut AppState) {
     let Some(setup) = &mut state.setup else {
         return;
     };
-    setup.completions = crate::components::path_input::complete(&setup.input);
+    setup.completions = crate::components::path_input::complete(&setup.input.text);
     setup.selected_completion = if setup.completions.is_empty() {
         None
     } else {
@@ -584,7 +501,7 @@ fn update_active_filter(state: &mut AppState, matcher: &SkimMatcherV2) {
 }
 
 fn apply_fuzzy_filter(list: &mut SearchableList, items: &[String], matcher: &SkimMatcherV2) {
-    if list.search.is_empty() {
+    if list.input.text.is_empty() {
         list.filtered = items.iter().enumerate().map(|(i, _)| (i, 0)).collect();
     } else {
         let mut scored: Vec<(usize, i64)> = items
@@ -592,7 +509,7 @@ fn apply_fuzzy_filter(list: &mut SearchableList, items: &[String], matcher: &Ski
             .enumerate()
             .filter_map(|(i, item)| {
                 matcher
-                    .fuzzy_match(item, &list.search)
+                    .fuzzy_match(item, &list.input.text)
                     .map(|score| (i, score))
             })
             .collect();
@@ -617,8 +534,10 @@ mod tests {
 
     fn make_list(search: &str) -> SearchableList {
         SearchableList {
-            search: search.to_string(),
-            cursor: search.len(),
+            input: kiosk_core::state::TextInput {
+                text: search.to_string(),
+                cursor: search.len(),
+            },
             filtered: Vec::new(),
             selected: None,
             scroll_offset: 0,

@@ -3574,6 +3574,7 @@ mod tests {
                 error: None,
         let session_name = state.repos[0]
             .tmux_session_name(&std::path::PathBuf::from("/tmp/wt"));
+        let session_name = state.repos[0].tmux_session_name(&std::path::PathBuf::from("/tmp/wt"));
         let status = AgentStatus {
             kind: AgentKind::ClaudeCode,
             state: AgentState::Waiting,
@@ -3884,6 +3885,8 @@ mod tests {
                 error: None,
         let session_name = state.repos[0]
             .tmux_session_name(&std::path::PathBuf::from("/tmp/alpha"));
+        let session_name =
+            state.repos[0].tmux_session_name(&std::path::PathBuf::from("/tmp/alpha"));
 
         process_app_event(
             AppEvent::AgentStatesUpdated {

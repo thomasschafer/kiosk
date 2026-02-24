@@ -227,10 +227,8 @@ mod tests {
         );
         tmux.pane_content
             .insert((session.to_string(), 0), "$ vim file.txt".to_string());
-        tmux.pane_content.insert(
-            (session.to_string(), 1),
-            "Esc to interrupt".to_string(),
-        );
+        tmux.pane_content
+            .insert((session.to_string(), 1), "Esc to interrupt".to_string());
 
         let status = detect_for_session(&tmux, session).unwrap();
         assert_eq!(status.kind, AgentKind::ClaudeCode);
@@ -239,11 +237,7 @@ mod tests {
 
     #[test]
     fn agent_with_ansi_codes_in_output() {
-        let tmux = mock_with_agent(
-            "ansi-session",
-            "claude",
-            "\x1B[32m⠹ Running tool\x1B[0m",
-        );
+        let tmux = mock_with_agent("ansi-session", "claude", "\x1B[32m⠹ Running tool\x1B[0m");
         let status = detect_for_session(&tmux, "ansi-session").unwrap();
         assert_eq!(status.state, AgentState::Running);
     }

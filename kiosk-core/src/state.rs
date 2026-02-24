@@ -680,7 +680,11 @@ impl Mode {
     pub(crate) fn supports_list_navigation(&self) -> bool {
         matches!(
             self,
-            Mode::RepoSelect | Mode::BranchSelect | Mode::SelectBaseBranch | Mode::Help { .. }
+            Mode::RepoSelect
+                | Mode::BranchSelect
+                | Mode::SelectBaseBranch
+                | Mode::Help { .. }
+                | Mode::Setup(SetupStep::SearchDirs)
         )
     }
 

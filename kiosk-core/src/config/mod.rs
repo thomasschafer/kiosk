@@ -3,6 +3,7 @@ pub mod keys;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::{
+    fmt::Write as _,
     fs,
     path::{Path, PathBuf},
 };
@@ -309,11 +310,14 @@ pub fn format_default_config(dirs: &[String]) -> String {
             content.push_str(", ");
         }
         content.push('"');
-        // Escape backslashes and double quotes for valid TOML
+        // Escape for valid TOML basic strings
         for c in d.chars() {
             match c {
                 '\\' => content.push_str("\\\\"),
                 '"' => content.push_str("\\\""),
+                c if c.is_control() => {
+                    write!(content, "\\u{:04X}", c as u32).unwrap();
+                }
                 _ => content.push(c),
             }
         }
@@ -326,9 +330,10 @@ pub fn format_default_config(dirs: &[String]) -> String {
 /// Write a default config file with the specified search directories.
 /// Creates parent directories as needed. Returns the path written to.
 pub fn write_default_config(dirs: &[String]) -> Result<PathBuf> {
-    let dir = config_dir();
-    fs::create_dir_all(&dir)?;
-    let path = dir.join("config.toml");
+    let path = config_file();
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)?;
+    }
     let content = format_default_config(dirs);
     fs::write(&path, content)?;
     Ok(path)

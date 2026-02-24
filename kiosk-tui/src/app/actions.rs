@@ -352,21 +352,26 @@ pub(super) fn handle_setup_add_dir(state: &mut AppState) -> Option<super::OpenAc
         return None;
     };
 
-    // If a completion is selected, fill it into input instead
+    // If a completion is selected and differs from current input, fill it in
     if let Some(sel) = setup.selected_completion
         && let Some(completion) = setup.completions.get(sel).cloned()
     {
         let with_slash = if completion.ends_with('/') {
-            completion
+            completion.clone()
         } else {
             format!("{completion}/")
         };
-        setup.input.text = with_slash;
-        setup.input.cursor = setup.input.text.len();
-        setup.completions.clear();
-        setup.selected_completion = None;
-        update_setup_completions(state);
-        return None;
+        let current = setup.input.text.trim_end_matches('/');
+        let candidate = with_slash.trim_end_matches('/');
+        if current != candidate {
+            setup.input.text = with_slash;
+            setup.input.cursor = setup.input.text.len();
+            setup.completions.clear();
+            setup.selected_completion = None;
+            update_setup_completions(state);
+            return None;
+        }
+        // Completion matches input — fall through to add-dir logic
     }
 
     let input_text = setup.input.text.trim().to_string();

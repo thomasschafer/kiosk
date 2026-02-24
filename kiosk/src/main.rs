@@ -238,19 +238,12 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let json_errors = command_wants_json(cli.command.as_ref());
 
-    let config_result = config::load_config(cli.config.as_deref());
-
     // No explicit --config, default doesn't exist, TUI mode → setup wizard
-    let should_setup = config_result.is_err()
-        && cli.config.is_none()
-        && cli.command.is_none()
-        && !config::config_file_exists();
-
-    if should_setup {
+    if cli.config.is_none() && cli.command.is_none() && !config::config_file_exists() {
         return run_setup_then_tui();
     }
 
-    let config = match config_result {
+    let config = match config::load_config(cli.config.as_deref()) {
         Ok(config) => config,
         Err(error) => {
             let cli_error = crate::cli::CliError::system(error.to_string());
@@ -573,8 +566,8 @@ fn run_setup_then_tui() -> ExitCode {
         }
         Ok(Some(kiosk_tui::OpenAction::Quit) | None) => ExitCode::from(0),
         Ok(Some(kiosk_tui::OpenAction::Open { .. })) => {
-            // Shouldn't happen in setup mode
-            ExitCode::from(0)
+            eprintln!("Unexpected OpenAction::Open during setup flow");
+            ExitCode::from(2)
         }
         Err(e) => {
             eprintln!("Error: {e}");

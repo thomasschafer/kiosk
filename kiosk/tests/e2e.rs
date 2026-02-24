@@ -2389,11 +2389,17 @@ fn test_e2e_setup_wizard_add_dir_and_finish() {
         s.contains("setup-test-repo") || s.contains("select repo") || s.contains("Config written")
     });
 
-    // Verify config file was created
+    // Verify config file was created and includes the entered directory
+    let config_path = env.config_file_path();
     assert!(
-        env.config_file_path().exists(),
+        config_path.exists(),
         "Config file should exist at {}. Screen: {screen}",
-        env.config_file_path().display()
+        config_path.display()
+    );
+    let config_content = fs::read_to_string(&config_path).unwrap();
+    assert!(
+        config_content.contains(&dir_str),
+        "Config should include entered directory '{dir_str}'. config:\n{config_content}"
     );
 }
 
@@ -2414,6 +2420,10 @@ fn test_e2e_setup_wizard_not_triggered_with_config_flag() {
     assert!(
         !screen.contains("Welcome to Kiosk"),
         "Should NOT show setup wizard when --config is specified: {screen}"
+    );
+    assert!(
+        screen.contains("Config file not found"),
+        "Should show config error when --config points to nonexistent file: {screen}"
     );
 }
 

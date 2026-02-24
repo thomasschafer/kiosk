@@ -39,14 +39,14 @@ fn config_file() -> PathBuf {
 
 pub const DEFAULT_SEARCH_DEPTH: u16 = 1;
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(untagged)]
 pub enum SearchDirEntry {
     Simple(String),
     Rich { path: String, depth: Option<u16> },
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     /// Directories to scan for git repositories. Each directory can be scanned to a specified depth, with a default of 1 (i.e. just the top level).
@@ -70,7 +70,7 @@ pub struct Config {
     pub keys: KeysConfig,
 }
 
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 #[serde(deny_unknown_fields)]
 pub struct SessionConfig {
     /// Command to run in a split pane when creating a new session. For example, to open

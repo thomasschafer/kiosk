@@ -28,7 +28,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Padding, Paragraph},
 };
-use spawn::spawn_repo_discovery;
+use spawn::{spawn_agent_status_poller, spawn_repo_discovery};
 use std::{
     fmt::Write as _,
     path::PathBuf,

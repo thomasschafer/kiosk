@@ -761,6 +761,8 @@ pub struct AppState {
     active_list_page_rows: usize,
     pub pending_worktree_deletes: Vec<PendingWorktreeDelete>,
     pub session_activity: HashMap<String, u64>,
+    /// Whether an agent status poller is already running
+    pub agent_poller_active: bool,
     /// Main repo root path from CWD (for repo ordering)
     pub current_repo_path: Option<PathBuf>,
     /// CWD resolved to repo/worktree root (for branch current detection)
@@ -790,6 +792,7 @@ impl AppState {
             active_list_page_rows: 10,
             pending_worktree_deletes: Vec::new(),
             session_activity: HashMap::new(),
+            agent_poller_active: false,
             current_repo_path: None,
             cwd_worktree_path: None,
             seen_repo_paths: HashSet::new(),

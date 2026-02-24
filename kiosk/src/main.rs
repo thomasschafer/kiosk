@@ -198,6 +198,33 @@ enum ConfigCommands {
     },
 }
 
+impl Commands {
+    fn wants_json(&self) -> bool {
+        match self {
+            Self::Clean { json, .. }
+            | Self::List { json }
+            | Self::Branches { json, .. }
+            | Self::Open { json, .. }
+            | Self::Status { json, .. }
+            | Self::Sessions { json }
+            | Self::Delete { json, .. }
+            | Self::Send { json, .. }
+            | Self::Panes { json, .. }
+            | Self::Wait { json, .. }
+            | Self::Log { json, .. } => *json,
+            Self::Config { command } => command.as_ref().is_some_and(ConfigCommands::wants_json),
+        }
+    }
+}
+
+impl ConfigCommands {
+    fn wants_json(&self) -> bool {
+        match self {
+            Self::Show { json } => *json,
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let json_errors = command_wants_json(cli.command.as_ref());
@@ -489,27 +516,8 @@ fn resolve_main_repo_root(path: &Path) -> Option<std::path::PathBuf> {
     }
 }
 
-#[allow(clippy::unnested_or_patterns)]
 fn command_wants_json(command: Option<&Commands>) -> bool {
-    match command {
-        Some(
-            Commands::List { json }
-            | Commands::Branches { json, .. }
-            | Commands::Sessions { json }
-            | Commands::Open { json, .. }
-            | Commands::Status { json, .. }
-            | Commands::Delete { json, .. }
-            | Commands::Clean { json, .. }
-            | Commands::Send { json, .. }
-            | Commands::Panes { json, .. }
-            | Commands::Wait { json, .. }
-            | Commands::Log { json, .. },
-        )
-        | Some(Commands::Config {
-            command: Some(ConfigCommands::Show { json }),
-        }) => *json,
-        Some(Commands::Config { command: None }) | None => false,
-    }
+    command.is_some_and(Commands::wants_json)
 }
 
 fn should_disable_alt_screen() -> bool {

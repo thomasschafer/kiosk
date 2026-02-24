@@ -18,6 +18,7 @@ crossterm = "0.29"
 dirs = "6"
 serde.workspace = true
 toml = "1.0"
+unicode-segmentation = "1"
 
 [dev-dependencies]
 serde_json.workspace = true

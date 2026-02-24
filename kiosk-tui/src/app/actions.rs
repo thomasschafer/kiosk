@@ -1,8 +1,9 @@
 use fuzzy_matcher::{FuzzyMatcher, skim::SkimMatcherV2};
 use kiosk_core::{
+    config::KeysConfig,
     git::GitProvider,
     pending_delete::{PendingWorktreeDelete, save_pending_worktree_deletes},
-    state::{AppState, BaseBranchSelection, Mode, SearchableList, worktree_dir},
+    state::{AppState, BaseBranchSelection, HelpOverlayState, Mode, SearchableList, worktree_dir},
     tmux::TmuxProvider,
 };
 use std::sync::Arc;
@@ -28,22 +29,26 @@ pub(super) fn handle_go_back(state: &mut AppState) {
             state.mode = Mode::BranchSelect;
         }
         Mode::Help { previous } => {
+            state.help_overlay = None;
             state.mode = *previous;
         }
         Mode::RepoSelect | Mode::Loading(_) => {}
     }
 }
 
-pub(super) fn handle_show_help(state: &mut AppState) {
-    match state.mode.clone() {
-        Mode::Help { previous } => {
-            state.mode = *previous;
-        }
-        _ => {
-            state.mode = Mode::Help {
-                previous: Box::new(state.mode.clone()),
-            };
-        }
+pub(super) fn handle_show_help(state: &mut AppState, keys: &KeysConfig) {
+    if let Mode::Help { previous } = state.mode.clone() {
+        state.help_overlay = None;
+        state.mode = *previous;
+    } else {
+        let catalog = keys.catalog_for_mode(&state.mode);
+        state.help_overlay = Some(HelpOverlayState {
+            list: SearchableList::new(catalog.flattened.len()),
+            rows: catalog.flattened,
+        });
+        state.mode = Mode::Help {
+            previous: Box::new(state.mode.clone()),
+        };
     }
 }
 
@@ -335,6 +340,27 @@ fn update_active_filter(state: &mut AppState, matcher: &SkimMatcherV2) {
             if let Some(flow) = &mut state.base_branch_selection {
                 let bases = flow.bases.clone();
                 apply_fuzzy_filter(&mut flow.list, &bases, matcher);
+            }
+        }
+        Mode::Help { .. } => {
+            if let Some(overlay) = &mut state.help_overlay {
+                let search_items: Vec<String> = overlay
+                    .rows
+                    .iter()
+                    .map(|row| {
+                        format!(
+                            "{} {} {} {}",
+                            row.section_name, row.key_display, row.command, row.description
+                        )
+                    })
+                    .collect();
+                apply_fuzzy_filter(&mut overlay.list, &search_items, matcher);
+                // Stable-sort filtered results by section_index so that
+                // compute_help_layout never emits duplicate section headers
+                // when fuzzy scoring reorders items across sections.
+                overlay.list.filtered.sort_by_key(|(row_idx, _score)| {
+                    overlay.rows.get(*row_idx).map_or(0, |r| r.section_index)
+                });
             }
         }
         _ => {}

@@ -30,7 +30,7 @@ macro_rules! define_commands {
         ),* $(,)?
     ) => {
         /// Commands that can be bound to keys
-        #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+        #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
         pub enum Command { $($variant),* }
 
         impl FromStr for Command {
@@ -166,37 +166,7 @@ define_commands! {
         description: "Move to bottom",
     },
 
-    // Text editing
-    DeleteBackwardChar {
-        config_name: "delete_backward_char",
-        hint: "del char back",
-        description: "Delete backward char",
-    },
-    DeleteForwardChar {
-        config_name: "delete_forward_char",
-        hint: "del char fwd",
-        description: "Delete forward char",
-    },
-    DeleteBackwardWord {
-        config_name: "delete_backward_word",
-        hint: "del word back",
-        description: "Delete backward word",
-    },
-    DeleteForwardWord {
-        config_name: "delete_forward_word",
-        hint: "del word fwd",
-        description: "Delete forward word",
-    },
-    DeleteToStart {
-        config_name: "delete_to_start",
-        hint: "del to start",
-        description: "Delete to start of line",
-    },
-    DeleteToEnd {
-        config_name: "delete_to_end",
-        hint: "del to end",
-        description: "Delete to end of line",
-    },
+    // Text editing — cursor movement (char → word → line)
     MoveCursorLeft {
         config_name: "move_cursor_left",
         hint: "cursor left",
@@ -228,6 +198,38 @@ define_commands! {
         description: "Move cursor to end",
     },
 
+    // Text editing — deletion (char → word → line)
+    DeleteBackwardChar {
+        config_name: "delete_backward_char",
+        hint: "del char back",
+        description: "Delete backward char",
+    },
+    DeleteForwardChar {
+        config_name: "delete_forward_char",
+        hint: "del char fwd",
+        description: "Delete forward char",
+    },
+    DeleteBackwardWord {
+        config_name: "delete_backward_word",
+        hint: "del word back",
+        description: "Delete backward word",
+    },
+    DeleteForwardWord {
+        config_name: "delete_forward_word",
+        hint: "del word fwd",
+        description: "Delete forward word",
+    },
+    DeleteToStart {
+        config_name: "delete_to_start",
+        hint: "del to start",
+        description: "Delete to start of line",
+    },
+    DeleteToEnd {
+        config_name: "delete_to_end",
+        hint: "del to end",
+        description: "Delete to end of line",
+    },
+
     // Modal
     Confirm {
         config_name: "confirm",
@@ -243,6 +245,35 @@ define_commands! {
 
 /// Key bindings for a specific layer/mode
 pub type KeyMap = HashMap<KeyEvent, Command>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeybindingEntry {
+    pub key: KeyEvent,
+    pub command: Command,
+    pub description: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeybindingSection {
+    pub name: &'static str,
+    pub entries: Vec<KeybindingEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlattenedKeybindingRow {
+    pub section_index: usize,
+    pub section_name: &'static str,
+    pub key_display: String,
+    pub command: Command,
+    pub description: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModeKeybindingCatalog {
+    pub mode: Mode,
+    pub sections: Vec<KeybindingSection>,
+    pub flattened: Vec<FlattenedKeybindingRow>,
+}
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -336,6 +367,54 @@ impl KeysConfig {
         combined
     }
 
+    /// Build keybinding sections for a mode, filtering out entries that are
+    /// overridden or unbound by higher-priority layers in the effective keymap.
+    pub fn sections_for_mode(&self, mode: &Mode) -> Vec<KeybindingSection> {
+        let effective = self.keymap_for_mode(mode);
+        Layer::ORDER_ASC
+            .into_iter()
+            .filter(|layer| Self::mode_uses_layer(mode, *layer))
+            .map(|layer| KeybindingSection {
+                name: layer.section_name(),
+                entries: Self::entries_for_layer(self.layer(layer))
+                    .into_iter()
+                    .filter(|e| effective.get(&e.key) == Some(&e.command))
+                    .collect(),
+            })
+            .filter(|section| !section.entries.is_empty())
+            .collect()
+    }
+
+    /// Build sectioned and flattened keybinding data for a mode.
+    /// Sections are returned in descending precedence order (highest first)
+    /// so the most relevant bindings appear at the top of the help overlay.
+    pub fn catalog_for_mode(&self, mode: &Mode) -> ModeKeybindingCatalog {
+        let mut sections = self.sections_for_mode(mode);
+        sections.reverse();
+        let flattened = sections
+            .iter()
+            .enumerate()
+            .flat_map(|(section_index, section)| {
+                section
+                    .entries
+                    .iter()
+                    .map(move |entry| FlattenedKeybindingRow {
+                        section_index,
+                        section_name: section.name,
+                        key_display: entry.key.to_string(),
+                        command: entry.command.clone(),
+                        description: entry.description,
+                    })
+            })
+            .collect();
+
+        ModeKeybindingCatalog {
+            mode: mode.clone(),
+            sections,
+            flattened,
+        }
+    }
+
     /// Return key-layer section names ordered from lowest to highest precedence.
     pub fn docs_section_order_asc() -> Vec<&'static str> {
         Layer::ORDER_ASC
@@ -373,6 +452,30 @@ impl KeysConfig {
                 base.insert(*key, command.clone());
             }
         }
+    }
+
+    fn entries_for_layer(layer: &KeyMap) -> Vec<KeybindingEntry> {
+        let mut entries: Vec<KeybindingEntry> = layer
+            .iter()
+            .filter_map(|(key, command)| {
+                if *command == Command::Noop {
+                    None
+                } else {
+                    Some(KeybindingEntry {
+                        key: *key,
+                        command: command.clone(),
+                        description: command.labels().description,
+                    })
+                }
+            })
+            .collect();
+
+        entries.sort_by(|a, b| {
+            a.command
+                .cmp(&b.command)
+                .then_with(|| a.key.to_string().cmp(&b.key.to_string()))
+        });
+        entries
     }
 
     fn layer(&self, layer: Layer) -> &KeyMap {
@@ -860,6 +963,161 @@ mod tests {
     }
 
     #[test]
+    fn test_sections_for_mode_uses_layer_precedence_order() {
+        let config = KeysConfig::default();
+        let section_names: Vec<&str> = config
+            .sections_for_mode(&Mode::BranchSelect)
+            .iter()
+            .map(|section| section.name)
+            .collect();
+
+        assert_eq!(
+            section_names,
+            vec!["general", "text_edit", "list_navigation", "branch_select"]
+        );
+    }
+
+    #[test]
+    fn test_sections_for_mode_excludes_noop_entries() {
+        let raw = KeysConfigRaw {
+            general: {
+                let mut map = HashMap::new();
+                map.insert("C-c".to_string(), "noop".to_string());
+                map.insert("C-h".to_string(), "show_help".to_string());
+                map
+            },
+            text_edit: HashMap::new(),
+            list_navigation: HashMap::new(),
+            modal: HashMap::new(),
+            repo_select: HashMap::new(),
+            branch_select: HashMap::new(),
+        };
+
+        let config = KeysConfig::from_raw(&raw).unwrap();
+        let general = config
+            .sections_for_mode(&Mode::RepoSelect)
+            .into_iter()
+            .find(|section| section.name == "general")
+            .unwrap();
+
+        assert_eq!(general.entries.len(), 1);
+        assert_eq!(general.entries[0].command, Command::ShowHelp);
+    }
+
+    #[test]
+    fn test_sections_for_mode_hides_entries_overridden_by_higher_layer_noop() {
+        let raw = KeysConfigRaw {
+            general: HashMap::new(),
+            text_edit: HashMap::new(),
+            list_navigation: HashMap::new(),
+            modal: HashMap::new(),
+            repo_select: HashMap::new(),
+            branch_select: {
+                let mut map = HashMap::new();
+                // Override the inherited list_navigation C-n binding with noop
+                map.insert("C-n".to_string(), "noop".to_string());
+                map
+            },
+        };
+
+        let config = KeysConfig::from_raw(&raw).unwrap();
+        let sections = config.sections_for_mode(&Mode::BranchSelect);
+
+        let list_nav = sections
+            .iter()
+            .find(|s| s.name == "list_navigation")
+            .expect("list_navigation section should exist");
+
+        assert!(
+            !list_nav
+                .entries
+                .iter()
+                .any(|e| e.command == Command::MoveDown
+                    && e.key == KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL)),
+            "C-n -> MoveDown should be hidden when overridden by higher-layer noop"
+        );
+
+        // The 'down' key binding for MoveDown should still be present
+        assert!(
+            list_nav
+                .entries
+                .iter()
+                .any(|e| e.command == Command::MoveDown
+                    && e.key == KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+            "down -> MoveDown should still be shown (not overridden)"
+        );
+    }
+
+    #[test]
+    fn test_sections_for_mode_omits_fully_unbound_layers() {
+        let raw = KeysConfigRaw {
+            general: {
+                let mut map = HashMap::new();
+                map.insert("C-c".to_string(), "noop".to_string());
+                map.insert("C-h".to_string(), "noop".to_string());
+                map
+            },
+            text_edit: HashMap::new(),
+            list_navigation: HashMap::new(),
+            modal: HashMap::new(),
+            repo_select: {
+                let mut map = HashMap::new();
+                map.insert("enter".to_string(), "open_repo".to_string());
+                map
+            },
+            branch_select: HashMap::new(),
+        };
+
+        let config = KeysConfig::from_raw(&raw).unwrap();
+        let section_names: Vec<&str> = config
+            .sections_for_mode(&Mode::RepoSelect)
+            .iter()
+            .map(|s| s.name)
+            .collect();
+
+        assert!(
+            !section_names.contains(&"general"),
+            "Fully-unbound general layer should be omitted"
+        );
+        assert!(
+            section_names.contains(&"repo_select"),
+            "Layer with bindings should be present"
+        );
+    }
+
+    #[test]
+    fn test_catalog_for_mode_flattened_order_is_deterministic() {
+        let config = KeysConfig::default();
+        let catalog = config.catalog_for_mode(&Mode::RepoSelect);
+
+        let section_names: Vec<&str> = catalog
+            .sections
+            .iter()
+            .map(|section| section.name)
+            .collect();
+        assert_eq!(
+            section_names,
+            vec!["repo_select", "list_navigation", "text_edit", "general"]
+        );
+
+        let mut previous_section_index = 0;
+        let mut previous_command: Option<Command> = None;
+        let mut previous_key = String::new();
+        for row in &catalog.flattened {
+            if row.section_index != previous_section_index {
+                assert_eq!(row.section_index, previous_section_index + 1);
+                previous_section_index = row.section_index;
+            } else if previous_command.as_ref() == Some(&row.command) {
+                assert!(previous_key <= row.key_display);
+            } else {
+                assert!(previous_command.as_ref() <= Some(&row.command));
+            }
+            previous_command = Some(row.command.clone());
+            previous_key = row.key_display.clone();
+        }
+    }
+
+    #[test]
     fn test_modal_overrides_lower_layers_in_select_base_branch() {
         let raw = KeysConfigRaw {
             general: HashMap::new(),
@@ -1036,6 +1294,44 @@ mod tests {
                 "Command::{cmd:?} has an empty description"
             );
         }
+    }
+
+    #[test]
+    fn test_catalog_for_mode_excludes_noop_from_flattened_rows() {
+        let raw = KeysConfigRaw {
+            general: {
+                let mut map = HashMap::new();
+                map.insert("C-c".to_string(), "noop".to_string());
+                map.insert("C-h".to_string(), "show_help".to_string());
+                map
+            },
+            text_edit: HashMap::new(),
+            list_navigation: HashMap::new(),
+            modal: HashMap::new(),
+            repo_select: HashMap::new(),
+            branch_select: HashMap::new(),
+        };
+
+        let config = KeysConfig::from_raw(&raw).unwrap();
+        let catalog = config.catalog_for_mode(&Mode::RepoSelect);
+
+        for row in &catalog.flattened {
+            assert_ne!(
+                row.command,
+                Command::Noop,
+                "Flattened rows should not contain Noop entries, found: {}",
+                row.key_display
+            );
+        }
+
+        // Verify C-h (show_help) IS present
+        assert!(
+            catalog
+                .flattened
+                .iter()
+                .any(|r| r.command == Command::ShowHelp),
+            "Non-noop commands should still be in flattened rows"
+        );
     }
 
     #[test]

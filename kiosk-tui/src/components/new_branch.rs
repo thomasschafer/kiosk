@@ -24,7 +24,7 @@ pub fn draw(f: &mut Frame, state: &AppState, theme: &Theme) {
         &super::search_bar::SearchBarStyle {
             title: &title,
             placeholder: "Select base branch...",
-            border_color: theme.success,
+            border_color: theme.tertiary,
             muted_color: theme.muted,
         },
         &flow.list.search,
@@ -42,11 +42,11 @@ pub fn draw(f: &mut Frame, state: &AppState, theme: &Theme) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(theme.border)),
+                .border_style(Style::default().fg(theme.tertiary)),
         )
         .highlight_style(
             Style::default()
-                .bg(theme.success)
+                .bg(theme.tertiary)
                 .fg(theme.highlight_fg)
                 .add_modifier(Modifier::BOLD),
         )

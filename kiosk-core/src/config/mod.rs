@@ -93,6 +93,9 @@ pub struct ThemeConfig {
     /// Secondary accent color (default: "cyan").
     #[serde(deserialize_with = "deserialize_color")]
     pub secondary: ThemeColor,
+    /// Tertiary accent color (default: "green").
+    #[serde(deserialize_with = "deserialize_color")]
+    pub tertiary: ThemeColor,
     /// Success/positive color (default: "green").
     #[serde(deserialize_with = "deserialize_color")]
     pub success: ThemeColor,
@@ -133,6 +136,7 @@ macro_rules! theme_defaults {
 theme_defaults! {
     accent       => Magenta,
     secondary    => Cyan,
+    tertiary     => Green,
     success      => Green,
     error        => Red,
     warning      => Yellow,
@@ -369,6 +373,7 @@ unknown_field = true
         let config = load_config_from_str(r#"search_dirs = ["~/Development"]"#).unwrap();
         assert_eq!(config.theme.accent, ThemeColor::Named(NamedColor::Magenta));
         assert_eq!(config.theme.secondary, ThemeColor::Named(NamedColor::Cyan));
+        assert_eq!(config.theme.tertiary, ThemeColor::Named(NamedColor::Green));
         assert_eq!(config.theme.success, ThemeColor::Named(NamedColor::Green));
         assert_eq!(config.theme.error, ThemeColor::Named(NamedColor::Red));
         assert_eq!(config.theme.warning, ThemeColor::Named(NamedColor::Yellow));

@@ -102,6 +102,6 @@ fn command_to_action(command: &Command, state: &AppState) -> Option<Action> {
 fn can_search_in_mode(mode: &Mode) -> bool {
     matches!(
         mode,
-        Mode::RepoSelect | Mode::BranchSelect | Mode::SelectBaseBranch
+        Mode::RepoSelect | Mode::BranchSelect | Mode::SelectBaseBranch | Mode::Help { .. }
     )
 }

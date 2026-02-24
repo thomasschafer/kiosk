@@ -23,9 +23,9 @@ use kiosk_core::{
 use ratatui::{
     DefaultTerminal, Frame,
     layout::{Alignment, Constraint, Layout, Rect},
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Clear, Padding, Paragraph, Wrap},
 };
 use spawn::spawn_repo_discovery;
 use std::{
@@ -125,9 +125,15 @@ pub fn run(
             // Clear error on any keypress
             state.error = None;
 
+            let ctx = ActionContext {
+                git,
+                tmux,
+                keys,
+                matcher: &matcher,
+                sender: &event_sender,
+            };
             if let Some(action) = keymap::resolve_action(key, state, keys)
-                && let Some(result) =
-                    process_action(action, state, git, tmux, &matcher, &event_sender)
+                && let Some(result) = process_action(action, state, &ctx)
             {
                 return Ok(Some(result));
             }
@@ -202,7 +208,7 @@ fn draw(
                 Mode::Loading(_) | Mode::Help { .. } => {}
             }
             // Draw help overlay on top
-            components::help::draw(f, state, theme, keys);
+            components::help::draw(f, state, theme);
         }
         Mode::Loading(_) => unreachable!(),
     }
@@ -262,7 +268,11 @@ fn active_list_page_rows(full_area: Rect, main_area: Rect, mode: &Mode) -> usize
             let chunks = Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(popup);
             list_rows_from_list_area(chunks[1])
         }
-        Mode::Help { previous } => active_list_page_rows(full_area, main_area, previous),
+        Mode::Help { .. } => {
+            let popup = components::centered_rect(80, 85, full_area);
+            let chunks = Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(popup);
+            list_rows_from_list_area(chunks[1])
+        }
         Mode::Loading(_) => 1,
     }
 }
@@ -292,12 +302,124 @@ fn draw_loading(
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.accent));
 
-    let centered = components::centered_rect(50, 10, area);
+    // 2 for borders + 1 content line
+    let centered = components::centered_fixed_rect(50, 3, area);
 
     let paragraph = Paragraph::new(text)
         .block(block)
         .alignment(ratatui::layout::Alignment::Center);
     f.render_widget(paragraph, centered);
+}
+
+/// Estimate visual line count when a `Line` is word-wrapped to `max_width` columns.
+/// Uses byte length as a width proxy, which is exact for ASCII and a safe overestimate
+/// for multi-byte UTF-8 (produces a taller dialog rather than clipping content).
+fn word_wrapped_line_count(line: &Line, max_width: u16) -> u16 {
+    let max_w = usize::from(max_width);
+    if max_w == 0 {
+        return 1;
+    }
+
+    let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+    if text.is_empty() {
+        return 1;
+    }
+
+    let mut lines: u16 = 1;
+    let mut col: usize = 0;
+
+    for (i, word) in text.split(' ').enumerate() {
+        let w = word.len();
+        let needed = if i == 0 || col == 0 { w } else { w + 1 };
+
+        if col + needed <= max_w {
+            col += needed;
+        } else if w <= max_w {
+            lines += 1;
+            col = w;
+        } else {
+            if col > 0 {
+                lines += 1;
+            }
+            col = w;
+            while col > max_w {
+                lines += 1;
+                col -= max_w;
+            }
+        }
+    }
+
+    lines
+}
+
+struct ConfirmDeleteDialogLayout {
+    text: Vec<Line<'static>>,
+    width: u16,
+    height: u16,
+}
+
+fn confirm_delete_dialog_layout(
+    branch_name: &str,
+    has_session: bool,
+    confirm_key: &str,
+    cancel_key: &str,
+    accent_color: Color,
+    hint_color: Color,
+    terminal_width: u16,
+) -> ConfirmDeleteDialogLayout {
+    let action_text = if has_session {
+        "Delete worktree and kill tmux session for branch "
+    } else {
+        "Delete worktree for branch "
+    };
+
+    let message_line = Line::from(vec![
+        Span::raw(action_text),
+        Span::styled(
+            format!("\"{branch_name}\""),
+            Style::default()
+                .fg(accent_color)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("?"),
+    ]);
+
+    let blank_line = Line::raw("");
+
+    let hints_line = Line::from(vec![
+        Span::raw("confirm ("),
+        Span::styled(
+            confirm_key.to_string(),
+            Style::default().fg(hint_color).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(")"),
+        Span::raw(" / "),
+        Span::raw("cancel ("),
+        Span::styled(
+            cancel_key.to_string(),
+            Style::default().fg(hint_color).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(")"),
+    ]);
+
+    let width = components::dialog_width(terminal_width);
+    // 2 for borders + 2 for 1-cell padding on each side
+    let h_chrome: u16 = 4;
+    let v_chrome: u16 = 4;
+    let text_width = width.saturating_sub(h_chrome).max(1);
+
+    let text = vec![message_line, blank_line, hints_line];
+
+    let content_height: u16 = text
+        .iter()
+        .map(|line| word_wrapped_line_count(line, text_width))
+        .sum();
+
+    ConfirmDeleteDialogLayout {
+        text,
+        width,
+        height: content_height + v_chrome,
+    }
 }
 
 fn draw_confirm_delete_dialog(
@@ -312,12 +434,6 @@ fn draw_confirm_delete_dialog(
         has_session,
     } = &state.mode
     {
-        let action_text = if *has_session {
-            "Delete worktree and kill tmux session for branch "
-        } else {
-            "Delete worktree for branch "
-        };
-
         let keymap = keys.keymap_for_mode(&Mode::ConfirmWorktreeDelete {
             branch_name: branch_name.clone(),
             has_session: *has_session,
@@ -327,39 +443,29 @@ fn draw_confirm_delete_dialog(
         let cancel_key = KeysConfig::find_key(&keymap, &Command::Cancel)
             .map_or("esc".to_string(), |k| k.to_string());
 
-        let text = vec![
-            Line::from(vec![
-                Span::raw(action_text),
-                Span::styled(
-                    format!("\"{branch_name}\""),
-                    Style::default()
-                        .fg(theme.accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw("?"),
-            ]),
-            Line::raw(""),
-            Line::from(vec![
-                Span::raw("confirm ("),
-                Span::styled(&confirm_key, Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(")"),
-                Span::raw(" / "),
-                Span::raw("cancel ("),
-                Span::styled(&cancel_key, Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(")"),
-            ]),
-        ];
+        let layout = confirm_delete_dialog_layout(
+            branch_name,
+            *has_session,
+            &confirm_key,
+            &cancel_key,
+            theme.accent,
+            theme.hint,
+            area.width,
+        );
 
         let block = Block::default()
             .borders(Borders::ALL)
             .title(" Confirm delete ")
-            .border_style(Style::default().fg(theme.accent));
+            .border_style(Style::default().fg(theme.accent))
+            .padding(Padding::uniform(1));
 
-        let centered = components::centered_rect(50, 20, area);
+        let centered = components::centered_fixed_rect(layout.width, layout.height, area);
+        f.render_widget(Clear, centered);
 
-        let paragraph = Paragraph::new(text)
+        let paragraph = Paragraph::new(layout.text)
             .block(block)
-            .alignment(ratatui::layout::Alignment::Center);
+            .wrap(Wrap { trim: false })
+            .alignment(Alignment::Center);
         f.render_widget(paragraph, centered);
     }
 }
@@ -600,31 +706,69 @@ fn handle_movement_actions(action: &Action, state: &mut AppState) -> bool {
     match action {
         Action::HalfPageUp => {
             list.move_selection(-half_page_step);
-            list.update_scroll_offset_for_selection(-1, page_rows_usize);
         }
         Action::HalfPageDown => {
             list.move_selection(half_page_step);
-            list.update_scroll_offset_for_selection(1, page_rows_usize);
         }
         Action::PageUp => {
             list.move_selection(-page_step);
-            list.update_scroll_offset_for_selection(-1, page_rows_usize);
         }
         Action::PageDown => {
             list.move_selection(page_step);
-            list.update_scroll_offset_for_selection(1, page_rows_usize);
         }
         Action::MoveTop => {
             list.move_to_top();
-            list.update_scroll_offset_for_selection(-1, page_rows_usize);
         }
         Action::MoveBottom => {
             list.move_to_bottom();
-            list.update_scroll_offset_for_selection(1, page_rows_usize);
         }
         _ => return false,
     }
+    update_active_list_scroll_offset(state, page_rows_usize);
     true
+}
+
+fn update_active_list_scroll_offset(state: &mut AppState, viewport_rows: usize) {
+    if let Mode::Help { .. } = state.mode {
+        if let Some(overlay) = &mut state.help_overlay {
+            update_help_scroll_offset(overlay, viewport_rows);
+        }
+    } else if let Some(list) = state.active_list_mut() {
+        list.update_scroll_offset_for_selection(viewport_rows);
+    }
+}
+
+fn update_help_scroll_offset(
+    overlay: &mut kiosk_core::state::HelpOverlayState,
+    viewport_rows: usize,
+) {
+    let (row_item_indices, total_visual_rows) = components::help::help_visual_metrics(overlay);
+    let len = overlay.list.filtered.len();
+    if len == 0 {
+        overlay.list.scroll_offset = 0;
+        return;
+    }
+
+    let selected = overlay.list.selected.unwrap_or(0).min(len - 1);
+    let selected_visual = row_item_indices.get(selected).copied().unwrap_or(0);
+
+    let viewport_rows = viewport_rows.max(1);
+    let max_visual_offset = total_visual_rows.saturating_sub(viewport_rows);
+    let current_visual_offset = overlay.list.scroll_offset.min(max_visual_offset);
+    let anchor_top = usize::from(viewport_rows > 2);
+    let anchor_bottom = viewport_rows.saturating_sub(2);
+
+    let desired_visual_offset =
+        if selected_visual < current_visual_offset.saturating_add(anchor_top) {
+            selected_visual.saturating_sub(anchor_top)
+        } else if selected_visual > current_visual_offset.saturating_add(anchor_bottom) {
+            selected_visual.saturating_sub(anchor_bottom)
+        } else {
+            current_visual_offset
+        }
+        .min(max_visual_offset);
+
+    overlay.list.scroll_offset = desired_visual_offset;
 }
 
 /// Handle simple cursor and error actions
@@ -674,14 +818,19 @@ fn handle_simple_actions(action: &Action, state: &mut AppState) -> bool {
     }
 }
 
+struct ActionContext<'a, T: TmuxProvider + ?Sized + 'static> {
+    git: &'a Arc<dyn GitProvider>,
+    tmux: &'a Arc<T>,
+    keys: &'a KeysConfig,
+    matcher: &'a SkimMatcherV2,
+    sender: &'a EventSender,
+}
+
 #[allow(clippy::needless_pass_by_value)]
 fn process_action<T: TmuxProvider + ?Sized + 'static>(
     action: Action,
     state: &mut AppState,
-    git: &Arc<dyn GitProvider>,
-    tmux: &Arc<T>,
-    matcher: &SkimMatcherV2,
-    sender: &EventSender,
+    ctx: &ActionContext<'_, T>,
 ) -> Option<OpenAction> {
     // Handle movement and simple actions first
     if handle_movement_actions(&action, state) || handle_simple_actions(&action, state) {
@@ -709,14 +858,14 @@ fn process_action<T: TmuxProvider + ?Sized + 'static>(
             if let Some(sel) = state.repo_list.selected
                 && let Some(&(idx, _)) = state.repo_list.filtered.get(sel)
             {
-                enter_branch_select(state, idx, git, tmux, sender);
+                enter_branch_select(state, idx, ctx.git, ctx.tmux, ctx.sender);
             }
         }
 
         Action::GoBack => handle_go_back(state),
 
         Action::OpenBranch => {
-            if let Some(result) = handle_open_branch(state, git, sender) {
+            if let Some(result) = handle_open_branch(state, ctx.git, ctx.sender) {
                 return Some(result);
             }
         }
@@ -726,26 +875,28 @@ fn process_action<T: TmuxProvider + ?Sized + 'static>(
         }
 
         Action::MoveSelection(delta) => {
-            let page_rows = state.active_list_page_rows();
             if let Some(list) = state.active_list_mut() {
                 list.move_selection(delta);
-                list.update_scroll_offset_for_selection(delta, page_rows);
             }
+            let page_rows = state.active_list_page_rows();
+            update_active_list_scroll_offset(state, page_rows);
         }
 
-        Action::SearchPush(c) => handle_search_push(state, matcher, c),
-        Action::SearchPop => handle_search_pop(state, matcher),
-        Action::SearchDeleteForward => handle_search_delete_forward(state, matcher),
-        Action::SearchDeleteWordForward => handle_search_delete_word_forward(state, matcher),
-        Action::SearchDeleteToStart => handle_search_delete_to_start(state, matcher),
-        Action::SearchDeleteToEnd => handle_search_delete_to_end(state, matcher),
+        Action::SearchPush(c) => handle_search_push(state, ctx.matcher, c),
+        Action::SearchPop => handle_search_pop(state, ctx.matcher),
+        Action::SearchDeleteForward => handle_search_delete_forward(state, ctx.matcher),
+        Action::SearchDeleteWordForward => handle_search_delete_word_forward(state, ctx.matcher),
+        Action::SearchDeleteToStart => handle_search_delete_to_start(state, ctx.matcher),
+        Action::SearchDeleteToEnd => handle_search_delete_to_end(state, ctx.matcher),
 
         Action::DeleteWorktree => handle_delete_worktree(state),
-        Action::ConfirmDeleteWorktree => handle_confirm_delete(state, git, tmux.as_ref(), sender),
+        Action::ConfirmDeleteWorktree => {
+            handle_confirm_delete(state, ctx.git, ctx.tmux.as_ref(), ctx.sender);
+        }
 
-        Action::SearchDeleteWord => handle_search_delete_word(state, matcher),
+        Action::SearchDeleteWord => handle_search_delete_word(state, ctx.matcher),
 
-        Action::ShowHelp => handle_show_help(state),
+        Action::ShowHelp => handle_show_help(state, ctx.keys),
 
         // Movement, cursor, and cancel actions are handled by helper functions above.
         // If we reach here, it means the action wasn't applicable in the current mode
@@ -797,6 +948,22 @@ mod tests {
         }
     }
 
+    fn default_ctx<'a>(
+        git: &'a Arc<dyn GitProvider>,
+        tmux: &'a Arc<dyn TmuxProvider>,
+        keys: &'a KeysConfig,
+        matcher: &'a SkimMatcherV2,
+        sender: &'a EventSender,
+    ) -> ActionContext<'a, dyn TmuxProvider> {
+        ActionContext {
+            git,
+            tmux,
+            keys,
+            matcher,
+            sender,
+        }
+    }
+
     #[test]
     fn test_enter_repo_populates_branches() {
         let repos = vec![make_repo("alpha"), make_repo("beta")];
@@ -808,21 +975,16 @@ mod tests {
             ..Default::default()
         });
         let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let keys = KeysConfig::default();
         let matcher = SkimMatcherV2::default();
         let (tx, rx) = std::sync::mpsc::channel();
         let sender = EventSender {
             tx,
             cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
+        let ctx = default_ctx(&git, &tmux, &keys, &matcher, &sender);
 
-        let result = process_action(
-            Action::EnterRepo,
-            &mut state,
-            &git,
-            &tmux,
-            &matcher,
-            &sender,
-        );
+        let result = process_action(Action::EnterRepo, &mut state, &ctx);
         assert!(result.is_none());
         assert_eq!(state.mode, Mode::BranchSelect);
         assert!(state.loading_branches);
@@ -958,11 +1120,13 @@ mod tests {
         state.mode = Mode::BranchSelect;
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
-        let tmux = Arc::new(MockTmuxProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let keys = KeysConfig::default();
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
+        let ctx = default_ctx(&git, &tmux, &keys, &matcher, &sender);
 
-        process_action(Action::GoBack, &mut state, &git, &tmux, &matcher, &sender);
+        process_action(Action::GoBack, &mut state, &ctx);
         assert_eq!(state.mode, Mode::RepoSelect);
     }
 
@@ -979,12 +1143,147 @@ mod tests {
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let keys = KeysConfig::default();
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
+        let ctx = default_ctx(&git, &tmux, &keys, &matcher, &sender);
 
-        process_action(Action::GoBack, &mut state, &git, &tmux, &matcher, &sender);
+        process_action(Action::GoBack, &mut state, &ctx);
         assert_eq!(state.mode, Mode::BranchSelect);
         assert!(state.base_branch_selection.is_none());
+    }
+
+    #[test]
+    fn test_show_help_initializes_overlay_and_toggles_back() {
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let keys = KeysConfig::default();
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+        let ctx = default_ctx(&git, &tmux, &keys, &matcher, &sender);
+
+        process_action(Action::ShowHelp, &mut state, &ctx);
+
+        assert!(matches!(state.mode, Mode::Help { .. }));
+        let overlay = state.help_overlay.as_ref().unwrap();
+        assert!(!overlay.rows.is_empty());
+        assert_eq!(overlay.list.filtered.len(), overlay.rows.len());
+
+        process_action(Action::ShowHelp, &mut state, &ctx);
+
+        assert_eq!(state.mode, Mode::RepoSelect);
+        assert!(state.help_overlay.is_none());
+    }
+
+    #[test]
+    fn test_help_search_and_movement_use_help_list_state() {
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let keys = KeysConfig::default();
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+        let ctx = default_ctx(&git, &tmux, &keys, &matcher, &sender);
+
+        process_action(Action::ShowHelp, &mut state, &ctx);
+
+        let initial_count = state
+            .help_overlay
+            .as_ref()
+            .map_or(0, |overlay| overlay.list.filtered.len());
+        process_action(Action::SearchPush('d'), &mut state, &ctx);
+        process_action(Action::SearchPush('e'), &mut state, &ctx);
+
+        let filtered_count = state
+            .help_overlay
+            .as_ref()
+            .map_or(0, |overlay| overlay.list.filtered.len());
+        assert!(filtered_count > 0);
+        assert!(filtered_count <= initial_count);
+
+        let before = state
+            .help_overlay
+            .as_ref()
+            .and_then(|overlay| overlay.list.selected)
+            .unwrap_or(0);
+        process_action(Action::MoveSelection(1), &mut state, &ctx);
+        let after = state
+            .help_overlay
+            .as_ref()
+            .and_then(|overlay| overlay.list.selected)
+            .unwrap_or(0);
+        assert!(after >= before);
+    }
+
+    #[test]
+    fn test_help_up_from_bottom_keeps_scroll_offset() {
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+        state.set_active_list_page_rows(20);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let keys = KeysConfig::default();
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+        let ctx = default_ctx(&git, &tmux, &keys, &matcher, &sender);
+
+        process_action(Action::ShowHelp, &mut state, &ctx);
+
+        for _ in 0..200 {
+            process_action(Action::MoveSelection(1), &mut state, &ctx);
+        }
+        let offset_before = state
+            .help_overlay
+            .as_ref()
+            .map_or(0, |overlay| overlay.list.scroll_offset);
+
+        process_action(Action::MoveSelection(-1), &mut state, &ctx);
+        let offset_after = state
+            .help_overlay
+            .as_ref()
+            .map_or(0, |overlay| overlay.list.scroll_offset);
+
+        assert_eq!(offset_before, offset_after);
+    }
+
+    #[test]
+    fn test_help_down_keeps_selection_one_above_bottom_before_end() {
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+        state.set_active_list_page_rows(20);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let keys = KeysConfig::default();
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+        let ctx = default_ctx(&git, &tmux, &keys, &matcher, &sender);
+
+        process_action(Action::ShowHelp, &mut state, &ctx);
+
+        for _ in 0..20 {
+            process_action(Action::MoveSelection(1), &mut state, &ctx);
+        }
+
+        let overlay = state.help_overlay.as_ref().expect("help overlay");
+        let (indices, _total) = components::help::help_visual_metrics(overlay);
+        let selected_logical = overlay.list.selected.expect("selected logical");
+        let selected_visual = indices
+            .get(selected_logical)
+            .copied()
+            .expect("selected visual");
+        let offset_visual = overlay.list.scroll_offset;
+        let row_in_view = selected_visual.saturating_sub(offset_visual);
+        assert!(
+            row_in_view <= 18,
+            "Expected selected row to stay above visual bottom before end"
+        );
     }
 
     #[test]
@@ -1006,18 +1305,13 @@ mod tests {
         state.branch_list.selected = Some(0);
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
-        let tmux = Arc::new(MockTmuxProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let keys = KeysConfig::default();
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
+        let ctx = default_ctx(&git, &tmux, &keys, &matcher, &sender);
 
-        let result = process_action(
-            Action::OpenBranch,
-            &mut state,
-            &git,
-            &tmux,
-            &matcher,
-            &sender,
-        );
+        let result = process_action(Action::OpenBranch, &mut state, &ctx);
         assert!(result.is_some());
         match result.unwrap() {
             OpenAction::Open {
@@ -1049,18 +1343,13 @@ mod tests {
         state.branch_list.selected = Some(0);
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
-        let tmux = Arc::new(MockTmuxProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let keys = KeysConfig::default();
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
+        let ctx = default_ctx(&git, &tmux, &keys, &matcher, &sender);
 
-        let result = process_action(
-            Action::OpenBranch,
-            &mut state,
-            &git,
-            &tmux,
-            &matcher,
-            &sender,
-        );
+        let result = process_action(Action::OpenBranch, &mut state, &ctx);
         assert!(result.is_none());
         assert!(matches!(state.mode, Mode::Loading(_)));
     }
@@ -1073,17 +1362,12 @@ mod tests {
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let keys = KeysConfig::default();
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
+        let ctx = default_ctx(&git, &tmux, &keys, &matcher, &sender);
 
-        process_action(
-            Action::SearchPush('a'),
-            &mut state,
-            &git,
-            &tmux,
-            &matcher,
-            &sender,
-        );
+        process_action(Action::SearchPush('a'), &mut state, &ctx);
         assert_eq!(state.repo_list.search, "a");
         // "alpha" matches "a", "beta" also matches "a" — but both should be present
         assert!(!state.repo_list.filtered.is_empty());
@@ -1097,38 +1381,19 @@ mod tests {
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let keys = KeysConfig::default();
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
+        let ctx = default_ctx(&git, &tmux, &keys, &matcher, &sender);
 
-        process_action(
-            Action::MoveSelection(1),
-            &mut state,
-            &git,
-            &tmux,
-            &matcher,
-            &sender,
-        );
+        process_action(Action::MoveSelection(1), &mut state, &ctx);
         assert_eq!(state.repo_list.selected, Some(1));
 
-        process_action(
-            Action::MoveSelection(1),
-            &mut state,
-            &git,
-            &tmux,
-            &matcher,
-            &sender,
-        );
+        process_action(Action::MoveSelection(1), &mut state, &ctx);
         assert_eq!(state.repo_list.selected, Some(2));
 
         // Should clamp at max
-        process_action(
-            Action::MoveSelection(1),
-            &mut state,
-            &git,
-            &tmux,
-            &matcher,
-            &sender,
-        );
+        process_action(Action::MoveSelection(1), &mut state, &ctx);
         assert_eq!(state.repo_list.selected, Some(2));
     }
 
@@ -1140,18 +1405,13 @@ mod tests {
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let keys = KeysConfig::default();
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
+        let ctx = default_ctx(&git, &tmux, &keys, &matcher, &sender);
 
         for _ in 0..25 {
-            process_action(
-                Action::MoveSelection(1),
-                &mut state,
-                &git,
-                &tmux,
-                &matcher,
-                &sender,
-            );
+            process_action(Action::MoveSelection(1), &mut state, &ctx);
         }
 
         let selected = state.repo_list.selected.unwrap_or(0);
@@ -1172,23 +1432,18 @@ mod tests {
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let keys = KeysConfig::default();
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
+        let ctx = default_ctx(&git, &tmux, &keys, &matcher, &sender);
 
-        process_action(
-            Action::HalfPageDown,
-            &mut state,
-            &git,
-            &tmux,
-            &matcher,
-            &sender,
-        );
+        process_action(Action::HalfPageDown, &mut state, &ctx);
         assert_eq!(state.repo_list.selected, Some(4));
 
-        process_action(Action::PageDown, &mut state, &git, &tmux, &matcher, &sender);
+        process_action(Action::PageDown, &mut state, &ctx);
         assert_eq!(state.repo_list.selected, Some(12));
 
-        process_action(Action::PageUp, &mut state, &git, &tmux, &matcher, &sender);
+        process_action(Action::PageUp, &mut state, &ctx);
         assert_eq!(state.repo_list.selected, Some(4));
     }
 
@@ -1200,33 +1455,21 @@ mod tests {
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let keys = KeysConfig::default();
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
+        let ctx = default_ctx(&git, &tmux, &keys, &matcher, &sender);
 
-        process_action(Action::PageDown, &mut state, &git, &tmux, &matcher, &sender);
+        process_action(Action::PageDown, &mut state, &ctx);
         assert_eq!(state.repo_list.selected, Some(5));
 
-        process_action(
-            Action::HalfPageDown,
-            &mut state,
-            &git,
-            &tmux,
-            &matcher,
-            &sender,
-        );
+        process_action(Action::HalfPageDown, &mut state, &ctx);
         assert_eq!(state.repo_list.selected, Some(5));
 
-        process_action(Action::PageUp, &mut state, &git, &tmux, &matcher, &sender);
+        process_action(Action::PageUp, &mut state, &ctx);
         assert_eq!(state.repo_list.selected, Some(0));
 
-        process_action(
-            Action::HalfPageUp,
-            &mut state,
-            &git,
-            &tmux,
-            &matcher,
-            &sender,
-        );
+        process_action(Action::HalfPageUp, &mut state, &ctx);
         assert_eq!(state.repo_list.selected, Some(0));
     }
 
@@ -1239,31 +1482,19 @@ mod tests {
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let keys = KeysConfig::default();
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
+        let ctx = default_ctx(&git, &tmux, &keys, &matcher, &sender);
 
-        process_action(
-            Action::HalfPageDown,
-            &mut state,
-            &git,
-            &tmux,
-            &matcher,
-            &sender,
-        );
+        process_action(Action::HalfPageDown, &mut state, &ctx);
         assert_eq!(
             state.repo_list.selected,
             Some(10),
             "Half-page should move by half viewport rows (20/2)"
         );
 
-        process_action(
-            Action::HalfPageDown,
-            &mut state,
-            &git,
-            &tmux,
-            &matcher,
-            &sender,
-        );
+        process_action(Action::HalfPageDown, &mut state, &ctx);
         assert_eq!(
             state.repo_list.selected,
             Some(12),
@@ -1279,10 +1510,12 @@ mod tests {
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let keys = KeysConfig::default();
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
+        let ctx = default_ctx(&git, &tmux, &keys, &matcher, &sender);
 
-        let result = process_action(Action::OpenRepo, &mut state, &git, &tmux, &matcher, &sender);
+        let result = process_action(Action::OpenRepo, &mut state, &ctx);
         assert!(result.is_some());
         match result.unwrap() {
             OpenAction::Open {
@@ -1311,17 +1544,12 @@ mod tests {
             ..Default::default()
         });
         let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let keys = KeysConfig::default();
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
+        let ctx = default_ctx(&git, &tmux, &keys, &matcher, &sender);
 
-        process_action(
-            Action::StartNewBranchFlow,
-            &mut state,
-            &git,
-            &tmux,
-            &matcher,
-            &sender,
-        );
+        process_action(Action::StartNewBranchFlow, &mut state, &ctx);
 
         assert_eq!(
             state.mode,
@@ -1357,17 +1585,12 @@ mod tests {
             ..Default::default()
         });
         let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let keys = KeysConfig::default();
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
+        let ctx = default_ctx(&git, &tmux, &keys, &matcher, &sender);
 
-        process_action(
-            Action::StartNewBranchFlow,
-            &mut state,
-            &git,
-            &tmux,
-            &matcher,
-            &sender,
-        );
+        process_action(Action::StartNewBranchFlow, &mut state, &ctx);
 
         assert_eq!(state.mode, Mode::SelectBaseBranch);
         assert!(state.base_branch_selection.is_some());
@@ -1393,17 +1616,12 @@ mod tests {
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let keys = KeysConfig::default();
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
+        let ctx = default_ctx(&git, &tmux, &keys, &matcher, &sender);
 
-        process_action(
-            Action::DeleteWorktree,
-            &mut state,
-            &git,
-            &tmux,
-            &matcher,
-            &sender,
-        );
+        process_action(Action::DeleteWorktree, &mut state, &ctx);
 
         assert_eq!(state.mode, Mode::BranchSelect);
         assert!(state.error.is_some());
@@ -1429,17 +1647,12 @@ mod tests {
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let keys = KeysConfig::default();
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
+        let ctx = default_ctx(&git, &tmux, &keys, &matcher, &sender);
 
-        process_action(
-            Action::DeleteWorktree,
-            &mut state,
-            &git,
-            &tmux,
-            &matcher,
-            &sender,
-        );
+        process_action(Action::DeleteWorktree, &mut state, &ctx);
 
         assert_eq!(state.mode, Mode::BranchSelect);
         assert!(state.error.is_some());
@@ -1465,17 +1678,12 @@ mod tests {
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let keys = KeysConfig::default();
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
+        let ctx = default_ctx(&git, &tmux, &keys, &matcher, &sender);
 
-        process_action(
-            Action::DeleteWorktree,
-            &mut state,
-            &git,
-            &tmux,
-            &matcher,
-            &sender,
-        );
+        process_action(Action::DeleteWorktree, &mut state, &ctx);
 
         assert_eq!(
             state.mode,
@@ -1506,17 +1714,12 @@ mod tests {
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let keys = KeysConfig::default();
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
+        let ctx = default_ctx(&git, &tmux, &keys, &matcher, &sender);
 
-        process_action(
-            Action::DeleteWorktree,
-            &mut state,
-            &git,
-            &tmux,
-            &matcher,
-            &sender,
-        );
+        process_action(Action::DeleteWorktree, &mut state, &ctx);
 
         assert_eq!(
             state.mode,
@@ -1553,17 +1756,18 @@ mod tests {
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux = Arc::new(MockTmuxProvider::default());
+        let keys = KeysConfig::default();
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
+        let ctx = ActionContext {
+            git: &git,
+            tmux: &tmux,
+            keys: &keys,
+            matcher: &matcher,
+            sender: &sender,
+        };
 
-        process_action(
-            Action::ConfirmDeleteWorktree,
-            &mut state,
-            &git,
-            &tmux,
-            &matcher,
-            &sender,
-        );
+        process_action(Action::ConfirmDeleteWorktree, &mut state, &ctx);
 
         let killed = tmux.killed_sessions.lock().unwrap();
         assert_eq!(killed.as_slice(), &["alpha-dev"]);
@@ -1597,17 +1801,18 @@ mod tests {
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux = Arc::new(MockTmuxProvider::default());
+        let keys = KeysConfig::default();
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
+        let ctx = ActionContext {
+            git: &git,
+            tmux: &tmux,
+            keys: &keys,
+            matcher: &matcher,
+            sender: &sender,
+        };
 
-        process_action(
-            Action::ConfirmDeleteWorktree,
-            &mut state,
-            &git,
-            &tmux,
-            &matcher,
-            &sender,
-        );
+        process_action(Action::ConfirmDeleteWorktree, &mut state, &ctx);
 
         let killed = tmux.killed_sessions.lock().unwrap();
         assert!(killed.is_empty());
@@ -1696,51 +1901,25 @@ mod tests {
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let keys = KeysConfig::default();
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
+        let ctx = default_ctx(&git, &tmux, &keys, &matcher, &sender);
 
         // Move left from end should skip over the 2-byte 'é'
-        process_action(
-            Action::CursorLeft,
-            &mut state,
-            &git,
-            &tmux,
-            &matcher,
-            &sender,
-        );
+        process_action(Action::CursorLeft, &mut state, &ctx);
         assert_eq!(state.repo_list.cursor, 3); // before 'é' (byte offset of 'é')
 
         // Move left again should land before 'f'
-        process_action(
-            Action::CursorLeft,
-            &mut state,
-            &git,
-            &tmux,
-            &matcher,
-            &sender,
-        );
+        process_action(Action::CursorLeft, &mut state, &ctx);
         assert_eq!(state.repo_list.cursor, 2);
 
         // Move right should skip over 'f' (1 byte)
-        process_action(
-            Action::CursorRight,
-            &mut state,
-            &git,
-            &tmux,
-            &matcher,
-            &sender,
-        );
+        process_action(Action::CursorRight, &mut state, &ctx);
         assert_eq!(state.repo_list.cursor, 3);
 
         // Move right should skip over 'é' (2 bytes)
-        process_action(
-            Action::CursorRight,
-            &mut state,
-            &git,
-            &tmux,
-            &matcher,
-            &sender,
-        );
+        process_action(Action::CursorRight, &mut state, &ctx);
         assert_eq!(state.repo_list.cursor, 5);
     }
 
@@ -1753,18 +1932,13 @@ mod tests {
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let keys = KeysConfig::default();
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
+        let ctx = default_ctx(&git, &tmux, &keys, &matcher, &sender);
 
         // Backspace should remove 'é' (2 bytes)
-        process_action(
-            Action::SearchPop,
-            &mut state,
-            &git,
-            &tmux,
-            &matcher,
-            &sender,
-        );
+        process_action(Action::SearchPop, &mut state, &ctx);
         assert_eq!(state.repo_list.search, "caf");
         assert_eq!(state.repo_list.cursor, 3);
     }
@@ -1778,52 +1952,569 @@ mod tests {
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let keys = KeysConfig::default();
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
+        let ctx = default_ctx(&git, &tmux, &keys, &matcher, &sender);
 
         // Move cursor left
-        process_action(
-            Action::CursorLeft,
-            &mut state,
-            &git,
-            &tmux,
-            &matcher,
-            &sender,
-        );
+        process_action(Action::CursorLeft, &mut state, &ctx);
         assert_eq!(state.repo_list.cursor, 4);
 
         // Move cursor to start
-        process_action(
-            Action::CursorStart,
-            &mut state,
-            &git,
-            &tmux,
-            &matcher,
-            &sender,
-        );
+        process_action(Action::CursorStart, &mut state, &ctx);
         assert_eq!(state.repo_list.cursor, 0);
 
         // Move cursor to end
-        process_action(
-            Action::CursorEnd,
-            &mut state,
-            &git,
-            &tmux,
-            &matcher,
-            &sender,
-        );
+        process_action(Action::CursorEnd, &mut state, &ctx);
         assert_eq!(state.repo_list.cursor, 5);
 
         // Move cursor right at end stays at end
-        process_action(
-            Action::CursorRight,
-            &mut state,
-            &git,
-            &tmux,
-            &matcher,
-            &sender,
-        );
+        process_action(Action::CursorRight, &mut state, &ctx);
         assert_eq!(state.repo_list.cursor, 5);
+    }
+
+    // ── update_help_scroll_offset direct tests ──
+
+    fn make_help_overlay(
+        num_rows: usize,
+        num_sections: usize,
+    ) -> kiosk_core::state::HelpOverlayState {
+        use kiosk_core::config::Command;
+        use kiosk_core::config::keys::FlattenedKeybindingRow;
+
+        let section_names: Vec<&'static str> = vec![
+            "general",
+            "text_edit",
+            "list_navigation",
+            "repo_select",
+            "branch_select",
+            "modal",
+        ];
+        let rows: Vec<FlattenedKeybindingRow> = (0..num_rows)
+            .map(|i| {
+                let sec = i % num_sections;
+                FlattenedKeybindingRow {
+                    section_index: sec,
+                    section_name: section_names[sec.min(section_names.len() - 1)],
+                    key_display: format!("K-{i:02}"),
+                    command: Command::MoveDown,
+                    description: Command::MoveDown.labels().description,
+                }
+            })
+            .collect();
+        kiosk_core::state::HelpOverlayState {
+            list: SearchableList::new(rows.len()),
+            rows,
+        }
+    }
+
+    #[test]
+    fn test_update_help_scroll_offset_selection_at_top() {
+        let mut overlay = make_help_overlay(30, 3);
+        // Selection is at 0 (top), viewport 20 — offset should be 0
+        update_help_scroll_offset(&mut overlay, 20);
+        assert_eq!(overlay.list.scroll_offset, 0);
+    }
+
+    #[test]
+    fn test_update_help_scroll_offset_selection_at_middle() {
+        let mut overlay = make_help_overlay(30, 3);
+        overlay.list.selected = Some(15);
+        update_help_scroll_offset(&mut overlay, 20);
+        // Visual row for selection 15 should be visible in viewport
+        let (indices, _) = components::help::help_visual_metrics(&overlay);
+        let sel_visual = indices[15];
+        assert!(sel_visual >= overlay.list.scroll_offset);
+        assert!(sel_visual < overlay.list.scroll_offset + 20);
+    }
+
+    #[test]
+    fn test_update_help_scroll_offset_selection_at_bottom() {
+        let mut overlay = make_help_overlay(30, 3);
+        overlay.list.selected = Some(29);
+        update_help_scroll_offset(&mut overlay, 20);
+        let (indices, _) = components::help::help_visual_metrics(&overlay);
+        let sel_visual = indices[29];
+        assert!(sel_visual >= overlay.list.scroll_offset);
+        assert!(sel_visual < overlay.list.scroll_offset + 20);
+    }
+
+    #[test]
+    fn test_update_help_scroll_offset_empty_filtered_list() {
+        let mut overlay = make_help_overlay(10, 2);
+        overlay.list.filtered = vec![];
+        overlay.list.selected = None;
+        update_help_scroll_offset(&mut overlay, 20);
+        assert_eq!(overlay.list.scroll_offset, 0);
+    }
+
+    #[test]
+    fn test_update_help_scroll_offset_tiny_viewport() {
+        let mut overlay = make_help_overlay(20, 2);
+        overlay.list.selected = Some(10);
+        // viewport_rows = 1 — should not panic, selection should be visible
+        update_help_scroll_offset(&mut overlay, 1);
+        let (indices, _) = components::help::help_visual_metrics(&overlay);
+        let sel_visual = indices[10];
+        assert_eq!(overlay.list.scroll_offset, sel_visual);
+    }
+
+    #[test]
+    fn test_update_help_scroll_offset_viewport_2_rows() {
+        let mut overlay = make_help_overlay(20, 2);
+        overlay.list.selected = Some(10);
+        update_help_scroll_offset(&mut overlay, 2);
+        let (indices, _) = components::help::help_visual_metrics(&overlay);
+        let sel_visual = indices[10];
+        assert!(sel_visual >= overlay.list.scroll_offset);
+        assert!(sel_visual < overlay.list.scroll_offset + 2);
+    }
+
+    #[test]
+    fn test_update_help_scroll_offset_viewport_larger_than_content() {
+        let mut overlay = make_help_overlay(5, 1);
+        overlay.list.selected = Some(4);
+        update_help_scroll_offset(&mut overlay, 100);
+        assert_eq!(
+            overlay.list.scroll_offset, 0,
+            "Offset should be 0 when viewport is larger than content"
+        );
+    }
+
+    #[test]
+    fn test_update_help_scroll_offset_sequential_moves_down_then_up() {
+        let mut overlay = make_help_overlay(40, 4);
+        let viewport = 10;
+        // Move all the way down
+        for _ in 0..39 {
+            overlay.list.move_selection(1);
+            update_help_scroll_offset(&mut overlay, viewport);
+        }
+        let offset_at_bottom = overlay.list.scroll_offset;
+        // Move up one — offset should not change
+        overlay.list.move_selection(-1);
+        update_help_scroll_offset(&mut overlay, viewport);
+        assert_eq!(
+            overlay.list.scroll_offset, offset_at_bottom,
+            "First up from bottom should not change offset"
+        );
+    }
+
+    // ── Help mode movement action tests ──
+
+    #[test]
+    fn test_help_page_down_moves_selection() {
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+        state.set_active_list_page_rows(10);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let keys = KeysConfig::default();
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+        let ctx = default_ctx(&git, &tmux, &keys, &matcher, &sender);
+
+        process_action(Action::ShowHelp, &mut state, &ctx);
+
+        let initial_selected = state
+            .help_overlay
+            .as_ref()
+            .and_then(|o| o.list.selected)
+            .unwrap_or(0);
+
+        process_action(Action::PageDown, &mut state, &ctx);
+
+        let after = state
+            .help_overlay
+            .as_ref()
+            .and_then(|o| o.list.selected)
+            .unwrap_or(0);
+        assert!(
+            after > initial_selected,
+            "PageDown should advance selection in help mode"
+        );
+        assert!(after >= 10, "PageDown should move by at least page_rows");
+    }
+
+    #[test]
+    fn test_help_page_up_moves_selection() {
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+        state.set_active_list_page_rows(10);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let keys = KeysConfig::default();
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+        let ctx = default_ctx(&git, &tmux, &keys, &matcher, &sender);
+
+        process_action(Action::ShowHelp, &mut state, &ctx);
+
+        // Move down first
+        for _ in 0..20 {
+            process_action(Action::MoveSelection(1), &mut state, &ctx);
+        }
+        let before = state
+            .help_overlay
+            .as_ref()
+            .and_then(|o| o.list.selected)
+            .unwrap_or(0);
+
+        process_action(Action::PageUp, &mut state, &ctx);
+
+        let after = state
+            .help_overlay
+            .as_ref()
+            .and_then(|o| o.list.selected)
+            .unwrap_or(0);
+        assert!(
+            after < before,
+            "PageUp should move selection backwards in help mode"
+        );
+    }
+
+    #[test]
+    fn test_help_half_page_down_moves_selection() {
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+        state.set_active_list_page_rows(20);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let keys = KeysConfig::default();
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+        let ctx = default_ctx(&git, &tmux, &keys, &matcher, &sender);
+
+        process_action(Action::ShowHelp, &mut state, &ctx);
+
+        process_action(Action::HalfPageDown, &mut state, &ctx);
+
+        let after = state
+            .help_overlay
+            .as_ref()
+            .and_then(|o| o.list.selected)
+            .unwrap_or(0);
+        assert_eq!(after, 10, "HalfPageDown should move by half the viewport");
+    }
+
+    #[test]
+    fn test_help_move_top_and_bottom() {
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+        state.set_active_list_page_rows(10);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let keys = KeysConfig::default();
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+        let ctx = default_ctx(&git, &tmux, &keys, &matcher, &sender);
+
+        process_action(Action::ShowHelp, &mut state, &ctx);
+
+        let total = state
+            .help_overlay
+            .as_ref()
+            .map_or(0, |o| o.list.filtered.len());
+        assert!(total > 1, "Help overlay should have multiple rows");
+
+        process_action(Action::MoveBottom, &mut state, &ctx);
+        let after_bottom = state
+            .help_overlay
+            .as_ref()
+            .and_then(|o| o.list.selected)
+            .unwrap_or(0);
+        assert_eq!(after_bottom, total - 1, "MoveBottom should go to last item");
+
+        process_action(Action::MoveTop, &mut state, &ctx);
+        let after_top = state
+            .help_overlay
+            .as_ref()
+            .and_then(|o| o.list.selected)
+            .unwrap_or(usize::MAX);
+        assert_eq!(after_top, 0, "MoveTop should go to first item");
+        assert_eq!(
+            state
+                .help_overlay
+                .as_ref()
+                .map_or(usize::MAX, |o| o.list.scroll_offset),
+            0,
+            "MoveTop should reset scroll offset to 0"
+        );
+    }
+
+    // ── Help toggle + parent mode round-trip tests ──
+
+    #[test]
+    fn test_help_toggle_from_branch_select_restores_mode() {
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+        state.mode = Mode::BranchSelect;
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let keys = KeysConfig::default();
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+        let ctx = default_ctx(&git, &tmux, &keys, &matcher, &sender);
+
+        process_action(Action::ShowHelp, &mut state, &ctx);
+        assert!(matches!(state.mode, Mode::Help { .. }));
+        assert!(state.help_overlay.is_some());
+
+        process_action(Action::ShowHelp, &mut state, &ctx);
+        assert_eq!(state.mode, Mode::BranchSelect);
+        assert!(
+            state.help_overlay.is_none(),
+            "Toggle off should clear help_overlay"
+        );
+    }
+
+    #[test]
+    fn test_help_toggle_from_select_base_branch_restores_mode() {
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+        state.mode = Mode::SelectBaseBranch;
+        state.base_branch_selection = Some(kiosk_core::state::BaseBranchSelection {
+            new_name: "feat".into(),
+            bases: vec!["main".into()],
+            list: SearchableList::new(1),
+        });
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let keys = KeysConfig::default();
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+        let ctx = default_ctx(&git, &tmux, &keys, &matcher, &sender);
+
+        process_action(Action::ShowHelp, &mut state, &ctx);
+        assert!(matches!(state.mode, Mode::Help { .. }));
+
+        process_action(Action::ShowHelp, &mut state, &ctx);
+        assert_eq!(state.mode, Mode::SelectBaseBranch);
+        assert!(state.help_overlay.is_none());
+        assert!(
+            state.base_branch_selection.is_some(),
+            "Base branch selection should survive help round-trip"
+        );
+    }
+
+    #[test]
+    fn test_help_toggle_from_confirm_worktree_delete_restores_mode() {
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+        state.mode = Mode::ConfirmWorktreeDelete {
+            branch_name: "dev".to_string(),
+            has_session: true,
+        };
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let keys = KeysConfig::default();
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+        let ctx = default_ctx(&git, &tmux, &keys, &matcher, &sender);
+
+        process_action(Action::ShowHelp, &mut state, &ctx);
+        assert!(matches!(state.mode, Mode::Help { .. }));
+
+        process_action(Action::ShowHelp, &mut state, &ctx);
+        assert_eq!(
+            state.mode,
+            Mode::ConfirmWorktreeDelete {
+                branch_name: "dev".to_string(),
+                has_session: true,
+            }
+        );
+        assert!(state.help_overlay.is_none());
+    }
+
+    // ── Help search filtering tests ──
+
+    #[test]
+    fn test_help_search_no_matches_empties_filtered() {
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let keys = KeysConfig::default();
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+        let ctx = default_ctx(&git, &tmux, &keys, &matcher, &sender);
+
+        process_action(Action::ShowHelp, &mut state, &ctx);
+
+        // Type nonsense that won't match any keybinding
+        for c in "zzzzxxx".chars() {
+            process_action(Action::SearchPush(c), &mut state, &ctx);
+        }
+
+        let overlay = state.help_overlay.as_ref().expect("overlay");
+        assert!(
+            overlay.list.filtered.is_empty(),
+            "Nonsense search should yield zero results"
+        );
+        assert_eq!(overlay.list.selected, None);
+        assert_eq!(overlay.list.scroll_offset, 0);
+    }
+
+    // ── Search filtering + scroll offset interaction ──
+
+    #[test]
+    fn test_help_search_resets_scroll_offset_after_scrolling() {
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+        state.set_active_list_page_rows(10);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let keys = KeysConfig::default();
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+        let ctx = default_ctx(&git, &tmux, &keys, &matcher, &sender);
+
+        process_action(Action::ShowHelp, &mut state, &ctx);
+
+        // Scroll down significantly
+        for _ in 0..30 {
+            process_action(Action::MoveSelection(1), &mut state, &ctx);
+        }
+        let offset_before_search = state
+            .help_overlay
+            .as_ref()
+            .map_or(0, |o| o.list.scroll_offset);
+        assert!(offset_before_search > 0, "Should have scrolled down");
+
+        // Type a search query — scroll_offset and selection should reset
+        process_action(Action::SearchPush('q'), &mut state, &ctx);
+        let overlay = state.help_overlay.as_ref().expect("overlay");
+        assert_eq!(
+            overlay.list.scroll_offset, 0,
+            "Search should reset scroll offset"
+        );
+        assert_eq!(
+            overlay.list.selected,
+            Some(0),
+            "Search should reset selection to first match"
+        );
+
+        // Clear search — should restore full list with offset reset
+        process_action(Action::SearchPop, &mut state, &ctx);
+        let overlay = state.help_overlay.as_ref().expect("overlay");
+        assert_eq!(
+            overlay.list.scroll_offset, 0,
+            "Clearing search should keep offset at 0"
+        );
+        assert_eq!(overlay.list.selected, Some(0));
+        let initial_count = state.help_overlay.as_ref().map_or(0, |o| o.rows.len());
+        assert_eq!(
+            overlay.list.filtered.len(),
+            initial_count,
+            "Clearing search should restore full list"
+        );
+    }
+
+    // ── Help cursor movement tests ──
+
+    #[test]
+    fn test_help_cursor_movement_in_search_bar() {
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let keys = KeysConfig::default();
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+        let ctx = default_ctx(&git, &tmux, &keys, &matcher, &sender);
+
+        process_action(Action::ShowHelp, &mut state, &ctx);
+
+        // Type "hello world"
+        for c in "hello world".chars() {
+            process_action(Action::SearchPush(c), &mut state, &ctx);
+        }
+
+        let help_cursor = |s: &AppState| s.help_overlay.as_ref().map_or(0, |o| o.list.cursor);
+        assert_eq!(help_cursor(&state), 11); // at end
+
+        // Cursor left
+        process_action(Action::CursorLeft, &mut state, &ctx);
+        assert_eq!(help_cursor(&state), 10);
+
+        // Cursor word left: should jump past "world" to before "hello"
+        process_action(Action::CursorWordLeft, &mut state, &ctx);
+        assert_eq!(help_cursor(&state), 6); // before "world"
+
+        process_action(Action::CursorWordLeft, &mut state, &ctx);
+        assert_eq!(help_cursor(&state), 0); // before "hello"
+
+        // Cursor word right
+        process_action(Action::CursorWordRight, &mut state, &ctx);
+        assert_eq!(help_cursor(&state), 5); // after "hello"
+
+        // Cursor end
+        process_action(Action::CursorEnd, &mut state, &ctx);
+        assert_eq!(help_cursor(&state), 11);
+
+        // Cursor start
+        process_action(Action::CursorStart, &mut state, &ctx);
+        assert_eq!(help_cursor(&state), 0);
+
+        // Cursor right
+        process_action(Action::CursorRight, &mut state, &ctx);
+        assert_eq!(help_cursor(&state), 1);
+    }
+
+    // ── Multibyte character handling in help search ──
+
+    #[test]
+    fn test_help_search_multibyte_characters() {
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let keys = KeysConfig::default();
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+        let ctx = default_ctx(&git, &tmux, &keys, &matcher, &sender);
+
+        process_action(Action::ShowHelp, &mut state, &ctx);
+
+        // Type multibyte characters
+        for c in "café".chars() {
+            process_action(Action::SearchPush(c), &mut state, &ctx);
+        }
+
+        let overlay = state.help_overlay.as_ref().expect("overlay");
+        assert_eq!(overlay.list.search, "café");
+        assert_eq!(overlay.list.cursor, "café".len()); // 5 bytes
+
+        // Backspace should remove 'é' (2 bytes)
+        process_action(Action::SearchPop, &mut state, &ctx);
+        let overlay = state.help_overlay.as_ref().expect("overlay");
+        assert_eq!(overlay.list.search, "caf");
+        assert_eq!(overlay.list.cursor, 3);
+
+        // Cursor left and right should handle multibyte correctly
+        process_action(Action::SearchPush('ñ'), &mut state, &ctx);
+        let overlay = state.help_overlay.as_ref().expect("overlay");
+        assert_eq!(overlay.list.search, "cafñ");
+
+        process_action(Action::CursorLeft, &mut state, &ctx);
+        let cursor = state.help_overlay.as_ref().map_or(0, |o| o.list.cursor);
+        assert_eq!(cursor, 3, "Cursor should be before 'ñ'");
+
+        process_action(Action::CursorRight, &mut state, &ctx);
+        let cursor = state.help_overlay.as_ref().map_or(0, |o| o.list.cursor);
+        assert_eq!(cursor, "cafñ".len(), "Cursor should be after 'ñ'");
     }
 
     #[test]
@@ -1985,5 +2676,335 @@ mod tests {
 
         // Session activity updated
         assert_eq!(state.session_activity.get("alpha"), Some(&500));
+    }
+
+    // -- word_wrapped_line_count tests --
+
+    #[test]
+    fn test_word_wrap_single_line_no_wrap() {
+        let line = Line::raw("hello world");
+        assert_eq!(word_wrapped_line_count(&line, 20), 1);
+    }
+
+    #[test]
+    fn test_word_wrap_exact_fit() {
+        let line = Line::raw("hello world");
+        assert_eq!(word_wrapped_line_count(&line, 11), 1);
+    }
+
+    #[test]
+    fn test_word_wrap_breaks_at_word_boundary() {
+        let line = Line::raw("hello world");
+        assert_eq!(word_wrapped_line_count(&line, 10), 2);
+    }
+
+    #[test]
+    fn test_word_wrap_multiple_wraps() {
+        let line = Line::raw("one two three four");
+        // width 5: "one" (3) → col=3, "two" needs 4 → new line col=3,
+        //          "three" needs 6 > 5 → new line, oversized → col=5 then col=0... wait
+        // Actually: "three" len=5 fits on a new line exactly
+        // "four" needs 5 → new line col=4
+        assert_eq!(word_wrapped_line_count(&line, 5), 4);
+    }
+
+    #[test]
+    fn test_word_wrap_oversized_word() {
+        let line = Line::raw("abcdefghij");
+        // 10-char word on width 4: lines=1, col=10 → 10>4: lines=2, col=6 → 6>4: lines=3, col=2
+        assert_eq!(word_wrapped_line_count(&line, 4), 3);
+    }
+
+    #[test]
+    fn test_word_wrap_oversized_word_exact_multiple() {
+        let line = Line::raw("abcdefgh");
+        // 8-char word on width 4: lines=1, col=8 → 8>4: lines=2, col=4 → not >4, stop
+        assert_eq!(word_wrapped_line_count(&line, 4), 2);
+    }
+
+    #[test]
+    fn test_word_wrap_oversized_after_short_word() {
+        let line = Line::raw("hi abcdefghij");
+        // "hi" col=2, "abcdefghij" needs 11: 2+1+10=13 > 6, and 10 > 6, so:
+        // col>0 → lines=2, col=10, 10>6 → lines=3, col=4
+        assert_eq!(word_wrapped_line_count(&line, 6), 3);
+    }
+
+    #[test]
+    fn test_word_wrap_empty_line() {
+        let line = Line::raw("");
+        assert_eq!(word_wrapped_line_count(&line, 20), 1);
+    }
+
+    #[test]
+    fn test_word_wrap_zero_width() {
+        let line = Line::raw("hello");
+        assert_eq!(word_wrapped_line_count(&line, 0), 1);
+    }
+
+    #[test]
+    fn test_word_wrap_multi_span_line() {
+        let line = Line::from(vec![
+            Span::raw("hello "),
+            Span::styled("world", Style::default().fg(Color::Red)),
+        ]);
+        assert_eq!(word_wrapped_line_count(&line, 20), 1);
+        assert_eq!(word_wrapped_line_count(&line, 8), 2);
+    }
+
+    // -- confirm_delete_dialog_layout sizing tests --
+
+    #[test]
+    fn test_confirm_delete_layout_short_branch() {
+        let layout = confirm_delete_dialog_layout(
+            "main",
+            false,
+            "enter",
+            "esc",
+            Color::Magenta,
+            Color::Blue,
+            120,
+        );
+        // min(120*80/100, 80) = 80
+        assert_eq!(layout.width, 80, "width should be capped at 80");
+        // 3 content lines + 2 borders + 2 padding
+        assert_eq!(layout.height, 7, "no wrapping needed for short branch");
+    }
+
+    #[test]
+    fn test_confirm_delete_layout_long_branch() {
+        let long_name = "a".repeat(100);
+        let layout = confirm_delete_dialog_layout(
+            &long_name,
+            false,
+            "enter",
+            "esc",
+            Color::Magenta,
+            Color::Blue,
+            120,
+        );
+        // min(120*80/100, 80) = 80
+        assert_eq!(layout.width, 80, "width should be capped at 80");
+        assert!(
+            layout.height > 7,
+            "long branch should cause wrapping, height={}",
+            layout.height
+        );
+    }
+
+    #[test]
+    fn test_confirm_delete_layout_very_long_branch() {
+        let long_name = "a".repeat(200);
+        let layout = confirm_delete_dialog_layout(
+            &long_name,
+            false,
+            "enter",
+            "esc",
+            Color::Magenta,
+            Color::Blue,
+            80,
+        );
+        // min(80*80/100, 80) = 64
+        assert_eq!(layout.width, 64, "width should be 80% of terminal");
+        assert!(
+            layout.height > 8,
+            "very long branch on narrow terminal needs more wrapping, height={}",
+            layout.height,
+        );
+    }
+
+    #[test]
+    fn test_confirm_delete_layout_narrow_terminal() {
+        let layout = confirm_delete_dialog_layout(
+            "main",
+            false,
+            "enter",
+            "esc",
+            Color::Magenta,
+            Color::Blue,
+            50,
+        );
+        assert!(
+            layout.width <= 50,
+            "dialog width {} must fit in terminal",
+            layout.width
+        );
+    }
+
+    #[test]
+    fn test_confirm_delete_layout_session_same_width() {
+        let without = confirm_delete_dialog_layout(
+            "feature-branch",
+            false,
+            "enter",
+            "esc",
+            Color::Magenta,
+            Color::Blue,
+            120,
+        );
+        let with = confirm_delete_dialog_layout(
+            "feature-branch",
+            true,
+            "enter",
+            "esc",
+            Color::Magenta,
+            Color::Blue,
+            120,
+        );
+        assert_eq!(
+            with.width, without.width,
+            "width is content-independent: with session ({}) should equal without ({})",
+            with.width, without.width,
+        );
+    }
+
+    #[test]
+    fn test_confirm_delete_layout_exact_fit_no_wrap() {
+        // "Delete worktree for branch \"exactly-fits\"?" = 42 chars, well within
+        // text_width of 76 (80 - 4 chrome), so no wrapping should occur.
+        let layout = confirm_delete_dialog_layout(
+            "exactly-fits",
+            false,
+            "enter",
+            "esc",
+            Color::Magenta,
+            Color::Blue,
+            120,
+        );
+        assert_eq!(layout.height, 7, "exact fit should not wrap");
+    }
+
+    // -- rendering tests --
+
+    fn buf_to_string(buf: &ratatui::buffer::Buffer) -> String {
+        let area = buf.area();
+        let mut s = String::new();
+        for y in area.y..area.y + area.height {
+            if y > area.y {
+                s.push('\n');
+            }
+            for x in area.x..area.x + area.width {
+                s.push_str(buf.cell((x, y)).unwrap().symbol());
+            }
+        }
+        s
+    }
+
+    fn render_dialog_to_buffer(layout: &ConfirmDeleteDialogLayout) -> ratatui::buffer::Buffer {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" Confirm delete ")
+            .border_style(Style::default().fg(Color::Magenta))
+            .padding(Padding::uniform(1));
+        let paragraph = Paragraph::new(layout.text.clone())
+            .block(block)
+            .wrap(Wrap { trim: false })
+            .alignment(Alignment::Center);
+        let area = Rect::new(0, 0, layout.width, layout.height);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        ratatui::widgets::Widget::render(paragraph, area, &mut buf);
+        buf
+    }
+
+    #[test]
+    fn test_confirm_delete_render_full_text_visible() {
+        let layout = confirm_delete_dialog_layout(
+            "main",
+            false,
+            "enter",
+            "esc",
+            Color::Magenta,
+            Color::Blue,
+            120,
+        );
+        let buf = render_dialog_to_buffer(&layout);
+        let rendered = buf_to_string(&buf);
+        assert!(
+            rendered.contains("main"),
+            "branch name missing:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("Delete worktree"),
+            "action text missing:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("confirm"),
+            "confirm hint missing:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("cancel"),
+            "cancel hint missing:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn test_confirm_delete_render_wrapping() {
+        let long_name = "x".repeat(100);
+        let layout = confirm_delete_dialog_layout(
+            &long_name,
+            false,
+            "enter",
+            "esc",
+            Color::Magenta,
+            Color::Blue,
+            120,
+        );
+        let buf = render_dialog_to_buffer(&layout);
+        let rendered = buf_to_string(&buf);
+        let x_count = rendered.chars().filter(|c| *c == 'x').count();
+        assert_eq!(
+            x_count, 100,
+            "all branch chars should be rendered:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn test_confirm_delete_render_narrow_terminal_hints_visible() {
+        // On a narrow terminal the hints line wraps; both "confirm" and "cancel"
+        // must still be fully rendered (this was the bug that motivated the
+        // word_wrapped_line_count fix).
+        let layout = confirm_delete_dialog_layout(
+            "feat/headless-cli",
+            true,
+            "enter",
+            "esc",
+            Color::Magenta,
+            Color::Blue,
+            28,
+        );
+        let buf = render_dialog_to_buffer(&layout);
+        let rendered = buf_to_string(&buf);
+        assert!(
+            rendered.contains("confirm"),
+            "confirm hint missing:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("cancel"),
+            "cancel hint missing:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("feat/headless-cli"),
+            "branch name missing:\n{rendered}",
+        );
+    }
+
+    #[test]
+    fn test_confirm_delete_render_border_positions() {
+        let layout = confirm_delete_dialog_layout(
+            "main",
+            false,
+            "enter",
+            "esc",
+            Color::Magenta,
+            Color::Blue,
+            120,
+        );
+        let buf = render_dialog_to_buffer(&layout);
+        let w = layout.width;
+        let h = layout.height;
+        assert_eq!(buf.cell((0, 0)).unwrap().symbol(), "┌");
+        assert_eq!(buf.cell((w - 1, 0)).unwrap().symbol(), "┐");
+        assert_eq!(buf.cell((0, h - 1)).unwrap().symbol(), "└");
+        assert_eq!(buf.cell((w - 1, h - 1)).unwrap().symbol(), "┘");
     }
 }

@@ -51,3 +51,7 @@ Success checklist:
 - Pre/post session diff contains the expected app-created session.
 - `list-panes` for the app session matches expected layout (main pane + split pane if configured).
 - Marker command grep passes in at least one target pane (`AGENT_TMUX_MARKER` / `KIOSK_SPLIT_OK`).
+
+## Pull request descriptions
+- Do not include a `Validation` section in PR descriptions that just lists out tests to run. If test commands are needed, include them inline in the summary bullets instead.
+- If you do want to add a validation section, ideally this should explain how to actually test the TUI/CLI from a user's perspective.

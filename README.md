@@ -161,6 +161,7 @@ Defaults:
 [theme]
 accent = "magenta"
 secondary = "cyan"
+tertiary = "green"
 success = "green"
 error = "red"
 warning = "yellow"

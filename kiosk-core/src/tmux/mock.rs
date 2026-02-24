@@ -21,7 +21,8 @@ pub struct MockTmuxProvider {
     pub send_keys_result: Mutex<Option<Result<()>>>,
     pub pipe_pane_result: Mutex<Option<Result<()>>>,
     pub pane_info: HashMap<String, Vec<PaneInfo>>,
-    pub pane_content: HashMap<(String, u32), String>,
+    /// Pane content keyed by `(session_name, window_index, pane_index)`
+    pub pane_content: HashMap<(String, u32, u32), String>,
 }
 
 impl TmuxProvider for MockTmuxProvider {
@@ -156,9 +157,15 @@ impl TmuxProvider for MockTmuxProvider {
         self.pane_info.get(session).cloned().unwrap_or_default()
     }
 
-    fn capture_pane_by_index(&self, session: &str, pane_index: u32, _lines: u32) -> Option<String> {
+    fn capture_pane_by_index(
+        &self,
+        session: &str,
+        window_index: u32,
+        pane_index: u32,
+        _lines: u32,
+    ) -> Option<String> {
         self.pane_content
-            .get(&(session.to_string(), pane_index))
+            .get(&(session.to_string(), window_index, pane_index))
             .cloned()
     }
 }

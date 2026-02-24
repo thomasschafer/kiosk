@@ -86,12 +86,14 @@ pub fn detect_for_session(
         }
 
         if kind != AgentKind::Unknown
-            && let Some(content) =
-                tmux.capture_pane_by_index(session_name, pane.window_index, pane.pane_index, 30)
+            && let Some(content) = tmux.capture_pane_content(&pane.pane_id, 30)
         {
             let state = detect::detect_state(&content, kind);
             let status = AgentStatus { kind, state };
-            if best.as_ref().is_none_or(|b| status.state.attention_priority() > b.state.attention_priority()) {
+            if best
+                .as_ref()
+                .is_none_or(|b| status.state.attention_priority() > b.state.attention_priority())
+            {
                 best = Some(status);
             }
         }
@@ -160,17 +162,17 @@ mod tests {
 
     fn mock_with_agent(session: &str, command: &str, pane_content: &str) -> MockTmuxProvider {
         let mut tmux = MockTmuxProvider::default();
+        let pane_id = "%0";
         tmux.pane_info.insert(
             session.to_string(),
             vec![PaneInfo {
-                window_index: 0,
-                pane_index: 0,
+                pane_id: pane_id.to_string(),
                 command: command.to_string(),
                 pid: 99999, // Fake PID — child process lookup will fail gracefully
             }],
         );
         tmux.pane_content
-            .insert((session.to_string(), 0, 0), pane_content.to_string());
+            .insert(pane_id.to_string(), pane_content.to_string());
         tmux
     }
 
@@ -238,23 +240,21 @@ mod tests {
             session.to_string(),
             vec![
                 PaneInfo {
-                    window_index: 0,
-                    pane_index: 0,
+                    pane_id: "%0".to_string(),
                     command: "bash".to_string(),
                     pid: 11111,
                 },
                 PaneInfo {
-                    window_index: 0,
-                    pane_index: 1,
+                    pane_id: "%1".to_string(),
                     command: "claude".to_string(),
                     pid: 22222,
                 },
             ],
         );
         tmux.pane_content
-            .insert((session.to_string(), 0, 0), "$ vim file.txt".to_string());
+            .insert("%0".to_string(), "$ vim file.txt".to_string());
         tmux.pane_content
-            .insert((session.to_string(), 0, 1), "Esc to interrupt".to_string());
+            .insert("%1".to_string(), "Esc to interrupt".to_string());
 
         let status = detect_for_session(&tmux, session).unwrap();
         assert_eq!(status.kind, AgentKind::ClaudeCode);
@@ -274,13 +274,12 @@ mod tests {
         tmux.pane_info.insert(
             "empty-pane".to_string(),
             vec![PaneInfo {
-                window_index: 0,
-                pane_index: 0,
+                pane_id: "%0".to_string(),
                 command: "claude".to_string(),
                 pid: 33333,
             }],
         );
-        // No pane_content entry → capture_pane_by_index returns None
+        // No pane_content entry → capture_pane_content returns None
         assert!(detect_for_session(&tmux, "empty-pane").is_none());
     }
 
@@ -291,8 +290,7 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(i, (command, _))| PaneInfo {
-                window_index: 0,
-                pane_index: i as u32,
+                pane_id: format!("%{i}"),
                 command: command.to_string(),
                 pid: 90000 + i as u32,
             })
@@ -300,7 +298,7 @@ mod tests {
         tmux.pane_info.insert(session.to_string(), panes);
         for (i, (_, content)) in agents.iter().enumerate() {
             tmux.pane_content
-                .insert((session.to_string(), 0, i as u32), content.to_string());
+                .insert(format!("%{i}"), content.to_string());
         }
         tmux
     }
@@ -335,10 +333,7 @@ mod tests {
     fn multi_agent_idle_beats_running() {
         let tmux = mock_multi_agent(
             "multi",
-            &[
-                ("claude", "⠋ Reading file src/main.rs"),
-                ("claude", "$ "),
-            ],
+            &[("claude", "⠋ Reading file src/main.rs"), ("claude", "$ ")],
         );
         let status = detect_for_session(&tmux, "multi").unwrap();
         assert_eq!(status.state, AgentState::Idle);
@@ -352,27 +347,21 @@ mod tests {
             session.to_string(),
             vec![
                 PaneInfo {
-                    window_index: 0,
-                    pane_index: 0,
+                    pane_id: "%10".to_string(),
                     command: "claude".to_string(),
                     pid: 80001,
                 },
                 PaneInfo {
-                    window_index: 1,
-                    pane_index: 0,
+                    pane_id: "%11".to_string(),
                     command: "claude".to_string(),
                     pid: 80002,
                 },
             ],
         );
-        tmux.pane_content.insert(
-            (session.to_string(), 0, 0),
-            "⠋ Reading file".to_string(),
-        );
-        tmux.pane_content.insert(
-            (session.to_string(), 1, 0),
-            "Allow write?\n  Yes, allow".to_string(),
-        );
+        tmux.pane_content
+            .insert("%10".to_string(), "⠋ Reading file".to_string());
+        tmux.pane_content
+            .insert("%11".to_string(), "Allow write?\n  Yes, allow".to_string());
 
         let status = detect_for_session(&tmux, session).unwrap();
         assert_eq!(status.state, AgentState::Waiting);

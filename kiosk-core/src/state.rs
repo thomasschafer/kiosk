@@ -9,6 +9,11 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Instant,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -761,8 +766,10 @@ pub struct AppState {
     active_list_page_rows: usize,
     pub pending_worktree_deletes: Vec<PendingWorktreeDelete>,
     pub session_activity: HashMap<String, u64>,
-    /// Whether an agent status poller is already running
-    pub agent_poller_active: bool,
+    /// Cancel token for the active agent status poller thread.
+    /// Setting this flag stops the current poller; clearing it (via `cancel_agent_poller`)
+    /// prepares for a new one.
+    pub agent_poller_cancel: Option<Arc<AtomicBool>>,
     /// Main repo root path from CWD (for repo ordering)
     pub current_repo_path: Option<PathBuf>,
     /// CWD resolved to repo/worktree root (for branch current detection)
@@ -792,7 +799,7 @@ impl AppState {
             active_list_page_rows: 10,
             pending_worktree_deletes: Vec::new(),
             session_activity: HashMap::new(),
-            agent_poller_active: false,
+            agent_poller_cancel: None,
             current_repo_path: None,
             cwd_worktree_path: None,
             seen_repo_paths: HashSet::new(),
@@ -833,6 +840,13 @@ impl AppState {
         Self {
             setup: Some(SetupState::new()),
             ..Self::base(Mode::Setup(SetupStep::Welcome))
+        }
+    }
+
+    /// Signal the current agent poller thread to stop and clear the cancel token.
+    pub fn cancel_agent_poller(&mut self) {
+        if let Some(token) = self.agent_poller_cancel.take() {
+            token.store(true, Ordering::Relaxed);
         }
     }
 

@@ -329,7 +329,7 @@ impl TmuxProvider for CliTmuxProvider {
             .args([
                 "capture-pane",
                 "-t",
-                &format!("={session}:{pane_index}"),
+                &format!("={session}:.{pane_index}"),
                 "-p",
                 "-S",
                 &format!("-{lines}"),

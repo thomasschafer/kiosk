@@ -499,8 +499,10 @@ fn command_wants_json(command: Option<&Commands>) -> bool {
             | Commands::Panes { json, .. }
             | Commands::Wait { json, .. }
             | Commands::Log { json, .. },
-        ) 
-        | Some(Commands::Config { command: Some(ConfigCommands::Show { json }) }) => *json,
+        )
+        | Some(Commands::Config {
+            command: Some(ConfigCommands::Show { json }),
+        }) => *json,
         Some(Commands::Config { command: None }) | None => false,
     }
 }

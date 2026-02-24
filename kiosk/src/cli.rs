@@ -578,13 +578,9 @@ fn status_internal(
     let session_exists = tmux.session_exists(&session_name);
 
     let (output, clients, source) = if session_exists {
-        let captured = if args.pane == 0 {
-            tmux.capture_pane(&session_name, lines)
-                .map_err(CliError::from)?
-        } else {
-            tmux.capture_pane_with_pane(&session_name, &args.pane.to_string(), lines)
-                .map_err(CliError::from)?
-        };
+        let captured = tmux
+            .capture_pane_with_pane(&session_name, &args.pane.to_string(), lines)
+            .map_err(CliError::from)?;
         let clients = tmux.list_clients(&session_name);
         (captured, clients, StatusSource::Live)
     } else {
@@ -785,7 +781,9 @@ pub fn cmd_send(
     let pane = &args.pane.to_string();
 
     if let Some(command) = &args.command {
-        tmux.send_keys(&session_name, command)
+        tmux.send_text_raw(&session_name, pane, command)
+            .map_err(CliError::from)?;
+        tmux.send_keys_raw(&session_name, pane, &["Enter"])
             .map_err(CliError::from)?;
     } else if let Some(keys_str) = &args.keys {
         let keys: Vec<&str> = keys_str.split_whitespace().collect();
@@ -1113,23 +1111,24 @@ pub fn cmd_wait(
 
     loop {
         if let Some(timeout) = timeout_duration
-            && start_time.elapsed() >= timeout {
-                let output = WaitOutput {
-                    idle: false,
-                    timed_out: true,
-                    pane_command: tmux
-                        .pane_current_command(&session_name, pane_str)
-                        .unwrap_or_else(|_| "unknown".to_string()),
-                    exit_code: None,
-                };
+            && start_time.elapsed() >= timeout
+        {
+            let output = WaitOutput {
+                idle: false,
+                timed_out: true,
+                pane_command: tmux
+                    .pane_current_command(&session_name, pane_str)
+                    .unwrap_or_else(|_| "unknown".to_string()),
+                exit_code: None,
+            };
 
-                if args.json {
-                    print_json(&output)?;
-                } else {
-                    println!("timeout reached");
-                }
-                return Err(CliError::user("wait timeout"));
+            if args.json {
+                print_json(&output)?;
+            } else {
+                println!("timeout reached");
             }
+            return Err(CliError::user("wait timeout"));
+        }
 
         match tmux.pane_current_command(&session_name, pane_str) {
             Ok(command) => {
@@ -1191,7 +1190,10 @@ pub fn cmd_log(
         .map_err(CliError::from)?;
 
     let tail_content = tail_lines(&log_content, args.tail);
-    let lines: Vec<String> = tail_content.lines().map(std::string::ToString::to_string).collect();
+    let lines: Vec<String> = tail_content
+        .lines()
+        .map(std::string::ToString::to_string)
+        .collect();
 
     let output = LogOutput {
         session: session_name,
@@ -2071,7 +2073,10 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(
             tmux.sent_keys.lock().unwrap().as_slice(),
-            &[("demo".to_string(), "echo hello".to_string())]
+            &[
+                ("demo:0:text".to_string(), "echo hello".to_string()),
+                ("demo:0".to_string(), "Enter".to_string()),
+            ]
         );
     }
 

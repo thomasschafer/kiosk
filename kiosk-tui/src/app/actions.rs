@@ -355,6 +355,15 @@ fn update_active_filter(state: &mut AppState, matcher: &SkimMatcherV2) {
                     })
                     .collect();
                 apply_fuzzy_filter(&mut overlay.list, &search_items, matcher);
+                // Stable-sort filtered results by section_index so that
+                // compute_help_layout never emits duplicate section headers
+                // when fuzzy scoring reorders items across sections.
+                overlay.list.filtered.sort_by_key(|(row_idx, _score)| {
+                    overlay
+                        .rows
+                        .get(*row_idx)
+                        .map_or(0, |r| r.section_index)
+                });
             }
         }
         _ => {}

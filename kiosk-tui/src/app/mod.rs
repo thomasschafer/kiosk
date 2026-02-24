@@ -208,7 +208,7 @@ fn draw(
                 Mode::Loading(_) | Mode::Help { .. } => {}
             }
             // Draw help overlay on top
-            components::help::draw(f, state, theme, keys);
+            components::help::draw(f, state, theme);
         }
         Mode::Loading(_) => unreachable!(),
     }

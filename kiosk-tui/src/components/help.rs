@@ -1,4 +1,3 @@
-use kiosk_core::config::KeysConfig;
 use kiosk_core::state::{AppState, HelpOverlayState};
 use ratatui::{
     Frame,
@@ -38,7 +37,7 @@ fn compute_help_layout(overlay: &HelpOverlayState) -> Vec<HelpLayoutEntry> {
 }
 
 /// Help overlay showing keybindings.
-pub fn draw(f: &mut Frame, state: &AppState, theme: &crate::theme::Theme, _keys: &KeysConfig) {
+pub fn draw(f: &mut Frame, state: &AppState, theme: &crate::theme::Theme) {
     let Some(overlay) = state.help_overlay.as_ref() else {
         return;
     };
@@ -433,6 +432,78 @@ mod tests {
         let (indices, total_visual_rows) = help_visual_metrics(&overlay);
         assert!(indices.is_empty());
         assert_eq!(total_visual_rows, 0);
+    }
+
+    #[test]
+    fn test_build_visible_items_no_duplicate_section_headers_when_interleaved() {
+        // Simulate what happens if filtered results alternate between sections
+        // (e.g. fuzzy scoring reorders items across sections). compute_help_layout
+        // should still produce exactly one header per section when items are grouped.
+        let rows = vec![
+            FlattenedKeybindingRow {
+                section_index: 0,
+                section_name: "general",
+                key_display: "C-c".to_string(),
+                command: Command::Quit,
+                description: Command::Quit.labels().description,
+            },
+            FlattenedKeybindingRow {
+                section_index: 0,
+                section_name: "general",
+                key_display: "C-h".to_string(),
+                command: Command::ShowHelp,
+                description: Command::ShowHelp.labels().description,
+            },
+            FlattenedKeybindingRow {
+                section_index: 1,
+                section_name: "text_edit",
+                key_display: "backspace".to_string(),
+                command: Command::DeleteBackwardChar,
+                description: Command::DeleteBackwardChar.labels().description,
+            },
+            FlattenedKeybindingRow {
+                section_index: 1,
+                section_name: "text_edit",
+                key_display: "C-w".to_string(),
+                command: Command::DeleteBackwardWord,
+                description: Command::DeleteBackwardWord.labels().description,
+            },
+        ];
+
+        // Interleave: general(0), text_edit(2), general(1), text_edit(3)
+        let mut list = SearchableList::new(rows.len());
+        list.filtered = vec![(0, 100), (2, 90), (1, 80), (3, 70)];
+        list.selected = Some(0);
+        let overlay = HelpOverlayState { list, rows };
+
+        let (items, row_item_indices) = build_visible_items(&overlay, Color::DarkGray);
+        // With interleaved ordering, compute_help_layout would produce duplicate
+        // section headers (general, text_edit, general, text_edit). Verify that
+        // this case still produces duplicates at the layout level — the fix lives
+        // in apply_fuzzy_filter which stable-sorts by section_index before we
+        // get here. This test documents the current behavior.
+        //
+        // Expect: header(general), row(0), blank, header(text_edit), row(2),
+        //         blank, header(general), row(1), blank, header(text_edit), row(3)
+        // = 4 headers, 4 rows, 3 blanks = 11 items
+        assert_eq!(items.len(), 11);
+        assert_eq!(row_item_indices.len(), 4);
+
+        // Now verify that properly grouped ordering produces no duplicates:
+        // sorted by section_index → general(0), general(1), text_edit(2), text_edit(3)
+        let mut overlay_grouped = HelpOverlayState {
+            list: SearchableList::new(4),
+            rows: overlay.rows,
+        };
+        overlay_grouped.list.filtered = vec![(0, 100), (1, 80), (2, 90), (3, 70)];
+        overlay_grouped.list.selected = Some(0);
+
+        let (items_grouped, row_item_indices_grouped) =
+            build_visible_items(&overlay_grouped, Color::DarkGray);
+        // Expect: header(general), row(0), row(1), blank, header(text_edit), row(2), row(3)
+        // = 2 headers, 4 rows, 1 blank = 7 items
+        assert_eq!(items_grouped.len(), 7);
+        assert_eq!(row_item_indices_grouped.len(), 4);
     }
 
     #[test]

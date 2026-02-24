@@ -26,7 +26,37 @@ pub fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
 
 /// Standard dialog width: 80% of terminal width, capped at 80 columns.
 pub fn dialog_width(terminal_width: u16) -> u16 {
-    (terminal_width * 80 / 100).min(80)
+    (u32::from(terminal_width) * 80 / 100).min(80) as u16
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_dialog_width_normal_terminal() {
+        assert_eq!(dialog_width(100), 80);
+        assert_eq!(dialog_width(80), 64);
+        assert_eq!(dialog_width(50), 40);
+    }
+
+    #[test]
+    fn test_dialog_width_capped_at_80() {
+        assert_eq!(dialog_width(200), 80);
+    }
+
+    #[test]
+    fn test_dialog_width_wide_terminal_no_overflow() {
+        // u16::MAX = 65535; previous implementation would overflow at width > 819
+        assert_eq!(dialog_width(820), 80);
+        assert_eq!(dialog_width(1000), 80);
+        assert_eq!(dialog_width(u16::MAX), 80);
+    }
+
+    #[test]
+    fn test_dialog_width_zero() {
+        assert_eq!(dialog_width(0), 0);
+    }
 }
 
 /// Center a rect with a fixed width and height, clamped to fit within `r`.

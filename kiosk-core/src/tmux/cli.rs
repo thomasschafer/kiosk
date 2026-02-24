@@ -123,6 +123,142 @@ impl TmuxProvider for CliTmuxProvider {
         Ok(())
     }
 
+    fn send_keys_raw(&self, session: &str, pane: &str, keys: &[&str]) -> Result<()> {
+        let target = format!("={session}:0.{pane}");
+        let mut args = vec!["send-keys", "-t", &target];
+        args.extend(keys);
+
+        let output = Command::new("tmux").args(&args).output().with_context(|| {
+            format!("failed to execute tmux send-keys for session {session} pane {pane}")
+        })?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("tmux send-keys failed: {}", stderr.trim());
+        }
+        Ok(())
+    }
+
+    fn send_text_raw(&self, session: &str, pane: &str, text: &str) -> Result<()> {
+        let target = format!("={session}:0.{pane}");
+        let output = Command::new("tmux")
+            .args(["send-keys", "-t", &target, "-l", text])
+            .output()
+            .with_context(|| {
+                format!("failed to execute tmux send-keys for session {session} pane {pane}")
+            })?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("tmux send-keys failed: {}", stderr.trim());
+        }
+        Ok(())
+    }
+
+    fn capture_pane_with_pane(&self, session: &str, pane: &str, lines: usize) -> Result<String> {
+        let target = format!("={session}:0.{pane}");
+        let output = Command::new("tmux")
+            .args([
+                "capture-pane",
+                "-t",
+                &target,
+                "-p",
+                "-S",
+                &format!("-{lines}"),
+            ])
+            .output()
+            .with_context(|| {
+                format!("failed to execute tmux capture-pane for session {session} pane {pane}")
+            })?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("tmux capture-pane failed: {}", stderr.trim());
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
+
+    fn pane_current_command(&self, session: &str, pane: &str) -> Result<String> {
+        let target = format!("={session}:0.{pane}");
+        let output = Command::new("tmux")
+            .args([
+                "display-message",
+                "-t",
+                &target,
+                "-p",
+                "#{pane_current_command}",
+            ])
+            .output()
+            .with_context(|| {
+                format!("failed to execute tmux display-message for session {session} pane {pane}")
+            })?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("tmux display-message failed: {}", stderr.trim());
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
+
+    fn session_activity(&self, session: &str) -> Result<u64> {
+        let output = Command::new("tmux")
+            .args([
+                "display-message",
+                "-t",
+                &format!("={session}"),
+                "-p",
+                "#{session_activity}",
+            ])
+            .output()
+            .with_context(|| {
+                format!("failed to execute tmux display-message for session {session}")
+            })?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("tmux display-message failed: {}", stderr.trim());
+        }
+        let output_str = String::from_utf8_lossy(&output.stdout);
+        let activity_str = output_str.trim();
+        activity_str
+            .parse::<u64>()
+            .with_context(|| format!("failed to parse session activity timestamp: {activity_str}"))
+    }
+
+    fn pane_count(&self, session: &str) -> Result<usize> {
+        let output = Command::new("tmux")
+            .args([
+                "display-message",
+                "-t",
+                &format!("={session}"),
+                "-p",
+                "#{session_windows}",
+            ])
+            .output()
+            .with_context(|| {
+                format!("failed to execute tmux display-message for session {session}")
+            })?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("tmux display-message failed: {}", stderr.trim());
+        }
+
+        // Get number of panes in all windows for this session
+        let output = Command::new("tmux")
+            .args([
+                "list-panes",
+                "-t",
+                &format!("={session}"),
+                "-a",
+                "-F",
+                "#{pane_index}",
+            ])
+            .output()
+            .with_context(|| format!("failed to execute tmux list-panes for session {session}"))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("tmux list-panes failed: {}", stderr.trim());
+        }
+
+        let pane_count = String::from_utf8_lossy(&output.stdout).lines().count();
+        Ok(pane_count)
+    }
+
     fn pipe_pane(&self, session: &str, log_path: &Path) -> Result<()> {
         let target = format!("={session}:0.0");
         let escaped_path = log_path.to_string_lossy().replace('\'', "'\\''");

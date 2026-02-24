@@ -112,4 +112,41 @@ impl TmuxProvider for MockTmuxProvider {
     fn is_inside_tmux(&self) -> bool {
         self.inside_tmux
     }
+
+    fn send_keys_raw(&self, session: &str, pane: &str, keys: &[&str]) -> anyhow::Result<()> {
+        self.sent_keys
+            .lock()
+            .unwrap()
+            .push((format!("{session}:{pane}"), keys.join(" ")));
+        Ok(())
+    }
+
+    fn send_text_raw(&self, session: &str, pane: &str, text: &str) -> anyhow::Result<()> {
+        self.sent_keys
+            .lock()
+            .unwrap()
+            .push((format!("{session}:{pane}:text"), text.to_string()));
+        Ok(())
+    }
+
+    fn capture_pane_with_pane(
+        &self,
+        _session: &str,
+        _pane: &str,
+        _lines: usize,
+    ) -> anyhow::Result<String> {
+        Ok(self.capture_output.lock().unwrap().clone())
+    }
+
+    fn pane_current_command(&self, _session: &str, _pane: &str) -> anyhow::Result<String> {
+        Ok("zsh".to_string())
+    }
+
+    fn session_activity(&self, _session: &str) -> anyhow::Result<u64> {
+        Ok(1_234_567_890)
+    }
+
+    fn pane_count(&self, _session: &str) -> anyhow::Result<usize> {
+        Ok(1)
+    }
 }

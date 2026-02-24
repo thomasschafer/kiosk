@@ -2,8 +2,7 @@ use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaneInfo {
-    pub window_index: u32,
-    pub pane_index: u32,
+    pub pane_id: String,
     pub command: String,
     pub pid: u32,
 }
@@ -54,11 +53,5 @@ pub trait TmuxProvider: Send + Sync {
     fn kill_session(&self, name: &str);
     fn is_inside_tmux(&self) -> bool;
     fn list_panes_detailed(&self, session: &str) -> Vec<PaneInfo>;
-    fn capture_pane_by_index(
-        &self,
-        session: &str,
-        window_index: u32,
-        pane_index: u32,
-        lines: u32,
-    ) -> Option<String>;
+    fn capture_pane_content(&self, pane_id: &str, lines: u32) -> Option<String>;
 }

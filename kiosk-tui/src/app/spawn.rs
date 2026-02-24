@@ -8,7 +8,10 @@ use rayon::ThreadPoolBuilder;
 use std::{
     collections::HashMap,
     path::PathBuf,
-    sync::{Arc, atomic::Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     thread,
 };
 
@@ -383,17 +386,21 @@ pub(super) fn spawn_tracking_worktree_creation(
 const AGENT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Spawns a background thread that periodically detects agent states for the
-/// given tmux sessions. Runs until the sender's cancel flag is set.
+/// given tmux sessions. Runs until `cancel` is set or the sender's app-wide
+/// cancel flag is set.
 pub fn spawn_agent_status_poller<T: TmuxProvider + ?Sized + 'static>(
     tmux: &Arc<T>,
     sender: &EventSender,
     sessions: Vec<String>,
+    cancel: Arc<AtomicBool>,
 ) {
     let tmux = Arc::clone(tmux);
     let sender = sender.clone();
     thread::spawn(move || {
+        let is_cancelled =
+            || cancel.load(Ordering::Relaxed) || sender.cancel.load(Ordering::Relaxed);
         loop {
-            if sender.cancel.load(Ordering::Relaxed) {
+            if is_cancelled() {
                 return;
             }
 
@@ -404,7 +411,7 @@ pub fn spawn_agent_status_poller<T: TmuxProvider + ?Sized + 'static>(
             // Sleep in small increments so we can check cancel promptly
             let mut remaining = AGENT_POLL_INTERVAL;
             while !remaining.is_zero() {
-                if sender.cancel.load(Ordering::Relaxed) {
+                if is_cancelled() {
                     return;
                 }
                 let sleep = remaining.min(std::time::Duration::from_millis(200));

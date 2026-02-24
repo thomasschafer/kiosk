@@ -22,7 +22,7 @@ pub(super) fn handle_go_back(state: &mut AppState) {
         Mode::BranchSelect => {
             state.mode = Mode::RepoSelect;
             state.branch_list.input.clear();
-            state.agent_poller_active = false;
+            state.cancel_agent_poller();
         }
         Mode::SelectBaseBranch => {
             state.base_branch_selection = None;

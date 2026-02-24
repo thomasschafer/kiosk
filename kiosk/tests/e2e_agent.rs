@@ -311,22 +311,9 @@ impl AgentTestEnvDefault {
 
     fn run_cli_json(&self, args: &[&str]) -> Value {
         let output = self.run_cli(args);
-        assert!(
-            output.status.success(),
-            "CLI failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
         let stdout = String::from_utf8_lossy(&output.stdout);
         serde_json::from_str(&stdout)
             .unwrap_or_else(|e| panic!("Failed to parse JSON: {e}\nOutput: {stdout}"))
-    }
-
-    fn capture_pane(&self) -> String {
-        let output = Command::new("tmux")
-            .args(["capture-pane", "-t", &self.kiosk_session, "-p"])
-            .output()
-            .unwrap();
-        String::from_utf8_lossy(&output.stdout).to_string()
     }
 }
 

@@ -307,7 +307,7 @@ impl TmuxProvider for CliTmuxProvider {
                 "-t",
                 &format!("={session}"),
                 "-F",
-                "#{window_index}|#{pane_index}|#{pane_current_command}|#{pane_pid}",
+                "#{pane_id}|#{pane_current_command}|#{pane_pid}",
             ])
             .output();
 
@@ -325,18 +325,12 @@ impl TmuxProvider for CliTmuxProvider {
             .collect()
     }
 
-    fn capture_pane_by_index(
-        &self,
-        session: &str,
-        window_index: u32,
-        pane_index: u32,
-        lines: u32,
-    ) -> Option<String> {
+    fn capture_pane_content(&self, pane_id: &str, lines: u32) -> Option<String> {
         let output = Command::new("tmux")
             .args([
                 "capture-pane",
                 "-t",
-                &format!("={session}:{window_index}.{pane_index}"),
+                pane_id,
                 "-p",
                 "-S",
                 &format!("-{lines}"),
@@ -353,17 +347,15 @@ impl TmuxProvider for CliTmuxProvider {
 }
 
 /// Parse a single line of tmux list-panes output in the format:
-/// `{window_index}|{pane_index}|{pane_current_command}|{pane_pid}`
+/// `{pane_id}|{pane_current_command}|{pane_pid}`
 fn parse_pane_line(line: &str) -> Option<PaneInfo> {
-    let parts: Vec<&str> = line.splitn(4, '|').collect();
-    if parts.len() == 4 {
-        let window_index = parts[0].parse().ok()?;
-        let pane_index = parts[1].parse().ok()?;
-        let command = parts[2].to_string();
-        let pid = parts[3].parse().ok()?;
+    let parts: Vec<&str> = line.splitn(3, '|').collect();
+    if parts.len() == 3 {
+        let pane_id = parts[0].to_string();
+        let command = parts[1].to_string();
+        let pid = parts[2].parse().ok()?;
         Some(PaneInfo {
-            window_index,
-            pane_index,
+            pane_id,
             command,
             pid,
         })
@@ -413,41 +405,28 @@ mod tests {
 
     #[test]
     fn test_parse_pane_line_basic() {
-        let info = parse_pane_line("0|0|bash|12345").unwrap();
-        assert_eq!(info.window_index, 0);
-        assert_eq!(info.pane_index, 0);
+        let info = parse_pane_line("%0|bash|12345").unwrap();
+        assert_eq!(info.pane_id, "%0");
         assert_eq!(info.command, "bash");
         assert_eq!(info.pid, 12345);
     }
 
     #[test]
     fn test_parse_pane_line_complex_command() {
-        let info = parse_pane_line("1|2|claude-code|99999").unwrap();
-        assert_eq!(info.window_index, 1);
-        assert_eq!(info.pane_index, 2);
+        let info = parse_pane_line("%5|claude-code|99999").unwrap();
+        assert_eq!(info.pane_id, "%5");
         assert_eq!(info.command, "claude-code");
         assert_eq!(info.pid, 99999);
     }
 
     #[test]
-    fn test_parse_pane_line_invalid_window_index() {
-        assert!(parse_pane_line("abc|0|bash|12345").is_none());
-    }
-
-    #[test]
-    fn test_parse_pane_line_invalid_pane_index() {
-        assert!(parse_pane_line("0|abc|bash|12345").is_none());
-    }
-
-    #[test]
     fn test_parse_pane_line_invalid_pid() {
-        assert!(parse_pane_line("0|0|bash|notapid").is_none());
+        assert!(parse_pane_line("%0|bash|notapid").is_none());
     }
 
     #[test]
     fn test_parse_pane_line_too_few_fields() {
-        assert!(parse_pane_line("0|bash").is_none());
-        assert!(parse_pane_line("0|0|bash").is_none());
+        assert!(parse_pane_line("%0|bash").is_none());
         assert!(parse_pane_line("").is_none());
     }
 }

@@ -249,6 +249,7 @@ Defaults are shown below.
 [keys.modal]
 "enter" = "confirm"
 "esc" = "cancel"
+"tab" = "tab_complete"
 
 ```
 

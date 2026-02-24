@@ -2308,3 +2308,128 @@ fn test_e2e_headless_branches_json_stable_schema() {
         "should NOT have internal 'session_activity_ts' field"
     );
 }
+
+// ── Setup wizard E2E tests ──
+
+#[test]
+fn test_e2e_setup_wizard_welcome_screen() {
+    let env = TestEnv::new("setup-welcome");
+    // Don't write a config — this triggers the setup wizard
+    env.launch_kiosk();
+
+    let screen = wait_for_screen(&env, 3000, |s| s.contains("Welcome to Kiosk"));
+    assert!(
+        screen.contains("Welcome to Kiosk"),
+        "Should show welcome screen when no config exists: {screen}"
+    );
+    assert!(screen.contains("Enter"), "Should show Enter hint: {screen}");
+}
+
+#[test]
+fn test_e2e_setup_wizard_enter_advances_to_search_dirs() {
+    let env = TestEnv::new("setup-enter");
+    env.launch_kiosk();
+
+    wait_for_screen(&env, 3000, |s| s.contains("Welcome to Kiosk"));
+    env.send_special("Enter");
+
+    let screen = wait_for_screen(&env, 2000, |s| s.contains("Add directory"));
+    assert!(
+        screen.contains("Add directory"),
+        "Should show search dirs screen after Enter: {screen}"
+    );
+    assert!(
+        screen.contains("search directories") || screen.contains("git repos"),
+        "Should describe what dirs are for: {screen}"
+    );
+}
+
+#[test]
+fn test_e2e_setup_wizard_add_dir_and_finish() {
+    let env = TestEnv::new("setup-add-finish");
+    let search_dir = env.search_dir();
+
+    // Create a repo so the normal TUI has something to show
+    let repo = search_dir.join("setup-test-repo");
+    fs::create_dir_all(&repo).unwrap();
+    init_test_repo(&repo);
+
+    env.launch_kiosk();
+
+    wait_for_screen(&env, 3000, |s| s.contains("Welcome to Kiosk"));
+    env.send_special("Enter");
+    wait_for_screen(&env, 2000, |s| s.contains("Add directory"));
+
+    // Type the search dir path
+    let dir_str = search_dir.to_string_lossy().to_string();
+    env.send(&dir_str);
+    wait_ms(500);
+
+    // Press Enter — if completion is selected this fills it, otherwise adds the dir.
+    // Keep pressing Enter until we see it in the Added list or leave the setup screen.
+    for _ in 0..5 {
+        env.send_special("Enter");
+        wait_ms(500);
+        let screen = env.capture();
+        if screen.contains("✓")
+            || screen.contains("select repo")
+            || screen.contains("Config written")
+        {
+            break;
+        }
+    }
+
+    // Press Enter on empty input to finish (if still in setup)
+    env.send_special("Enter");
+    wait_ms(500);
+    env.send_special("Enter");
+
+    // Wait for either normal TUI or config written message
+    let screen = wait_for_screen(&env, 8000, |s| {
+        s.contains("setup-test-repo") || s.contains("select repo") || s.contains("Config written")
+    });
+
+    // Verify config file was created
+    assert!(
+        env.config_file_path().exists(),
+        "Config file should exist at {}. Screen: {screen}",
+        env.config_file_path().display()
+    );
+}
+
+#[test]
+fn test_e2e_setup_wizard_not_triggered_with_config_flag() {
+    let env = TestEnv::new("setup-config-flag");
+    let nonexistent = env.tmp.path().join("nonexistent.toml");
+
+    // Use a fake XDG_CONFIG_HOME that has no kiosk config
+    let fake_xdg = env.tmp.path().join("fake-xdg");
+    fs::create_dir_all(&fake_xdg).unwrap();
+
+    env.launch_kiosk_with_config_arg(&nonexistent, &fake_xdg);
+    wait_ms(1000);
+
+    let screen = env.capture();
+    // With --config pointing to nonexistent file, should error, not show wizard
+    assert!(
+        !screen.contains("Welcome to Kiosk"),
+        "Should NOT show setup wizard when --config is specified: {screen}"
+    );
+}
+
+#[test]
+fn test_e2e_setup_wizard_esc_quits() {
+    let env = TestEnv::new("setup-esc-quits");
+    env.launch_kiosk();
+
+    wait_for_screen(&env, 3000, |s| s.contains("Welcome to Kiosk"));
+    env.send_special("Escape");
+
+    // After quit, the kiosk process exits and the tmux command moves to `sleep 2`
+    // The screen should eventually no longer show the Welcome message
+    let screen = wait_for_screen(&env, 3000, |s| !s.contains("Welcome to Kiosk"));
+    assert!(
+        !screen.contains("Welcome to Kiosk"),
+        "Wizard should be gone after Esc: {screen}"
+    );
+}

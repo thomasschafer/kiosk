@@ -3,7 +3,10 @@ use kiosk_core::{
     config::KeysConfig,
     git::GitProvider,
     pending_delete::{PendingWorktreeDelete, save_pending_worktree_deletes},
-    state::{AppState, BaseBranchSelection, HelpOverlayState, Mode, SearchableList, worktree_dir},
+    state::{
+        AppState, BaseBranchSelection, HelpOverlayState, Mode, SearchableList, SetupStep,
+        worktree_dir,
+    },
     tmux::TmuxProvider,
 };
 use std::sync::Arc;
@@ -32,7 +35,7 @@ pub(super) fn handle_go_back(state: &mut AppState) {
             state.help_overlay = None;
             state.mode = *previous;
         }
-        Mode::RepoSelect | Mode::Loading(_) => {}
+        Mode::Setup(_) | Mode::RepoSelect | Mode::Loading(_) => {}
     }
 }
 
@@ -242,7 +245,8 @@ pub(super) fn handle_open_branch(
         Mode::RepoSelect
         | Mode::ConfirmWorktreeDelete { .. }
         | Mode::Loading(_)
-        | Mode::Help { .. } => {}
+        | Mode::Help { .. }
+        | Mode::Setup(_) => {}
     }
     None
 }
@@ -324,6 +328,153 @@ pub(super) fn handle_search_delete_to_end(state: &mut AppState, matcher: &SkimMa
         list.delete_to_end();
     }
     update_active_filter(state, matcher);
+}
+
+// ── Setup action handlers ──
+
+pub(super) fn handle_setup_continue(state: &mut AppState) {
+    state.mode = Mode::Setup(SetupStep::SearchDirs);
+    if state.setup.is_none() {
+        state.setup = Some(kiosk_core::state::SetupState::new());
+    }
+}
+
+pub(super) fn handle_setup_add_dir(state: &mut AppState) -> Option<super::OpenAction> {
+    let Some(setup) = &mut state.setup else {
+        return None;
+    };
+
+    // If a completion is selected, fill it into input instead
+    if let Some(sel) = setup.selected_completion
+        && let Some(completion) = setup.completions.get(sel).cloned()
+    {
+        let with_slash = if completion.ends_with('/') {
+            completion
+        } else {
+            format!("{completion}/")
+        };
+        setup.input = with_slash;
+        setup.cursor = setup.input.len();
+        setup.completions.clear();
+        setup.selected_completion = None;
+        update_setup_completions(state);
+        return None;
+    }
+
+    let input = setup.input.trim().to_string();
+    if input.is_empty() {
+        if setup.dirs.is_empty() {
+            state.error = Some("Add at least one directory".to_string());
+            return None;
+        }
+        // Finish setup
+        return Some(super::OpenAction::SetupComplete);
+    }
+
+    if !setup.dirs.contains(&input) {
+        setup.dirs.push(input);
+    }
+    setup.input.clear();
+    setup.cursor = 0;
+    setup.completions.clear();
+    setup.selected_completion = None;
+    None
+}
+
+pub(super) fn handle_setup_tab_complete(state: &mut AppState) {
+    let Some(setup) = &mut state.setup else {
+        return;
+    };
+
+    // Generate completions if not already present
+    if setup.completions.is_empty() {
+        setup.completions = crate::components::path_input::complete(&setup.input);
+        if !setup.completions.is_empty() {
+            setup.selected_completion = Some(0);
+        }
+        return;
+    }
+
+    if setup.completions.len() == 1 {
+        // Single match: complete fully and append /
+        let c = setup.completions[0].clone();
+        setup.input = if c.ends_with('/') { c } else { format!("{c}/") };
+        setup.cursor = setup.input.len();
+        setup.completions.clear();
+        setup.selected_completion = None;
+        // Re-generate completions for new input
+        update_setup_completions(state);
+        return;
+    }
+
+    // Multiple: fill to common prefix
+    let common = crate::components::path_input::common_prefix(&setup.completions);
+    if !common.is_empty() && common != setup.input {
+        setup.input = common;
+        setup.cursor = setup.input.len();
+        setup.completions = crate::components::path_input::complete(&setup.input);
+        setup.selected_completion = if setup.completions.is_empty() {
+            None
+        } else {
+            Some(0)
+        };
+    }
+}
+
+pub(super) fn handle_setup_search_push(state: &mut AppState, c: char) {
+    let Some(setup) = &mut state.setup else {
+        return;
+    };
+    setup.input.insert(setup.cursor, c);
+    setup.cursor += c.len_utf8();
+    update_setup_completions(state);
+}
+
+pub(super) fn handle_setup_search_pop(state: &mut AppState) {
+    let Some(setup) = &mut state.setup else {
+        return;
+    };
+    if setup.cursor > 0 && !setup.input.is_empty() {
+        // Find previous char boundary
+        let new_cursor = setup.input[..setup.cursor]
+            .char_indices()
+            .next_back()
+            .map_or(0, |(i, _)| i);
+        setup.input.drain(new_cursor..setup.cursor);
+        setup.cursor = new_cursor;
+    }
+    update_setup_completions(state);
+}
+
+pub(super) fn handle_setup_move_selection(state: &mut AppState, delta: i32) {
+    let Some(setup) = &mut state.setup else {
+        return;
+    };
+    if setup.completions.is_empty() {
+        return;
+    }
+    let len = setup.completions.len();
+    let current = setup.selected_completion.unwrap_or(0);
+    let new = if delta > 0 {
+        current
+            .saturating_add(delta.unsigned_abs() as usize)
+            .min(len - 1)
+    } else {
+        current.saturating_sub(delta.unsigned_abs() as usize)
+    };
+    setup.selected_completion = Some(new);
+}
+
+fn update_setup_completions(state: &mut AppState) {
+    let Some(setup) = &mut state.setup else {
+        return;
+    };
+    setup.completions = crate::components::path_input::complete(&setup.input);
+    setup.selected_completion = if setup.completions.is_empty() {
+        None
+    } else {
+        Some(0)
+    };
 }
 
 fn update_active_filter(state: &mut AppState, matcher: &SkimMatcherV2) {

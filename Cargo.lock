@@ -704,6 +704,7 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "crossterm",
+ "dirs",
  "fuzzy-matcher",
  "kiosk-core",
  "ratatui",

@@ -538,6 +538,48 @@ fn repo_max_activity(repo: &Repo, session_activity: &HashMap<String, u64>) -> Op
         .max()
 }
 
+/// Setup wizard step
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SetupStep {
+    /// Brief welcome screen
+    Welcome,
+    /// Directory entry with autocomplete
+    SearchDirs,
+}
+
+/// Setup wizard state
+#[derive(Debug, Clone)]
+pub struct SetupState {
+    /// Current text input
+    pub input: String,
+    /// Cursor position in input
+    pub cursor: usize,
+    /// Current filesystem completions
+    pub completions: Vec<String>,
+    /// Which completion is highlighted
+    pub selected_completion: Option<usize>,
+    /// Directories added so far
+    pub dirs: Vec<String>,
+}
+
+impl SetupState {
+    pub fn new() -> Self {
+        Self {
+            input: String::new(),
+            cursor: 0,
+            completions: Vec::new(),
+            selected_completion: None,
+            dirs: Vec::new(),
+        }
+    }
+}
+
+impl Default for SetupState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// What mode the app is in
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Mode {
@@ -555,6 +597,8 @@ pub enum Mode {
     Help {
         previous: Box<Mode>,
     },
+    /// Setup wizard for first-time config
+    Setup(SetupStep),
 }
 
 impl Mode {
@@ -586,14 +630,18 @@ impl Mode {
                 Command::ShowHelp,
                 Command::Quit,
             ],
-            Mode::Loading(_) | Mode::Help { .. } => &[],
+            Mode::Setup(_) | Mode::Loading(_) | Mode::Help { .. } => &[],
         }
     }
 
     pub(crate) fn supports_text_edit(&self) -> bool {
         matches!(
             self,
-            Mode::RepoSelect | Mode::BranchSelect | Mode::SelectBaseBranch | Mode::Help { .. }
+            Mode::RepoSelect
+                | Mode::BranchSelect
+                | Mode::SelectBaseBranch
+                | Mode::Help { .. }
+                | Mode::Setup(SetupStep::SearchDirs)
         )
     }
 
@@ -607,7 +655,7 @@ impl Mode {
     pub(crate) fn supports_modal_actions(&self) -> bool {
         matches!(
             self,
-            Mode::SelectBaseBranch | Mode::ConfirmWorktreeDelete { .. }
+            Mode::SelectBaseBranch | Mode::ConfirmWorktreeDelete { .. } | Mode::Setup(_)
         )
     }
 
@@ -649,6 +697,7 @@ pub struct AppState {
 
     pub base_branch_selection: Option<BaseBranchSelection>,
     pub help_overlay: Option<HelpOverlayState>,
+    pub setup: Option<SetupState>,
 
     pub split_command: Option<String>,
     pub mode: Mode,
@@ -675,6 +724,7 @@ impl AppState {
             branch_list: SearchableList::new(0),
             base_branch_selection: None,
             help_overlay: None,
+            setup: None,
             split_command,
             mode: Mode::RepoSelect,
             loading_branches: false,
@@ -697,8 +747,32 @@ impl AppState {
             branch_list: SearchableList::new(0),
             base_branch_selection: None,
             help_overlay: None,
+            setup: None,
             split_command,
             mode: Mode::Loading(loading_message.to_string()),
+            loading_branches: false,
+            error: None,
+            active_list_page_rows: 10,
+            pending_worktree_deletes: Vec::new(),
+            session_activity: HashMap::new(),
+            current_repo_path: None,
+            cwd_worktree_path: None,
+        }
+    }
+
+    pub fn new_setup() -> Self {
+        Self {
+            repos: Vec::new(),
+            repo_list: SearchableList::new(0),
+            loading_repos: false,
+            selected_repo_idx: None,
+            branches: Vec::new(),
+            branch_list: SearchableList::new(0),
+            base_branch_selection: None,
+            help_overlay: None,
+            setup: Some(SetupState::new()),
+            split_command: None,
+            mode: Mode::Setup(SetupStep::Welcome),
             loading_branches: false,
             error: None,
             active_list_page_rows: 10,
@@ -2014,5 +2088,35 @@ mod tests {
         let json = serde_json::to_string(&entry).unwrap();
         let decoded: BranchEntry = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded, entry);
+    }
+
+    #[test]
+    fn test_setup_state_new() {
+        let setup = SetupState::new();
+        assert!(setup.input.is_empty());
+        assert_eq!(setup.cursor, 0);
+        assert!(setup.completions.is_empty());
+        assert!(setup.selected_completion.is_none());
+        assert!(setup.dirs.is_empty());
+    }
+
+    #[test]
+    fn test_app_state_new_setup() {
+        let state = AppState::new_setup();
+        assert!(state.setup.is_some());
+        assert_eq!(state.mode, Mode::Setup(SetupStep::Welcome));
+        assert!(state.repos.is_empty());
+    }
+
+    #[test]
+    fn test_setup_step_supports_text_edit() {
+        assert!(Mode::Setup(SetupStep::SearchDirs).supports_text_edit());
+        assert!(!Mode::Setup(SetupStep::Welcome).supports_text_edit());
+    }
+
+    #[test]
+    fn test_setup_step_supports_modal() {
+        assert!(Mode::Setup(SetupStep::Welcome).supports_modal_actions());
+        assert!(Mode::Setup(SetupStep::SearchDirs).supports_modal_actions());
     }
 }

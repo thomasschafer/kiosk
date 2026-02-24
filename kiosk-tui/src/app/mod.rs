@@ -6,8 +6,9 @@ use actions::{
     enter_branch_select, enter_branch_select_with_loading, handle_confirm_delete,
     handle_delete_worktree, handle_go_back, handle_open_branch, handle_search_delete_forward,
     handle_search_delete_to_end, handle_search_delete_to_start, handle_search_delete_word,
-    handle_search_delete_word_forward, handle_search_pop, handle_search_push, handle_show_help,
-    handle_start_new_branch,
+    handle_search_delete_word_forward, handle_search_pop, handle_search_push, handle_setup_add_dir,
+    handle_setup_continue, handle_setup_move_selection, handle_setup_search_pop,
+    handle_setup_search_push, handle_setup_tab_complete, handle_show_help, handle_start_new_branch,
 };
 use crossterm::event::{self, Event, KeyEventKind};
 use fuzzy_matcher::{FuzzyMatcher, skim::SkimMatcherV2};
@@ -46,6 +47,8 @@ pub enum OpenAction {
         session_name: String,
         split_command: Option<String>,
     },
+    /// Setup wizard completed — dirs are stored in `AppState.setup`
+    SetupComplete,
     Quit,
 }
 
@@ -187,6 +190,9 @@ fn draw(
             components::branch_picker::draw(f, main_area, state, theme, keys);
             draw_confirm_delete_dialog(f, main_area, state, theme, keys);
         }
+        Mode::Setup(_) => {
+            components::setup::draw(f, state, theme);
+        }
         Mode::Help { previous } => {
             // Draw the previous mode as background
             match previous.as_ref() {
@@ -203,6 +209,9 @@ fn draw(
                 Mode::ConfirmWorktreeDelete { .. } => {
                     components::branch_picker::draw(f, main_area, state, theme, keys);
                     draw_confirm_delete_dialog(f, main_area, state, theme, keys);
+                }
+                Mode::Setup(_) => {
+                    components::setup::draw(f, state, theme);
                 }
                 // Loading is handled by the early-return guard; Help cannot nest.
                 Mode::Loading(_) | Mode::Help { .. } => {}
@@ -273,7 +282,7 @@ fn active_list_page_rows(full_area: Rect, main_area: Rect, mode: &Mode) -> usize
             let chunks = Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(popup);
             list_rows_from_list_area(chunks[1])
         }
-        Mode::Loading(_) => 1,
+        Mode::Setup(_) | Mode::Loading(_) => 1,
     }
 }
 
@@ -773,6 +782,43 @@ fn update_help_scroll_offset(
 
 /// Handle simple cursor and error actions
 fn handle_simple_actions(action: &Action, state: &mut AppState) -> bool {
+    // Setup mode cursor movement
+    if matches!(
+        state.mode,
+        Mode::Setup(kiosk_core::state::SetupStep::SearchDirs)
+    ) && let Some(setup) = &mut state.setup
+    {
+        match action {
+            Action::CursorLeft => {
+                if setup.cursor > 0 {
+                    setup.cursor = setup.input[..setup.cursor]
+                        .char_indices()
+                        .next_back()
+                        .map_or(0, |(i, _)| i);
+                }
+                return true;
+            }
+            Action::CursorRight => {
+                if setup.cursor < setup.input.len() {
+                    setup.cursor = setup.input[setup.cursor..]
+                        .char_indices()
+                        .nth(1)
+                        .map_or(setup.input.len(), |(i, _)| setup.cursor + i);
+                }
+                return true;
+            }
+            Action::CursorStart => {
+                setup.cursor = 0;
+                return true;
+            }
+            Action::CursorEnd => {
+                setup.cursor = setup.input.len();
+                return true;
+            }
+            _ => {}
+        }
+    }
+
     match action {
         Action::CursorLeft => {
             if let Some(list) = state.active_list_mut() {
@@ -875,15 +921,40 @@ fn process_action<T: TmuxProvider + ?Sized + 'static>(
         }
 
         Action::MoveSelection(delta) => {
-            if let Some(list) = state.active_list_mut() {
-                list.move_selection(delta);
+            if matches!(
+                state.mode,
+                Mode::Setup(kiosk_core::state::SetupStep::SearchDirs)
+            ) {
+                handle_setup_move_selection(state, delta);
+            } else {
+                if let Some(list) = state.active_list_mut() {
+                    list.move_selection(delta);
+                }
+                let page_rows = state.active_list_page_rows();
+                update_active_list_scroll_offset(state, page_rows);
             }
-            let page_rows = state.active_list_page_rows();
-            update_active_list_scroll_offset(state, page_rows);
         }
 
-        Action::SearchPush(c) => handle_search_push(state, ctx.matcher, c),
-        Action::SearchPop => handle_search_pop(state, ctx.matcher),
+        Action::SearchPush(c) => {
+            if matches!(
+                state.mode,
+                Mode::Setup(kiosk_core::state::SetupStep::SearchDirs)
+            ) {
+                handle_setup_search_push(state, c);
+            } else {
+                handle_search_push(state, ctx.matcher, c);
+            }
+        }
+        Action::SearchPop => {
+            if matches!(
+                state.mode,
+                Mode::Setup(kiosk_core::state::SetupStep::SearchDirs)
+            ) {
+                handle_setup_search_pop(state);
+            } else {
+                handle_search_pop(state, ctx.matcher);
+            }
+        }
         Action::SearchDeleteForward => handle_search_delete_forward(state, ctx.matcher),
         Action::SearchDeleteWordForward => handle_search_delete_word_forward(state, ctx.matcher),
         Action::SearchDeleteToStart => handle_search_delete_to_start(state, ctx.matcher),
@@ -897,6 +968,15 @@ fn process_action<T: TmuxProvider + ?Sized + 'static>(
         Action::SearchDeleteWord => handle_search_delete_word(state, ctx.matcher),
 
         Action::ShowHelp => handle_show_help(state, ctx.keys),
+
+        // Setup actions
+        Action::SetupContinue => handle_setup_continue(state),
+        Action::SetupAddDir => {
+            if let Some(result) = handle_setup_add_dir(state) {
+                return Some(result);
+            }
+        }
+        Action::SetupTabComplete => handle_setup_tab_complete(state),
 
         // Movement, cursor, and cancel actions are handled by helper functions above.
         // If we reach here, it means the action wasn't applicable in the current mode
@@ -1320,7 +1400,7 @@ mod tests {
                 assert_eq!(path, PathBuf::from("/tmp/alpha"));
                 assert_eq!(session_name, "alpha");
             }
-            OpenAction::Quit => panic!("Expected OpenAction::Open"),
+            OpenAction::Quit | OpenAction::SetupComplete => panic!("Expected OpenAction::Open"),
         }
     }
 
@@ -1527,7 +1607,7 @@ mod tests {
                 assert_eq!(session_name, "beta");
                 assert_eq!(split_command.as_deref(), Some("hx"));
             }
-            OpenAction::Quit => panic!("Expected OpenAction::Open"),
+            OpenAction::Quit | OpenAction::SetupComplete => panic!("Expected OpenAction::Open"),
         }
     }
 

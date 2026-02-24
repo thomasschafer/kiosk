@@ -11,7 +11,7 @@ pub use keys::{Command, KeysConfig};
 
 pub const APP_NAME: &str = "kiosk";
 
-fn config_dir() -> PathBuf {
+pub fn config_dir() -> PathBuf {
     // Use ~/.config on both Linux and macOS (not ~/Library/Application Support)
     #[cfg(unix)]
     {
@@ -293,6 +293,40 @@ pub fn load_config_from_str(s: &str) -> Result<Config> {
     Ok(config)
 }
 
+/// Check whether the default config file exists
+pub fn config_file_exists() -> bool {
+    config_file().exists()
+}
+
+/// Format a minimal config TOML string from search directories.
+pub fn format_default_config(dirs: &[String]) -> String {
+    let mut content = String::from(
+        "# Kiosk configuration\n# See https://github.com/thomasschafer/kiosk for all options\n\n",
+    );
+    content.push_str("search_dirs = [");
+    for (i, d) in dirs.iter().enumerate() {
+        if i > 0 {
+            content.push_str(", ");
+        }
+        content.push('"');
+        content.push_str(d);
+        content.push('"');
+    }
+    content.push_str("]\n");
+    content
+}
+
+/// Write a default config file with the specified search directories.
+/// Creates parent directories as needed. Returns the path written to.
+pub fn write_default_config(dirs: &[String]) -> Result<PathBuf> {
+    let dir = config_dir();
+    fs::create_dir_all(&dir)?;
+    let path = dir.join("config.toml");
+    let content = format_default_config(dirs);
+    fs::write(&path, content)?;
+    Ok(path)
+}
+
 pub fn load_config(config_override: Option<&Path>) -> Result<Config> {
     let config_file = match config_override {
         Some(path) => path.to_path_buf(),
@@ -506,6 +540,38 @@ unknown = "bad"
                 "Alias '{alias}' should parse as a valid color"
             );
         }
+    }
+
+    #[test]
+    fn test_format_default_config_is_valid_toml() {
+        let dirs = vec!["~/Development".to_string(), "~/Work".to_string()];
+        let content = format_default_config(&dirs);
+        assert!(content.contains("search_dirs"));
+        let _config: Config = toml::from_str(&content).unwrap();
+    }
+
+    #[test]
+    fn test_format_default_config_roundtrip() {
+        let dirs = vec!["~/Projects".to_string(), "~/Code".to_string()];
+        let content = format_default_config(&dirs);
+        let config = load_config_from_str(&content).unwrap();
+        let paths: Vec<String> = config
+            .search_dirs
+            .iter()
+            .map(|e| match e {
+                SearchDirEntry::Simple(s) => s.clone(),
+                SearchDirEntry::Rich { path, .. } => path.clone(),
+            })
+            .collect();
+        assert_eq!(paths, dirs);
+    }
+
+    #[test]
+    fn test_format_default_config_single_dir() {
+        let dirs = vec!["~/Dev".to_string()];
+        let content = format_default_config(&dirs);
+        let config = load_config_from_str(&content).unwrap();
+        assert_eq!(config.search_dirs.len(), 1);
     }
 
     #[test]

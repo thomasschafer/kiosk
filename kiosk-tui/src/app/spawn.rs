@@ -1,5 +1,5 @@
 use kiosk_core::{
-    agent::{self, AgentKind},
+    agent::{self, AgentStatus},
     event::AppEvent,
     git::GitProvider,
     state::BranchEntry,
@@ -8,7 +8,6 @@ use rayon::ThreadPoolBuilder;
 use std::{
     collections::HashMap,
     path::PathBuf,
-    process::Command,
     sync::{Arc, atomic::Ordering},
     thread,
 };
@@ -398,7 +397,7 @@ pub fn spawn_agent_status_poller<T: TmuxProvider + ?Sized + 'static>(
                 return;
             }
 
-            let states = detect_agent_states(&*tmux, &sessions);
+            let states = detect_agent_statuses(&*tmux, &sessions);
             if !states.is_empty() {
                 sender.send(AppEvent::AgentStatesUpdated { states });
             }
@@ -417,89 +416,15 @@ pub fn spawn_agent_status_poller<T: TmuxProvider + ?Sized + 'static>(
     });
 }
 
-fn detect_agent_states<T: TmuxProvider + ?Sized>(
+fn detect_agent_statuses<T: TmuxProvider + ?Sized>(
     tmux: &T,
     sessions: &[(String, PathBuf)],
-) -> Vec<(String, kiosk_core::AgentState)> {
-    let mut states = Vec::new();
-
-    for (session_name, _worktree_path) in sessions {
-        let panes = tmux.list_panes_detailed(session_name);
-
-        for pane in panes {
-            let mut agent_kind = agent::detect::detect_agent_kind(&pane.command, None);
-
-            // If pane command doesn't reveal the agent, check child processes
-            if agent_kind == AgentKind::Unknown {
-                let child_args = get_child_process_args(pane.pid);
-                if let Some(ref args) = child_args {
-                    agent_kind = agent::detect::detect_agent_kind(&pane.command, Some(args));
-                }
-            }
-
-            if agent_kind != AgentKind::Unknown
-                && let Some(content) = tmux.capture_pane_by_index(session_name, pane.pane_index, 30)
-            {
-                let state = agent::detect::detect_state(&content, agent_kind);
-                states.push((session_name.clone(), state));
-                break; // One agent per session is enough
-            }
-        }
-    }
-
-    states
-}
-
-/// Get command-line arguments of child processes for a given PID.
-/// Portable across Linux (incl. WSL) and macOS.
-fn get_child_process_args(pid: u32) -> Option<String> {
-    // Try /proc first (Linux, WSL) — children file contains space-separated child PIDs
-    if let Ok(children) = std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children")) {
-        let mut args = String::new();
-        for child_pid in children.split_whitespace() {
-            if let Ok(cmdline) = std::fs::read_to_string(format!("/proc/{child_pid}/cmdline")) {
-                // cmdline uses null bytes as separators
-                let readable = cmdline.replace('\0', " ");
-                args.push_str(&readable);
-                args.push('\n');
-            }
-        }
-        if !args.is_empty() {
-            return Some(args);
-        }
-    }
-
-    // Fallback: use pgrep + ps (works on Linux and macOS)
-    let pgrep_output = Command::new("pgrep")
-        .args(["-P", &pid.to_string()])
-        .output()
-        .ok()?;
-
-    if !pgrep_output.status.success() {
-        return None;
-    }
-
-    let pgrep_str = String::from_utf8_lossy(&pgrep_output.stdout).to_string();
-    let child_pids: Vec<&str> = pgrep_str.lines().filter(|s| !s.is_empty()).collect();
-
-    if child_pids.is_empty() {
-        return None;
-    }
-
-    // ps -o args= -p <pid1> -p <pid2> ... works on both Linux and macOS
-    let mut ps_cmd = Command::new("ps");
-    ps_cmd.args(["-o", "args="]);
-    for cpid in &child_pids {
-        ps_cmd.args(["-p", cpid]);
-    }
-    let output = ps_cmd.output().ok()?;
-
-    if output.status.success() {
-        let args = String::from_utf8_lossy(&output.stdout).to_string();
-        if !args.trim().is_empty() {
-            return Some(args);
-        }
-    }
-
-    None
+) -> Vec<(String, AgentStatus)> {
+    sessions
+        .iter()
+        .filter_map(|(session_name, _)| {
+            agent::detect_for_session(tmux, session_name)
+                .map(|status| (session_name.clone(), status))
+        })
+        .collect()
 }

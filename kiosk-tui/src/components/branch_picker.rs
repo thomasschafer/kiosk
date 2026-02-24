@@ -75,9 +75,9 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, _keys: &
                 ));
             }
             // Add agent status indicator if present
-            if let Some(agent_state) = branch.agent_state {
+            if let Some(ref agent_status) = branch.agent_status {
                 use kiosk_core::agent::AgentState;
-                let (icon, color) = match agent_state {
+                let (icon, color) = match agent_status.state {
                     AgentState::Running => ("⚡", theme.accent),
                     AgentState::Waiting => ("⏳", Color::Yellow),
                     AgentState::Idle => ("●", Color::DarkGray),

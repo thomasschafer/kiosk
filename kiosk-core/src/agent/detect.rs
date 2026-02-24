@@ -237,18 +237,12 @@ mod tests {
 
     #[test]
     fn test_claude_idle() {
-        assert_eq!(
-            detect_state("$ ", AgentKind::ClaudeCode),
-            AgentState::Idle
-        );
+        assert_eq!(detect_state("$ ", AgentKind::ClaudeCode), AgentState::Idle);
         assert_eq!(
             detect_state("Welcome to Claude Code\n> ", AgentKind::ClaudeCode),
             AgentState::Idle
         );
-        assert_eq!(
-            detect_state("", AgentKind::ClaudeCode),
-            AgentState::Idle
-        );
+        assert_eq!(detect_state("", AgentKind::ClaudeCode), AgentState::Idle);
     }
 
     #[test]
@@ -291,10 +285,7 @@ mod tests {
 
     #[test]
     fn test_codex_idle() {
-        assert_eq!(
-            detect_state("> ", AgentKind::Codex),
-            AgentState::Idle
-        );
+        assert_eq!(detect_state("> ", AgentKind::Codex), AgentState::Idle);
         assert_eq!(
             detect_state("Codex ready\n> ", AgentKind::Codex),
             AgentState::Idle
@@ -309,14 +300,8 @@ mod tests {
             detect_state("esc to interrupt", AgentKind::Unknown),
             AgentState::Idle
         );
-        assert_eq!(
-            detect_state("(Y/n)", AgentKind::Unknown),
-            AgentState::Idle
-        );
-        assert_eq!(
-            detect_state("", AgentKind::Unknown),
-            AgentState::Idle
-        );
+        assert_eq!(detect_state("(Y/n)", AgentKind::Unknown), AgentState::Idle);
+        assert_eq!(detect_state("", AgentKind::Unknown), AgentState::Idle);
     }
 
     // -- ANSI stripping ------------------------------------------------------

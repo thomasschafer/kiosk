@@ -143,6 +143,8 @@ struct BranchOutput {
     has_session: bool,
     is_current: bool,
     remote: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_status: Option<kiosk_core::AgentStatus>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -163,6 +165,8 @@ struct StatusOutput {
     attached: bool,
     clients: usize,
     source: StatusSource,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_status: Option<kiosk_core::AgentStatus>,
     output: String,
 }
 
@@ -183,6 +187,8 @@ struct SessionOutput {
     last_activity: u64,
     pane_count: usize,
     current_command: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_status: Option<kiosk_core::AgentStatus>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -308,6 +314,16 @@ pub fn cmd_branches(
     }
     entries.extend(remote);
     BranchEntry::sort_entries(&mut entries);
+
+    // Detect agent status for branches with active sessions
+    for entry in &mut entries {
+        if entry.has_session
+            && let Some(ref wt_path) = entry.worktree_path
+        {
+            let session_name = repo.tmux_session_name(wt_path);
+            entry.agent_status = kiosk_core::agent::detect_for_session(tmux, &session_name);
+        }
+    }
 
     let output: Vec<BranchOutput> = entries.iter().map(BranchOutput::from).collect();
 
@@ -591,6 +607,9 @@ pub fn cmd_status(
                 StatusSource::Log => "log",
             }
         );
+        if let Some(ref agent) = output.agent_status {
+            println!("agent: {} ({})", agent.kind, agent.state);
+        }
         println!("output:\n{}", output.output);
     }
 
@@ -635,12 +654,19 @@ fn status_internal(
         (tail_lines(&log, lines), Vec::new(), StatusSource::Log)
     };
 
+    let agent_status = if session_exists {
+        kiosk_core::agent::detect_for_session(tmux, &session_name)
+    } else {
+        None
+    };
+
     Ok(StatusOutput {
         session: session_name,
         path: worktree_path,
         attached: !clients.is_empty(),
         clients: clients.len(),
         source,
+        agent_status,
         output,
     })
 }
@@ -666,6 +692,7 @@ pub fn cmd_sessions(
             let current_command = tmux
                 .pane_current_command(&session, "0")
                 .unwrap_or_else(|_| "unknown".to_string());
+            let agent_status = kiosk_core::agent::detect_for_session(tmux, &session);
 
             output.push(SessionOutput {
                 session: session.clone(),
@@ -676,6 +703,7 @@ pub fn cmd_sessions(
                 last_activity,
                 pane_count,
                 current_command,
+                agent_status,
             });
         }
     }
@@ -858,6 +886,7 @@ impl From<&BranchEntry> for BranchOutput {
             has_session: entry.has_session,
             is_current: entry.is_current,
             remote: entry.remote.clone(),
+            agent_status: entry.agent_status,
         }
     }
 }
@@ -908,6 +937,7 @@ fn format_repo_table(repos: &[RepoOutput]) -> String {
 fn format_branch_table(entries: &[BranchEntry]) -> String {
     let branch_header = "branch";
     let stat_header = "stat";
+    let agent_header = "agent";
     let worktree_header = "worktree";
     let branch_width = entries
         .iter()
@@ -916,12 +946,25 @@ fn format_branch_table(entries: &[BranchEntry]) -> String {
         .unwrap_or(branch_header.len())
         .max(branch_header.len());
     let stat_width = stat_header.len().max(4);
+    let has_agents = entries.iter().any(|e| e.agent_status.is_some());
+    let agent_width = if has_agents {
+        agent_header.len().max(7)
+    } else {
+        0
+    };
 
     let mut out = String::new();
-    let _ = writeln!(
-        out,
-        "{branch_header:<branch_width$}  {stat_header:<stat_width$}  {worktree_header}"
-    );
+    if has_agents {
+        let _ = writeln!(
+            out,
+            "{branch_header:<branch_width$}  {stat_header:<stat_width$}  {agent_header:<agent_width$}  {worktree_header}"
+        );
+    } else {
+        let _ = writeln!(
+            out,
+            "{branch_header:<branch_width$}  {stat_header:<stat_width$}  {worktree_header}"
+        );
+    }
     for entry in entries {
         let stat = format!(
             "{}{}{}{}",
@@ -938,11 +981,22 @@ fn format_branch_table(entries: &[BranchEntry]) -> String {
             .worktree_path
             .as_ref()
             .map_or_else(|| "-".to_string(), |path| path.display().to_string());
-        let _ = writeln!(
-            out,
-            "{:<branch_width$}  {:<stat_width$}  {}",
-            entry.name, stat, worktree
-        );
+        if has_agents {
+            let agent = entry
+                .agent_status
+                .map_or_else(|| "-".to_string(), |s| s.state.to_string());
+            let _ = writeln!(
+                out,
+                "{:<branch_width$}  {:<stat_width$}  {:<agent_width$}  {}",
+                entry.name, stat, agent, worktree
+            );
+        } else {
+            let _ = writeln!(
+                out,
+                "{:<branch_width$}  {:<stat_width$}  {}",
+                entry.name, stat, worktree
+            );
+        }
     }
     out
 }
@@ -979,21 +1033,53 @@ fn format_session_table(rows: &[SessionOutput]) -> String {
         .unwrap_or(path_header.len())
         .max(path_header.len());
 
+    let has_agents = rows.iter().any(|r| r.agent_status.is_some());
+    let agent_header = "agent";
+    let agent_width = if has_agents {
+        agent_header.len().max(7)
+    } else {
+        0
+    };
+
     let mut out = String::new();
-    let _ = writeln!(
-        out,
-        "{session_header:<session_width$}  {repo_header:<repo_width$}  {branch_header:<branch_width$}  {path_header:<path_width$}  {attached_header}"
-    );
-    for row in rows {
+    if has_agents {
         let _ = writeln!(
             out,
-            "{:<session_width$}  {:<repo_width$}  {:<branch_width$}  {:<path_width$}  {}",
-            row.session,
-            row.repo,
-            row.branch.as_deref().unwrap_or("(detached)"),
-            row.path.display(),
-            row.attached
+            "{session_header:<session_width$}  {repo_header:<repo_width$}  {branch_header:<branch_width$}  {agent_header:<agent_width$}  {path_header:<path_width$}  {attached_header}"
         );
+    } else {
+        let _ = writeln!(
+            out,
+            "{session_header:<session_width$}  {repo_header:<repo_width$}  {branch_header:<branch_width$}  {path_header:<path_width$}  {attached_header}"
+        );
+    }
+    for row in rows {
+        let branch = row.branch.as_deref().unwrap_or("(detached)");
+        if has_agents {
+            let agent = row
+                .agent_status
+                .map_or_else(|| "-".to_string(), |s| s.state.to_string());
+            let _ = writeln!(
+                out,
+                "{:<session_width$}  {:<repo_width$}  {:<branch_width$}  {:<agent_width$}  {:<path_width$}  {}",
+                row.session,
+                row.repo,
+                branch,
+                agent,
+                row.path.display(),
+                row.attached
+            );
+        } else {
+            let _ = writeln!(
+                out,
+                "{:<session_width$}  {:<repo_width$}  {:<branch_width$}  {:<path_width$}  {}",
+                row.session,
+                row.repo,
+                branch,
+                row.path.display(),
+                row.attached
+            );
+        }
     }
     out
 }
@@ -1623,7 +1709,7 @@ mod tests {
                 is_default: false,
                 remote: None,
                 session_activity_ts: None,
-            agent_state: None,
+                agent_status: None,
             },
             BranchEntry {
                 name: "feat/test".to_string(),
@@ -1633,7 +1719,7 @@ mod tests {
                 is_default: false,
                 remote: Some("origin".to_string()),
                 session_activity_ts: None,
-            agent_state: None,
+                agent_status: None,
             },
         ];
         let rendered = format_branch_table(&rows);
@@ -1657,6 +1743,7 @@ mod tests {
                 last_activity: 1_234_567_890,
                 pane_count: 1,
                 current_command: "zsh".to_string(),
+                agent_status: None,
             },
             SessionOutput {
                 session: "repo".to_string(),
@@ -1667,6 +1754,7 @@ mod tests {
                 last_activity: 1_234_567_891,
                 pane_count: 2,
                 current_command: "bash".to_string(),
+                agent_status: None,
             },
         ];
         let rendered = format_session_table(&rows);
@@ -2211,7 +2299,7 @@ mod tests {
             is_default: true,
             remote: None,
             session_activity_ts: Some(12345),
-            agent_state: None,
+            agent_status: None,
         };
 
         let output = BranchOutput::from(&entry);

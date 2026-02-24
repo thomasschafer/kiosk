@@ -543,10 +543,11 @@ impl CliGitProvider {
 
             // If this directory is a git repo, add it
             if path.join(GIT_DIR_ENTRY).exists() {
+                let canonical = std::fs::canonicalize(&path).unwrap_or(path);
                 let repo = if with_worktrees {
-                    self.build_repo(&path)
+                    self.build_repo(&canonical)
                 } else {
-                    Self::build_repo_stub(&path)
+                    Self::build_repo_stub(&canonical)
                 };
                 if let Some(repo) = repo {
                     repos.push((repo, search_root));

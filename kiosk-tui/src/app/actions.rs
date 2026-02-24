@@ -380,7 +380,11 @@ fn apply_fuzzy_filter(list: &mut SearchableList, items: &[String], matcher: &Ski
                     .map(|score| (i, score))
             })
             .collect();
-        scored.sort_by(|a, b| b.1.cmp(&a.1));
+        scored.sort_by(|a, b| {
+            b.1.cmp(&a.1)
+                .then_with(|| items[a.0].len().cmp(&items[b.0].len()))
+                .then_with(|| items[a.0].cmp(&items[b.0]))
+        });
         list.filtered = scored;
     }
     list.selected = if list.filtered.is_empty() {
@@ -389,4 +393,112 @@ fn apply_fuzzy_filter(list: &mut SearchableList, items: &[String], matcher: &Ski
         Some(0)
     };
     list.scroll_offset = 0;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_list(search: &str) -> SearchableList {
+        SearchableList {
+            search: search.to_string(),
+            cursor: search.len(),
+            filtered: Vec::new(),
+            selected: None,
+            scroll_offset: 0,
+        }
+    }
+
+    fn filtered_names<'a>(list: &SearchableList, items: &'a [String]) -> Vec<&'a str> {
+        list.filtered
+            .iter()
+            .map(|(i, _)| items[*i].as_str())
+            .collect()
+    }
+
+    #[test]
+    fn empty_search_preserves_original_order() {
+        let items: Vec<String> = vec!["zebra", "apple", "mango"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let mut list = make_list("");
+        let matcher = SkimMatcherV2::default();
+
+        apply_fuzzy_filter(&mut list, &items, &matcher);
+
+        assert_eq!(
+            filtered_names(&list, &items),
+            vec!["zebra", "apple", "mango"]
+        );
+        assert_eq!(list.selected, Some(0));
+    }
+
+    #[test]
+    fn equal_scores_sorted_by_length_then_alphabetically() {
+        // All items start with "cli" so the match occurs at the same position,
+        // giving equal fuzzy scores — tiebreakers should apply.
+        let items: Vec<String> = vec!["cli-extension-dep-graph", "cli-tools", "cli", "cli-abc"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let mut list = make_list("cli");
+        let matcher = SkimMatcherV2::default();
+
+        apply_fuzzy_filter(&mut list, &items, &matcher);
+
+        let names = filtered_names(&list, &items);
+        assert_eq!(names[0], "cli", "shortest match should be first");
+        assert_eq!(names[1], "cli-abc");
+        assert_eq!(names[2], "cli-tools");
+        assert_eq!(names[3], "cli-extension-dep-graph");
+    }
+
+    #[test]
+    fn higher_score_wins_over_length() {
+        let items: Vec<String> = vec!["x-main-utils", "main"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let mut list = make_list("main");
+        let matcher = SkimMatcherV2::default();
+
+        apply_fuzzy_filter(&mut list, &items, &matcher);
+
+        let names = filtered_names(&list, &items);
+        // Both should match; "main" is shorter so should be first if scores are equal,
+        // or first regardless if its score is higher
+        assert_eq!(names[0], "main");
+        assert_eq!(names[1], "x-main-utils");
+    }
+
+    #[test]
+    fn no_matches_gives_empty_filtered_and_none_selected() {
+        let items: Vec<String> = vec!["alpha", "beta"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let mut list = make_list("zzzzz");
+        let matcher = SkimMatcherV2::default();
+
+        apply_fuzzy_filter(&mut list, &items, &matcher);
+
+        assert!(list.filtered.is_empty());
+        assert_eq!(list.selected, None);
+    }
+
+    #[test]
+    fn alphabetical_tiebreak_when_same_score_and_length() {
+        let items: Vec<String> = vec!["bfoo", "afoo", "cfoo"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let mut list = make_list("foo");
+        let matcher = SkimMatcherV2::default();
+
+        apply_fuzzy_filter(&mut list, &items, &matcher);
+
+        let names = filtered_names(&list, &items);
+        assert_eq!(names, vec!["afoo", "bfoo", "cfoo"]);
+    }
 }

@@ -46,11 +46,31 @@ kiosk open my-project feat/thing --no-switch --run "your-command-here" --log --j
 # Send a follow-up command to an existing session
 kiosk send my-project feat/thing --command "another-command" --json
 
+# Send raw tmux keys (e.g. for TUI interaction — no Enter appended)
+kiosk send my-project feat/thing --keys "C-c" --json
+kiosk send my-project feat/thing --keys "Escape" --json
+
+# Send literal text without appending Enter
+kiosk send my-project feat/thing --text "y" --json
+
+# Target a specific pane (default: 0)
+kiosk send my-project feat/thing --command "ls" --pane 1 --json
+kiosk status my-project feat/thing --pane 1 --json
+
+# List panes in a session
+kiosk panes my-project feat/thing --json
+
 # Check session status
 kiosk status my-project feat/thing --json
 
-# List active kiosk sessions
+# List active kiosk sessions (includes last_activity, pane_count, current_command)
 kiosk sessions --json
+
+# Read session logs
+kiosk log my-project feat/thing --tail 100 --json
+
+# Show resolved configuration
+kiosk config show --json
 
 # Non-interactive cleanup of orphaned worktrees
 kiosk clean --yes --json
@@ -59,23 +79,19 @@ kiosk clean --yes --json
 kiosk delete my-project feat/thing --force --json
 ```
 
-#### Polling for completion
+#### Waiting for completion
 
-`--run` dispatches a command asynchronously. To wait for it to finish, poll with `status`:
+`--run` dispatches a command asynchronously. Use `wait` to block until the pane is idle:
 
 ```bash
 # Launch a long-running command with logging enabled
 kiosk open my-project feat/thing --no-switch --run "cargo test" --log --json
 
-# Poll until the command completes (check output for your expected marker)
-while true; do
-  output=$(kiosk status my-project feat/thing --json --lines 5)
-  echo "$output" | grep -q 'test result' && break
-  sleep 2
-done
+# Wait until the command finishes (detects when the shell prompt returns)
+kiosk wait my-project feat/thing --timeout 300 --json
 
-# After the session exits, --log preserves the output for retrieval via status
-kiosk status my-project feat/thing --json --lines 200
+# Read the output
+kiosk log my-project feat/thing --tail 200 --json
 ```
 
 #### Session naming

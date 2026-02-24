@@ -67,7 +67,7 @@ pub struct OpenArgs {
     pub no_switch: bool,
     pub run: Option<String>,
     pub wait: bool,
-    pub wait_timeout: Option<u64>,
+    pub wait_timeout: u64,
     pub wait_pane: usize,
     pub log: bool,
     pub json: bool,
@@ -112,7 +112,7 @@ pub struct PanesArgs {
 pub struct WaitArgs {
     pub repo: String,
     pub branch: Option<String>,
-    pub timeout: Option<u64>,
+    pub timeout: u64,
     pub pane: usize,
     pub json: bool,
 }
@@ -1126,16 +1126,14 @@ fn wait_for_idle(
     tmux: &dyn TmuxProvider,
     session_name: &str,
     pane: usize,
-    timeout: Option<u64>,
+    timeout_secs: u64,
 ) -> CliResult<WaitOutput> {
     let pane_str = pane.to_string();
     let start_time = std::time::Instant::now();
-    let timeout_duration = timeout.map(std::time::Duration::from_secs);
+    let timeout_duration = std::time::Duration::from_secs(timeout_secs);
 
     loop {
-        if let Some(dur) = timeout_duration
-            && start_time.elapsed() >= dur
-        {
+        if start_time.elapsed() >= timeout_duration {
             return Err(CliError::user("wait timeout"));
         }
 
@@ -1352,7 +1350,7 @@ mod tests {
                 log: false,
                 json: false,
                 wait: false,
-                wait_timeout: None,
+                wait_timeout: 600,
                 wait_pane: 0,
             },
         )
@@ -1397,7 +1395,7 @@ mod tests {
                 log: false,
                 json: false,
                 wait: false,
-                wait_timeout: None,
+                wait_timeout: 600,
                 wait_pane: 0,
             },
         )
@@ -1438,7 +1436,7 @@ mod tests {
                 log: false,
                 json: false,
                 wait: false,
-                wait_timeout: None,
+                wait_timeout: 600,
                 wait_pane: 0,
             },
         )
@@ -1486,7 +1484,7 @@ mod tests {
                 log: false,
                 json: false,
                 wait: false,
-                wait_timeout: None,
+                wait_timeout: 600,
                 wait_pane: 0,
             },
         )
@@ -1532,7 +1530,7 @@ mod tests {
                 log: false,
                 json: false,
                 wait: false,
-                wait_timeout: None,
+                wait_timeout: 600,
                 wait_pane: 0,
             },
         )
@@ -2036,7 +2034,7 @@ mod tests {
                 log: false,
                 json: false,
                 wait: false,
-                wait_timeout: None,
+                wait_timeout: 600,
                 wait_pane: 0,
             },
         )
@@ -2080,7 +2078,7 @@ mod tests {
                 log: false,
                 json: false,
                 wait: false,
-                wait_timeout: None,
+                wait_timeout: 600,
                 wait_pane: 0,
             },
         )
@@ -2114,7 +2112,7 @@ mod tests {
                 no_switch: true,
                 run: Some("cargo test".to_string()),
                 wait: true,
-                wait_timeout: Some(5),
+                wait_timeout: 5,
                 wait_pane: 0,
                 log: false,
                 json: true,
@@ -2150,7 +2148,7 @@ mod tests {
                 no_switch: true,
                 run: Some("echo hi".to_string()),
                 wait: false,
-                wait_timeout: None,
+                wait_timeout: 600,
                 wait_pane: 0,
                 log: false,
                 json: false,
@@ -2183,7 +2181,7 @@ mod tests {
                 no_switch: true,
                 run: None,
                 wait: true,
-                wait_timeout: None,
+                wait_timeout: 600,
                 wait_pane: 0,
                 log: false,
                 json: false,
@@ -2430,7 +2428,7 @@ mod tests {
             &WaitArgs {
                 repo: "demo".to_string(),
                 branch: None,
-                timeout: Some(1), // Short timeout for test
+                timeout: 1,
                 pane: 0,
                 json: true,
             },

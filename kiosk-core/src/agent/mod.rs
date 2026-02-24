@@ -19,7 +19,11 @@ impl fmt::Display for AgentKind {
     }
 }
 
-/// Represents the current state of an AI coding agent
+/// Represents the current state of an AI coding agent.
+///
+/// Variants are ordered by attention priority (highest first): a Waiting agent
+/// needs user action most urgently, an Idle agent may need a nudge, and a
+/// Running agent is already doing work.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentState {
     /// Agent is actively working (spinner, processing)
@@ -28,6 +32,17 @@ pub enum AgentState {
     Waiting,
     /// Agent is at prompt, not doing anything
     Idle,
+}
+
+impl AgentState {
+    /// Attention priority: higher means the user should look at this agent first.
+    fn attention_priority(self) -> u8 {
+        match self {
+            AgentState::Waiting => 2,
+            AgentState::Idle => 1,
+            AgentState::Running => 0,
+        }
+    }
 }
 
 impl fmt::Display for AgentState {
@@ -50,12 +65,16 @@ pub struct AgentStatus {
 pub mod detect;
 
 /// Detect agent status for a tmux session by inspecting its panes.
-/// Returns `None` if no agent is found in any pane.
+/// Returns `None` if no agent is found in any pane. When multiple agents are
+/// present, returns the one with the highest attention priority (Waiting >
+/// Idle > Running) so the user sees the status that most needs their action.
 pub fn detect_for_session(
     tmux: &(impl crate::tmux::TmuxProvider + ?Sized),
     session_name: &str,
 ) -> Option<AgentStatus> {
     let panes = tmux.list_panes_detailed(session_name);
+
+    let mut best: Option<AgentStatus> = None;
 
     for pane in panes {
         let mut kind = detect::detect_agent_kind(&pane.command, None);
@@ -67,14 +86,18 @@ pub fn detect_for_session(
         }
 
         if kind != AgentKind::Unknown
-            && let Some(content) = tmux.capture_pane_by_index(session_name, pane.pane_index, 30)
+            && let Some(content) =
+                tmux.capture_pane_by_index(session_name, pane.window_index, pane.pane_index, 30)
         {
             let state = detect::detect_state(&content, kind);
-            return Some(AgentStatus { kind, state });
+            let status = AgentStatus { kind, state };
+            if best.as_ref().is_none_or(|b| status.state.attention_priority() > b.state.attention_priority()) {
+                best = Some(status);
+            }
         }
     }
 
-    None
+    best
 }
 
 /// Get command-line arguments of child processes for a given PID.
@@ -140,13 +163,14 @@ mod tests {
         tmux.pane_info.insert(
             session.to_string(),
             vec![PaneInfo {
+                window_index: 0,
                 pane_index: 0,
                 command: command.to_string(),
                 pid: 99999, // Fake PID — child process lookup will fail gracefully
             }],
         );
         tmux.pane_content
-            .insert((session.to_string(), 0), pane_content.to_string());
+            .insert((session.to_string(), 0, 0), pane_content.to_string());
         tmux
     }
 
@@ -214,11 +238,13 @@ mod tests {
             session.to_string(),
             vec![
                 PaneInfo {
+                    window_index: 0,
                     pane_index: 0,
                     command: "bash".to_string(),
                     pid: 11111,
                 },
                 PaneInfo {
+                    window_index: 0,
                     pane_index: 1,
                     command: "claude".to_string(),
                     pid: 22222,
@@ -226,9 +252,9 @@ mod tests {
             ],
         );
         tmux.pane_content
-            .insert((session.to_string(), 0), "$ vim file.txt".to_string());
+            .insert((session.to_string(), 0, 0), "$ vim file.txt".to_string());
         tmux.pane_content
-            .insert((session.to_string(), 1), "Esc to interrupt".to_string());
+            .insert((session.to_string(), 0, 1), "Esc to interrupt".to_string());
 
         let status = detect_for_session(&tmux, session).unwrap();
         assert_eq!(status.kind, AgentKind::ClaudeCode);
@@ -248,6 +274,7 @@ mod tests {
         tmux.pane_info.insert(
             "empty-pane".to_string(),
             vec![PaneInfo {
+                window_index: 0,
                 pane_index: 0,
                 command: "claude".to_string(),
                 pid: 33333,
@@ -255,5 +282,99 @@ mod tests {
         );
         // No pane_content entry → capture_pane_by_index returns None
         assert!(detect_for_session(&tmux, "empty-pane").is_none());
+    }
+
+    /// Helper: build a mock with multiple agent panes in the same session.
+    fn mock_multi_agent(session: &str, agents: &[(&str, &str)]) -> MockTmuxProvider {
+        let mut tmux = MockTmuxProvider::default();
+        let panes: Vec<PaneInfo> = agents
+            .iter()
+            .enumerate()
+            .map(|(i, (command, _))| PaneInfo {
+                window_index: 0,
+                pane_index: i as u32,
+                command: command.to_string(),
+                pid: 90000 + i as u32,
+            })
+            .collect();
+        tmux.pane_info.insert(session.to_string(), panes);
+        for (i, (_, content)) in agents.iter().enumerate() {
+            tmux.pane_content
+                .insert((session.to_string(), 0, i as u32), content.to_string());
+        }
+        tmux
+    }
+
+    #[test]
+    fn multi_agent_waiting_beats_running() {
+        let tmux = mock_multi_agent(
+            "multi",
+            &[
+                ("claude", "⠋ Reading file src/main.rs"),
+                ("claude", "Allow write?\n  Yes, allow\n  No, deny"),
+            ],
+        );
+        let status = detect_for_session(&tmux, "multi").unwrap();
+        assert_eq!(status.state, AgentState::Waiting);
+    }
+
+    #[test]
+    fn multi_agent_waiting_beats_idle() {
+        let tmux = mock_multi_agent(
+            "multi",
+            &[
+                ("claude", "$ "),
+                ("claude", "Allow write?\n  Yes, allow\n  No, deny"),
+            ],
+        );
+        let status = detect_for_session(&tmux, "multi").unwrap();
+        assert_eq!(status.state, AgentState::Waiting);
+    }
+
+    #[test]
+    fn multi_agent_idle_beats_running() {
+        let tmux = mock_multi_agent(
+            "multi",
+            &[
+                ("claude", "⠋ Reading file src/main.rs"),
+                ("claude", "$ "),
+            ],
+        );
+        let status = detect_for_session(&tmux, "multi").unwrap();
+        assert_eq!(status.state, AgentState::Idle);
+    }
+
+    #[test]
+    fn multi_agent_across_windows() {
+        let mut tmux = MockTmuxProvider::default();
+        let session = "multi-win";
+        tmux.pane_info.insert(
+            session.to_string(),
+            vec![
+                PaneInfo {
+                    window_index: 0,
+                    pane_index: 0,
+                    command: "claude".to_string(),
+                    pid: 80001,
+                },
+                PaneInfo {
+                    window_index: 1,
+                    pane_index: 0,
+                    command: "claude".to_string(),
+                    pid: 80002,
+                },
+            ],
+        );
+        tmux.pane_content.insert(
+            (session.to_string(), 0, 0),
+            "⠋ Reading file".to_string(),
+        );
+        tmux.pane_content.insert(
+            (session.to_string(), 1, 0),
+            "Allow write?\n  Yes, allow".to_string(),
+        );
+
+        let status = detect_for_session(&tmux, session).unwrap();
+        assert_eq!(status.state, AgentState::Waiting);
     }
 }

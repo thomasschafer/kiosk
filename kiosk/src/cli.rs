@@ -2428,6 +2428,64 @@ mod tests {
     }
 
     #[test]
+    fn format_branch_table_with_agent_column() {
+        use kiosk_core::agent::{AgentKind, AgentState, AgentStatus};
+
+        let rows = vec![
+            BranchEntry {
+                name: "main".to_string(),
+                worktree_path: Some(PathBuf::from("/tmp/repo")),
+                has_session: true,
+                is_current: true,
+                is_default: false,
+                is_remote: false,
+                session_activity_ts: None,
+                agent_status: Some(AgentStatus {
+                    kind: AgentKind::ClaudeCode,
+                    state: AgentState::Waiting,
+                }),
+            },
+            BranchEntry {
+                name: "feat/test".to_string(),
+                worktree_path: Some(PathBuf::from("/tmp/feat")),
+                has_session: true,
+                is_current: false,
+                is_default: false,
+                is_remote: false,
+                session_activity_ts: None,
+                agent_status: Some(AgentStatus {
+                    kind: AgentKind::Codex,
+                    state: AgentState::Running,
+                }),
+            },
+            BranchEntry {
+                name: "develop".to_string(),
+                worktree_path: None,
+                has_session: false,
+                is_current: false,
+                is_default: false,
+                is_remote: false,
+                session_activity_ts: None,
+                agent_status: None,
+            },
+        ];
+        let rendered = format_branch_table(&rows);
+        // Agent column should appear since some entries have agent_status
+        assert!(
+            rendered.contains("agent"),
+            "Should have agent column header: {rendered}"
+        );
+        assert!(
+            rendered.contains("Waiting"),
+            "Should show Waiting state: {rendered}"
+        );
+        assert!(
+            rendered.contains("Running"),
+            "Should show Running state: {rendered}"
+        );
+    }
+
+    #[test]
     fn test_send_keys_mode() {
         let config = test_config();
         let git = demo_git(vec![main_worktree()], vec![]);
@@ -2587,5 +2645,109 @@ mod tests {
         );
 
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn format_branch_table_no_agent_column_when_no_agents() {
+        let rows = vec![BranchEntry {
+            name: "main".to_string(),
+            worktree_path: Some(PathBuf::from("/tmp/repo")),
+            has_session: false,
+            is_current: true,
+            is_default: false,
+            is_remote: false,
+            session_activity_ts: None,
+            agent_status: None,
+        }];
+        let rendered = format_branch_table(&rows);
+        assert!(
+            !rendered.contains("agent"),
+            "Should NOT have agent column when no agents: {rendered}"
+        );
+    }
+
+    #[test]
+    fn format_session_table_with_agent_column() {
+        use kiosk_core::agent::{AgentKind, AgentState, AgentStatus};
+
+        let rows = vec![
+            SessionOutput {
+                session: "repo--feat".to_string(),
+                repo: "repo".to_string(),
+                branch: Some("feat/test".to_string()),
+                path: PathBuf::from("/tmp/repo-feat"),
+                attached: false,
+                last_activity: 0,
+                pane_count: 1,
+                current_command: "zsh".to_string(),
+                agent_status: Some(AgentStatus {
+                    kind: AgentKind::ClaudeCode,
+                    state: AgentState::Idle,
+                }),
+            },
+            SessionOutput {
+                session: "repo".to_string(),
+                repo: "repo".to_string(),
+                branch: None,
+                path: PathBuf::from("/tmp/repo"),
+                attached: true,
+                last_activity: 0,
+                pane_count: 1,
+                current_command: "zsh".to_string(),
+                agent_status: None,
+            },
+        ];
+        let rendered = format_session_table(&rows);
+        assert!(
+            rendered.contains("agent"),
+            "Should have agent column: {rendered}"
+        );
+        assert!(
+            rendered.contains("Idle"),
+            "Should show Idle state: {rendered}"
+        );
+    }
+
+    #[test]
+    fn branch_output_includes_agent_status_in_json() {
+        use kiosk_core::agent::{AgentKind, AgentState, AgentStatus};
+
+        let entry = BranchEntry {
+            name: "feat/agent".to_string(),
+            worktree_path: Some(PathBuf::from("/tmp/wt")),
+            has_session: true,
+            is_current: false,
+            is_default: false,
+            is_remote: false,
+            session_activity_ts: None,
+            agent_status: Some(AgentStatus {
+                kind: AgentKind::ClaudeCode,
+                state: AgentState::Waiting,
+            }),
+        };
+        let output = BranchOutput::from(&entry);
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["agent_status"]["kind"], "ClaudeCode");
+        assert_eq!(json["agent_status"]["state"], "Waiting");
+    }
+
+    #[test]
+    fn branch_output_omits_agent_status_when_none() {
+        let entry = BranchEntry {
+            name: "main".to_string(),
+            worktree_path: None,
+            has_session: false,
+            is_current: true,
+            is_default: false,
+            is_remote: false,
+            session_activity_ts: None,
+            agent_status: None,
+        };
+        let output = BranchOutput::from(&entry);
+        let json = serde_json::to_value(&output).unwrap();
+        assert!(
+            json.get("agent_status").is_none(),
+            "agent_status should be omitted when None: {json}"
+        );
     }
 }

@@ -292,7 +292,7 @@ mod tests {
             .map(|(i, (command, _))| PaneInfo {
                 pane_id: format!("%{i}"),
                 command: command.to_string(),
-                pid: 90000 + i as u32,
+                pid: 90000 + u32::try_from(i),
             })
             .collect();
         tmux.pane_info.insert(session.to_string(), panes);

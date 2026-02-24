@@ -29,6 +29,15 @@ pub fn dialog_width(terminal_width: u16) -> u16 {
     (u32::from(terminal_width) * 80 / 100).min(80) as u16
 }
 
+/// Center a rect with a fixed width and height, clamped to fit within `r`.
+pub fn centered_fixed_rect(width: u16, height: u16, r: Rect) -> Rect {
+    let clamped_width = width.min(r.width);
+    let clamped_height = height.min(r.height);
+    let offset_x = r.x + (r.width.saturating_sub(clamped_width)) / 2;
+    let offset_y = r.y + (r.height.saturating_sub(clamped_height)) / 2;
+    Rect::new(offset_x, offset_y, clamped_width, clamped_height)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -57,13 +66,4 @@ mod tests {
     fn test_dialog_width_zero() {
         assert_eq!(dialog_width(0), 0);
     }
-}
-
-/// Center a rect with a fixed width and height, clamped to fit within `r`.
-pub fn centered_fixed_rect(width: u16, height: u16, r: Rect) -> Rect {
-    let clamped_width = width.min(r.width);
-    let clamped_height = height.min(r.height);
-    let offset_x = r.x + (r.width.saturating_sub(clamped_width)) / 2;
-    let offset_y = r.y + (r.height.saturating_sub(clamped_height)) / 2;
-    Rect::new(offset_x, offset_y, clamped_width, clamped_height)
 }

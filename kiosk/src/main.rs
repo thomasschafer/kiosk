@@ -116,6 +116,11 @@ enum Commands {
         json: bool,
     },
     /// Send a command to an existing session
+    #[command(group(
+        clap::ArgGroup::new("send_mode")
+            .required(true)
+            .args(["command", "keys", "text"])
+    ))]
     Send {
         /// Repository name (as shown by 'kiosk list')
         repo: String,

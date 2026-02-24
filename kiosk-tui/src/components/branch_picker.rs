@@ -80,7 +80,7 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, _keys: &
                 let (icon, color) = match agent_status.state {
                     AgentState::Running => ("⚡", theme.accent),
                     AgentState::Waiting => ("⏳", theme.warning),
-                    AgentState::Idle => ("●", theme.muted),
+                    AgentState::Idle => ("🟡", theme.muted),
                 };
                 spans.push(Span::raw(" "));
                 spans.push(Span::styled(icon, Style::default().fg(color)));

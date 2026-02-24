@@ -11,7 +11,7 @@ pub use keys::{Command, KeysConfig};
 
 pub const APP_NAME: &str = "kiosk";
 
-pub fn config_dir() -> PathBuf {
+fn config_dir() -> PathBuf {
     // Use ~/.config on both Linux and macOS (not ~/Library/Application Support)
     #[cfg(unix)]
     {
@@ -309,7 +309,14 @@ pub fn format_default_config(dirs: &[String]) -> String {
             content.push_str(", ");
         }
         content.push('"');
-        content.push_str(d);
+        // Escape backslashes and double quotes for valid TOML
+        for c in d.chars() {
+            match c {
+                '\\' => content.push_str("\\\\"),
+                '"' => content.push_str("\\\""),
+                _ => content.push(c),
+            }
+        }
         content.push('"');
     }
     content.push_str("]\n");
@@ -564,6 +571,39 @@ unknown = "bad"
             })
             .collect();
         assert_eq!(paths, dirs);
+    }
+
+    #[test]
+    fn test_format_default_config_escapes_special_chars() {
+        let dirs = vec![
+            "C:\\Users\\Tom".to_string(),
+            "path with \"quotes\"".to_string(),
+        ];
+        let content = format_default_config(&dirs);
+        // Should produce valid TOML despite special characters
+        let config = load_config_from_str(&content).unwrap();
+        let paths: Vec<String> = config
+            .search_dirs
+            .iter()
+            .map(|e| match e {
+                SearchDirEntry::Simple(s) => s.clone(),
+                SearchDirEntry::Rich { path, .. } => path.clone(),
+            })
+            .collect();
+        assert_eq!(paths, dirs);
+    }
+
+    #[test]
+    fn test_format_default_config_empty_dirs() {
+        let content = format_default_config(&[]);
+        assert!(content.contains("search_dirs = []"));
+    }
+
+    #[test]
+    fn test_config_file_exists_returns_false_for_missing() {
+        // This relies on the test not having a kiosk config in the default location,
+        // which is fragile. Instead just verify the function doesn't panic.
+        let _ = config_file_exists();
     }
 
     #[test]

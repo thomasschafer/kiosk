@@ -2433,3 +2433,19 @@ fn test_e2e_setup_wizard_esc_quits() {
         "Wizard should be gone after Esc: {screen}"
     );
 }
+
+#[test]
+fn test_e2e_setup_wizard_not_triggered_for_cli_subcommand() {
+    let env = TestEnv::new("setup-cli-sub");
+    // No config written — but using a CLI subcommand should error, not wizard
+    let output = env.run_cli(&["list", "--json"]);
+    assert!(
+        !output.status.success(),
+        "CLI subcommand with no config should fail"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Config file not found") || stderr.contains("config"),
+        "Should show config error, not wizard: {stderr}"
+    );
+}

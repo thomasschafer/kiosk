@@ -7,8 +7,10 @@ use actions::{
     handle_delete_worktree, handle_go_back, handle_open_branch, handle_search_delete_forward,
     handle_search_delete_to_end, handle_search_delete_to_start, handle_search_delete_word,
     handle_search_delete_word_forward, handle_search_pop, handle_search_push, handle_setup_add_dir,
-    handle_setup_continue, handle_setup_move_selection, handle_setup_search_pop,
-    handle_setup_search_push, handle_setup_tab_complete, handle_show_help, handle_start_new_branch,
+    handle_setup_continue, handle_setup_delete_forward, handle_setup_delete_to_end,
+    handle_setup_delete_to_start, handle_setup_delete_word, handle_setup_delete_word_forward,
+    handle_setup_move_selection, handle_setup_search_pop, handle_setup_search_push,
+    handle_setup_tab_complete, handle_show_help, handle_start_new_branch,
 };
 use crossterm::event::{self, Event, KeyEventKind};
 use fuzzy_matcher::{FuzzyMatcher, skim::SkimMatcherV2};
@@ -815,6 +817,26 @@ fn handle_simple_actions(action: &Action, state: &mut AppState) -> bool {
                 setup.cursor = setup.input.len();
                 return true;
             }
+            Action::CursorWordLeft => {
+                let before = &setup.input[..setup.cursor];
+                setup.cursor = before
+                    .rfind(|c: char| c == '/' || c.is_whitespace())
+                    .map_or(0, |i| {
+                        i + before[i..].chars().next().map_or(0, char::len_utf8)
+                    });
+                return true;
+            }
+            Action::CursorWordRight => {
+                if setup.cursor < setup.input.len() {
+                    let after = &setup.input[setup.cursor..];
+                    setup.cursor = after
+                        .find(|c: char| c == '/' || c.is_whitespace())
+                        .map_or(setup.input.len(), |i| {
+                            setup.cursor + i + after[i..].chars().next().map_or(0, char::len_utf8)
+                        });
+                }
+                return true;
+            }
             _ => {}
         }
     }
@@ -873,6 +895,7 @@ struct ActionContext<'a, T: TmuxProvider + ?Sized + 'static> {
 }
 
 #[allow(clippy::needless_pass_by_value)]
+#[allow(clippy::too_many_lines)]
 fn process_action<T: TmuxProvider + ?Sized + 'static>(
     action: Action,
     state: &mut AppState,
@@ -882,6 +905,11 @@ fn process_action<T: TmuxProvider + ?Sized + 'static>(
     if handle_movement_actions(&action, state) || handle_simple_actions(&action, state) {
         return None;
     }
+
+    let is_setup_search_dirs = matches!(
+        state.mode,
+        Mode::Setup(kiosk_core::state::SetupStep::SearchDirs)
+    );
 
     match action {
         Action::Quit => return Some(OpenAction::Quit),
@@ -921,10 +949,7 @@ fn process_action<T: TmuxProvider + ?Sized + 'static>(
         }
 
         Action::MoveSelection(delta) => {
-            if matches!(
-                state.mode,
-                Mode::Setup(kiosk_core::state::SetupStep::SearchDirs)
-            ) {
+            if is_setup_search_dirs {
                 handle_setup_move_selection(state, delta);
             } else {
                 if let Some(list) = state.active_list_mut() {
@@ -936,36 +961,60 @@ fn process_action<T: TmuxProvider + ?Sized + 'static>(
         }
 
         Action::SearchPush(c) => {
-            if matches!(
-                state.mode,
-                Mode::Setup(kiosk_core::state::SetupStep::SearchDirs)
-            ) {
+            if is_setup_search_dirs {
                 handle_setup_search_push(state, c);
             } else {
                 handle_search_push(state, ctx.matcher, c);
             }
         }
         Action::SearchPop => {
-            if matches!(
-                state.mode,
-                Mode::Setup(kiosk_core::state::SetupStep::SearchDirs)
-            ) {
+            if is_setup_search_dirs {
                 handle_setup_search_pop(state);
             } else {
                 handle_search_pop(state, ctx.matcher);
             }
         }
-        Action::SearchDeleteForward => handle_search_delete_forward(state, ctx.matcher),
-        Action::SearchDeleteWordForward => handle_search_delete_word_forward(state, ctx.matcher),
-        Action::SearchDeleteToStart => handle_search_delete_to_start(state, ctx.matcher),
-        Action::SearchDeleteToEnd => handle_search_delete_to_end(state, ctx.matcher),
+        Action::SearchDeleteForward => {
+            if is_setup_search_dirs {
+                handle_setup_delete_forward(state);
+            } else {
+                handle_search_delete_forward(state, ctx.matcher);
+            }
+        }
+        Action::SearchDeleteWordForward => {
+            if is_setup_search_dirs {
+                handle_setup_delete_word_forward(state);
+            } else {
+                handle_search_delete_word_forward(state, ctx.matcher);
+            }
+        }
+        Action::SearchDeleteToStart => {
+            if is_setup_search_dirs {
+                handle_setup_delete_to_start(state);
+            } else {
+                handle_search_delete_to_start(state, ctx.matcher);
+            }
+        }
+        Action::SearchDeleteToEnd => {
+            if is_setup_search_dirs {
+                handle_setup_delete_to_end(state);
+            } else {
+                handle_search_delete_to_end(state, ctx.matcher);
+            }
+        }
 
         Action::DeleteWorktree => handle_delete_worktree(state),
         Action::ConfirmDeleteWorktree => {
             handle_confirm_delete(state, ctx.git, ctx.tmux.as_ref(), ctx.sender);
         }
 
-        Action::SearchDeleteWord => handle_search_delete_word(state, ctx.matcher),
+        Action::SearchDeleteWord => {
+            if is_setup_search_dirs {
+                handle_setup_delete_word(state);
+            } else {
+                handle_search_delete_word(state, ctx.matcher);
+            }
+        }
 
         Action::ShowHelp => handle_show_help(state, ctx.keys),
 

@@ -80,17 +80,17 @@ pub fn common_prefix(completions: &[String]) -> String {
     }
 
     let first = &completions[0];
-    let mut len = first.len();
+    let mut prefix_chars = first.chars().count();
     for other in &completions[1..] {
-        len = len.min(other.len());
+        prefix_chars = prefix_chars.min(other.chars().count());
         for (i, (a, b)) in first.chars().zip(other.chars()).enumerate() {
             if a != b {
-                len = len.min(i);
+                prefix_chars = prefix_chars.min(i);
                 break;
             }
         }
     }
-    first[..len].to_string()
+    first.chars().take(prefix_chars).collect()
 }
 
 /// Check if a path exists (expanding `~` if needed).
@@ -137,7 +137,7 @@ mod tests {
     fn test_expand_tilde_with_rest() {
         let expanded = expand_tilde("~/test");
         assert!(expanded.to_string_lossy().contains("test"));
-        assert!(!expanded.to_string_lossy().starts_with("~"));
+        assert!(!expanded.to_string_lossy().starts_with('~'));
     }
 
     #[test]
@@ -164,6 +164,34 @@ mod tests {
             common_prefix(&["~/Dev".to_string(), "~/Work".to_string()]),
             "~/"
         );
+    }
+
+    #[test]
+    fn test_common_prefix_multibyte() {
+        assert_eq!(
+            common_prefix(&["~/Üntersuchung".to_string(), "~/Über".to_string()]),
+            "~/Ü"
+        );
+    }
+
+    #[test]
+    fn test_split_input_empty() {
+        assert_eq!(split_input(""), ("./".to_string(), String::new()));
+    }
+
+    #[test]
+    fn test_complete_empty_input() {
+        assert!(complete("").is_empty());
+    }
+
+    #[test]
+    fn test_join_path_trailing_slash() {
+        assert_eq!(join_path("~/", "Dev"), "~/Dev");
+    }
+
+    #[test]
+    fn test_join_path_no_trailing_slash() {
+        assert_eq!(join_path("~", "Dev"), "~/Dev");
     }
 
     #[test]

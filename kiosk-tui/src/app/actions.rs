@@ -435,7 +435,6 @@ pub(super) fn handle_setup_search_pop(state: &mut AppState) {
         return;
     };
     if setup.cursor > 0 && !setup.input.is_empty() {
-        // Find previous char boundary
         let new_cursor = setup.input[..setup.cursor]
             .char_indices()
             .next_back()
@@ -443,6 +442,72 @@ pub(super) fn handle_setup_search_pop(state: &mut AppState) {
         setup.input.drain(new_cursor..setup.cursor);
         setup.cursor = new_cursor;
     }
+    update_setup_completions(state);
+}
+
+pub(super) fn handle_setup_delete_forward(state: &mut AppState) {
+    let Some(setup) = &mut state.setup else {
+        return;
+    };
+    if setup.cursor < setup.input.len() {
+        let next = setup.input[setup.cursor..]
+            .char_indices()
+            .nth(1)
+            .map_or(setup.input.len(), |(i, _)| setup.cursor + i);
+        setup.input.drain(setup.cursor..next);
+    }
+    update_setup_completions(state);
+}
+
+pub(super) fn handle_setup_delete_word(state: &mut AppState) {
+    let Some(setup) = &mut state.setup else {
+        return;
+    };
+    if setup.cursor == 0 {
+        return;
+    }
+    let before = &setup.input[..setup.cursor];
+    let new_cursor = before
+        .rfind(|c: char| c == '/' || c.is_whitespace())
+        .map_or(0, |i| {
+            i + before[i..].chars().next().map_or(0, char::len_utf8)
+        });
+    setup.input.drain(new_cursor..setup.cursor);
+    setup.cursor = new_cursor;
+    update_setup_completions(state);
+}
+
+pub(super) fn handle_setup_delete_word_forward(state: &mut AppState) {
+    let Some(setup) = &mut state.setup else {
+        return;
+    };
+    if setup.cursor >= setup.input.len() {
+        return;
+    }
+    let after = &setup.input[setup.cursor..];
+    let end = after
+        .find(|c: char| c == '/' || c.is_whitespace())
+        .map_or(setup.input.len(), |i| {
+            setup.cursor + i + after[i..].chars().next().map_or(0, char::len_utf8)
+        });
+    setup.input.drain(setup.cursor..end);
+    update_setup_completions(state);
+}
+
+pub(super) fn handle_setup_delete_to_start(state: &mut AppState) {
+    let Some(setup) = &mut state.setup else {
+        return;
+    };
+    setup.input.drain(..setup.cursor);
+    setup.cursor = 0;
+    update_setup_completions(state);
+}
+
+pub(super) fn handle_setup_delete_to_end(state: &mut AppState) {
+    let Some(setup) = &mut state.setup else {
+        return;
+    };
+    setup.input.truncate(setup.cursor);
     update_setup_completions(state);
 }
 

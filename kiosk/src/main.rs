@@ -92,6 +92,9 @@ enum Commands {
         /// Number of lines to include in output
         #[arg(long, default_value_t = 50)]
         lines: usize,
+        /// Target pane index (default: 0)
+        #[arg(long, default_value_t = 0)]
+        pane: usize,
     },
     /// List active kiosk sessions
     Sessions {
@@ -120,7 +123,70 @@ enum Commands {
         branch: Option<String>,
         /// Command to send (typed and Enter sent automatically)
         #[arg(long)]
-        command: String,
+        command: Option<String>,
+        /// Send tmux key names (e.g. C-c, Escape, Enter, Up, Down) WITHOUT auto-appending Enter
+        #[arg(long)]
+        keys: Option<String>,
+        /// Send literal text WITHOUT auto-appending Enter
+        #[arg(long)]
+        text: Option<String>,
+        /// Target pane index (default: 0)
+        #[arg(long, default_value_t = 0)]
+        pane: usize,
+        /// Output result as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// List panes in a session
+    Panes {
+        /// Repository name (as shown by 'kiosk list')
+        repo: String,
+        /// Branch name (omit for main checkout)
+        branch: Option<String>,
+        /// Output result as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Wait until a session pane appears idle
+    Wait {
+        /// Repository name (as shown by 'kiosk list')
+        repo: String,
+        /// Branch name (omit for main checkout)
+        branch: Option<String>,
+        /// Timeout in seconds
+        #[arg(long)]
+        timeout: Option<u64>,
+        /// Target pane index (default: 0)
+        #[arg(long, default_value_t = 0)]
+        pane: usize,
+        /// Output result as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Read log files from a session
+    Log {
+        /// Repository name (as shown by 'kiosk list')
+        repo: String,
+        /// Branch name (omit for main checkout)
+        branch: Option<String>,
+        /// Show last N lines (default: 50)
+        #[arg(long, default_value_t = 50)]
+        tail: usize,
+        /// Output result as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show configuration
+    Config {
+        #[command(subcommand)]
+        command: Option<ConfigCommands>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ConfigCommands {
+    /// Show current configuration as JSON
+    Show {
         /// Output result as JSON
         #[arg(long)]
         json: bool,
@@ -157,6 +223,7 @@ fn main() -> ExitCode {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn dispatch_command(
     command: Option<Commands>,
     config: &config::Config,
@@ -200,12 +267,14 @@ fn dispatch_command(
             branch,
             json,
             lines,
+            pane,
         }) => {
             let args = crate::cli::StatusArgs {
                 repo,
                 branch,
                 json,
                 lines,
+                pane,
             };
             crate::cli::cmd_status(config, git.as_ref(), tmux.as_ref(), &args)
         }
@@ -213,12 +282,18 @@ fn dispatch_command(
             repo,
             branch,
             command,
+            keys,
+            text,
+            pane,
             json,
         }) => {
             let args = crate::cli::SendArgs {
                 repo,
                 branch,
                 command,
+                keys,
+                text,
+                pane,
                 json,
             };
             crate::cli::cmd_send(config, git.as_ref(), tmux.as_ref(), &args)
@@ -240,6 +315,50 @@ fn dispatch_command(
             };
             crate::cli::cmd_delete(config, git.as_ref(), tmux.as_ref(), &args)
         }
+        Some(Commands::Panes { repo, branch, json }) => {
+            let args = crate::cli::PanesArgs { repo, branch, json };
+            crate::cli::cmd_panes(config, git.as_ref(), tmux.as_ref(), &args)
+        }
+        Some(Commands::Wait {
+            repo,
+            branch,
+            timeout,
+            pane,
+            json,
+        }) => {
+            let args = crate::cli::WaitArgs {
+                repo,
+                branch,
+                timeout,
+                pane,
+                json,
+            };
+            crate::cli::cmd_wait(config, git.as_ref(), tmux.as_ref(), &args)
+        }
+        Some(Commands::Log {
+            repo,
+            branch,
+            tail,
+            json,
+        }) => {
+            let args = crate::cli::LogArgs {
+                repo,
+                branch,
+                tail,
+                json,
+            };
+            crate::cli::cmd_log(config, git.as_ref(), tmux.as_ref(), &args)
+        }
+        Some(Commands::Config { command }) => match command {
+            Some(ConfigCommands::Show { json }) => {
+                let args = crate::cli::ConfigShowArgs { json };
+                crate::cli::cmd_config_show(config, &args)
+            }
+            None => {
+                eprintln!("config subcommand required. Use --help for usage.");
+                Err(crate::cli::CliError::user("config subcommand required"))
+            }
+        },
         None => run_tui(config, git, tmux).map_err(crate::cli::CliError::from),
     }
 }
@@ -365,6 +484,7 @@ fn resolve_main_repo_root(path: &Path) -> Option<std::path::PathBuf> {
     }
 }
 
+#[allow(clippy::unnested_or_patterns)]
 fn command_wants_json(command: Option<&Commands>) -> bool {
     match command {
         Some(
@@ -375,9 +495,13 @@ fn command_wants_json(command: Option<&Commands>) -> bool {
             | Commands::Status { json, .. }
             | Commands::Delete { json, .. }
             | Commands::Clean { json, .. }
-            | Commands::Send { json, .. },
-        ) => *json,
-        None => false,
+            | Commands::Send { json, .. }
+            | Commands::Panes { json, .. }
+            | Commands::Wait { json, .. }
+            | Commands::Log { json, .. },
+        ) 
+        | Some(Commands::Config { command: Some(ConfigCommands::Show { json }) }) => *json,
+        Some(Commands::Config { command: None }) | None => false,
     }
 }
 

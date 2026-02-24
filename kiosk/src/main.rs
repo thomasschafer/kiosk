@@ -73,6 +73,15 @@ enum Commands {
         /// Command to execute in the session after creation (typed and Enter sent automatically). Use --log to preserve output after session exit
         #[arg(long)]
         run: Option<String>,
+        /// Block until the command from --run finishes (pane returns to shell). Requires --run
+        #[arg(long, requires = "run")]
+        wait: bool,
+        /// Timeout in seconds for --wait (default: 600)
+        #[arg(long, default_value_t = 600)]
+        wait_timeout: u64,
+        /// Target pane index for --wait (default: 0)
+        #[arg(long, default_value_t = 0)]
+        wait_pane: usize,
         /// Enable logging of session output. Logs are stored in `$XDG_STATE_HOME/kiosk/logs/` (default: `~/.local/state/kiosk/logs/`)
         #[arg(long)]
         log: bool,
@@ -92,6 +101,9 @@ enum Commands {
         /// Number of lines to include in output
         #[arg(long, default_value_t = 50)]
         lines: usize,
+        /// Target pane index (default: 0)
+        #[arg(long, default_value_t = 0)]
+        pane: usize,
     },
     /// List active kiosk sessions
     Sessions {
@@ -113,6 +125,11 @@ enum Commands {
         json: bool,
     },
     /// Send a command to an existing session
+    #[command(group(
+        clap::ArgGroup::new("send_mode")
+            .required(true)
+            .args(["command", "keys", "text"])
+    ))]
     Send {
         /// Repository name (as shown by 'kiosk list')
         repo: String,
@@ -120,11 +137,101 @@ enum Commands {
         branch: Option<String>,
         /// Command to send (typed and Enter sent automatically)
         #[arg(long)]
-        command: String,
+        command: Option<String>,
+        /// Send tmux key names (e.g. C-c, Escape, Enter, Up, Down) WITHOUT auto-appending Enter
+        #[arg(long)]
+        keys: Option<String>,
+        /// Send literal text WITHOUT auto-appending Enter
+        #[arg(long)]
+        text: Option<String>,
+        /// Target pane index (default: 0)
+        #[arg(long, default_value_t = 0)]
+        pane: usize,
         /// Output result as JSON
         #[arg(long)]
         json: bool,
     },
+    /// List panes in a session
+    Panes {
+        /// Repository name (as shown by 'kiosk list')
+        repo: String,
+        /// Branch name (omit for main checkout)
+        branch: Option<String>,
+        /// Output result as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Wait until a session pane appears idle
+    Wait {
+        /// Repository name (as shown by 'kiosk list')
+        repo: String,
+        /// Branch name (omit for main checkout)
+        branch: Option<String>,
+        /// Timeout in seconds (default: 600)
+        #[arg(long, default_value_t = 600)]
+        timeout: u64,
+        /// Target pane index (default: 0)
+        #[arg(long, default_value_t = 0)]
+        pane: usize,
+        /// Output result as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Read log files from a session
+    Log {
+        /// Repository name (as shown by 'kiosk list')
+        repo: String,
+        /// Branch name (omit for main checkout)
+        branch: Option<String>,
+        /// Show last N lines (default: 50)
+        #[arg(long, default_value_t = 50)]
+        tail: usize,
+        /// Output result as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show configuration
+    Config {
+        #[command(subcommand)]
+        command: Option<ConfigCommands>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ConfigCommands {
+    /// Show current configuration as JSON
+    Show {
+        /// Output result as JSON
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+impl Commands {
+    fn wants_json(&self) -> bool {
+        match self {
+            Self::Clean { json, .. }
+            | Self::List { json }
+            | Self::Branches { json, .. }
+            | Self::Open { json, .. }
+            | Self::Status { json, .. }
+            | Self::Sessions { json }
+            | Self::Delete { json, .. }
+            | Self::Send { json, .. }
+            | Self::Panes { json, .. }
+            | Self::Wait { json, .. }
+            | Self::Log { json, .. } => *json,
+            Self::Config { command } => command.as_ref().is_some_and(ConfigCommands::wants_json),
+        }
+    }
+}
+
+impl ConfigCommands {
+    fn wants_json(&self) -> bool {
+        match self {
+            Self::Show { json } => *json,
+        }
+    }
 }
 
 fn main() -> ExitCode {
@@ -157,6 +264,7 @@ fn main() -> ExitCode {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn dispatch_command(
     command: Option<Commands>,
     config: &config::Config,
@@ -180,6 +288,9 @@ fn dispatch_command(
             base,
             no_switch,
             run,
+            wait,
+            wait_timeout,
+            wait_pane,
             log,
             json,
         }) => {
@@ -190,6 +301,9 @@ fn dispatch_command(
                 base,
                 no_switch,
                 run,
+                wait,
+                wait_timeout,
+                wait_pane,
                 log,
                 json,
             };
@@ -200,12 +314,14 @@ fn dispatch_command(
             branch,
             json,
             lines,
+            pane,
         }) => {
             let args = crate::cli::StatusArgs {
                 repo,
                 branch,
                 json,
                 lines,
+                pane,
             };
             crate::cli::cmd_status(config, git.as_ref(), tmux.as_ref(), &args)
         }
@@ -213,12 +329,18 @@ fn dispatch_command(
             repo,
             branch,
             command,
+            keys,
+            text,
+            pane,
             json,
         }) => {
             let args = crate::cli::SendArgs {
                 repo,
                 branch,
                 command,
+                keys,
+                text,
+                pane,
                 json,
             };
             crate::cli::cmd_send(config, git.as_ref(), tmux.as_ref(), &args)
@@ -240,6 +362,50 @@ fn dispatch_command(
             };
             crate::cli::cmd_delete(config, git.as_ref(), tmux.as_ref(), &args)
         }
+        Some(Commands::Panes { repo, branch, json }) => {
+            let args = crate::cli::PanesArgs { repo, branch, json };
+            crate::cli::cmd_panes(config, git.as_ref(), tmux.as_ref(), &args)
+        }
+        Some(Commands::Wait {
+            repo,
+            branch,
+            timeout,
+            pane,
+            json,
+        }) => {
+            let args = crate::cli::WaitArgs {
+                repo,
+                branch,
+                timeout,
+                pane,
+                json,
+            };
+            crate::cli::cmd_wait(config, git.as_ref(), tmux.as_ref(), &args)
+        }
+        Some(Commands::Log {
+            repo,
+            branch,
+            tail,
+            json,
+        }) => {
+            let args = crate::cli::LogArgs {
+                repo,
+                branch,
+                tail,
+                json,
+            };
+            crate::cli::cmd_log(config, git.as_ref(), tmux.as_ref(), &args)
+        }
+        Some(Commands::Config { command }) => match command {
+            Some(ConfigCommands::Show { json }) => {
+                let args = crate::cli::ConfigShowArgs { json };
+                crate::cli::cmd_config_show(config, &args)
+            }
+            None => {
+                eprintln!("config subcommand required. Use --help for usage.");
+                Err(crate::cli::CliError::user("config subcommand required"))
+            }
+        },
         None => run_tui(config, git, tmux).map_err(crate::cli::CliError::from),
     }
 }
@@ -366,19 +532,7 @@ fn resolve_main_repo_root(path: &Path) -> Option<std::path::PathBuf> {
 }
 
 fn command_wants_json(command: Option<&Commands>) -> bool {
-    match command {
-        Some(
-            Commands::List { json }
-            | Commands::Branches { json, .. }
-            | Commands::Sessions { json }
-            | Commands::Open { json, .. }
-            | Commands::Status { json, .. }
-            | Commands::Delete { json, .. }
-            | Commands::Clean { json, .. }
-            | Commands::Send { json, .. },
-        ) => *json,
-        None => false,
-    }
+    command.is_some_and(Commands::wants_json)
 }
 
 fn should_disable_alt_screen() -> bool {

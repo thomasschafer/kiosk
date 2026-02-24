@@ -128,3 +128,138 @@ fn get_child_process_args(pid: u32) -> Option<String> {
 
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tmux::mock::MockTmuxProvider;
+    use crate::tmux::provider::PaneInfo;
+
+    fn mock_with_agent(session: &str, command: &str, pane_content: &str) -> MockTmuxProvider {
+        let mut tmux = MockTmuxProvider::default();
+        tmux.pane_info.insert(
+            session.to_string(),
+            vec![PaneInfo {
+                pane_index: 0,
+                command: command.to_string(),
+                pid: 99999, // Fake PID — child process lookup will fail gracefully
+            }],
+        );
+        tmux.pane_content
+            .insert((session.to_string(), 0), pane_content.to_string());
+        tmux
+    }
+
+    #[test]
+    fn detect_claude_code_running() {
+        let tmux = mock_with_agent("my-session", "claude", "⠋ Reading file src/main.rs");
+        let status = detect_for_session(&tmux, "my-session").unwrap();
+        assert_eq!(status.kind, AgentKind::ClaudeCode);
+        assert_eq!(status.state, AgentState::Running);
+    }
+
+    #[test]
+    fn detect_claude_code_waiting() {
+        let tmux = mock_with_agent(
+            "my-session",
+            "claude",
+            "Allow write to src/main.rs?\n  Yes, allow\n  No, deny",
+        );
+        let status = detect_for_session(&tmux, "my-session").unwrap();
+        assert_eq!(status.kind, AgentKind::ClaudeCode);
+        assert_eq!(status.state, AgentState::Waiting);
+    }
+
+    #[test]
+    fn detect_claude_code_idle() {
+        let tmux = mock_with_agent("my-session", "claude", "$ ");
+        let status = detect_for_session(&tmux, "my-session").unwrap();
+        assert_eq!(status.kind, AgentKind::ClaudeCode);
+        assert_eq!(status.state, AgentState::Idle);
+    }
+
+    #[test]
+    fn detect_codex_running() {
+        let tmux = mock_with_agent("codex-session", "codex", "working on your request...");
+        let status = detect_for_session(&tmux, "codex-session").unwrap();
+        assert_eq!(status.kind, AgentKind::Codex);
+        assert_eq!(status.state, AgentState::Running);
+    }
+
+    #[test]
+    fn detect_codex_waiting() {
+        let tmux = mock_with_agent("codex-session", "codex", "Do you approve this? [y/n]");
+        let status = detect_for_session(&tmux, "codex-session").unwrap();
+        assert_eq!(status.kind, AgentKind::Codex);
+        assert_eq!(status.state, AgentState::Waiting);
+    }
+
+    #[test]
+    fn no_agent_in_regular_shell() {
+        let tmux = mock_with_agent("shell-session", "bash", "$ ls -la\ntotal 42");
+        assert!(detect_for_session(&tmux, "shell-session").is_none());
+    }
+
+    #[test]
+    fn no_panes_returns_none() {
+        let tmux = MockTmuxProvider::default();
+        assert!(detect_for_session(&tmux, "nonexistent").is_none());
+    }
+
+    #[test]
+    fn agent_found_in_second_pane() {
+        let mut tmux = MockTmuxProvider::default();
+        let session = "multi-pane";
+        tmux.pane_info.insert(
+            session.to_string(),
+            vec![
+                PaneInfo {
+                    pane_index: 0,
+                    command: "bash".to_string(),
+                    pid: 11111,
+                },
+                PaneInfo {
+                    pane_index: 1,
+                    command: "claude".to_string(),
+                    pid: 22222,
+                },
+            ],
+        );
+        tmux.pane_content
+            .insert((session.to_string(), 0), "$ vim file.txt".to_string());
+        tmux.pane_content.insert(
+            (session.to_string(), 1),
+            "Esc to interrupt".to_string(),
+        );
+
+        let status = detect_for_session(&tmux, session).unwrap();
+        assert_eq!(status.kind, AgentKind::ClaudeCode);
+        assert_eq!(status.state, AgentState::Running);
+    }
+
+    #[test]
+    fn agent_with_ansi_codes_in_output() {
+        let tmux = mock_with_agent(
+            "ansi-session",
+            "claude",
+            "\x1B[32m⠹ Running tool\x1B[0m",
+        );
+        let status = detect_for_session(&tmux, "ansi-session").unwrap();
+        assert_eq!(status.state, AgentState::Running);
+    }
+
+    #[test]
+    fn pane_has_agent_command_but_no_content() {
+        let mut tmux = MockTmuxProvider::default();
+        tmux.pane_info.insert(
+            "empty-pane".to_string(),
+            vec![PaneInfo {
+                pane_index: 0,
+                command: "claude".to_string(),
+                pid: 33333,
+            }],
+        );
+        // No pane_content entry → capture_pane_by_index returns None
+        assert!(detect_for_session(&tmux, "empty-pane").is_none());
+    }
+}

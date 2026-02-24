@@ -1116,7 +1116,9 @@ pub fn cmd_panes(
     Ok(())
 }
 
-const KNOWN_SHELLS: &[&str] = &["bash", "zsh", "fish", "sh", "dash", "ash"];
+const KNOWN_SHELLS: &[&str] = &[
+    "bash", "zsh", "fish", "sh", "dash", "ash", "ksh", "tcsh", "csh", "nu", "nushell", "pwsh",
+];
 
 /// Core wait loop: blocks until the pane's foreground process is a shell, or timeout.
 /// Returns `Ok(WaitOutput)` on idle, `Err` on timeout or failure.

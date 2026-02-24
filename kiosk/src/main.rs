@@ -76,7 +76,7 @@ enum Commands {
         /// Block until the command from --run finishes (pane returns to shell). Requires --run
         #[arg(long, requires = "run")]
         wait: bool,
-        /// Timeout in seconds for --wait
+        /// Timeout in seconds for --wait (blocks indefinitely if omitted)
         #[arg(long)]
         wait_timeout: Option<u64>,
         /// Target pane index for --wait (default: 0)
@@ -167,7 +167,7 @@ enum Commands {
         repo: String,
         /// Branch name (omit for main checkout)
         branch: Option<String>,
-        /// Timeout in seconds
+        /// Timeout in seconds (blocks indefinitely if omitted)
         #[arg(long)]
         timeout: Option<u64>,
         /// Target pane index (default: 0)

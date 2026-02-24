@@ -295,12 +295,18 @@ impl AgentTestEnvDefault {
     }
 
     fn run_cli(&self, args: &[&str]) -> std::process::Output {
-        Command::new(kiosk_binary())
+        let output = Command::new(kiosk_binary())
             .args(args)
             .env("XDG_CONFIG_HOME", &self.config_dir)
             .env("XDG_STATE_HOME", &self.state_dir)
             .output()
-            .unwrap()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "CLI failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output
     }
 
     fn run_cli_json(&self, args: &[&str]) -> Value {

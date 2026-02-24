@@ -72,9 +72,10 @@ pub enum AppEvent {
         session_activity: HashMap<String, u64>,
     },
 
-    /// Agent states updated from background detection
+    /// Agent states updated from background detection (full snapshot —
+    /// `None` means no agent detected, allowing stale statuses to be cleared)
     AgentStatesUpdated {
-        states: Vec<(String, AgentStatus)>, // (session_name, status)
+        states: Vec<(String, Option<AgentStatus>)>,
     },
 
     /// A background git operation failed

@@ -387,7 +387,7 @@ const AGENT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(
 pub fn spawn_agent_status_poller<T: TmuxProvider + ?Sized + 'static>(
     tmux: &Arc<T>,
     sender: &EventSender,
-    sessions: Vec<(String, PathBuf)>,
+    sessions: Vec<String>,
 ) {
     let tmux = Arc::clone(tmux);
     let sender = sender.clone();
@@ -397,10 +397,9 @@ pub fn spawn_agent_status_poller<T: TmuxProvider + ?Sized + 'static>(
                 return;
             }
 
+            // Always emit a full snapshot so consumers can clear stale statuses
             let states = detect_agent_statuses(&*tmux, &sessions);
-            if !states.is_empty() {
-                sender.send(AppEvent::AgentStatesUpdated { states });
-            }
+            sender.send(AppEvent::AgentStatesUpdated { states });
 
             // Sleep in small increments so we can check cancel promptly
             let mut remaining = AGENT_POLL_INTERVAL;
@@ -418,13 +417,13 @@ pub fn spawn_agent_status_poller<T: TmuxProvider + ?Sized + 'static>(
 
 fn detect_agent_statuses<T: TmuxProvider + ?Sized>(
     tmux: &T,
-    sessions: &[(String, PathBuf)],
-) -> Vec<(String, AgentStatus)> {
+    sessions: &[String],
+) -> Vec<(String, Option<AgentStatus>)> {
     sessions
         .iter()
-        .filter_map(|(session_name, _)| {
-            agent::detect_for_session(tmux, session_name)
-                .map(|status| (session_name.clone(), status))
+        .map(|session_name| {
+            let status = agent::detect_for_session(tmux, session_name);
+            (session_name.clone(), status)
         })
         .collect()
 }

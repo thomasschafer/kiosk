@@ -758,7 +758,8 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
         }
         AppEvent::AgentStatesUpdated { states } => {
             if state.mode == Mode::BranchSelect {
-                // Update agent states in-place — no re-sorting or filter changes
+                // Update agent states in-place — no re-sorting or filter changes.
+                // None values clear stale statuses (agent exited since last poll).
                 for (session_name, agent_status) in states {
                     for branch in &mut state.branches {
                         if branch.has_session
@@ -770,7 +771,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
                                 }
                             })
                         {
-                            branch.agent_status = Some(agent_status);
+                            branch.agent_status = agent_status;
                         }
                     }
                 }
@@ -3582,7 +3583,7 @@ mod tests {
 
         process_app_event(
             AppEvent::AgentStatesUpdated {
-                states: vec![(session_name, status)],
+                states: vec![(session_name, Some(status))],
             },
             &mut state,
             &git,
@@ -3643,10 +3644,10 @@ mod tests {
             AppEvent::AgentStatesUpdated {
                 states: vec![(
                     "nonexistent-session".to_string(),
-                    AgentStatus {
+                    Some(AgentStatus {
                         kind: AgentKind::ClaudeCode,
                         state: AgentState::Running,
-                    },
+                    }),
                 )],
             },
             &mut state,
@@ -3892,10 +3893,10 @@ mod tests {
             AppEvent::AgentStatesUpdated {
                 states: vec![(
                     session_name,
-                    AgentStatus {
+                    Some(AgentStatus {
                         kind: AgentKind::ClaudeCode,
                         state: AgentState::Running,
-                    },
+                    }),
                 )],
             },
             &mut state,
@@ -3993,10 +3994,10 @@ mod tests {
             AppEvent::AgentStatesUpdated {
                 states: vec![(
                     "whatever".to_string(),
-                    AgentStatus {
+                    Some(AgentStatus {
                         kind: AgentKind::ClaudeCode,
                         state: AgentState::Waiting,
-                    },
+                    }),
                 )],
             },
             &mut state,

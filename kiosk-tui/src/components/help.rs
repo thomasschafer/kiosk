@@ -52,7 +52,7 @@ pub fn draw(f: &mut Frame, state: &AppState, theme: &crate::theme::Theme) {
         &super::search_bar::SearchBarStyle {
             title: "help - key bindings",
             placeholder: "Type to filter by key, command, or description...",
-            border_color: theme.accent,
+            border_color: theme.tertiary,
             muted_color: theme.muted,
         },
         &overlay.list.search,
@@ -76,11 +76,11 @@ pub fn draw(f: &mut Frame, state: &AppState, theme: &crate::theme::Theme) {
             Block::default()
                 .borders(Borders::ALL)
                 .title(title)
-                .border_style(Style::default().fg(theme.accent)),
+                .border_style(Style::default().fg(theme.tertiary)),
         )
         .highlight_style(
             Style::default()
-                .bg(theme.secondary)
+                .bg(theme.tertiary)
                 .fg(theme.highlight_fg)
                 .add_modifier(Modifier::BOLD),
         )

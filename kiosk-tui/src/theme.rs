@@ -22,6 +22,7 @@ macro_rules! define_theme {
 define_theme!(
     accent,
     secondary,
+    tertiary,
     success,
     error,
     warning,
@@ -59,6 +60,7 @@ mod tests {
         let theme = Theme::from_config(&ThemeConfig::default());
         assert_eq!(theme.accent, Color::Magenta);
         assert_eq!(theme.secondary, Color::Cyan);
+        assert_eq!(theme.tertiary, Color::Green);
         assert_eq!(theme.success, Color::Green);
         assert_eq!(theme.error, Color::Red);
         assert_eq!(theme.warning, Color::Yellow);

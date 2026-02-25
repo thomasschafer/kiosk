@@ -19,7 +19,7 @@ bind-key f popup -xC -yC -w90% -h90% -E "kiosk"
 
 - On first load you'll see an onboarding popup that will automatically fill in your config file. If you'd rather do this manually, see the [configuration](#configuration) section
 - You'll start in the repo view, which shows all repos in the folders defined in your config
-  - Start typing to fuzzy search across them
+  - Start typing to fuzzy search across repos
   - Enter opens the repo with the primary checkout
   - Tab opens the branch view for that repo
 - From the branch view, you can again fuzzy match across branches

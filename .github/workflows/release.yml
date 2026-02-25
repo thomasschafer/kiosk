@@ -80,7 +80,7 @@ jobs:
             target: x86_64-unknown-linux-musl
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
-          - os: macos-13  # Intel runner for native x86_64 builds
+          - os: macos-latest  # Cross-compile x86_64 on ARM64 (macos-13 Intel runners were retired)
             target: x86_64-apple-darwin
           - os: macos-latest
             target: aarch64-apple-darwin

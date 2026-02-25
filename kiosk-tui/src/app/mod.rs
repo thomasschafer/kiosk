@@ -95,6 +95,13 @@ pub fn run(
     loop {
         terminal.draw(|f| draw(f, state, theme, keys, &spinner_start))?;
 
+        // Auto-dismiss error after 5 seconds
+        if let Some(set_at) = state.error_set_at
+            && set_at.elapsed() >= Duration::from_secs(5)
+        {
+            state.clear_error();
+        }
+
         // Check background channel (non-blocking)
         if let Ok(app_event) = rx.try_recv() {
             if let Some(result) = process_app_event(app_event, state, git, tmux, &event_sender) {
@@ -126,7 +133,7 @@ pub fn run(
             }
 
             // Clear error on any keypress
-            state.error = None;
+            state.clear_error();
 
             let ctx = ActionContext {
                 git,
@@ -159,16 +166,8 @@ fn draw(
 
     let outer = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(f.area());
 
-    let content_area = outer[0];
+    let main_area = outer[0];
     let footer_area = outer[1];
-
-    let (main_area, error_area) = if state.error.is_some() {
-        let chunks =
-            Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(content_area);
-        (chunks[0], Some(chunks[1]))
-    } else {
-        (content_area, None)
-    };
 
     let page_rows = active_list_page_rows(f.area(), main_area, &state.mode);
     state.set_active_list_page_rows(page_rows);
@@ -222,9 +221,8 @@ fn draw(
         Mode::Loading(_) => unreachable!(),
     }
 
-    if let Some(area) = error_area {
-        components::error_bar::draw(f, area, state, theme);
-    }
+    // Error toast overlay (rendered on top of everything)
+    components::error_toast::draw(f, f.area(), state, theme);
 
     // Footer with key hints
     let footer_hints = build_footer_hints(effective_mode, keys);
@@ -345,7 +343,7 @@ fn draw_loading(
 /// Estimate visual line count when a `Line` is word-wrapped to `max_width` columns.
 /// Uses byte length as a width proxy, which is exact for ASCII and a safe overestimate
 /// for multi-byte UTF-8 (produces a taller dialog rather than clipping content).
-fn word_wrapped_line_count(line: &Line, max_width: u16) -> u16 {
+pub fn word_wrapped_line_count(line: &Line, max_width: u16) -> u16 {
     let max_w = usize::from(max_width);
     if max_w == 0 {
         return 1;
@@ -606,7 +604,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
         } => {
             state.clear_pending_worktree_delete_by_path(&worktree_path);
             if let Err(e) = save_pending_worktree_deletes(&state.pending_worktree_deletes) {
-                state.error = Some(format!("Failed to persist pending deletes: {e}"));
+                state.set_error(format!("Failed to persist pending deletes: {e}"));
             }
             // Return to branch select and refresh the branch list
             if let Some(repo_idx) = state.selected_repo_idx {
@@ -633,7 +631,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
                     " (also failed to persist pending deletes: {e})"
                 );
             }
-            state.error = Some(error_message);
+            state.set_error(error_message);
             state.loading_branches = false;
             state.mode = Mode::BranchSelect;
         }
@@ -713,7 +711,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
                 state.mode = Mode::BranchSelect;
             }
             state.loading_branches = false;
-            state.error = Some(msg);
+            state.set_error(msg);
         }
     }
     None

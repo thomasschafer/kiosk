@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
+    time::Instant,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -739,6 +740,7 @@ pub struct AppState {
     pub mode: Mode,
     pub loading_branches: bool,
     pub error: Option<String>,
+    pub error_set_at: Option<Instant>,
     active_list_page_rows: usize,
     pub pending_worktree_deletes: Vec<PendingWorktreeDelete>,
     pub session_activity: HashMap<String, u64>,
@@ -764,6 +766,7 @@ impl AppState {
             mode,
             loading_branches: false,
             error: None,
+            error_set_at: None,
             active_list_page_rows: 10,
             pending_worktree_deletes: Vec::new(),
             session_activity: HashMap::new(),
@@ -788,6 +791,18 @@ impl AppState {
             split_command,
             ..Self::base(Mode::Loading(loading_message.to_string()))
         }
+    }
+
+    /// Set an error message with a timestamp for auto-dismiss.
+    pub fn set_error(&mut self, msg: String) {
+        self.error = Some(msg);
+        self.error_set_at = Some(Instant::now());
+    }
+
+    /// Clear the error message and timestamp.
+    pub fn clear_error(&mut self) {
+        self.error = None;
+        self.error_set_at = None;
     }
 
     pub fn new_setup() -> Self {

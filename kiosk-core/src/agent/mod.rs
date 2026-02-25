@@ -200,7 +200,7 @@ mod tests {
 
     #[test]
     fn detect_claude_code_idle() {
-        let tmux = mock_with_agent("my-session", "claude", "$ ");
+        let tmux = mock_with_agent("my-session", "claude", "❯ \n? for shortcuts");
         let status = detect_for_session(&tmux, "my-session").unwrap();
         assert_eq!(status.kind, AgentKind::ClaudeCode);
         assert_eq!(status.state, AgentState::Idle);
@@ -350,7 +350,7 @@ mod tests {
         let tmux = mock_multi_agent(
             "multi",
             &[
-                ("claude", "$ "),
+                ("claude", "❯ \n? for shortcuts"),
                 ("claude", "Allow write?\n  Yes, allow\n  No, deny"),
             ],
         );
@@ -362,7 +362,10 @@ mod tests {
     fn multi_agent_idle_beats_running() {
         let tmux = mock_multi_agent(
             "multi",
-            &[("claude", "⠋ Reading file src/main.rs"), ("claude", "$ ")],
+            &[
+                ("claude", "⠋ Reading file src/main.rs"),
+                ("claude", "❯ \n? for shortcuts"),
+            ],
         );
         let status = detect_for_session(&tmux, "multi").unwrap();
         assert_eq!(status.state, AgentState::Idle);

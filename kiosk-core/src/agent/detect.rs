@@ -56,19 +56,23 @@ const CLAUDE_WAITING_PATTERNS: &[&str] = &[
     "do you trust the files",
 ];
 
-/// Claude Code uses alt-screen so stale content is not an issue.
-const CLAUDE_IDLE_TAIL_PATTERNS: &[&str] = &[];
+/// Claude Code uses alt-screen so stale content is not an issue, but
+/// `? for shortcuts` reliably indicates the idle prompt.
+const CLAUDE_IDLE_TAIL_PATTERNS: &[&str] = &["? for shortcuts"];
 
 const CODEX_RUNNING_PATTERNS: &[&str] = &["esc to interrupt"];
 
 const CODEX_WAITING_PATTERNS: &[&str] = &[
     "yes, proceed",
+    "yes, continue",
     "press enter to confirm",
+    "press enter to continue",
     "(y/n)",
     "[y/n]",
     "approve",
     "allow",
     "❯ 1.",
+    "› 1.",
     "enter to select",
     "esc to cancel",
 ];
@@ -105,13 +109,7 @@ pub fn detect_state(content: &str, kind: AgentKind) -> AgentState {
     let tail_lowered = last_5.to_lowercase();
 
     match kind {
-        AgentKind::ClaudeCode => detect_agent_state(
-            &content_lowered,
-            &tail_lowered,
-            CLAUDE_RUNNING_PATTERNS,
-            CLAUDE_WAITING_PATTERNS,
-            CLAUDE_IDLE_TAIL_PATTERNS,
-        ),
+        AgentKind::ClaudeCode => detect_claude_state(&content_lowered, &tail_lowered),
         AgentKind::Codex => detect_agent_state(
             &content_lowered,
             &tail_lowered,
@@ -128,6 +126,41 @@ pub fn detect_state(content: &str, kind: AgentKind) -> AgentState {
         ),
         AgentKind::Unknown => AgentState::Idle,
     }
+}
+
+/// Claude Code-specific state detection.
+///
+/// Claude Code uses the alternate screen, so there is no scrollback — the
+/// captured pane content IS what the user sees. This has two key implications:
+///
+/// 1. Stale content is not a concern (unlike Codex where old prompts linger
+///    in the scrollback).
+/// 2. When Claude is processing, the pane shows the user's prompt and empty
+///    lines but NO running indicators (no "esc to interrupt", no spinners).
+///    The `? for shortcuts` footer is only visible when Claude is idle at the
+///    input prompt.
+///
+/// Detection strategy:
+/// - If `? for shortcuts` is in the tail → Idle
+/// - If explicit running patterns match → Running
+/// - If waiting patterns match → Waiting
+/// - Otherwise → Running (Claude is processing; absence of idle footer is
+///   the strongest signal)
+fn detect_claude_state(content: &str, tail: &str) -> AgentState {
+    // Idle: the prompt footer is visible
+    if matches_any(tail, CLAUDE_IDLE_TAIL_PATTERNS) {
+        return AgentState::Idle;
+    }
+    // Explicit running indicators (e.g. "esc to interrupt" during tool use)
+    if matches_any(content, CLAUDE_RUNNING_PATTERNS) || contains_braille_spinner(content) {
+        return AgentState::Running;
+    }
+    // Permission / confirmation prompts
+    if matches_any(content, CLAUDE_WAITING_PATTERNS) {
+        return AgentState::Waiting;
+    }
+    // Default: Claude is on alt-screen without the idle footer → processing
+    AgentState::Running
 }
 
 /// Generic agent state detection.
@@ -312,12 +345,36 @@ mod tests {
 
     #[test]
     fn test_claude_idle() {
-        assert_eq!(detect_state("$ ", AgentKind::ClaudeCode), AgentState::Idle);
         assert_eq!(
-            detect_state("Welcome to Claude Code\n> ", AgentKind::ClaudeCode),
+            detect_state("❯ \n? for shortcuts", AgentKind::ClaudeCode),
             AgentState::Idle
         );
-        assert_eq!(detect_state("", AgentKind::ClaudeCode), AgentState::Idle);
+        assert_eq!(
+            detect_state(
+                "Welcome to Claude Code\n❯ Try \"fix errors\"\n? for shortcuts",
+                AgentKind::ClaudeCode
+            ),
+            AgentState::Idle
+        );
+    }
+
+    #[test]
+    fn test_claude_processing_no_indicators() {
+        // When Claude is processing on alt-screen, no idle footer is visible.
+        // This should be detected as Running, not Idle.
+        assert_eq!(
+            detect_state(
+                "❯ what files are in this directory?\n\n",
+                AgentKind::ClaudeCode
+            ),
+            AgentState::Running
+        );
+        // Empty pane (just started up, loading) should also be Running
+        assert_eq!(detect_state("", AgentKind::ClaudeCode), AgentState::Running);
+        assert_eq!(
+            detect_state("$ ", AgentKind::ClaudeCode),
+            AgentState::Running
+        );
     }
 
     #[test]
@@ -349,6 +406,22 @@ mod tests {
             detect_state("Please approve this action: [y/n]", AgentKind::Codex),
             AgentState::Waiting
         );
+    }
+
+    #[test]
+    fn test_codex_trust_prompt() {
+        // Real Codex trust prompt shown on first launch in an untrusted directory
+        let content = "\
+> You are in /tmp
+
+  Do you trust the contents of this directory? Working with untrusted contents comes with higher risk of prompt
+  injection.
+
+› 1. Yes, continue
+  2. No, quit
+
+  Press enter to continue";
+        assert_eq!(detect_state(content, AgentKind::Codex), AgentState::Waiting);
     }
 
     #[test]
@@ -514,16 +587,18 @@ $ touch test.txt
 
     #[test]
     fn test_empty_content() {
-        assert_eq!(detect_state("", AgentKind::ClaudeCode), AgentState::Idle);
+        // Claude defaults to Running when no patterns match (alt-screen heuristic)
+        assert_eq!(detect_state("", AgentKind::ClaudeCode), AgentState::Running);
         assert_eq!(detect_state("", AgentKind::Codex), AgentState::Idle);
         assert_eq!(detect_state("", AgentKind::Unknown), AgentState::Idle);
     }
 
     #[test]
     fn test_only_whitespace_content() {
+        // Claude defaults to Running on empty/whitespace content (alt-screen)
         assert_eq!(
             detect_state("   \n\n  \t  ", AgentKind::ClaudeCode),
-            AgentState::Idle
+            AgentState::Running
         );
     }
 }

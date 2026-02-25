@@ -286,6 +286,25 @@ fn active_list_page_rows(full_area: Rect, main_area: Rect, mode: &Mode) -> usize
     }
 }
 
+/// Compute the width and height for a loading-spinner dialog.
+/// `spinner_prefix` is the "⠋ " (or similar) text prepended to `message`.
+fn loading_dialog_size(spinner_prefix: &str, message: &str, terminal_width: u16) -> (u16, u16) {
+    let text = Line::from(vec![
+        Span::raw(spinner_prefix.to_string()),
+        Span::raw(message),
+    ]);
+
+    let width = components::dialog_width(terminal_width);
+    // 2 for borders + 2 for 1-cell horizontal padding on each side
+    let h_chrome: u16 = 4;
+    // 2 for borders
+    let v_chrome: u16 = 2;
+    let text_width = width.saturating_sub(h_chrome).max(1);
+
+    let content_height = word_wrapped_line_count(&text, text_width);
+    (width, content_height + v_chrome)
+}
+
 fn draw_loading(
     f: &mut Frame,
     area: Rect,
@@ -296,10 +315,11 @@ fn draw_loading(
     let elapsed = start.elapsed().as_millis() as usize;
     let frame_idx = (elapsed / 80) % SPINNER_FRAMES.len();
     let spinner = SPINNER_FRAMES[frame_idx];
+    let spinner_prefix = format!("{spinner} ");
 
     let text = Line::from(vec![
         Span::styled(
-            format!("{spinner} "),
+            spinner_prefix.clone(),
             Style::default()
                 .fg(theme.accent)
                 .add_modifier(Modifier::BOLD),
@@ -309,13 +329,15 @@ fn draw_loading(
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.accent));
+        .border_style(Style::default().fg(theme.accent))
+        .padding(Padding::horizontal(1));
 
-    // 2 for borders + 1 content line
-    let centered = components::centered_fixed_rect(50, 3, area);
+    let (width, height) = loading_dialog_size(&spinner_prefix, message, area.width);
+    let centered = components::centered_fixed_rect(width, height, area);
 
     let paragraph = Paragraph::new(text)
         .block(block)
+        .wrap(Wrap { trim: false })
         .alignment(ratatui::layout::Alignment::Center);
     f.render_widget(paragraph, centered);
 }
@@ -2795,6 +2817,44 @@ mod tests {
         ]);
         assert_eq!(word_wrapped_line_count(&line, 20), 1);
         assert_eq!(word_wrapped_line_count(&line, 8), 2);
+    }
+
+    // -- loading_dialog_size tests --
+
+    #[test]
+    fn test_loading_dialog_short_message_single_line() {
+        let (width, height) = loading_dialog_size("⠋ ", "Fetching...", 100);
+        assert_eq!(width, 80); // dialog_width(100) = 80
+        // short message fits on one line → height = 1 content + 2 border = 3
+        assert_eq!(height, 3);
+    }
+
+    #[test]
+    fn test_loading_dialog_long_message_wraps() {
+        let msg = "Creating branch my-very-long-feature-branch-name from origin/main-development-branch...";
+        let (width, height) = loading_dialog_size("⠋ ", msg, 60);
+        // dialog_width(60) = 48; text_width = 44
+        // "⠋ " + msg = 2 + 87 = 89 chars, should wrap to multiple lines
+        assert_eq!(width, 48);
+        assert!(
+            height > 3,
+            "long message should wrap to more than 1 line, got height {height}"
+        );
+    }
+
+    #[test]
+    fn test_loading_dialog_narrow_terminal() {
+        let (width, height) = loading_dialog_size("⠋ ", "Creating branch foo from bar...", 30);
+        assert_eq!(width, 24); // dialog_width(30) = 24
+        assert!(height >= 3);
+    }
+
+    #[test]
+    fn test_loading_dialog_uses_dialog_width() {
+        // Verify it scales with terminal width, not hardcoded
+        let (w1, _) = loading_dialog_size("⠋ ", "test", 80);
+        let (w2, _) = loading_dialog_size("⠋ ", "test", 40);
+        assert!(w1 > w2, "wider terminal should produce wider dialog");
     }
 
     // -- confirm_delete_dialog_layout sizing tests --

@@ -104,6 +104,8 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, _keys: &
     let count = state.branch_list.filtered.len();
     let loading_suffix = if state.loading_branches {
         " | loading..."
+    } else if state.fetching_remotes {
+        " | fetching..."
     } else {
         ""
     };

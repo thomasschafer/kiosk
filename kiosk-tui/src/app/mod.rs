@@ -556,10 +556,17 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             }
             state.mode = Mode::BranchSelect;
 
-            // Kick off remote branch loading
+            // Kick off remote branch loading and background fetch
             if let Some(repo_idx) = state.selected_repo_idx {
                 let repo_path = state.repos[repo_idx].path.clone();
-                spawn::spawn_remote_branch_loading(git, sender, repo_path, local_names);
+                spawn::spawn_remote_branch_loading(
+                    git,
+                    sender,
+                    repo_path.clone(),
+                    local_names.clone(),
+                );
+                state.fetching_remotes = true;
+                spawn::spawn_git_fetch(git, sender, repo_path, local_names);
             }
         }
         AppEvent::RemoteBranchesLoaded { branches } => {
@@ -567,6 +574,37 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
                 state.branches.extend(branches);
                 let names: Vec<&str> = state.branches.iter().map(|b| b.name.as_str()).collect();
                 rebuild_filtered_preserving_search(&mut state.branch_list, &names);
+            }
+        }
+        AppEvent::GitFetchCompleted {
+            branches,
+            repo_path,
+            error,
+        } => {
+            state.fetching_remotes = false;
+            if let Some(err) = error {
+                state.error = Some(format!("git fetch failed: {err}"));
+            }
+            // Only update if still in BranchSelect and the repo matches
+            let current_repo_path = state
+                .selected_repo_idx
+                .map(|idx| &state.repos[idx].path);
+            if state.mode == Mode::BranchSelect
+                && current_repo_path == Some(&repo_path)
+                && !branches.is_empty()
+            {
+                let existing_names: std::collections::HashSet<&str> =
+                    state.branches.iter().map(|b| b.name.as_str()).collect();
+                let new_branches: Vec<_> = branches
+                    .into_iter()
+                    .filter(|b| !existing_names.contains(b.name.as_str()))
+                    .collect();
+                if !new_branches.is_empty() {
+                    state.branches.extend(new_branches);
+                    let names: Vec<&str> =
+                        state.branches.iter().map(|b| b.name.as_str()).collect();
+                    rebuild_filtered_preserving_search(&mut state.branch_list, &names);
+                }
             }
         }
         AppEvent::ReposEnriched {
@@ -3367,5 +3405,262 @@ mod tests {
         // Up past first → None (back to text)
         handle_setup_move_selection(&mut state, -1);
         assert_eq!(state.setup.as_ref().unwrap().selected_completion, None);
+    }
+
+    // ── GitFetchCompleted tests ──
+
+    fn make_branch(name: &str, is_remote: bool) -> BranchEntry {
+        BranchEntry {
+            name: name.to_string(),
+            worktree_path: None,
+            has_session: false,
+            is_current: false,
+            is_default: false,
+            is_remote,
+            session_activity_ts: None,
+        }
+    }
+
+    #[test]
+    fn test_git_fetch_completed_adds_new_remote_branches() {
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+        state.selected_repo_idx = Some(0);
+        state.mode = Mode::BranchSelect;
+        state.branches = vec![make_branch("main", false)];
+        state.branch_list.reset(1);
+        state.fetching_remotes = true;
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let sender = make_sender();
+
+        process_app_event(
+            AppEvent::GitFetchCompleted {
+                branches: vec![make_branch("feature-new", true)],
+                repo_path: PathBuf::from("/tmp/alpha"),
+                error: None,
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+        );
+
+        assert!(!state.fetching_remotes);
+        assert_eq!(state.branches.len(), 2);
+        assert_eq!(state.branches[1].name, "feature-new");
+        assert!(state.branches[1].is_remote);
+        assert_eq!(state.branch_list.filtered.len(), 2);
+    }
+
+    #[test]
+    fn test_git_fetch_completed_deduplicates() {
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+        state.selected_repo_idx = Some(0);
+        state.mode = Mode::BranchSelect;
+        state.branches = vec![
+            make_branch("main", false),
+            make_branch("existing-remote", true),
+        ];
+        state.branch_list.reset(2);
+        state.fetching_remotes = true;
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let sender = make_sender();
+
+        process_app_event(
+            AppEvent::GitFetchCompleted {
+                branches: vec![
+                    make_branch("existing-remote", true),
+                    make_branch("brand-new", true),
+                ],
+                repo_path: PathBuf::from("/tmp/alpha"),
+                error: None,
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+        );
+
+        assert_eq!(state.branches.len(), 3);
+        let names: Vec<&str> = state.branches.iter().map(|b| b.name.as_str()).collect();
+        assert_eq!(names, vec!["main", "existing-remote", "brand-new"]);
+    }
+
+    #[test]
+    fn test_git_fetch_completed_preserves_search() {
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+        state.selected_repo_idx = Some(0);
+        state.mode = Mode::BranchSelect;
+        state.branches = vec![make_branch("main", false)];
+        state.branch_list.reset(1);
+        state.branch_list.input.text = "feat".to_string();
+        state.branch_list.input.cursor = 4;
+        state.branch_list.filtered = vec![];
+        state.branch_list.selected = None;
+        state.fetching_remotes = true;
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let sender = make_sender();
+
+        process_app_event(
+            AppEvent::GitFetchCompleted {
+                branches: vec![make_branch("feature-x", true)],
+                repo_path: PathBuf::from("/tmp/alpha"),
+                error: None,
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+        );
+
+        assert_eq!(state.branch_list.input.text, "feat");
+        assert_eq!(state.branches.len(), 2);
+        // "feat" should match "feature-x" but not "main"
+        assert_eq!(state.branch_list.filtered.len(), 1);
+        let matched_idx = state.branch_list.filtered[0].0;
+        assert_eq!(state.branches[matched_idx].name, "feature-x");
+    }
+
+    #[test]
+    fn test_git_fetch_completed_ignored_wrong_mode() {
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+        state.selected_repo_idx = Some(0);
+        state.mode = Mode::RepoSelect;
+        state.branches = vec![make_branch("main", false)];
+        state.fetching_remotes = true;
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let sender = make_sender();
+
+        process_app_event(
+            AppEvent::GitFetchCompleted {
+                branches: vec![make_branch("feature-x", true)],
+                repo_path: PathBuf::from("/tmp/alpha"),
+                error: None,
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+        );
+
+        assert!(!state.fetching_remotes);
+        assert_eq!(state.branches.len(), 1);
+    }
+
+    #[test]
+    fn test_git_fetch_completed_ignored_wrong_repo() {
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+        state.selected_repo_idx = Some(0);
+        state.mode = Mode::BranchSelect;
+        state.branches = vec![make_branch("main", false)];
+        state.branch_list.reset(1);
+        state.fetching_remotes = true;
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let sender = make_sender();
+
+        process_app_event(
+            AppEvent::GitFetchCompleted {
+                branches: vec![make_branch("feature-x", true)],
+                repo_path: PathBuf::from("/tmp/wrong-repo"),
+                error: None,
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+        );
+
+        assert!(!state.fetching_remotes);
+        assert_eq!(state.branches.len(), 1);
+    }
+
+    #[test]
+    fn test_git_fetch_completed_shows_error() {
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+        state.selected_repo_idx = Some(0);
+        state.mode = Mode::BranchSelect;
+        state.fetching_remotes = true;
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let sender = make_sender();
+
+        process_app_event(
+            AppEvent::GitFetchCompleted {
+                branches: vec![],
+                repo_path: PathBuf::from("/tmp/alpha"),
+                error: Some("network unreachable".to_string()),
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+        );
+
+        assert!(!state.fetching_remotes);
+        assert!(state.error.is_some());
+        assert!(state.error.as_ref().unwrap().contains("network unreachable"));
+    }
+
+    #[test]
+    fn test_fetching_remotes_flag_lifecycle() {
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+        state.repo_list.selected = Some(0);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider {
+            branches: vec!["main".into()],
+            ..Default::default()
+        });
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let sender = EventSender {
+            tx,
+            cancel: Arc::new(AtomicBool::new(false)),
+        };
+
+        // Enter branch select
+        enter_branch_select(&mut state, 0, &git, &tmux, &sender);
+        assert!(!state.fetching_remotes);
+
+        // Process BranchesLoaded — should set fetching_remotes
+        let event = rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+        process_app_event(event, &mut state, &git, &tmux, &sender);
+        assert!(
+            state.fetching_remotes,
+            "fetching_remotes should be true after BranchesLoaded"
+        );
+
+        // Process GitFetchCompleted — should clear it
+        process_app_event(
+            AppEvent::GitFetchCompleted {
+                branches: vec![],
+                repo_path: PathBuf::from("/tmp/alpha"),
+                error: None,
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+        );
+        assert!(
+            !state.fetching_remotes,
+            "fetching_remotes should be false after GitFetchCompleted"
+        );
     }
 }

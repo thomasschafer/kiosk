@@ -277,6 +277,7 @@ pub(super) fn enter_branch_select_with_loading<T: TmuxProvider + ?Sized + 'stati
         state.branch_list.reset(0);
     }
     state.loading_branches = true;
+    state.fetching_remotes = false;
     spawn_branch_loading(git, tmux, sender, repo, cwd);
 }
 

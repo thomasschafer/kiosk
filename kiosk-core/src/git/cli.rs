@@ -198,6 +198,20 @@ impl GitProvider for CliGitProvider {
         Ok(())
     }
 
+    fn fetch_all(&self, repo_path: &Path) -> Result<()> {
+        let output = Command::new("git")
+            .args(["fetch", "--all"])
+            .current_dir(repo_path)
+            .output()?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("git fetch --all failed: {stderr}");
+        }
+
+        Ok(())
+    }
+
     fn default_branch(&self, repo_path: &Path, local_branches: &[String]) -> Option<String> {
         // Try symbolic-ref first; fall through on spawn/IO errors so the
         // local-branch heuristic below still runs.
@@ -515,6 +529,91 @@ mod tests {
         let repos = provider.discover_repos(&[(tmp.path().to_path_buf(), 3)]);
         assert_eq!(repos.len(), 1);
         assert_eq!(repos[0].name, "parent-repo");
+    }
+
+    #[test]
+    fn test_fetch_all() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        // Create a "remote" bare repo
+        let remote_dir = tmp.path().join("remote.git");
+        fs::create_dir_all(&remote_dir).unwrap();
+        Command::new("git")
+            .args(["init", "--bare"])
+            .current_dir(&remote_dir)
+            .output()
+            .unwrap();
+
+        // Create a local repo and add the bare repo as a remote
+        let local_dir = tmp.path().join("local");
+        fs::create_dir_all(&local_dir).unwrap();
+        init_test_repo(&local_dir);
+        Command::new("git")
+            .args(["remote", "add", "origin", &remote_dir.to_string_lossy()])
+            .current_dir(&local_dir)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["push", "origin", "master"])
+            .current_dir(&local_dir)
+            .output()
+            .unwrap();
+
+        // Create a second clone to push a new branch to the remote
+        let clone_dir = tmp.path().join("clone");
+        Command::new("git")
+            .args(["clone", &remote_dir.to_string_lossy(), "clone"])
+            .current_dir(tmp.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(&clone_dir)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(&clone_dir)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["checkout", "-b", "new-feature"])
+            .current_dir(&clone_dir)
+            .output()
+            .unwrap();
+        fs::write(clone_dir.join("feature.txt"), "feature").unwrap();
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(&clone_dir)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "feature"])
+            .current_dir(&clone_dir)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["push", "origin", "new-feature"])
+            .current_dir(&clone_dir)
+            .output()
+            .unwrap();
+
+        let provider = CliGitProvider;
+
+        // Before fetch, the local repo shouldn't see the new remote branch
+        let before = provider.list_remote_branches(&local_dir);
+        assert!(
+            !before.contains(&"new-feature".to_string()),
+            "Should not see new-feature before fetch: {before:?}"
+        );
+
+        // Fetch and verify the branch appears
+        provider.fetch_all(&local_dir).unwrap();
+        let after = provider.list_remote_branches(&local_dir);
+        assert!(
+            after.contains(&"new-feature".to_string()),
+            "Should see new-feature after fetch: {after:?}"
+        );
     }
 }
 

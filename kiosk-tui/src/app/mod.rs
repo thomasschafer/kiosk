@@ -513,6 +513,106 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
                 state.mode = Mode::RepoSelect;
             }
         }
+        AppEvent::ReposFound { repos } => {
+            // Append new repos, deduplicating by path
+            for repo in repos {
+                if !state.repos.iter().any(|r| r.path == repo.path) {
+                    state.repos.push(repo);
+                }
+            }
+
+            // Sort and rebuild filtered list
+            kiosk_core::state::sort_repos(
+                &mut state.repos,
+                state.current_repo_path.as_deref(),
+                &state.session_activity,
+            );
+
+            let names: Vec<&str> = state.repos.iter().map(|r| r.name.as_str()).collect();
+            rebuild_filtered_preserving_search(&mut state.repo_list, &names);
+
+            state.loading_repos = false;
+
+            // Switch to RepoSelect from Loading
+            if matches!(state.mode, Mode::Loading(_)) {
+                state.mode = Mode::RepoSelect;
+            }
+        }
+        AppEvent::ScanComplete => {
+            // Run collision resolution on the full repo list
+            let mut name_counts = std::collections::HashMap::<String, usize>::new();
+            for repo in &state.repos {
+                *name_counts.entry(repo.name.clone()).or_insert(0) += 1;
+            }
+            // Only disambiguate if there are actual collisions
+            if name_counts.values().any(|&count| count > 1) {
+                for repo in &mut state.repos {
+                    if name_counts[&repo.name] > 1 {
+                        // Use parent directory name for disambiguation
+                        if let Some(parent) = repo.path.parent() {
+                            let parent_name =
+                                parent.file_name().unwrap_or_default().to_string_lossy();
+                            repo.session_name = format!("{}--({parent_name})", repo.name);
+                        }
+                    }
+                }
+            }
+
+            state.loading_repos = false;
+
+            if matches!(state.mode, Mode::Loading(_)) {
+                state.mode = Mode::RepoSelect;
+            }
+        }
+        AppEvent::SessionActivityLoaded { session_activity } => {
+            state.session_activity = session_activity;
+
+            // Re-sort with activity data
+            let selected_repo_path = state
+                .selected_repo_idx
+                .map(|idx| state.repos[idx].path.clone());
+
+            kiosk_core::state::sort_repos(
+                &mut state.repos,
+                state.current_repo_path.as_deref(),
+                &state.session_activity,
+            );
+
+            state.selected_repo_idx =
+                selected_repo_path.and_then(|path| state.repos.iter().position(|r| r.path == path));
+
+            let names: Vec<&str> = state.repos.iter().map(|r| r.name.as_str()).collect();
+            rebuild_filtered_preserving_search(&mut state.repo_list, &names);
+        }
+        AppEvent::RepoEnriched {
+            repo_path,
+            worktrees,
+        } => {
+            if let Some(repo) = state.repos.iter_mut().find(|r| r.path == repo_path) {
+                repo.worktrees = worktrees;
+            }
+
+            // Re-sort (worktree data may affect ordering)
+            let selected_repo_path = state
+                .selected_repo_idx
+                .map(|idx| state.repos[idx].path.clone());
+
+            kiosk_core::state::sort_repos(
+                &mut state.repos,
+                state.current_repo_path.as_deref(),
+                &state.session_activity,
+            );
+
+            state.selected_repo_idx =
+                selected_repo_path.and_then(|path| state.repos.iter().position(|r| r.path == path));
+
+            let names: Vec<&str> = state.repos.iter().map(|r| r.name.as_str()).collect();
+            rebuild_filtered_preserving_search(&mut state.repo_list, &names);
+
+            if state.reconcile_pending_worktree_deletes() {
+                let _ = save_pending_worktree_deletes(&state.pending_worktree_deletes);
+            }
+        }
         AppEvent::WorktreeCreated { path, session_name } => {
             return Some(OpenAction::Open {
                 path,

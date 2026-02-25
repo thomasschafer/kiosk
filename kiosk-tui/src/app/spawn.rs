@@ -25,38 +25,81 @@ pub(super) fn spawn_repo_discovery<T: TmuxProvider + ?Sized + 'static>(
             return;
         }
 
-        // Phase 1: fast dir-only scan (no git calls)
-        let repos = git.scan_repos(&search_dirs);
-        sender.send(AppEvent::ReposDiscovered {
-            repos: repos.clone(),
-            session_activity: HashMap::new(),
-        });
+        // Phase 1: Stream repos as they're found, scanning dirs in parallel
+        let all_repos: Vec<Repo> = if search_dirs.len() == 1 {
+            // Single dir: stream repos one by one via callback
+            let sender_ref = &sender;
+            let found = std::sync::Mutex::new(Vec::new());
+            let (dir, depth) = &search_dirs[0];
+            git.scan_repos_streaming(dir, *depth, &|repos| {
+                found.lock().unwrap().extend(repos.clone());
+                if !sender_ref.cancel.load(Ordering::Relaxed) {
+                    sender_ref.send(AppEvent::ReposFound { repos });
+                }
+            });
+            std::mem::take(&mut *found.lock().unwrap())
+        } else {
+            // Multiple dirs: scan each in a parallel thread, stream results
+            let found = Arc::new(std::sync::Mutex::new(Vec::new()));
+            thread::scope(|s| {
+                for (dir, depth) in &search_dirs {
+                    let git = &git;
+                    let sender = &sender;
+                    let found = Arc::clone(&found);
+                    s.spawn(move || {
+                        if sender.cancel.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        git.scan_repos_streaming(dir, *depth, &|repos| {
+                            found.lock().unwrap().extend(repos.clone());
+                            if !sender.cancel.load(Ordering::Relaxed) {
+                                sender.send(AppEvent::ReposFound { repos });
+                            }
+                        });
+                    });
+                }
+            });
+            std::mem::take(&mut *found.lock().unwrap())
+        };
 
         if sender.cancel.load(Ordering::Relaxed) {
             return;
         }
 
-        // Phase 2: enrich with worktrees (parallel git calls) + session activity
-        let repo_paths: Vec<PathBuf> = repos.iter().map(|r| r.path.clone()).collect();
-        let worktrees_by_repo: Vec<(PathBuf, Vec<kiosk_core::git::Worktree>)> =
-            thread::scope(|s| {
-                let handles: Vec<_> = repo_paths
-                    .iter()
-                    .map(|path| {
-                        let git = &git;
-                        s.spawn(move || (path.clone(), git.list_worktrees(path)))
-                    })
-                    .collect();
-                handles.into_iter().map(|h| h.join().unwrap()).collect()
-            });
+        // Signal scan complete so the UI can run collision resolution
+        sender.send(AppEvent::ScanComplete);
 
-        let session_activity: HashMap<String, u64> =
-            tmux.list_sessions_with_activity().into_iter().collect();
+        // Phase 2: Enrich repos with worktrees (streamed per-repo) + session activity
+        // Kick off session activity fetch in parallel
+        let tmux_handle = {
+            let tmux = Arc::clone(&tmux);
+            thread::spawn(move || tmux.list_sessions_with_activity())
+        };
 
-        sender.send(AppEvent::ReposEnriched {
-            worktrees_by_repo,
-            session_activity,
+        // Stream worktree enrichment per-repo
+        let repo_paths: Vec<PathBuf> = all_repos.iter().map(|r| r.path.clone()).collect();
+        thread::scope(|s| {
+            for path in &repo_paths {
+                let git = &git;
+                let sender = &sender;
+                s.spawn(move || {
+                    if sender.cancel.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    let worktrees = git.list_worktrees(path);
+                    sender.send(AppEvent::RepoEnriched {
+                        repo_path: path.clone(),
+                        worktrees,
+                    });
+                });
+            }
         });
+
+        // Send session activity once all enrichment is done
+        if let Ok(sessions) = tmux_handle.join() {
+            let session_activity: HashMap<String, u64> = sessions.into_iter().collect();
+            sender.send(AppEvent::SessionActivityLoaded { session_activity });
+        }
     });
 }
 

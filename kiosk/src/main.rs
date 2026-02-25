@@ -438,12 +438,13 @@ fn run_tui(
         });
     let initial_repo = current_repo_path.as_ref().and_then(|repo_path| {
         let name = repo_path.file_name()?.to_string_lossy().to_string();
-        let worktrees = git.list_worktrees(repo_path);
+        // Don't load worktrees synchronously — they'll arrive via background enrichment.
+        // This makes TUI startup instant.
         Some(kiosk_core::git::Repo {
             session_name: name.clone(),
             name,
             path: repo_path.clone(),
-            worktrees,
+            worktrees: vec![],
         })
     });
 

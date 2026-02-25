@@ -23,6 +23,13 @@ impl GitProvider for CliGitProvider {
         Self::apply_collision_resolution(repos_with_dirs)
     }
 
+    fn scan_repos_streaming(&self, dir: &Path, depth: u16, on_found: &dyn Fn(Vec<Repo>)) {
+        // Use the per-repo streaming scanner, batching into single-element vecs
+        Self::scan_dir_streaming(dir, depth, &|repo| {
+            on_found(vec![repo]);
+        });
+    }
+
     fn discover_repos(&self, dirs: &[(PathBuf, u16)]) -> Vec<Repo> {
         let mut repos_with_dirs = Vec::new();
 
@@ -598,6 +605,33 @@ mod tests {
 }
 
 impl CliGitProvider {
+    /// Streaming scan: emits each repo via callback as it's found.
+    fn scan_dir_streaming(dir: &Path, depth: u16, on_found: &dyn Fn(Repo)) {
+        let entries = match std::fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(err) => {
+                eprintln!("Warning: Failed to read directory {}: {err}", dir.display());
+                return;
+            }
+        };
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+
+            if path.join(GIT_DIR_ENTRY).exists() {
+                let canonical = std::fs::canonicalize(&path).unwrap_or(path);
+                if let Some(repo) = Self::build_repo_stub(&canonical) {
+                    on_found(repo);
+                }
+            } else if depth > 1 {
+                Self::scan_dir_streaming(&path, depth - 1, on_found);
+            }
+        }
+    }
+
     fn scan_dir_recursive<'a>(
         &self,
         dir: &Path,

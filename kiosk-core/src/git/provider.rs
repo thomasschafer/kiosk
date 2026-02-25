@@ -5,6 +5,14 @@ use std::path::{Path, PathBuf};
 pub trait GitProvider: Send + Sync {
     /// Fast directory scan: returns repos with empty worktrees (no git calls).
     fn scan_repos(&self, dirs: &[(PathBuf, u16)]) -> Vec<Repo>;
+    /// Fast directory scan for a single dir, calling `on_found` with each batch.
+    /// Default implementation falls back to `scan_repos`.
+    fn scan_repos_streaming(&self, dir: &Path, depth: u16, on_found: &dyn Fn(Vec<Repo>)) {
+        let repos = self.scan_repos(&[(dir.to_path_buf(), depth)]);
+        if !repos.is_empty() {
+            on_found(repos);
+        }
+    }
     /// Full discovery: dir scan + worktree enrichment (calls git per repo).
     fn discover_repos(&self, dirs: &[(PathBuf, u16)]) -> Vec<Repo>;
     fn list_branches(&self, repo_path: &Path) -> Vec<String>;

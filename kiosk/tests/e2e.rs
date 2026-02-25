@@ -2589,3 +2589,64 @@ fn test_e2e_setup_wizard_enter_adds_typed_path_without_selection() {
         "Config should include the entered directory: {config}"
     );
 }
+
+#[test]
+fn test_e2e_fetch_discovers_new_remote_branch() {
+    let env = TestEnv::new("fetch-discovers");
+    let search_dir = env.search_dir();
+
+    // Create a "remote" repo (outside the search dir so kiosk doesn't list it)
+    let remote_repo = env.tmp.path().join("remote-origin");
+    fs::create_dir_all(&remote_repo).unwrap();
+    init_test_repo(&remote_repo);
+
+    // Clone it into the search dir
+    let repo = search_dir.join("fetch-repo");
+    let output = Command::new("git")
+        .args([
+            "clone",
+            &remote_repo.to_string_lossy(),
+            &repo.to_string_lossy(),
+        ])
+        .output()
+        .expect("git clone failed to spawn");
+    assert!(
+        output.status.success(),
+        "git clone failed: stdout: {} stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    env.write_config(&search_dir);
+    env.launch_kiosk();
+
+    // Enter the cloned repo's branch view
+    let screen = wait_for_screen(&env, 8000, |s| s.contains("fetch-repo"));
+    assert!(
+        screen.contains("fetch-repo"),
+        "Should see fetch-repo: {screen}"
+    );
+    env.send_special("Tab");
+    let screen = wait_for_screen(&env, 8000, |s| s.contains("select branch"));
+    assert!(
+        screen.contains("select branch"),
+        "Should be in branch view: {screen}"
+    );
+
+    // Push a new branch to the remote from the origin repo
+    run_git(&remote_repo, &["branch", "discovered-via-fetch"]);
+
+    // Go back and re-enter to trigger a fresh background fetch
+    env.send_special("Escape");
+    wait_for_screen(&env, 3000, |s| s.contains("select repo"));
+    env.send_special("Tab");
+
+    // Wait for the new remote branch to appear via background fetch
+    let screen = wait_for_screen(&env, 15000, |s| s.contains("discovered-via-fetch"));
+    assert!(
+        screen.contains("discovered-via-fetch"),
+        "Should discover new branch via background fetch: {screen}"
+    );
+
+    cleanup_server(&env.tmux_socket);
+}

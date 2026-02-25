@@ -195,6 +195,39 @@ pub(super) fn spawn_remote_branch_loading(
     });
 }
 
+pub(super) fn spawn_git_fetch(
+    git: &Arc<dyn GitProvider>,
+    sender: &EventSender,
+    repo_path: PathBuf,
+    local_names: Vec<String>,
+) {
+    let git = Arc::clone(git);
+    let sender = sender.clone();
+    thread::spawn(move || {
+        if sender.cancel.load(Ordering::Relaxed) {
+            return;
+        }
+        if let Err(e) = git.fetch_all(&repo_path) {
+            sender.send(AppEvent::GitFetchCompleted {
+                branches: vec![],
+                repo_path,
+                error: Some(format!("{e}")),
+            });
+            return;
+        }
+        if sender.cancel.load(Ordering::Relaxed) {
+            return;
+        }
+        let remote_names = git.list_remote_branches(&repo_path);
+        let branches = BranchEntry::build_remote(&remote_names, &local_names);
+        sender.send(AppEvent::GitFetchCompleted {
+            branches,
+            repo_path,
+            error: None,
+        });
+    });
+}
+
 pub(super) fn spawn_tracking_worktree_creation(
     git: &Arc<dyn GitProvider>,
     sender: &EventSender,

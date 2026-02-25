@@ -43,6 +43,13 @@ pub enum AppEvent {
         branches: Vec<crate::state::BranchEntry>,
     },
 
+    /// Background git fetch completed, with any newly discovered remote branches
+    GitFetchCompleted {
+        branches: Vec<crate::state::BranchEntry>,
+        repo_path: PathBuf,
+        error: Option<String>,
+    },
+
     /// Background worktree enrichment completed (phase 2 of discovery)
     ReposEnriched {
         worktrees_by_repo: Vec<(PathBuf, Vec<Worktree>)>,

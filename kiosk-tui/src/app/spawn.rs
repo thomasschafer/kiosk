@@ -1,4 +1,5 @@
 use kiosk_core::{event::AppEvent, git::GitProvider, state::BranchEntry};
+use rayon::ThreadPoolBuilder;
 use std::{
     collections::HashMap,
     path::PathBuf,
@@ -10,6 +11,9 @@ use kiosk_core::git::Repo;
 use kiosk_core::tmux::TmuxProvider;
 
 use super::EventSender;
+
+/// Maximum number of concurrent `git worktree list` enrichment calls.
+const ENRICHMENT_POOL_SIZE: usize = 8;
 
 pub(super) fn spawn_repo_discovery<T: TmuxProvider + ?Sized + 'static>(
     git: &Arc<dyn GitProvider>,
@@ -37,15 +41,27 @@ pub(super) fn spawn_repo_discovery<T: TmuxProvider + ?Sized + 'static>(
             });
         }
 
+        // Bounded pool for worktree enrichment — prevents thread explosion
+        // with hundreds of repos.
+        let enrich_pool = Arc::new(
+            ThreadPoolBuilder::new()
+                .num_threads(ENRICHMENT_POOL_SIZE)
+                .build()
+                .expect("failed to build enrichment thread pool"),
+        );
+
         // Phase 1: Stream repos as they're found.
-        // Each repo also kicks off its own enrichment thread immediately.
-        let scan_callback = |repos: Vec<Repo>, git: &Arc<dyn GitProvider>, sender: &EventSender| {
+        // Each repo also kicks off enrichment on the pool immediately.
+        let scan_callback = |repos: Vec<Repo>,
+                             git: &Arc<dyn GitProvider>,
+                             sender: &EventSender,
+                             pool: &rayon::ThreadPool| {
             // Start enrichment for each repo immediately — don't wait for scan to finish
             for repo in &repos {
                 let path = repo.path.clone();
                 let git = Arc::clone(git);
                 let sender = sender.clone();
-                thread::spawn(move || {
+                pool.spawn(move || {
                     let worktrees = git.list_worktrees(&path);
                     sender.send(AppEvent::RepoEnriched {
                         repo_path: path,
@@ -60,9 +76,10 @@ pub(super) fn spawn_repo_discovery<T: TmuxProvider + ?Sized + 'static>(
             let (dir, depth) = &search_dirs[0];
             let git_ref = &git;
             let sender_ref = &sender;
+            let pool_ref = &enrich_pool;
             git.scan_repos_streaming(dir, *depth, &|repos| {
                 if !sender_ref.cancel.load(Ordering::Relaxed) {
-                    scan_callback(repos, git_ref, sender_ref);
+                    scan_callback(repos, git_ref, sender_ref, pool_ref);
                 }
             });
         } else {
@@ -71,13 +88,14 @@ pub(super) fn spawn_repo_discovery<T: TmuxProvider + ?Sized + 'static>(
                 for (dir, depth) in &search_dirs {
                     let git = &git;
                     let sender = &sender;
+                    let pool = &enrich_pool;
                     s.spawn(move || {
                         if sender.cancel.load(Ordering::Relaxed) {
                             return;
                         }
                         git.scan_repos_streaming(dir, *depth, &|repos| {
                             if !sender.cancel.load(Ordering::Relaxed) {
-                                scan_callback(repos, git, sender);
+                                scan_callback(repos, git, sender, pool);
                             }
                         });
                     });

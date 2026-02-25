@@ -492,7 +492,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             // Track selected repo so we can update the index after re-sort
             let selected_repo_path = state
                 .selected_repo_idx
-                .map(|idx| state.repos[idx].path.clone());
+                .and_then(|idx| state.repos.get(idx).map(|r| r.path.clone()));
 
             state.repos = repos;
             state.loading_repos = false;
@@ -582,7 +582,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             // Re-sort with activity data
             let selected_repo_path = state
                 .selected_repo_idx
-                .map(|idx| state.repos[idx].path.clone());
+                .and_then(|idx| state.repos.get(idx).map(|r| r.path.clone()));
 
             kiosk_core::state::sort_repos(
                 &mut state.repos,
@@ -720,7 +720,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             // Track selected repo so we can update the index after re-sort
             let selected_repo_path = state
                 .selected_repo_idx
-                .map(|idx| state.repos[idx].path.clone());
+                .and_then(|idx| state.repos.get(idx).map(|r| r.path.clone()));
 
             // Re-sort repos with full recency data
             kiosk_core::state::sort_repos(

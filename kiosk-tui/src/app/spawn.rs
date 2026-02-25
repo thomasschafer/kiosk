@@ -43,12 +43,17 @@ pub(super) fn spawn_repo_discovery<T: TmuxProvider + ?Sized + 'static>(
 
         // Bounded pool for worktree enrichment — prevents thread explosion
         // with hundreds of repos.
-        let enrich_pool = Arc::new(
-            ThreadPoolBuilder::new()
-                .num_threads(ENRICHMENT_POOL_SIZE)
-                .build()
-                .expect("failed to build enrichment thread pool"),
-        );
+        let enrich_pool = match ThreadPoolBuilder::new()
+            .num_threads(ENRICHMENT_POOL_SIZE)
+            .build()
+        {
+            Ok(pool) => Arc::new(pool),
+            Err(e) => {
+                eprintln!("Warning: failed to build enrichment pool: {e}");
+                sender.send(AppEvent::ScanComplete { search_dirs });
+                return;
+            }
+        };
 
         // Phase 1: Stream repos as they're found.
         // Each repo also kicks off enrichment on the pool immediately.
@@ -56,9 +61,12 @@ pub(super) fn spawn_repo_discovery<T: TmuxProvider + ?Sized + 'static>(
                              git: &Arc<dyn GitProvider>,
                              sender: &EventSender,
                              pool: &rayon::ThreadPool| {
-            // Start enrichment for each repo immediately — don't wait for scan to finish
-            for repo in &repos {
-                let path = repo.path.clone();
+            // Send discovery event first so the repo exists in state
+            // before any enrichment event can arrive on the channel.
+            let paths: Vec<_> = repos.iter().map(|r| r.path.clone()).collect();
+            sender.send(AppEvent::ReposFound { repos });
+
+            for path in paths {
                 let git = Arc::clone(git);
                 let sender = sender.clone();
                 pool.spawn(move || {
@@ -69,7 +77,6 @@ pub(super) fn spawn_repo_discovery<T: TmuxProvider + ?Sized + 'static>(
                     });
                 });
             }
-            sender.send(AppEvent::ReposFound { repos });
         };
 
         if search_dirs.len() == 1 {

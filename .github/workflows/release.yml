@@ -185,3 +185,93 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release edit "v${{ needs.prepare-release.outputs.version }}" --draft=false
+
+  publish-to-homebrew:
+    needs: [prepare-release, publish]
+    if: needs.prepare-release.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Update Homebrew formula
+        env:
+          GITHUB_TOKEN: ${{ secrets.COMMITTER_TOKEN }}
+          GH_REPO: thomasschafer/kiosk
+        run: |
+          VERSION="${{ needs.prepare-release.outputs.version }}"
+
+          # Download SHA256 checksums for all targets
+          declare -A SHAS
+          for target in x86_64-apple-darwin aarch64-apple-darwin x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
+            ASSET="kiosk-v${VERSION}-${target}.tar.gz"
+            SHA=$(gh release download "v${VERSION}" --pattern "${ASSET}.sha256" --output - | awk '{print $1}')
+            if [ -z "$SHA" ]; then
+              echo "Failed to get SHA256 for ${target}"
+              exit 1
+            fi
+            SHAS[$target]="$SHA"
+            echo "${target}: ${SHA}"
+          done
+
+          # Generate formula
+          cat > kiosk.rb << 'FORMULA'
+          class Kiosk < Formula
+            desc "Tmux session manager with worktree support"
+            homepage "https://github.com/thomasschafer/kiosk"
+            license "MIT"
+            version "VERSION_PLACEHOLDER"
+
+            on_macos do
+              on_intel do
+                url "https://github.com/thomasschafer/kiosk/releases/download/vVERSION_PLACEHOLDER/kiosk-vVERSION_PLACEHOLDER-x86_64-apple-darwin.tar.gz"
+                sha256 "SHA_X86_DARWIN"
+              end
+
+              on_arm do
+                url "https://github.com/thomasschafer/kiosk/releases/download/vVERSION_PLACEHOLDER/kiosk-vVERSION_PLACEHOLDER-aarch64-apple-darwin.tar.gz"
+                sha256 "SHA_ARM_DARWIN"
+              end
+            end
+
+            on_linux do
+              on_intel do
+                url "https://github.com/thomasschafer/kiosk/releases/download/vVERSION_PLACEHOLDER/kiosk-vVERSION_PLACEHOLDER-x86_64-unknown-linux-musl.tar.gz"
+                sha256 "SHA_X86_LINUX"
+              end
+
+              on_arm do
+                url "https://github.com/thomasschafer/kiosk/releases/download/vVERSION_PLACEHOLDER/kiosk-vVERSION_PLACEHOLDER-aarch64-unknown-linux-musl.tar.gz"
+                sha256 "SHA_ARM_LINUX"
+              end
+            end
+
+            def install
+              bin.install "kiosk"
+            end
+
+            test do
+              assert_match version.to_s, shell_output("#{bin}/kiosk --version")
+            end
+          end
+          FORMULA
+
+          # Strip leading whitespace from heredoc
+          sed -i 's/^          //' kiosk.rb
+
+          # Replace placeholders
+          sed -i "s/VERSION_PLACEHOLDER/${VERSION}/g" kiosk.rb
+          sed -i "s/SHA_X86_DARWIN/${SHAS[x86_64-apple-darwin]}/g" kiosk.rb
+          sed -i "s/SHA_ARM_DARWIN/${SHAS[aarch64-apple-darwin]}/g" kiosk.rb
+          sed -i "s/SHA_X86_LINUX/${SHAS[x86_64-unknown-linux-musl]}/g" kiosk.rb
+          sed -i "s/SHA_ARM_LINUX/${SHAS[aarch64-unknown-linux-musl]}/g" kiosk.rb
+
+          cat kiosk.rb
+
+          # Push to homebrew-tap
+          git clone "https://x-access-token:${{ secrets.COMMITTER_TOKEN }}@github.com/thomasschafer/homebrew-tap.git" tap
+          cp kiosk.rb tap/Formula/kiosk.rb
+          cd tap
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git add Formula/kiosk.rb
+          git commit -m "kiosk ${VERSION} (automated)"
+          git push

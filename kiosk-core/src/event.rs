@@ -17,9 +17,7 @@ pub enum AppEvent {
 
     /// All scan threads finished — triggers collision resolution and final sort.
     /// Carries `search_dirs` so collision resolution can use the correct search dir names.
-    ScanComplete {
-        search_dirs: Vec<(PathBuf, u16)>,
-    },
+    ScanComplete { search_dirs: Vec<(PathBuf, u16)> },
 
     /// A background git operation completed successfully
     WorktreeCreated { path: PathBuf, session_name: String },

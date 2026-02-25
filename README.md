@@ -111,6 +111,12 @@ The `open --json` response includes the exact session name in the `session` fiel
 
 ## Installing
 
+### Homebrew
+
+```sh
+brew install thomasschafer/tap/kiosk
+```
+
 ### Cargo
 
 Ensure you have the Rust toolchain installed, then run:

@@ -295,7 +295,8 @@ impl AgentTestEnvDefault {
             (AgentKind::Claude, FakeState::Waiting) => {
                 "Allow write to src/main.rs?\\n  Yes, allow\\n  No, deny"
             }
-            (AgentKind::Claude | AgentKind::CursorAgent, FakeState::Idle) => "> ",
+            (AgentKind::Claude, FakeState::Idle) => "❯ \\n? for shortcuts",
+            (AgentKind::CursorAgent, FakeState::Idle) => "> ",
 
             (AgentKind::Codex, FakeState::Running) => "⠋ Searching codebase\\nesc to interrupt",
             (AgentKind::Codex, FakeState::Waiting) => {
@@ -376,7 +377,8 @@ impl AgentTestEnvDefault {
             (AgentKind::CursorAgent, FakeState::Waiting) => Some("trust this workspace"),
             // Claude/CursorAgent idle output is just "> " — too minimal for
             // reliable content polling (tmux strips trailing whitespace).
-            (AgentKind::Claude | AgentKind::CursorAgent, FakeState::Idle) => None,
+            (AgentKind::Claude, FakeState::Idle) => Some("? for shortcuts"),
+            (AgentKind::CursorAgent, FakeState::Idle) => None,
         };
         if let Some(marker) = marker {
             assert!(

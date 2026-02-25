@@ -119,6 +119,20 @@ Ensure you have the Rust toolchain installed, then run:
 cargo install kiosk
 ```
 
+### Prebuilt binaries
+
+Download the appropriate binary for your system from the [releases page](https://github.com/thomasschafer/kiosk/releases/latest):
+
+| Platform | Architecture | Download file |
+|-|-|-|
+| Linux | Intel/AMD | `*-x86_64-unknown-linux-musl.tar.gz` |
+| Linux | ARM64 | `*-aarch64-unknown-linux-musl.tar.gz` |
+| macOS | Apple Silicon| `*-aarch64-apple-darwin.tar.gz` |
+| macOS | Intel | `*-x86_64-apple-darwin.tar.gz` |
+| Windows | x64 | `*-x86_64-pc-windows-msvc.zip` |
+
+After downloading, extract the binary and move it to a directory in your `PATH`.
+
 ### Building from source
 
 Ensure you have the Rust toolchain installed, then pull down the repo and run:

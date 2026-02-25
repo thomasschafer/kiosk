@@ -78,19 +78,14 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
-            use-cross: true
-          - os: ubuntu-latest
+          - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
-            use-cross: true
           - os: macos-13  # Intel runner for native x86_64 builds
             target: x86_64-apple-darwin
-            use-cross: false
           - os: macos-latest
             target: aarch64-apple-darwin
-            use-cross: false
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            use-cross: false
 
     steps:
     - uses: actions/checkout@v6
@@ -105,12 +100,12 @@ jobs:
       with:
         key: v1-${{ matrix.target }}
 
+    - name: Install musl-tools
+      if: contains(matrix.target, 'musl')
+      run: sudo apt-get update && sudo apt-get install -y musl-tools
+
     - name: Build binary
-      uses: clechasseur/rs-cargo@v4
-      with:
-        command: build
-        args: --release --target ${{ matrix.target }} --package kiosk
-        use-cross: ${{ matrix.use-cross }}
+      run: cargo build --release --target ${{ matrix.target }} --package kiosk
 
     - name: Create release archive
       shell: bash
@@ -137,7 +132,8 @@ jobs:
             7z x -y "$ASSET"
             ./kiosk.exe --version ;;
           aarch64*)
-            echo "Skipping: can't run ARM binary on x86 runner" ;;
+            tar -xvzf "$ASSET"
+            ./kiosk --version ;;
           *)
             tar -xvzf "$ASSET"
             ./kiosk --version ;;

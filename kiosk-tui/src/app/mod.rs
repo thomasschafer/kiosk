@@ -26,7 +26,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Padding, Paragraph, Wrap},
+    widgets::{Padding, Paragraph},
 };
 use spawn::spawn_repo_discovery;
 use std::{
@@ -95,6 +95,13 @@ pub fn run(
     loop {
         terminal.draw(|f| draw(f, state, theme, keys, &spinner_start))?;
 
+        // Auto-dismiss error after 5 seconds
+        if let Some(set_at) = state.error_set_at
+            && set_at.elapsed() >= Duration::from_secs(5)
+        {
+            state.clear_error();
+        }
+
         // Check background channel (non-blocking)
         if let Ok(app_event) = rx.try_recv() {
             if let Some(result) = process_app_event(app_event, state, git, tmux, &event_sender) {
@@ -126,7 +133,7 @@ pub fn run(
             }
 
             // Clear error on any keypress
-            state.error = None;
+            state.clear_error();
 
             let ctx = ActionContext {
                 git,
@@ -159,16 +166,8 @@ fn draw(
 
     let outer = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(f.area());
 
-    let content_area = outer[0];
+    let main_area = outer[0];
     let footer_area = outer[1];
-
-    let (main_area, error_area) = if state.error.is_some() {
-        let chunks =
-            Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(content_area);
-        (chunks[0], Some(chunks[1]))
-    } else {
-        (content_area, None)
-    };
 
     let page_rows = active_list_page_rows(f.area(), main_area, &state.mode);
     state.set_active_list_page_rows(page_rows);
@@ -222,9 +221,8 @@ fn draw(
         Mode::Loading(_) => unreachable!(),
     }
 
-    if let Some(area) = error_area {
-        components::error_bar::draw(f, area, state, theme);
-    }
+    // Error toast overlay (rendered on top of everything)
+    components::error_toast::draw(f, f.area(), state, theme);
 
     // Footer with key hints
     let footer_hints = build_footer_hints(effective_mode, keys);
@@ -286,6 +284,27 @@ fn active_list_page_rows(full_area: Rect, main_area: Rect, mode: &Mode) -> usize
     }
 }
 
+fn build_loading_dialog<'a>(
+    spinner_prefix: String,
+    message: &str,
+    accent_color: Color,
+) -> components::dialog::Dialog<'a> {
+    let text = Line::from(vec![
+        Span::styled(
+            spinner_prefix,
+            Style::default()
+                .fg(accent_color)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(message.to_string()),
+    ]);
+
+    components::dialog::Dialog::new(vec![text])
+        .border_color(accent_color)
+        .padding(Padding::horizontal(1))
+        .alignment(Alignment::Center)
+}
+
 fn draw_loading(
     f: &mut Frame,
     area: Rect,
@@ -297,85 +316,17 @@ fn draw_loading(
     let frame_idx = (elapsed / 80) % SPINNER_FRAMES.len();
     let spinner = SPINNER_FRAMES[frame_idx];
 
-    let text = Line::from(vec![
-        Span::styled(
-            format!("{spinner} "),
-            Style::default()
-                .fg(theme.accent)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(message),
-    ]);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.accent));
-
-    // 2 for borders + 1 content line
-    let centered = components::centered_fixed_rect(50, 3, area);
-
-    let paragraph = Paragraph::new(text)
-        .block(block)
-        .alignment(ratatui::layout::Alignment::Center);
-    f.render_widget(paragraph, centered);
+    build_loading_dialog(format!("{spinner} "), message, theme.accent).render(f, area);
 }
 
-/// Estimate visual line count when a `Line` is word-wrapped to `max_width` columns.
-/// Uses byte length as a width proxy, which is exact for ASCII and a safe overestimate
-/// for multi-byte UTF-8 (produces a taller dialog rather than clipping content).
-fn word_wrapped_line_count(line: &Line, max_width: u16) -> u16 {
-    let max_w = usize::from(max_width);
-    if max_w == 0 {
-        return 1;
-    }
-
-    let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-    if text.is_empty() {
-        return 1;
-    }
-
-    let mut lines: u16 = 1;
-    let mut col: usize = 0;
-
-    for (i, word) in text.split(' ').enumerate() {
-        let w = word.len();
-        let needed = if i == 0 || col == 0 { w } else { w + 1 };
-
-        if col + needed <= max_w {
-            col += needed;
-        } else if w <= max_w {
-            lines += 1;
-            col = w;
-        } else {
-            if col > 0 {
-                lines += 1;
-            }
-            col = w;
-            while col > max_w {
-                lines += 1;
-                col -= max_w;
-            }
-        }
-    }
-
-    lines
-}
-
-struct ConfirmDeleteDialogLayout {
-    text: Vec<Line<'static>>,
-    width: u16,
-    height: u16,
-}
-
-fn confirm_delete_dialog_layout(
+fn build_confirm_delete_dialog<'a>(
     branch_name: &str,
     has_session: bool,
     confirm_key: &str,
     cancel_key: &str,
     accent_color: Color,
     hint_color: Color,
-    terminal_width: u16,
-) -> ConfirmDeleteDialogLayout {
+) -> components::dialog::Dialog<'a> {
     let action_text = if has_session {
         "Delete worktree and kill tmux session for branch "
     } else {
@@ -411,24 +362,11 @@ fn confirm_delete_dialog_layout(
         Span::raw(")"),
     ]);
 
-    let width = components::dialog_width(terminal_width);
-    // 2 for borders + 2 for 1-cell padding on each side
-    let h_chrome: u16 = 4;
-    let v_chrome: u16 = 4;
-    let text_width = width.saturating_sub(h_chrome).max(1);
-
-    let text = vec![message_line, blank_line, hints_line];
-
-    let content_height: u16 = text
-        .iter()
-        .map(|line| word_wrapped_line_count(line, text_width))
-        .sum();
-
-    ConfirmDeleteDialogLayout {
-        text,
-        width,
-        height: content_height + v_chrome,
-    }
+    components::dialog::Dialog::new(vec![message_line, blank_line, hints_line])
+        .border_color(accent_color)
+        .title(" Confirm delete ")
+        .padding(Padding::uniform(1))
+        .alignment(Alignment::Center)
 }
 
 fn draw_confirm_delete_dialog(
@@ -452,30 +390,15 @@ fn draw_confirm_delete_dialog(
         let cancel_key = KeysConfig::find_key(&keymap, &Command::Cancel)
             .map_or("esc".to_string(), |k| k.to_string());
 
-        let layout = confirm_delete_dialog_layout(
+        build_confirm_delete_dialog(
             branch_name,
             *has_session,
             &confirm_key,
             &cancel_key,
             theme.accent,
             theme.hint,
-            area.width,
-        );
-
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(" Confirm delete ")
-            .border_style(Style::default().fg(theme.accent))
-            .padding(Padding::uniform(1));
-
-        let centered = components::centered_fixed_rect(layout.width, layout.height, area);
-        f.render_widget(Clear, centered);
-
-        let paragraph = Paragraph::new(layout.text)
-            .block(block)
-            .wrap(Wrap { trim: false })
-            .alignment(Alignment::Center);
-        f.render_widget(paragraph, centered);
+        )
+        .render(f, area);
     }
 }
 
@@ -584,7 +507,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
         } => {
             state.clear_pending_worktree_delete_by_path(&worktree_path);
             if let Err(e) = save_pending_worktree_deletes(&state.pending_worktree_deletes) {
-                state.error = Some(format!("Failed to persist pending deletes: {e}"));
+                state.set_error(format!("Failed to persist pending deletes: {e}"));
             }
             // Return to branch select and refresh the branch list
             if let Some(repo_idx) = state.selected_repo_idx {
@@ -611,7 +534,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
                     " (also failed to persist pending deletes: {e})"
                 );
             }
-            state.error = Some(error_message);
+            state.set_error(error_message);
             state.loading_branches = false;
             state.mode = Mode::BranchSelect;
         }
@@ -691,7 +614,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
                 state.mode = Mode::BranchSelect;
             }
             state.loading_branches = false;
-            state.error = Some(msg);
+            state.set_error(msg);
         }
     }
     None
@@ -2723,200 +2646,111 @@ mod tests {
         assert_eq!(state.session_activity.get("alpha"), Some(&500));
     }
 
-    // -- word_wrapped_line_count tests --
+    // -- loading dialog sizing tests (via Dialog) --
 
     #[test]
-    fn test_word_wrap_single_line_no_wrap() {
-        let line = Line::raw("hello world");
-        assert_eq!(word_wrapped_line_count(&line, 20), 1);
+    fn test_loading_dialog_short_message_single_line() {
+        let dialog = build_loading_dialog("⠋ ".to_string(), "Fetching...", Color::Magenta);
+        let (width, height) = dialog.size(100);
+        assert_eq!(width, 80);
+        assert_eq!(height, 3);
     }
 
     #[test]
-    fn test_word_wrap_exact_fit() {
-        let line = Line::raw("hello world");
-        assert_eq!(word_wrapped_line_count(&line, 11), 1);
+    fn test_loading_dialog_long_message_wraps() {
+        let msg = "Creating branch my-very-long-feature-branch-name from origin/main-development-branch...";
+        let dialog = build_loading_dialog("⠋ ".to_string(), msg, Color::Magenta);
+        let (width, height) = dialog.size(60);
+        assert_eq!(width, 48);
+        assert!(
+            height > 3,
+            "long message should wrap to more than 1 line, got height {height}"
+        );
     }
 
     #[test]
-    fn test_word_wrap_breaks_at_word_boundary() {
-        let line = Line::raw("hello world");
-        assert_eq!(word_wrapped_line_count(&line, 10), 2);
+    fn test_loading_dialog_narrow_terminal() {
+        let dialog = build_loading_dialog(
+            "⠋ ".to_string(),
+            "Creating branch foo from bar...",
+            Color::Magenta,
+        );
+        let (width, _height) = dialog.size(30);
+        assert_eq!(width, 24);
     }
 
     #[test]
-    fn test_word_wrap_multiple_wraps() {
-        let line = Line::raw("one two three four");
-        // width 5: "one" (3) → col=3, "two" needs 4 → new line col=3,
-        //          "three" needs 6 > 5 → new line, oversized → col=5 then col=0... wait
-        // Actually: "three" len=5 fits on a new line exactly
-        // "four" needs 5 → new line col=4
-        assert_eq!(word_wrapped_line_count(&line, 5), 4);
+    fn test_loading_dialog_uses_dialog_width() {
+        let dialog = build_loading_dialog("⠋ ".to_string(), "test", Color::Magenta);
+        let (w1, _) = dialog.size(80);
+        let (w2, _) = dialog.size(40);
+        assert!(w1 > w2, "wider terminal should produce wider dialog");
     }
 
-    #[test]
-    fn test_word_wrap_oversized_word() {
-        let line = Line::raw("abcdefghij");
-        // 10-char word on width 4: lines=1, col=10 → 10>4: lines=2, col=6 → 6>4: lines=3, col=2
-        assert_eq!(word_wrapped_line_count(&line, 4), 3);
-    }
+    // -- confirm_delete_dialog sizing tests (via Dialog) --
 
-    #[test]
-    fn test_word_wrap_oversized_word_exact_multiple() {
-        let line = Line::raw("abcdefgh");
-        // 8-char word on width 4: lines=1, col=8 → 8>4: lines=2, col=4 → not >4, stop
-        assert_eq!(word_wrapped_line_count(&line, 4), 2);
-    }
-
-    #[test]
-    fn test_word_wrap_oversized_after_short_word() {
-        let line = Line::raw("hi abcdefghij");
-        // "hi" col=2, "abcdefghij" needs 11: 2+1+10=13 > 6, and 10 > 6, so:
-        // col>0 → lines=2, col=10, 10>6 → lines=3, col=4
-        assert_eq!(word_wrapped_line_count(&line, 6), 3);
-    }
-
-    #[test]
-    fn test_word_wrap_empty_line() {
-        let line = Line::raw("");
-        assert_eq!(word_wrapped_line_count(&line, 20), 1);
-    }
-
-    #[test]
-    fn test_word_wrap_zero_width() {
-        let line = Line::raw("hello");
-        assert_eq!(word_wrapped_line_count(&line, 0), 1);
-    }
-
-    #[test]
-    fn test_word_wrap_multi_span_line() {
-        let line = Line::from(vec![
-            Span::raw("hello "),
-            Span::styled("world", Style::default().fg(Color::Red)),
-        ]);
-        assert_eq!(word_wrapped_line_count(&line, 20), 1);
-        assert_eq!(word_wrapped_line_count(&line, 8), 2);
-    }
-
-    // -- confirm_delete_dialog_layout sizing tests --
-
-    #[test]
-    fn test_confirm_delete_layout_short_branch() {
-        let layout = confirm_delete_dialog_layout(
-            "main",
-            false,
+    fn confirm_dialog_size(
+        branch_name: &str,
+        has_session: bool,
+        terminal_width: u16,
+    ) -> (u16, u16) {
+        build_confirm_delete_dialog(
+            branch_name,
+            has_session,
             "enter",
             "esc",
             Color::Magenta,
             Color::Blue,
-            120,
-        );
-        // min(120*80/100, 80) = 80
-        assert_eq!(layout.width, 80, "width should be capped at 80");
-        // 3 content lines + 2 borders + 2 padding
-        assert_eq!(layout.height, 7, "no wrapping needed for short branch");
+        )
+        .size(terminal_width)
+    }
+
+    #[test]
+    fn test_confirm_delete_layout_short_branch() {
+        let (w, h) = confirm_dialog_size("main", false, 120);
+        assert_eq!(w, 80, "width should be capped at 80");
+        assert_eq!(h, 7, "no wrapping needed for short branch");
     }
 
     #[test]
     fn test_confirm_delete_layout_long_branch() {
         let long_name = "a".repeat(100);
-        let layout = confirm_delete_dialog_layout(
-            &long_name,
-            false,
-            "enter",
-            "esc",
-            Color::Magenta,
-            Color::Blue,
-            120,
-        );
-        // min(120*80/100, 80) = 80
-        assert_eq!(layout.width, 80, "width should be capped at 80");
-        assert!(
-            layout.height > 7,
-            "long branch should cause wrapping, height={}",
-            layout.height
-        );
+        let (w, h) = confirm_dialog_size(&long_name, false, 120);
+        assert_eq!(w, 80, "width should be capped at 80");
+        assert!(h > 7, "long branch should cause wrapping, height={h}");
     }
 
     #[test]
     fn test_confirm_delete_layout_very_long_branch() {
         let long_name = "a".repeat(200);
-        let layout = confirm_delete_dialog_layout(
-            &long_name,
-            false,
-            "enter",
-            "esc",
-            Color::Magenta,
-            Color::Blue,
-            80,
-        );
-        // min(80*80/100, 80) = 64
-        assert_eq!(layout.width, 64, "width should be 80% of terminal");
+        let (w, h) = confirm_dialog_size(&long_name, false, 80);
+        assert_eq!(w, 64, "width should be 80% of terminal");
         assert!(
-            layout.height > 8,
-            "very long branch on narrow terminal needs more wrapping, height={}",
-            layout.height,
+            h > 8,
+            "very long branch on narrow terminal needs more wrapping, height={h}",
         );
     }
 
     #[test]
     fn test_confirm_delete_layout_narrow_terminal() {
-        let layout = confirm_delete_dialog_layout(
-            "main",
-            false,
-            "enter",
-            "esc",
-            Color::Magenta,
-            Color::Blue,
-            50,
-        );
-        assert!(
-            layout.width <= 50,
-            "dialog width {} must fit in terminal",
-            layout.width
-        );
+        let (w, _h) = confirm_dialog_size("main", false, 50);
+        assert!(w <= 50, "dialog width {w} must fit in terminal");
     }
 
     #[test]
     fn test_confirm_delete_layout_session_same_width() {
-        let without = confirm_delete_dialog_layout(
-            "feature-branch",
-            false,
-            "enter",
-            "esc",
-            Color::Magenta,
-            Color::Blue,
-            120,
-        );
-        let with = confirm_delete_dialog_layout(
-            "feature-branch",
-            true,
-            "enter",
-            "esc",
-            Color::Magenta,
-            Color::Blue,
-            120,
-        );
+        let (w_without, _) = confirm_dialog_size("feature-branch", false, 120);
+        let (w_with, _) = confirm_dialog_size("feature-branch", true, 120);
         assert_eq!(
-            with.width, without.width,
-            "width is content-independent: with session ({}) should equal without ({})",
-            with.width, without.width,
+            w_with, w_without,
+            "width is content-independent: with session ({w_with}) should equal without ({w_without})",
         );
     }
 
     #[test]
     fn test_confirm_delete_layout_exact_fit_no_wrap() {
-        // "Delete worktree for branch \"exactly-fits\"?" = 42 chars, well within
-        // text_width of 76 (80 - 4 chrome), so no wrapping should occur.
-        let layout = confirm_delete_dialog_layout(
-            "exactly-fits",
-            false,
-            "enter",
-            "esc",
-            Color::Magenta,
-            Color::Blue,
-            120,
-        );
-        assert_eq!(layout.height, 7, "exact fit should not wrap");
+        let (_w, h) = confirm_dialog_size("exactly-fits", false, 120);
+        assert_eq!(h, 7, "exact fit should not wrap");
     }
 
     // -- rendering tests --
@@ -2935,34 +2769,78 @@ mod tests {
         s
     }
 
-    fn render_dialog_to_buffer(layout: &ConfirmDeleteDialogLayout) -> ratatui::buffer::Buffer {
+    fn render_confirm_dialog_to_buffer(
+        branch_name: &str,
+        has_session: bool,
+        terminal_width: u16,
+    ) -> (ratatui::buffer::Buffer, u16, u16) {
+        use ratatui::widgets::{Block, Borders, Wrap};
+
+        let dialog = build_confirm_delete_dialog(
+            branch_name,
+            has_session,
+            "enter",
+            "esc",
+            Color::Magenta,
+            Color::Blue,
+        );
+        let (w, h) = dialog.size(terminal_width);
+
+        let action_text = if has_session {
+            "Delete worktree and kill tmux session for branch "
+        } else {
+            "Delete worktree for branch "
+        };
+        let lines = vec![
+            Line::from(vec![
+                Span::raw(action_text),
+                Span::styled(
+                    format!("\"{branch_name}\""),
+                    Style::default()
+                        .fg(Color::Magenta)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("?"),
+            ]),
+            Line::raw(""),
+            Line::from(vec![
+                Span::raw("confirm ("),
+                Span::styled(
+                    "enter",
+                    Style::default()
+                        .fg(Color::Blue)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(")"),
+                Span::raw(" / "),
+                Span::raw("cancel ("),
+                Span::styled(
+                    "esc",
+                    Style::default()
+                        .fg(Color::Blue)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(")"),
+            ]),
+        ];
         let block = Block::default()
             .borders(Borders::ALL)
             .title(" Confirm delete ")
             .border_style(Style::default().fg(Color::Magenta))
             .padding(Padding::uniform(1));
-        let paragraph = Paragraph::new(layout.text.clone())
+        let paragraph = Paragraph::new(lines)
             .block(block)
             .wrap(Wrap { trim: false })
             .alignment(Alignment::Center);
-        let area = Rect::new(0, 0, layout.width, layout.height);
+        let area = Rect::new(0, 0, w, h);
         let mut buf = ratatui::buffer::Buffer::empty(area);
         ratatui::widgets::Widget::render(paragraph, area, &mut buf);
-        buf
+        (buf, w, h)
     }
 
     #[test]
     fn test_confirm_delete_render_full_text_visible() {
-        let layout = confirm_delete_dialog_layout(
-            "main",
-            false,
-            "enter",
-            "esc",
-            Color::Magenta,
-            Color::Blue,
-            120,
-        );
-        let buf = render_dialog_to_buffer(&layout);
+        let (buf, _w, _h) = render_confirm_dialog_to_buffer("main", false, 120);
         let rendered = buf_to_string(&buf);
         assert!(
             rendered.contains("main"),
@@ -2985,16 +2863,7 @@ mod tests {
     #[test]
     fn test_confirm_delete_render_wrapping() {
         let long_name = "x".repeat(100);
-        let layout = confirm_delete_dialog_layout(
-            &long_name,
-            false,
-            "enter",
-            "esc",
-            Color::Magenta,
-            Color::Blue,
-            120,
-        );
-        let buf = render_dialog_to_buffer(&layout);
+        let (buf, _w, _h) = render_confirm_dialog_to_buffer(&long_name, false, 120);
         let rendered = buf_to_string(&buf);
         let x_count = rendered.chars().filter(|c| *c == 'x').count();
         assert_eq!(
@@ -3008,16 +2877,7 @@ mod tests {
         // On a narrow terminal the hints line wraps; both "confirm" and "cancel"
         // must still be fully rendered (this was the bug that motivated the
         // word_wrapped_line_count fix).
-        let layout = confirm_delete_dialog_layout(
-            "feat/headless-cli",
-            true,
-            "enter",
-            "esc",
-            Color::Magenta,
-            Color::Blue,
-            28,
-        );
-        let buf = render_dialog_to_buffer(&layout);
+        let (buf, _w, _h) = render_confirm_dialog_to_buffer("feat/headless-cli", true, 28);
         let rendered = buf_to_string(&buf);
         assert!(
             rendered.contains("confirm"),
@@ -3035,18 +2895,7 @@ mod tests {
 
     #[test]
     fn test_confirm_delete_render_border_positions() {
-        let layout = confirm_delete_dialog_layout(
-            "main",
-            false,
-            "enter",
-            "esc",
-            Color::Magenta,
-            Color::Blue,
-            120,
-        );
-        let buf = render_dialog_to_buffer(&layout);
-        let w = layout.width;
-        let h = layout.height;
+        let (buf, w, h) = render_confirm_dialog_to_buffer("main", false, 120);
         assert_eq!(buf.cell((0, 0)).unwrap().symbol(), "┌");
         assert_eq!(buf.cell((w - 1, 0)).unwrap().symbol(), "┐");
         assert_eq!(buf.cell((0, h - 1)).unwrap().symbol(), "└");

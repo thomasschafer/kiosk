@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     fmt::Write as _,
     fs,
+    io::Write as _,
     path::{Path, PathBuf},
 };
 
@@ -335,7 +336,18 @@ pub fn write_default_config(dirs: &[String]) -> Result<PathBuf> {
         fs::create_dir_all(dir)?;
     }
     let content = format_default_config(dirs);
-    fs::write(&path, content)?;
+    let mut file = match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+    {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            anyhow::bail!("Config file already exists at {}", path.display());
+        }
+        Err(e) => return Err(e.into()),
+    };
+    file.write_all(content.as_bytes())?;
     Ok(path)
 }
 

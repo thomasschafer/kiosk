@@ -18,7 +18,7 @@ use kiosk_core::{
     event::AppEvent,
     git::GitProvider,
     pending_delete::save_pending_worktree_deletes,
-    state::{AppState, Mode, SearchableList},
+    state::{AppState, BranchEntry, Mode, SearchableList},
     tmux::TmuxProvider,
 };
 use ratatui::{
@@ -402,6 +402,25 @@ fn draw_confirm_delete_dialog(
     }
 }
 
+/// Deduplicate `incoming` branches against `state.branches`, append any new ones,
+/// and rebuild the filtered list preserving search.
+fn extend_branches_deduped(state: &mut AppState, incoming: Vec<BranchEntry>) {
+    if incoming.is_empty() {
+        return;
+    }
+    let existing_names: std::collections::HashSet<&str> =
+        state.branches.iter().map(|b| b.name.as_str()).collect();
+    let new_branches: Vec<_> = incoming
+        .into_iter()
+        .filter(|b| !existing_names.contains(b.name.as_str()))
+        .collect();
+    if !new_branches.is_empty() {
+        state.branches.extend(new_branches);
+        let names: Vec<&str> = state.branches.iter().map(|b| b.name.as_str()).collect();
+        rebuild_filtered_preserving_search(&mut state.branch_list, &names);
+    }
+}
+
 /// Rebuild a `SearchableList`'s filtered entries from new item names while preserving
 /// the current search text, cursor position, and selection (clamped to bounds).
 fn rebuild_filtered_preserving_search(list: &mut SearchableList, names: &[&str]) {
@@ -571,9 +590,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
         }
         AppEvent::RemoteBranchesLoaded { branches } => {
             if state.mode == Mode::BranchSelect {
-                state.branches.extend(branches);
-                let names: Vec<&str> = state.branches.iter().map(|b| b.name.as_str()).collect();
-                rebuild_filtered_preserving_search(&mut state.branch_list, &names);
+                extend_branches_deduped(state, branches);
             }
         }
         AppEvent::GitFetchCompleted {
@@ -587,20 +604,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
                 if let Some(err) = error {
                     state.error = Some(format!("git fetch failed: {err}"));
                 }
-                if !branches.is_empty() {
-                    let existing_names: std::collections::HashSet<&str> =
-                        state.branches.iter().map(|b| b.name.as_str()).collect();
-                    let new_branches: Vec<_> = branches
-                        .into_iter()
-                        .filter(|b| !existing_names.contains(b.name.as_str()))
-                        .collect();
-                    if !new_branches.is_empty() {
-                        state.branches.extend(new_branches);
-                        let names: Vec<&str> =
-                            state.branches.iter().map(|b| b.name.as_str()).collect();
-                        rebuild_filtered_preserving_search(&mut state.branch_list, &names);
-                    }
-                }
+                extend_branches_deduped(state, branches);
             }
         }
         AppEvent::ReposEnriched {
@@ -996,8 +1000,6 @@ mod tests {
 
     #[test]
     fn test_remote_branches_appended() {
-        use kiosk_core::state::BranchEntry;
-
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
         state.selected_repo_idx = Some(0);
@@ -1058,8 +1060,6 @@ mod tests {
 
     #[test]
     fn test_remote_branches_filtered_with_search() {
-        use kiosk_core::state::BranchEntry;
-
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
         state.selected_repo_idx = Some(0);

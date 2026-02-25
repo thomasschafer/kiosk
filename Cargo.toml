@@ -1,5 +1,6 @@
 [workspace]
 members = ["kiosk", "kiosk-core", "kiosk-tui", "xtask"]
+default-members = ["kiosk"]
 resolver = "3"
 
 [workspace.package]

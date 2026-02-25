@@ -302,7 +302,7 @@ pub fn config_file_exists() -> bool {
 /// Format a minimal config TOML string from search directories.
 pub fn format_default_config(dirs: &[String]) -> String {
     let mut content = String::from(
-        "# Kiosk configuration\n# See https://github.com/thomasschafer/kiosk for all options\n\n",
+        "# See https://github.com/thomasschafer/kiosk/?tab=readme-ov-file#configuration for all options\n\n",
     );
     content.push_str("search_dirs = [");
     for (i, d) in dirs.iter().enumerate() {

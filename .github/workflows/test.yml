@@ -33,7 +33,7 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Run cargo check
-        run: cargo check
+        run: cargo check --workspace
 
       - name: Check README is up to date
         id: check-readme

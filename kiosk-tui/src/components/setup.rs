@@ -30,7 +30,7 @@ fn draw_welcome(f: &mut Frame, theme: &Theme) {
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
-        Line::from("Kiosk is a worktree-aware tmux session manager that helps"),
+        Line::from("Kiosk is a git-aware tmux session manager that helps"),
         Line::from("you manage git repositories and their branches."),
         Line::from(""),
         Line::from("Let's set up your configuration file."),

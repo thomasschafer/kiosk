@@ -2602,14 +2602,20 @@ fn test_e2e_fetch_discovers_new_remote_branch() {
 
     // Clone it into the search dir
     let repo = search_dir.join("fetch-repo");
-    Command::new("git")
+    let output = Command::new("git")
         .args([
             "clone",
             &remote_repo.to_string_lossy(),
             &repo.to_string_lossy(),
         ])
         .output()
-        .unwrap();
+        .expect("git clone failed to spawn");
+    assert!(
+        output.status.success(),
+        "git clone failed: stdout: {} stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     env.write_config(&search_dir);
     env.launch_kiosk();

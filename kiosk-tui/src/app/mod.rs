@@ -581,26 +581,25 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             repo_path,
             error,
         } => {
-            state.fetching_remotes = false;
-            if let Some(err) = error {
-                state.error = Some(format!("git fetch failed: {err}"));
-            }
-            // Only update if still in BranchSelect and the repo matches
             let current_repo_path = state.selected_repo_idx.map(|idx| &state.repos[idx].path);
-            if state.mode == Mode::BranchSelect
-                && current_repo_path == Some(&repo_path)
-                && !branches.is_empty()
-            {
-                let existing_names: std::collections::HashSet<&str> =
-                    state.branches.iter().map(|b| b.name.as_str()).collect();
-                let new_branches: Vec<_> = branches
-                    .into_iter()
-                    .filter(|b| !existing_names.contains(b.name.as_str()))
-                    .collect();
-                if !new_branches.is_empty() {
-                    state.branches.extend(new_branches);
-                    let names: Vec<&str> = state.branches.iter().map(|b| b.name.as_str()).collect();
-                    rebuild_filtered_preserving_search(&mut state.branch_list, &names);
+            if state.mode == Mode::BranchSelect && current_repo_path == Some(&repo_path) {
+                state.fetching_remotes = false;
+                if let Some(err) = error {
+                    state.error = Some(format!("git fetch failed: {err}"));
+                }
+                if !branches.is_empty() {
+                    let existing_names: std::collections::HashSet<&str> =
+                        state.branches.iter().map(|b| b.name.as_str()).collect();
+                    let new_branches: Vec<_> = branches
+                        .into_iter()
+                        .filter(|b| !existing_names.contains(b.name.as_str()))
+                        .collect();
+                    if !new_branches.is_empty() {
+                        state.branches.extend(new_branches);
+                        let names: Vec<&str> =
+                            state.branches.iter().map(|b| b.name.as_str()).collect();
+                        rebuild_filtered_preserving_search(&mut state.branch_list, &names);
+                    }
                 }
             }
         }
@@ -3551,7 +3550,8 @@ mod tests {
             &sender,
         );
 
-        assert!(!state.fetching_remotes);
+        // Stale event should leave state untouched
+        assert!(state.fetching_remotes);
         assert_eq!(state.branches.len(), 1);
     }
 
@@ -3581,7 +3581,8 @@ mod tests {
             &sender,
         );
 
-        assert!(!state.fetching_remotes);
+        // Stale event should leave state untouched
+        assert!(state.fetching_remotes);
         assert_eq!(state.branches.len(), 1);
     }
 

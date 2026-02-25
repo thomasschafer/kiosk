@@ -531,6 +531,20 @@ mod tests {
         assert_eq!(repos[0].name, "parent-repo");
     }
 
+    fn run_git(dir: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     #[test]
     fn test_fetch_all() {
         let tmp = tempfile::tempdir().unwrap();
@@ -538,65 +552,31 @@ mod tests {
         // Create a "remote" bare repo
         let remote_dir = tmp.path().join("remote.git");
         fs::create_dir_all(&remote_dir).unwrap();
-        Command::new("git")
-            .args(["init", "--bare"])
-            .current_dir(&remote_dir)
-            .output()
-            .unwrap();
+        run_git(&remote_dir, &["init", "--bare"]);
 
         // Create a local repo and add the bare repo as a remote
         let local_dir = tmp.path().join("local");
         fs::create_dir_all(&local_dir).unwrap();
         init_test_repo(&local_dir);
-        Command::new("git")
-            .args(["remote", "add", "origin", &remote_dir.to_string_lossy()])
-            .current_dir(&local_dir)
-            .output()
-            .unwrap();
-        Command::new("git")
-            .args(["push", "origin", "master"])
-            .current_dir(&local_dir)
-            .output()
-            .unwrap();
+        run_git(
+            &local_dir,
+            &["remote", "add", "origin", &remote_dir.to_string_lossy()],
+        );
+        run_git(&local_dir, &["push", "origin", "master"]);
 
         // Create a second clone to push a new branch to the remote
         let clone_dir = tmp.path().join("clone");
-        Command::new("git")
-            .args(["clone", &remote_dir.to_string_lossy(), "clone"])
-            .current_dir(tmp.path())
-            .output()
-            .unwrap();
-        Command::new("git")
-            .args(["config", "user.email", "test@test.com"])
-            .current_dir(&clone_dir)
-            .output()
-            .unwrap();
-        Command::new("git")
-            .args(["config", "user.name", "Test"])
-            .current_dir(&clone_dir)
-            .output()
-            .unwrap();
-        Command::new("git")
-            .args(["checkout", "-b", "new-feature"])
-            .current_dir(&clone_dir)
-            .output()
-            .unwrap();
+        run_git(
+            tmp.path(),
+            &["clone", &remote_dir.to_string_lossy(), "clone"],
+        );
+        run_git(&clone_dir, &["config", "user.email", "test@test.com"]);
+        run_git(&clone_dir, &["config", "user.name", "Test"]);
+        run_git(&clone_dir, &["checkout", "-b", "new-feature"]);
         fs::write(clone_dir.join("feature.txt"), "feature").unwrap();
-        Command::new("git")
-            .args(["add", "."])
-            .current_dir(&clone_dir)
-            .output()
-            .unwrap();
-        Command::new("git")
-            .args(["commit", "-m", "feature"])
-            .current_dir(&clone_dir)
-            .output()
-            .unwrap();
-        Command::new("git")
-            .args(["push", "origin", "new-feature"])
-            .current_dir(&clone_dir)
-            .output()
-            .unwrap();
+        run_git(&clone_dir, &["add", "."]);
+        run_git(&clone_dir, &["commit", "-m", "feature"]);
+        run_git(&clone_dir, &["push", "origin", "new-feature"]);
 
         let provider = CliGitProvider;
 

@@ -69,8 +69,9 @@ const CODEX_WAITING_PATTERNS: &[&str] = &[
     "press enter to continue",
     "(y/n)",
     "[y/n]",
-    "approve",
-    "allow",
+    "approve command",
+    "allow once",
+    "allow always",
     "❯ 1.",
     "› 1.",
     "enter to select",
@@ -110,13 +111,7 @@ pub fn detect_state(content: &str, kind: AgentKind) -> AgentState {
 
     match kind {
         AgentKind::ClaudeCode => detect_claude_state(&content_lowered, &tail_lowered),
-        AgentKind::Codex => detect_agent_state(
-            &content_lowered,
-            &tail_lowered,
-            CODEX_RUNNING_PATTERNS,
-            CODEX_WAITING_PATTERNS,
-            CODEX_IDLE_TAIL_PATTERNS,
-        ),
+        AgentKind::Codex => detect_codex_state(&content_lowered, &tail_lowered),
         AgentKind::CursorAgent => detect_agent_state(
             &content_lowered,
             &tail_lowered,
@@ -131,35 +126,73 @@ pub fn detect_state(content: &str, kind: AgentKind) -> AgentState {
 /// Claude Code-specific state detection.
 ///
 /// Claude Code uses the alternate screen, so there is no scrollback — the
-/// captured pane content IS what the user sees. This has two key implications:
-///
-/// 1. Stale content is not a concern (unlike Codex where old prompts linger
-///    in the scrollback).
-/// 2. When Claude is processing, the pane shows the user's prompt and empty
-///    lines but NO running indicators (no "esc to interrupt", no spinners).
-///    The `? for shortcuts` footer is only visible when Claude is idle at the
-///    input prompt.
-///
-/// Detection strategy:
-/// - If `? for shortcuts` is in the tail → Idle
-/// - If explicit running patterns match → Running
-/// - If waiting patterns match → Waiting
-/// - Otherwise → Running (Claude is processing; absence of idle footer is
-///   the strongest signal)
+/// captured pane content IS what the user sees. When Claude is processing,
+/// the pane shows the user's prompt and empty lines but NO running indicators
+/// (no "esc to interrupt", no spinners). The `? for shortcuts` footer is only
+/// visible when Claude is idle at the input prompt.
 fn detect_claude_state(content: &str, tail: &str) -> AgentState {
-    // Idle: the prompt footer is visible
-    if matches_any(tail, CLAUDE_IDLE_TAIL_PATTERNS) {
-        return AgentState::Idle;
-    }
-    // Explicit running indicators (e.g. "esc to interrupt" during tool use)
-    if matches_any(content, CLAUDE_RUNNING_PATTERNS) || contains_braille_spinner(content) {
+    detect_active_agent_state(
+        content,
+        tail,
+        CLAUDE_RUNNING_PATTERNS,
+        CLAUDE_WAITING_PATTERNS,
+        CLAUDE_IDLE_TAIL_PATTERNS,
+    )
+}
+
+/// Codex-specific state detection.
+///
+/// Codex does NOT use the alternate screen, so old content persists in the
+/// scrollback. However, `? for shortcuts` reliably appears at the very bottom
+/// when idle. During API calls the footer disappears before `• Working` appears
+/// — a brief window (~1s) with no indicators at all.
+fn detect_codex_state(content: &str, tail: &str) -> AgentState {
+    detect_active_agent_state(
+        content,
+        tail,
+        CODEX_RUNNING_PATTERNS,
+        CODEX_WAITING_PATTERNS,
+        CODEX_IDLE_TAIL_PATTERNS,
+    )
+}
+
+/// State detection for agents where absence of the idle footer means "processing".
+///
+/// Both Claude Code and Codex share this trait: when they are actively working
+/// (API call, tool execution), the idle footer (`? for shortcuts`) disappears.
+/// During the initial API round-trip, no explicit running indicators are shown
+/// either. So the strongest signal is: if the idle footer is gone and nothing
+/// else matches → the agent is Running.
+///
+/// Detection priority:
+/// 1. Running patterns in the **tail** → Running (takes precedence over idle
+///    because agents like Codex show both `esc to interrupt` and `? for shortcuts`
+///    simultaneously during active work)
+/// 2. Idle tail patterns (e.g. `? for shortcuts`) → Idle
+/// 3. Running patterns in full content + braille spinners → Running
+/// 4. Waiting patterns → Waiting
+/// 5. Default → **Running** (not Idle)
+fn detect_active_agent_state(
+    content: &str,
+    tail: &str,
+    running_patterns: &[&str],
+    waiting_patterns: &[&str],
+    idle_tail_patterns: &[&str],
+) -> AgentState {
+    // Running indicators in the tail override idle — the agent is actively working
+    // even if the idle footer is also visible (Codex keeps it during tool execution).
+    if matches_any(tail, running_patterns) || contains_braille_spinner(tail) {
         return AgentState::Running;
     }
-    // Permission / confirmation prompts
-    if matches_any(content, CLAUDE_WAITING_PATTERNS) {
+    if matches_any(tail, idle_tail_patterns) {
+        return AgentState::Idle;
+    }
+    if matches_any(content, running_patterns) || contains_braille_spinner(content) {
+        return AgentState::Running;
+    }
+    if matches_any(content, waiting_patterns) {
         return AgentState::Waiting;
     }
-    // Default: Claude is on alt-screen without the idle footer → processing
     AgentState::Running
 }
 
@@ -426,11 +459,103 @@ mod tests {
 
     #[test]
     fn test_codex_idle() {
-        assert_eq!(detect_state("> ", AgentKind::Codex), AgentState::Idle);
         assert_eq!(
-            detect_state("Codex ready\n> ", AgentKind::Codex),
+            detect_state("› Type a message\n\n  ? for shortcuts", AgentKind::Codex),
             AgentState::Idle
         );
+        assert_eq!(
+            detect_state(
+                "Codex ready\n› Type a message\n  ? for shortcuts",
+                AgentKind::Codex
+            ),
+            AgentState::Idle
+        );
+    }
+
+    #[test]
+    fn test_codex_processing_no_indicators() {
+        // When Codex is waiting for an API response, no idle footer is visible.
+        // This should be detected as Running, not Idle.
+        assert_eq!(
+            detect_state(
+                "› Review main.py and find all the bugs\n\n  100% context left",
+                AgentKind::Codex
+            ),
+            AgentState::Running
+        );
+        // Just "> " with no "? for shortcuts" → Running
+        assert_eq!(detect_state("> ", AgentKind::Codex), AgentState::Running);
+    }
+
+    #[test]
+    fn test_codex_working_indicator() {
+        // Real Codex "Working" indicator observed during tool execution.
+        // Both "esc to interrupt" and "? for shortcuts" are visible simultaneously.
+        // Running patterns in the tail take priority over idle patterns.
+        let content = "\
+› hi
+
+• Working (2s • esc to interrupt)
+
+› Use /skills to list available skills
+
+  ? for shortcuts                                                                                    100% context left";
+        assert_eq!(detect_state(content, AgentKind::Codex), AgentState::Running);
+    }
+
+    #[test]
+    fn test_codex_real_idle_with_context_left() {
+        // Real Codex idle screen as captured from tmux
+        let content = "\
+╭─────────────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.104.0)                          │
+│                                                     │
+│ model:     gpt-5.3-codex   /model to change         │
+│ directory: /tmp/test-workspace                      │
+╰─────────────────────────────────────────────────────╯
+
+  Tip: New 2x rate limits until April 2nd.
+
+› Write tests for @filename
+
+  ? for shortcuts                                                                                    100% context left";
+        assert_eq!(detect_state(content, AgentKind::Codex), AgentState::Idle);
+    }
+
+    #[test]
+    fn test_codex_real_api_call_phase() {
+        // Real Codex screen during initial API call — no indicators at all,
+        // just the query text and "100% context left"
+        let content = "\
+╭─────────────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.104.0)                          │
+│                                                     │
+│ model:     gpt-5.3-codex   /model to change         │
+│ directory: /tmp/test-workspace                      │
+╰─────────────────────────────────────────────────────╯
+
+  Tip: New 2x rate limits until April 2nd.
+
+› Review main.py and find all the bugs
+
+                                                                                                     100% context left";
+        assert_eq!(detect_state(content, AgentKind::Codex), AgentState::Running);
+    }
+
+    #[test]
+    fn test_codex_update_prompt() {
+        // Real Codex update prompt
+        let content = "\
+✨ Update available! 0.104.0 -> 0.105.0
+
+  Release notes: https://github.com/openai/codex/releases/latest
+
+› 1. Update now (runs `npm install -g @openai/codex`)
+  2. Skip
+  3. Skip until next version
+
+  Press enter to continue";
+        assert_eq!(detect_state(content, AgentKind::Codex), AgentState::Waiting);
     }
 
     #[test]
@@ -448,6 +573,26 @@ $ touch test.txt
 ╭──────────────────────────────╮
 │ >_ OpenAI Codex (v0.104.0)   │
 ╰──────────────────────────────╯
+
+› Type a message
+
+  ? for shortcuts";
+        assert_eq!(detect_state(content, AgentKind::Codex), AgentState::Idle);
+    }
+
+    #[test]
+    fn test_codex_idle_tail_overrides_stale_running() {
+        // After a task completes, stale "esc to interrupt" text may remain in
+        // the scrollback but scrolled above the tail window. The idle tail
+        // pattern should override it.
+        let content = "\
+• Working (5s • esc to interrupt)
+
+• Ran rm hello.py
+  └ (no output)
+
+• Completed.
+  - Deleted hello.py
 
 › Type a message
 
@@ -587,9 +732,9 @@ $ touch test.txt
 
     #[test]
     fn test_empty_content() {
-        // Claude defaults to Running when no patterns match (alt-screen heuristic)
+        // Claude and Codex default to Running when no patterns match
         assert_eq!(detect_state("", AgentKind::ClaudeCode), AgentState::Running);
-        assert_eq!(detect_state("", AgentKind::Codex), AgentState::Idle);
+        assert_eq!(detect_state("", AgentKind::Codex), AgentState::Running);
         assert_eq!(detect_state("", AgentKind::Unknown), AgentState::Idle);
     }
 

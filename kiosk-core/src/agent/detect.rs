@@ -51,7 +51,9 @@ const CLAUDE_WAITING_PATTERNS: &[&str] = &[
     "(y/n)",
     "[y/n]",
     "enter to select",
+    "enter to confirm",
     "esc to cancel",
+    "esc to exit",
     "❯ 1.",
     "do you trust the files",
 ];

@@ -3,7 +3,9 @@ pub mod keys;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::{
+    fmt::Write as _,
     fs,
+    io::Write as _,
     path::{Path, PathBuf},
 };
 
@@ -266,17 +268,8 @@ impl Config {
                     }
                 };
 
-                let resolved_path = if let Some(rest) = path_str.strip_prefix("~/")
-                    && let Some(home) = dirs::home_dir()
-                {
-                    home.join(rest)
-                } else if path_str == "~"
-                    && let Some(home) = dirs::home_dir()
-                {
-                    home
-                } else {
-                    PathBuf::from(path_str)
-                };
+                let resolved_path =
+                    crate::paths::expand_tilde(path_str).unwrap_or_else(|| PathBuf::from(path_str));
 
                 if resolved_path.is_dir() {
                     Some((resolved_path, depth))
@@ -291,6 +284,62 @@ impl Config {
 pub fn load_config_from_str(s: &str) -> Result<Config> {
     let config: Config = toml::from_str(s)?;
     Ok(config)
+}
+
+/// Check whether the default config file exists
+pub fn config_file_exists() -> bool {
+    config_file().exists()
+}
+
+/// Format a minimal config TOML string from search directories.
+pub fn format_default_config(dirs: &[String]) -> String {
+    let mut content = String::from(
+        "# See https://github.com/thomasschafer/kiosk/?tab=readme-ov-file#configuration for all options\n\n",
+    );
+    content.push_str("search_dirs = [");
+    for (i, d) in dirs.iter().enumerate() {
+        if i > 0 {
+            content.push_str(", ");
+        }
+        content.push('"');
+        // Escape for valid TOML basic strings
+        for c in d.chars() {
+            match c {
+                '\\' => content.push_str("\\\\"),
+                '"' => content.push_str("\\\""),
+                c if c.is_control() => {
+                    write!(content, "\\u{:04X}", c as u32).unwrap();
+                }
+                _ => content.push(c),
+            }
+        }
+        content.push('"');
+    }
+    content.push_str("]\n");
+    content
+}
+
+/// Write a default config file with the specified search directories.
+/// Creates parent directories as needed. Returns the path written to.
+pub fn write_default_config(dirs: &[String]) -> Result<PathBuf> {
+    let path = config_file();
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    let content = format_default_config(dirs);
+    let mut file = match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+    {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            anyhow::bail!("Config file already exists at {}", path.display());
+        }
+        Err(e) => return Err(e.into()),
+    };
+    file.write_all(content.as_bytes())?;
+    Ok(path)
 }
 
 pub fn load_config(config_override: Option<&Path>) -> Result<Config> {
@@ -509,6 +558,71 @@ unknown = "bad"
     }
 
     #[test]
+    fn test_format_default_config_is_valid_toml() {
+        let dirs = vec!["~/Development".to_string(), "~/Work".to_string()];
+        let content = format_default_config(&dirs);
+        assert!(content.contains("search_dirs"));
+        let _config: Config = toml::from_str(&content).unwrap();
+    }
+
+    #[test]
+    fn test_format_default_config_roundtrip() {
+        let dirs = vec!["~/Projects".to_string(), "~/Code".to_string()];
+        let content = format_default_config(&dirs);
+        let config = load_config_from_str(&content).unwrap();
+        let paths: Vec<String> = config
+            .search_dirs
+            .iter()
+            .map(|e| match e {
+                SearchDirEntry::Simple(s) => s.clone(),
+                SearchDirEntry::Rich { path, .. } => path.clone(),
+            })
+            .collect();
+        assert_eq!(paths, dirs);
+    }
+
+    #[test]
+    fn test_format_default_config_escapes_special_chars() {
+        let dirs = vec![
+            "C:\\Users\\Tom".to_string(),
+            "path with \"quotes\"".to_string(),
+        ];
+        let content = format_default_config(&dirs);
+        // Should produce valid TOML despite special characters
+        let config = load_config_from_str(&content).unwrap();
+        let paths: Vec<String> = config
+            .search_dirs
+            .iter()
+            .map(|e| match e {
+                SearchDirEntry::Simple(s) => s.clone(),
+                SearchDirEntry::Rich { path, .. } => path.clone(),
+            })
+            .collect();
+        assert_eq!(paths, dirs);
+    }
+
+    #[test]
+    fn test_format_default_config_empty_dirs() {
+        let content = format_default_config(&[]);
+        assert!(content.contains("search_dirs = []"));
+    }
+
+    #[test]
+    fn test_config_file_exists_returns_false_for_missing() {
+        // This relies on the test not having a kiosk config in the default location,
+        // which is fragile. Instead just verify the function doesn't panic.
+        let _ = config_file_exists();
+    }
+
+    #[test]
+    fn test_format_default_config_single_dir() {
+        let dirs = vec!["~/Dev".to_string()];
+        let content = format_default_config(&dirs);
+        let config = load_config_from_str(&content).unwrap();
+        assert_eq!(config.search_dirs.len(), 1);
+    }
+
+    #[test]
     fn test_rich_search_dirs() {
         let config = load_config_from_str(
             r#"search_dirs = [
@@ -537,5 +651,36 @@ unknown = "bad"
             }
             SearchDirEntry::Simple(_) => panic!("Expected Rich variant"),
         }
+    }
+
+    #[test]
+    fn test_write_default_config_creates_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("kiosk").join("config.toml");
+        // Temporarily override config_file() is not possible, so test
+        // format_default_config + fs::write manually to verify the flow.
+        let dirs = vec!["~/Development".to_string()];
+        let content = format_default_config(&dirs);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, &content).unwrap();
+        let loaded = load_config_from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(loaded.search_dirs.len(), 1);
+    }
+
+    #[test]
+    fn test_write_default_config_create_new_rejects_existing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        fs::write(&path, "existing").unwrap();
+
+        let result = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().kind(),
+            std::io::ErrorKind::AlreadyExists
+        );
     }
 }

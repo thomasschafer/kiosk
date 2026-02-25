@@ -3,7 +3,10 @@ use kiosk_core::{
     config::KeysConfig,
     git::GitProvider,
     pending_delete::{PendingWorktreeDelete, save_pending_worktree_deletes},
-    state::{AppState, BaseBranchSelection, HelpOverlayState, Mode, SearchableList, worktree_dir},
+    state::{
+        AppState, BaseBranchSelection, HelpOverlayState, Mode, SearchableList, SetupStep,
+        worktree_dir,
+    },
     tmux::TmuxProvider,
 };
 use std::sync::Arc;
@@ -18,8 +21,7 @@ pub(super) fn handle_go_back(state: &mut AppState) {
     match state.mode.clone() {
         Mode::BranchSelect => {
             state.mode = Mode::RepoSelect;
-            state.branch_list.search.clear();
-            state.branch_list.cursor = 0;
+            state.branch_list.input.clear();
         }
         Mode::SelectBaseBranch => {
             state.base_branch_selection = None;
@@ -32,7 +34,7 @@ pub(super) fn handle_go_back(state: &mut AppState) {
             state.help_overlay = None;
             state.mode = *previous;
         }
-        Mode::RepoSelect | Mode::Loading(_) => {}
+        Mode::Setup(_) | Mode::RepoSelect | Mode::Loading(_) => {}
     }
 }
 
@@ -53,7 +55,7 @@ pub(super) fn handle_show_help(state: &mut AppState, keys: &KeysConfig) {
 }
 
 pub(super) fn handle_start_new_branch(state: &mut AppState) {
-    if state.branch_list.search.is_empty() {
+    if state.branch_list.input.text.is_empty() {
         state.error = Some("Type a branch name first".to_string());
         return;
     }
@@ -75,7 +77,7 @@ pub(super) fn handle_start_new_branch(state: &mut AppState) {
     let list = SearchableList::new(bases.len());
 
     state.base_branch_selection = Some(BaseBranchSelection {
-        new_name: state.branch_list.search.clone(),
+        new_name: state.branch_list.input.text.clone(),
         bases,
         list,
     });
@@ -242,7 +244,8 @@ pub(super) fn handle_open_branch(
         Mode::RepoSelect
         | Mode::ConfirmWorktreeDelete { .. }
         | Mode::Loading(_)
-        | Mode::Help { .. } => {}
+        | Mode::Help { .. }
+        | Mode::Setup(_) => {}
     }
     None
 }
@@ -278,52 +281,201 @@ pub(super) fn enter_branch_select_with_loading<T: TmuxProvider + ?Sized + 'stati
 }
 
 pub(super) fn handle_search_push(state: &mut AppState, matcher: &SkimMatcherV2, c: char) {
-    if let Some(list) = state.active_list_mut() {
-        list.insert_char(c);
+    if let Some(input) = state.active_text_input() {
+        input.insert_char(c);
     }
-    update_active_filter(state, matcher);
+    post_text_edit(state, matcher);
 }
 
 pub(super) fn handle_search_pop(state: &mut AppState, matcher: &SkimMatcherV2) {
-    if let Some(list) = state.active_list_mut() {
-        list.backspace();
+    if let Some(input) = state.active_text_input() {
+        input.backspace();
     }
-    update_active_filter(state, matcher);
+    post_text_edit(state, matcher);
 }
 
 pub(super) fn handle_search_delete_word(state: &mut AppState, matcher: &SkimMatcherV2) {
-    if let Some(list) = state.active_list_mut() {
-        list.delete_word();
+    if let Some(input) = state.active_text_input() {
+        input.delete_word();
     }
-    update_active_filter(state, matcher);
+    post_text_edit(state, matcher);
 }
 
 pub(super) fn handle_search_delete_forward(state: &mut AppState, matcher: &SkimMatcherV2) {
-    if let Some(list) = state.active_list_mut() {
-        list.delete_forward_char();
+    if let Some(input) = state.active_text_input() {
+        input.delete_forward_char();
     }
-    update_active_filter(state, matcher);
+    post_text_edit(state, matcher);
 }
 
 pub(super) fn handle_search_delete_word_forward(state: &mut AppState, matcher: &SkimMatcherV2) {
-    if let Some(list) = state.active_list_mut() {
-        list.delete_word_forward();
+    if let Some(input) = state.active_text_input() {
+        input.delete_word_forward();
     }
-    update_active_filter(state, matcher);
+    post_text_edit(state, matcher);
 }
 
 pub(super) fn handle_search_delete_to_start(state: &mut AppState, matcher: &SkimMatcherV2) {
-    if let Some(list) = state.active_list_mut() {
-        list.delete_to_start();
+    if let Some(input) = state.active_text_input() {
+        input.delete_to_start();
     }
-    update_active_filter(state, matcher);
+    post_text_edit(state, matcher);
 }
 
 pub(super) fn handle_search_delete_to_end(state: &mut AppState, matcher: &SkimMatcherV2) {
-    if let Some(list) = state.active_list_mut() {
-        list.delete_to_end();
+    if let Some(input) = state.active_text_input() {
+        input.delete_to_end();
     }
-    update_active_filter(state, matcher);
+    post_text_edit(state, matcher);
+}
+
+/// Dispatch post-edit updates: setup completions or fuzzy filter.
+fn post_text_edit(state: &mut AppState, matcher: &SkimMatcherV2) {
+    if matches!(state.mode, Mode::Setup(SetupStep::SearchDirs)) {
+        update_setup_completions(state);
+    } else {
+        update_active_filter(state, matcher);
+    }
+}
+
+// ── Setup action handlers ──
+
+pub(super) fn handle_setup_continue(state: &mut AppState) {
+    state.mode = Mode::Setup(SetupStep::SearchDirs);
+    if state.setup.is_none() {
+        state.setup = Some(kiosk_core::state::SetupState::new());
+    }
+}
+
+pub(super) fn handle_setup_add_dir(state: &mut AppState) -> Option<super::OpenAction> {
+    let setup = state.setup.as_ref()?;
+
+    // If a completion is selected, navigate into it instead of adding
+    if let Some(sel) = setup.selected_completion {
+        fill_setup_completion(state, sel);
+        return None;
+    }
+
+    let input_text = setup.input.text.trim().to_string();
+    if input_text.is_empty() {
+        if setup.dirs.is_empty() {
+            state.error = Some("Add at least one directory".to_string());
+            return None;
+        }
+        return Some(super::OpenAction::SetupComplete);
+    }
+
+    let setup = state.setup.as_mut()?;
+    if !setup.dirs.contains(&input_text) {
+        setup.dirs.push(input_text);
+    }
+    setup.input.clear();
+    setup.completions.clear();
+    setup.selected_completion = None;
+    None
+}
+
+/// Fill the selected (or first) completion into the input and re-generate.
+/// Shared by Tab-complete and Enter-with-selection flows.
+fn fill_setup_completion(state: &mut AppState, index: usize) {
+    let Some(setup) = &mut state.setup else {
+        return;
+    };
+    let Some(completion) = setup.completions.get(index).cloned() else {
+        return;
+    };
+    let with_slash = if completion.ends_with('/') {
+        completion
+    } else {
+        format!("{completion}/")
+    };
+    setup.input.text = with_slash;
+    setup.input.cursor = setup.input.text.len();
+    setup.completions.clear();
+    setup.selected_completion = None;
+    update_setup_completions(state);
+}
+
+pub(super) fn handle_setup_tab_complete(state: &mut AppState) {
+    let Some(setup) = &mut state.setup else {
+        return;
+    };
+
+    // Generate completions if not already present
+    if setup.completions.is_empty() {
+        setup.completions = crate::components::path_input::complete(&setup.input.text);
+        setup.selected_completion = None;
+        return;
+    }
+
+    if setup.completions.len() == 1 {
+        fill_setup_completion(state, 0);
+        return;
+    }
+
+    // Multiple: fill to common prefix if it extends the input
+    let common = crate::components::path_input::common_prefix(&setup.completions);
+    if !common.is_empty() && common != setup.input.text {
+        setup.input.text = common;
+        setup.input.cursor = setup.input.text.len();
+        setup.completions = crate::components::path_input::complete(&setup.input.text);
+        setup.selected_completion = None;
+        return;
+    }
+
+    // Common prefix already matches input: fill in the selected (or first) completion
+    let sel = setup.selected_completion.unwrap_or(0);
+    fill_setup_completion(state, sel);
+}
+
+pub(super) fn handle_setup_move_selection(state: &mut AppState, delta: i32) {
+    let Some(setup) = &mut state.setup else {
+        return;
+    };
+    if setup.completions.is_empty() {
+        return;
+    }
+    let len = setup.completions.len();
+    setup.selected_completion = match setup.selected_completion {
+        None => {
+            if delta > 0 {
+                Some(0)
+            } else {
+                Some(len - 1)
+            }
+        }
+        Some(current) => {
+            if delta > 0 {
+                let next = current.saturating_add(delta.unsigned_abs() as usize);
+                if next >= len { None } else { Some(next) }
+            } else if current == 0 {
+                None
+            } else {
+                Some(current.saturating_sub(delta.unsigned_abs() as usize))
+            }
+        }
+    };
+}
+
+/// Cancel in setup: deselect completion if one is highlighted, otherwise quit.
+pub(super) fn handle_setup_cancel(state: &mut AppState) -> Option<super::OpenAction> {
+    let Some(setup) = &mut state.setup else {
+        return Some(super::OpenAction::Quit);
+    };
+    if setup.selected_completion.is_some() {
+        setup.selected_completion = None;
+        None
+    } else {
+        Some(super::OpenAction::Quit)
+    }
+}
+
+fn update_setup_completions(state: &mut AppState) {
+    let Some(setup) = &mut state.setup else {
+        return;
+    };
+    setup.completions = crate::components::path_input::complete(&setup.input.text);
+    setup.selected_completion = None;
 }
 
 fn update_active_filter(state: &mut AppState, matcher: &SkimMatcherV2) {
@@ -368,7 +520,7 @@ fn update_active_filter(state: &mut AppState, matcher: &SkimMatcherV2) {
 }
 
 fn apply_fuzzy_filter(list: &mut SearchableList, items: &[String], matcher: &SkimMatcherV2) {
-    if list.search.is_empty() {
+    if list.input.text.is_empty() {
         list.filtered = items.iter().enumerate().map(|(i, _)| (i, 0)).collect();
     } else {
         let mut scored: Vec<(usize, i64)> = items
@@ -376,7 +528,7 @@ fn apply_fuzzy_filter(list: &mut SearchableList, items: &[String], matcher: &Ski
             .enumerate()
             .filter_map(|(i, item)| {
                 matcher
-                    .fuzzy_match(item, &list.search)
+                    .fuzzy_match(item, &list.input.text)
                     .map(|score| (i, score))
             })
             .collect();
@@ -401,8 +553,10 @@ mod tests {
 
     fn make_list(search: &str) -> SearchableList {
         SearchableList {
-            search: search.to_string(),
-            cursor: search.len(),
+            input: kiosk_core::state::TextInput {
+                text: search.to_string(),
+                cursor: search.len(),
+            },
             filtered: Vec::new(),
             selected: None,
             scroll_offset: 0,

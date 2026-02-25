@@ -1,7 +1,7 @@
 use kiosk_core::action::Action;
 use kiosk_core::config::{Command, KeysConfig};
 use kiosk_core::keyboard::{KeyCode, KeyEvent, KeyModifiers};
-use kiosk_core::state::{AppState, Mode};
+use kiosk_core::state::{AppState, Mode, SetupStep};
 
 /// Resolve a key event into an Action based on current mode and key configuration
 pub fn resolve_action(
@@ -28,7 +28,7 @@ pub fn resolve_action(
     }
 
     // Handle printable characters for search in search-enabled modes
-    if can_search_in_mode(&state.mode)
+    if state.mode.supports_text_edit()
         && let KeyCode::Char(c) = our_key.code
         && (our_key.modifiers == KeyModifiers::NONE && c.is_ascii_graphic() || c == ' ')
     {
@@ -49,7 +49,7 @@ fn command_to_action(command: &Command, state: &AppState) -> Option<Action> {
         Command::OpenBranch => {
             // In branch-select mode, Enter with non-empty search and no matches starts new branch flow.
             if let Mode::BranchSelect = state.mode
-                && !state.branch_list.search.is_empty()
+                && !state.branch_list.input.text.is_empty()
                 && state.branch_list.filtered.is_empty()
             {
                 return Some(Action::StartNewBranchFlow);
@@ -88,20 +88,20 @@ fn command_to_action(command: &Command, state: &AppState) -> Option<Action> {
         Command::Confirm => match state.mode {
             Mode::ConfirmWorktreeDelete { .. } => Some(Action::ConfirmDeleteWorktree),
             Mode::SelectBaseBranch => Some(Action::OpenBranch),
+            Mode::Setup(SetupStep::Welcome) => Some(Action::SetupContinue),
+            Mode::Setup(SetupStep::SearchDirs) => Some(Action::SetupAddDir),
             _ => None,
         },
         Command::Cancel => match state.mode {
             Mode::ConfirmWorktreeDelete { .. } => Some(Action::CancelDeleteWorktree),
             Mode::SelectBaseBranch => Some(Action::GoBack),
+            Mode::Setup(SetupStep::Welcome) => Some(Action::Quit),
+            Mode::Setup(SetupStep::SearchDirs) => Some(Action::SetupCancel),
+            _ => None,
+        },
+        Command::TabComplete => match state.mode {
+            Mode::Setup(SetupStep::SearchDirs) => Some(Action::SetupTabComplete),
             _ => None,
         },
     }
-}
-
-/// Check if the current mode supports search input
-fn can_search_in_mode(mode: &Mode) -> bool {
-    matches!(
-        mode,
-        Mode::RepoSelect | Mode::BranchSelect | Mode::SelectBaseBranch | Mode::Help { .. }
-    )
 }

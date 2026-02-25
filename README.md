@@ -1,6 +1,6 @@
 # kiosk
 
-Git-aware tmux session manager. Search for the repo you want, and optionally select a branch or create a new one. If a session already exists, you jump straight in - if it doesn't, a new session is created, with a new worktree if needed.
+Kiosk is a Git-aware tmux session manager. Search for the repo you want, and optionally select a branch or create a new one. If a session already exists, you jump straight in - if it doesn't, a new session is created, with a new worktree if needed.
 
 ![kiosk preview](media/preview.png)
 
@@ -9,22 +9,25 @@ Worktrees are created in `.kiosk_worktrees/` in the parent directory of the give
 
 ## Usage
 
-### Humans
+### TUI
 
-Add something like this to your `tmux.conf`:
+Add a keybinding to your `tmux.conf` to open Kiosk in a popup - the following uses `<prefix> f`, but change as appropriate:
 
 ```tmux
 bind-key f popup -xC -yC -w90% -h90% -E "kiosk"
 ```
 
-Then `<prefix> f` opens the switcher in a popup.
+- On first interactive launch (when no config file exists), you'll see a setup wizard to create your config file. If you'd rather do this manually, see the [configuration](#configuration) section.
+- You'll start in the repo view, which shows all repos in the folders defined in your config:
+  - Start typing to fuzzy search across repos
+  - Enter opens the repo with the primary checkout
+  - Tab opens the branch view for that repo
+- From the branch view, you can again fuzzy match across branches:
+  - Enter opens a session in a worktree on that branch, either attaching to an existing session if one exists, or creating a new one otherwise
 
-- You'll start in the repo view. You'll see all repos in the folders defined in your config, and you can fuzzy search across them. Enter opens the repo with the primary checkout, tab opens the branch view.
-- From the branch view, you can again fuzzy match across branches. Enter opens a session in a worktree on that branch, either attaching to an existing session if one exists, or creating a new one otherwise.
+### CLI
 
-### AI agents
-
-You (agent or human) can also use kiosk as a CLI, using subcommands when you want non-interactive control. The following are some examples, but see `kiosk --help` for a complete list of commands and options.
+You can also use Kiosk as a CLI, which is particularly useful for AI agents. Below are some example commands, but see `kiosk --help` for a complete list of commands and options.
 
 <details>
 
@@ -108,7 +111,7 @@ The `open --json` response includes the exact session name in the `session` fiel
 
 ## Installing
 
-### crates.io
+### Cargo
 
 Ensure you have the Rust toolchain installed, then run:
 
@@ -127,18 +130,15 @@ cargo install --path kiosk
 
 ## Configuration
 
-You'll need a config file to get started. By default, kiosk looks for a TOML configuration file at:
+You'll need a config file to get started. By default, Kiosk looks for a TOML configuration file at:
 
 - Linux or macOS: `~/.config/kiosk/config.toml`
 - Windows: `%AppData%\kiosk\config.toml`
 
-Here's a basic example:
+Here's a minimal example that contains all required keys (change values as appropriate):
 
 ```toml
-search_dirs = ["~/Development", "~/Work"]
-
-[session]
-split_command = "hx"
+search_dirs = ["~/Development"]
 ```
 
 ### Config options
@@ -249,6 +249,7 @@ Defaults are shown below.
 [keys.modal]
 "enter" = "confirm"
 "esc" = "cancel"
+"tab" = "tab_complete"
 
 ```
 

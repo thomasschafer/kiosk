@@ -11,16 +11,11 @@ use std::{
 };
 use unicode_segmentation::UnicodeSegmentation;
 
-/// Shared state for any searchable, filterable list.
-/// Eliminates the mode-dispatch triplication for search/cursor/movement.
+/// Reusable text input with cursor, shared by `SearchableList` and `SetupState`.
 #[derive(Debug, Clone)]
-pub struct SearchableList {
-    pub search: String,
+pub struct TextInput {
+    pub text: String,
     pub cursor: usize,
-    /// Index-score pairs, sorted by score descending
-    pub filtered: Vec<(usize, i64)>,
-    pub selected: Option<usize>,
-    pub scroll_offset: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -30,9 +25,21 @@ struct GraphemeSpan {
     is_whitespace: bool,
 }
 
-impl SearchableList {
+impl TextInput {
+    pub fn new() -> Self {
+        Self {
+            text: String::new(),
+            cursor: 0,
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.text.clear();
+        self.cursor = 0;
+    }
+
     fn grapheme_spans(&self) -> Vec<GraphemeSpan> {
-        self.search
+        self.text
             .grapheme_indices(true)
             .map(|(start, grapheme)| GraphemeSpan {
                 start,
@@ -43,9 +50,8 @@ impl SearchableList {
     }
 
     fn grapheme_boundaries(&self) -> Vec<usize> {
-        let mut boundaries: Vec<usize> =
-            self.search.grapheme_indices(true).map(|(i, _)| i).collect();
-        boundaries.push(self.search.len());
+        let mut boundaries: Vec<usize> = self.text.grapheme_indices(true).map(|(i, _)| i).collect();
+        boundaries.push(self.text.len());
         boundaries
     }
 
@@ -66,19 +72,19 @@ impl SearchableList {
     }
 
     fn clamp_cursor_to_boundary(&mut self, boundaries: &[usize]) -> usize {
-        let cursor = self.cursor.min(self.search.len());
+        let cursor = self.cursor.min(self.text.len());
         let idx = Self::boundary_index_at_or_before(boundaries, cursor);
         self.cursor = boundaries.get(idx).copied().unwrap_or(0);
         idx
     }
 
-    fn prev_word_boundary(&self, from: usize) -> usize {
+    pub(crate) fn prev_word_boundary(&self, from: usize) -> usize {
         let spans = self.grapheme_spans();
         if spans.is_empty() {
             return 0;
         }
-        let boundaries = Self::boundaries_from_spans(&spans, self.search.len());
-        let cursor = from.min(self.search.len());
+        let boundaries = Self::boundaries_from_spans(&spans, self.text.len());
+        let cursor = from.min(self.text.len());
         let mut grapheme_idx =
             Self::boundary_index_at_or_before(&boundaries, cursor).saturating_sub(1);
 
@@ -105,13 +111,13 @@ impl SearchableList {
         0
     }
 
-    fn next_word_boundary(&self, from: usize) -> usize {
+    pub(crate) fn next_word_boundary(&self, from: usize) -> usize {
         let spans = self.grapheme_spans();
         if spans.is_empty() {
             return 0;
         }
-        let boundaries = Self::boundaries_from_spans(&spans, self.search.len());
-        let cursor = from.min(self.search.len());
+        let boundaries = Self::boundaries_from_spans(&spans, self.text.len());
+        let cursor = from.min(self.text.len());
         let mut grapheme_idx = Self::boundary_index_at_or_before(&boundaries, cursor);
 
         while let Some(span) = spans.get(grapheme_idx) {
@@ -128,13 +134,145 @@ impl SearchableList {
             grapheme_idx += 1;
         }
 
-        self.search.len()
+        self.text.len()
     }
 
+    /// Move cursor left by one grapheme cluster (UTF-8 safe)
+    pub fn cursor_left(&mut self) {
+        let boundaries = self.grapheme_boundaries();
+        let idx = self.clamp_cursor_to_boundary(&boundaries);
+        if idx > 0 {
+            self.cursor = boundaries[idx - 1];
+        }
+    }
+
+    /// Move cursor right by one grapheme cluster (UTF-8 safe)
+    pub fn cursor_right(&mut self) {
+        let boundaries = self.grapheme_boundaries();
+        let idx = self.clamp_cursor_to_boundary(&boundaries);
+        if idx + 1 < boundaries.len() {
+            self.cursor = boundaries[idx + 1];
+        }
+    }
+
+    pub fn cursor_start(&mut self) {
+        self.cursor = 0;
+    }
+
+    pub fn cursor_end(&mut self) {
+        self.cursor = self.text.len();
+    }
+
+    pub fn cursor_word_left(&mut self) {
+        let boundaries = self.grapheme_boundaries();
+        self.clamp_cursor_to_boundary(&boundaries);
+        self.cursor = self.prev_word_boundary(self.cursor);
+    }
+
+    pub fn cursor_word_right(&mut self) {
+        let boundaries = self.grapheme_boundaries();
+        self.clamp_cursor_to_boundary(&boundaries);
+        self.cursor = self.next_word_boundary(self.cursor);
+    }
+
+    /// Insert a character at the current cursor position
+    pub fn insert_char(&mut self, c: char) {
+        let boundaries = self.grapheme_boundaries();
+        self.clamp_cursor_to_boundary(&boundaries);
+        self.text.insert(self.cursor, c);
+        self.cursor += c.len_utf8();
+    }
+
+    /// Remove the grapheme cluster before the cursor (UTF-8 safe)
+    pub fn backspace(&mut self) -> bool {
+        let boundaries = self.grapheme_boundaries();
+        let idx = self.clamp_cursor_to_boundary(&boundaries);
+        if idx == 0 {
+            return false;
+        }
+        let prev = boundaries[idx - 1];
+        self.text.drain(prev..self.cursor);
+        self.cursor = prev;
+        true
+    }
+
+    /// Remove the grapheme cluster at cursor position (UTF-8 safe)
+    pub fn delete_forward_char(&mut self) -> bool {
+        let boundaries = self.grapheme_boundaries();
+        let idx = self.clamp_cursor_to_boundary(&boundaries);
+        if idx + 1 >= boundaries.len() {
+            return false;
+        }
+        let end = boundaries[idx + 1];
+        self.text.drain(self.cursor..end);
+        true
+    }
+
+    /// Delete word backwards from cursor position
+    pub fn delete_word(&mut self) {
+        if self.text.is_empty() || self.cursor == 0 {
+            return;
+        }
+        let boundaries = self.grapheme_boundaries();
+        self.clamp_cursor_to_boundary(&boundaries);
+        let new_cursor = self.prev_word_boundary(self.cursor);
+
+        self.text.drain(new_cursor..self.cursor);
+        self.cursor = new_cursor;
+    }
+
+    /// Delete word forwards from cursor position
+    pub fn delete_word_forward(&mut self) {
+        if self.text.is_empty() || self.cursor >= self.text.len() {
+            return;
+        }
+        let boundaries = self.grapheme_boundaries();
+        self.clamp_cursor_to_boundary(&boundaries);
+        let end = self.next_word_boundary(self.cursor);
+        self.text.drain(self.cursor..end);
+    }
+
+    pub fn delete_to_start(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+        let boundaries = self.grapheme_boundaries();
+        self.clamp_cursor_to_boundary(&boundaries);
+        self.text.drain(..self.cursor);
+        self.cursor = 0;
+    }
+
+    pub fn delete_to_end(&mut self) {
+        if self.cursor >= self.text.len() {
+            return;
+        }
+        let boundaries = self.grapheme_boundaries();
+        self.clamp_cursor_to_boundary(&boundaries);
+        self.text.truncate(self.cursor);
+    }
+}
+
+impl Default for TextInput {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Shared state for any searchable, filterable list.
+/// Eliminates the mode-dispatch triplication for search/cursor/movement.
+#[derive(Debug, Clone)]
+pub struct SearchableList {
+    pub input: TextInput,
+    /// Index-score pairs, sorted by score descending
+    pub filtered: Vec<(usize, i64)>,
+    pub selected: Option<usize>,
+    pub scroll_offset: usize,
+}
+
+impl SearchableList {
     pub fn new(item_count: usize) -> Self {
         Self {
-            search: String::new(),
-            cursor: 0,
+            input: TextInput::new(),
             filtered: (0..item_count).map(|i| (i, 0)).collect(),
             selected: if item_count > 0 { Some(0) } else { None },
             scroll_offset: 0,
@@ -142,11 +280,22 @@ impl SearchableList {
     }
 
     pub fn reset(&mut self, item_count: usize) {
-        self.search.clear();
-        self.cursor = 0;
+        self.input.clear();
         self.filtered = (0..item_count).map(|i| (i, 0)).collect();
         self.selected = if item_count > 0 { Some(0) } else { None };
         self.scroll_offset = 0;
+    }
+
+    // ── Convenience accessors for backward compatibility ──
+
+    /// Access the search text
+    pub fn search(&self) -> &str {
+        &self.input.text
+    }
+
+    /// Access the cursor position
+    pub fn cursor(&self) -> usize {
+        self.input.cursor
     }
 
     /// Move selection by delta, clamping to bounds
@@ -202,120 +351,6 @@ impl SearchableList {
         }
 
         self.scroll_offset = self.scroll_offset.min(max_offset);
-    }
-
-    /// Move cursor left by one grapheme cluster (UTF-8 safe)
-    pub fn cursor_left(&mut self) {
-        let boundaries = self.grapheme_boundaries();
-        let idx = self.clamp_cursor_to_boundary(&boundaries);
-        if idx > 0 {
-            self.cursor = boundaries[idx - 1];
-        }
-    }
-
-    /// Move cursor right by one grapheme cluster (UTF-8 safe)
-    pub fn cursor_right(&mut self) {
-        let boundaries = self.grapheme_boundaries();
-        let idx = self.clamp_cursor_to_boundary(&boundaries);
-        if idx + 1 < boundaries.len() {
-            self.cursor = boundaries[idx + 1];
-        }
-    }
-
-    pub fn cursor_start(&mut self) {
-        self.cursor = 0;
-    }
-
-    pub fn cursor_end(&mut self) {
-        self.cursor = self.search.len();
-    }
-
-    pub fn cursor_word_left(&mut self) {
-        let boundaries = self.grapheme_boundaries();
-        self.clamp_cursor_to_boundary(&boundaries);
-        self.cursor = self.prev_word_boundary(self.cursor);
-    }
-
-    pub fn cursor_word_right(&mut self) {
-        let boundaries = self.grapheme_boundaries();
-        self.clamp_cursor_to_boundary(&boundaries);
-        self.cursor = self.next_word_boundary(self.cursor);
-    }
-
-    /// Insert a character at the current cursor position
-    pub fn insert_char(&mut self, c: char) {
-        let boundaries = self.grapheme_boundaries();
-        self.clamp_cursor_to_boundary(&boundaries);
-        self.search.insert(self.cursor, c);
-        self.cursor += c.len_utf8();
-    }
-
-    /// Remove the grapheme cluster before the cursor (UTF-8 safe)
-    pub fn backspace(&mut self) -> bool {
-        let boundaries = self.grapheme_boundaries();
-        let idx = self.clamp_cursor_to_boundary(&boundaries);
-        if idx == 0 {
-            return false;
-        }
-        let prev = boundaries[idx - 1];
-        self.search.drain(prev..self.cursor);
-        self.cursor = prev;
-        true
-    }
-
-    /// Remove the grapheme cluster at cursor position (UTF-8 safe)
-    pub fn delete_forward_char(&mut self) -> bool {
-        let boundaries = self.grapheme_boundaries();
-        let idx = self.clamp_cursor_to_boundary(&boundaries);
-        if idx + 1 >= boundaries.len() {
-            return false;
-        }
-        let end = boundaries[idx + 1];
-        self.search.drain(self.cursor..end);
-        true
-    }
-
-    /// Delete word backwards from cursor position
-    pub fn delete_word(&mut self) {
-        if self.search.is_empty() || self.cursor == 0 {
-            return;
-        }
-        let boundaries = self.grapheme_boundaries();
-        self.clamp_cursor_to_boundary(&boundaries);
-        let new_cursor = self.prev_word_boundary(self.cursor);
-
-        self.search.drain(new_cursor..self.cursor);
-        self.cursor = new_cursor;
-    }
-
-    /// Delete word forwards from cursor position
-    pub fn delete_word_forward(&mut self) {
-        if self.search.is_empty() || self.cursor >= self.search.len() {
-            return;
-        }
-        let boundaries = self.grapheme_boundaries();
-        self.clamp_cursor_to_boundary(&boundaries);
-        let end = self.next_word_boundary(self.cursor);
-        self.search.drain(self.cursor..end);
-    }
-
-    pub fn delete_to_start(&mut self) {
-        if self.cursor == 0 {
-            return;
-        }
-        let boundaries = self.grapheme_boundaries();
-        self.clamp_cursor_to_boundary(&boundaries);
-        self.search.drain(..self.cursor);
-        self.cursor = 0;
-    }
-
-    pub fn delete_to_end(&mut self) {
-        if self.cursor >= self.search.len() {
-            return;
-        }
-        let boundaries = self.grapheme_boundaries();
-        self.clamp_cursor_to_boundary(&boundaries);
-        self.search.truncate(self.cursor);
     }
 }
 
@@ -538,6 +573,45 @@ fn repo_max_activity(repo: &Repo, session_activity: &HashMap<String, u64>) -> Op
         .max()
 }
 
+/// Setup wizard step
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SetupStep {
+    /// Brief welcome screen
+    Welcome,
+    /// Directory entry with autocomplete
+    SearchDirs,
+}
+
+/// Setup wizard state
+#[derive(Debug, Clone)]
+pub struct SetupState {
+    /// Current text input with cursor
+    pub input: TextInput,
+    /// Current filesystem completions
+    pub completions: Vec<String>,
+    /// Which completion is highlighted
+    pub selected_completion: Option<usize>,
+    /// Directories added so far
+    pub dirs: Vec<String>,
+}
+
+impl SetupState {
+    pub fn new() -> Self {
+        Self {
+            input: TextInput::new(),
+            completions: Vec::new(),
+            selected_completion: None,
+            dirs: Vec::new(),
+        }
+    }
+}
+
+impl Default for SetupState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// What mode the app is in
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Mode {
@@ -555,6 +629,8 @@ pub enum Mode {
     Help {
         previous: Box<Mode>,
     },
+    /// Setup wizard for first-time config
+    Setup(SetupStep),
 }
 
 impl Mode {
@@ -586,28 +662,36 @@ impl Mode {
                 Command::ShowHelp,
                 Command::Quit,
             ],
-            Mode::Loading(_) | Mode::Help { .. } => &[],
+            Mode::Setup(_) | Mode::Loading(_) | Mode::Help { .. } => &[],
         }
     }
 
-    pub(crate) fn supports_text_edit(&self) -> bool {
+    pub fn supports_text_edit(&self) -> bool {
         matches!(
             self,
-            Mode::RepoSelect | Mode::BranchSelect | Mode::SelectBaseBranch | Mode::Help { .. }
+            Mode::RepoSelect
+                | Mode::BranchSelect
+                | Mode::SelectBaseBranch
+                | Mode::Help { .. }
+                | Mode::Setup(SetupStep::SearchDirs)
         )
     }
 
     pub(crate) fn supports_list_navigation(&self) -> bool {
         matches!(
             self,
-            Mode::RepoSelect | Mode::BranchSelect | Mode::SelectBaseBranch | Mode::Help { .. }
+            Mode::RepoSelect
+                | Mode::BranchSelect
+                | Mode::SelectBaseBranch
+                | Mode::Help { .. }
+                | Mode::Setup(SetupStep::SearchDirs)
         )
     }
 
     pub(crate) fn supports_modal_actions(&self) -> bool {
         matches!(
             self,
-            Mode::SelectBaseBranch | Mode::ConfirmWorktreeDelete { .. }
+            Mode::SelectBaseBranch | Mode::ConfirmWorktreeDelete { .. } | Mode::Setup(_)
         )
     }
 
@@ -649,6 +733,7 @@ pub struct AppState {
 
     pub base_branch_selection: Option<BaseBranchSelection>,
     pub help_overlay: Option<HelpOverlayState>,
+    pub setup: Option<SetupState>,
 
     pub split_command: Option<String>,
     pub mode: Mode,
@@ -664,19 +749,19 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(repos: Vec<Repo>, split_command: Option<String>) -> Self {
-        let repo_list = SearchableList::new(repos.len());
+    fn base(mode: Mode) -> Self {
         Self {
-            repos,
-            repo_list,
+            repos: Vec::new(),
+            repo_list: SearchableList::new(0),
             loading_repos: false,
             selected_repo_idx: None,
             branches: Vec::new(),
             branch_list: SearchableList::new(0),
             base_branch_selection: None,
             help_overlay: None,
-            split_command,
-            mode: Mode::RepoSelect,
+            setup: None,
+            split_command: None,
+            mode,
             loading_branches: false,
             error: None,
             active_list_page_rows: 10,
@@ -687,25 +772,37 @@ impl AppState {
         }
     }
 
+    pub fn new(repos: Vec<Repo>, split_command: Option<String>) -> Self {
+        let repo_list = SearchableList::new(repos.len());
+        Self {
+            repos,
+            repo_list,
+            split_command,
+            mode: Mode::RepoSelect,
+            ..Self::base(Mode::RepoSelect)
+        }
+    }
+
     pub fn new_loading(loading_message: &str, split_command: Option<String>) -> Self {
         Self {
-            repos: Vec::new(),
-            repo_list: SearchableList::new(0),
-            loading_repos: false,
-            selected_repo_idx: None,
-            branches: Vec::new(),
-            branch_list: SearchableList::new(0),
-            base_branch_selection: None,
-            help_overlay: None,
             split_command,
-            mode: Mode::Loading(loading_message.to_string()),
-            loading_branches: false,
-            error: None,
-            active_list_page_rows: 10,
-            pending_worktree_deletes: Vec::new(),
-            session_activity: HashMap::new(),
-            current_repo_path: None,
-            cwd_worktree_path: None,
+            ..Self::base(Mode::Loading(loading_message.to_string()))
+        }
+    }
+
+    pub fn new_setup() -> Self {
+        Self {
+            setup: Some(SetupState::new()),
+            ..Self::base(Mode::Setup(SetupStep::Welcome))
+        }
+    }
+
+    /// Get the active text input for the current mode (mutable).
+    /// Works for both `SearchableList` modes and Setup mode.
+    pub fn active_text_input(&mut self) -> Option<&mut TextInput> {
+        match self.mode {
+            Mode::Setup(SetupStep::SearchDirs) => self.setup.as_mut().map(|s| &mut s.input),
+            _ => self.active_list_mut().map(|list| &mut list.input),
         }
     }
 
@@ -842,149 +939,149 @@ mod tests {
     #[test]
     fn test_cursor_grapheme_combining_mark() {
         let mut list = SearchableList::new(0);
-        list.search = "e\u{0301}".to_string();
-        list.cursor_end();
+        list.input.text = "e\u{0301}".to_string();
+        list.input.cursor_end();
 
-        list.cursor_left();
-        assert_eq!(list.cursor, 0);
+        list.input.cursor_left();
+        assert_eq!(list.input.cursor, 0);
 
-        list.cursor_right();
-        assert_eq!(list.cursor, list.search.len());
+        list.input.cursor_right();
+        assert_eq!(list.input.cursor, list.input.text.len());
 
-        list.cursor_end();
-        assert!(list.backspace());
-        assert_eq!(list.search, "");
-        assert_eq!(list.cursor, 0);
+        list.input.cursor_end();
+        assert!(list.input.backspace());
+        assert_eq!(list.input.text, "");
+        assert_eq!(list.input.cursor, 0);
     }
 
     #[test]
     fn test_cursor_grapheme_zwj_sequence() {
         let emoji = "👩‍💻";
         let mut list = SearchableList::new(0);
-        list.search = format!("{emoji}a");
+        list.input.text = format!("{emoji}a");
 
-        list.cursor_start();
-        list.cursor_right();
-        assert_eq!(list.cursor, emoji.len());
+        list.input.cursor_start();
+        list.input.cursor_right();
+        assert_eq!(list.input.cursor, emoji.len());
 
-        list.cursor_right();
-        assert_eq!(list.cursor, list.search.len());
+        list.input.cursor_right();
+        assert_eq!(list.input.cursor, list.input.text.len());
     }
 
     #[test]
     fn test_cursor_clamps_inside_grapheme() {
         let mut list = SearchableList::new(0);
-        list.search = "café".to_string();
-        list.cursor = 4;
+        list.input.text = "café".to_string();
+        list.input.cursor = 4;
 
-        list.cursor_left();
-        assert_eq!(list.cursor, 2);
+        list.input.cursor_left();
+        assert_eq!(list.input.cursor, 2);
 
-        list.cursor = 4;
-        list.cursor_right();
-        assert_eq!(list.cursor, 5);
+        list.input.cursor = 4;
+        list.input.cursor_right();
+        assert_eq!(list.input.cursor, 5);
     }
 
     #[test]
     fn test_delete_forward_grapheme() {
         let emoji = "👩‍💻";
         let mut list = SearchableList::new(0);
-        list.search = format!("{emoji}a");
-        list.cursor = 0;
+        list.input.text = format!("{emoji}a");
+        list.input.cursor = 0;
 
-        assert!(list.delete_forward_char());
-        assert_eq!(list.search, "a");
-        assert_eq!(list.cursor, 0);
+        assert!(list.input.delete_forward_char());
+        assert_eq!(list.input.text, "a");
+        assert_eq!(list.input.cursor, 0);
     }
 
     #[test]
     fn test_word_boundaries_unicode_whitespace() {
         let text = "alpha\u{00A0}\u{00A0}beta";
         let mut list = SearchableList::new(0);
-        list.search = text.to_string();
+        list.input.text = text.to_string();
         let beta_idx = text.find('b').unwrap();
         let alpha_end = text.find('\u{00A0}').unwrap();
 
-        list.cursor_end();
-        list.cursor_word_left();
-        assert_eq!(list.cursor, beta_idx);
+        list.input.cursor_end();
+        list.input.cursor_word_left();
+        assert_eq!(list.input.cursor, beta_idx);
 
-        list.cursor_start();
-        list.cursor_word_right();
-        assert_eq!(list.cursor, alpha_end);
+        list.input.cursor_start();
+        list.input.cursor_word_right();
+        assert_eq!(list.input.cursor, alpha_end);
     }
 
     #[test]
     fn test_delete_word_respects_whitespace() {
         let text = "alpha  beta";
         let mut list = SearchableList::new(0);
-        list.search = text.to_string();
-        list.cursor_end();
+        list.input.text = text.to_string();
+        list.input.cursor_end();
 
-        list.delete_word();
-        assert_eq!(list.search, "alpha  ");
-        assert_eq!(list.cursor, "alpha  ".len());
+        list.input.delete_word();
+        assert_eq!(list.input.text, "alpha  ");
+        assert_eq!(list.input.cursor, "alpha  ".len());
     }
 
     #[test]
     fn test_delete_word_forward_respects_whitespace() {
         let text = "alpha  beta";
         let mut list = SearchableList::new(0);
-        list.search = text.to_string();
-        list.cursor_start();
+        list.input.text = text.to_string();
+        list.input.cursor_start();
 
-        list.delete_word_forward();
-        assert_eq!(list.search, "  beta");
-        assert_eq!(list.cursor, 0);
+        list.input.delete_word_forward();
+        assert_eq!(list.input.text, "  beta");
+        assert_eq!(list.input.cursor, 0);
     }
 
     #[test]
     fn test_cursor_word_from_whitespace() {
         let text = "alpha   beta";
         let mut list = SearchableList::new(0);
-        list.search = text.to_string();
-        list.cursor = 6;
+        list.input.text = text.to_string();
+        list.input.cursor = 6;
 
-        list.cursor_word_left();
-        assert_eq!(list.cursor, 0);
+        list.input.cursor_word_left();
+        assert_eq!(list.input.cursor, 0);
 
-        list.cursor = 5;
-        list.cursor_word_right();
-        assert_eq!(list.cursor, text.len());
+        list.input.cursor = 5;
+        list.input.cursor_word_right();
+        assert_eq!(list.input.cursor, text.len());
     }
 
     #[test]
     fn test_delete_word_forward_from_whitespace() {
         let text = "alpha   beta";
         let mut list = SearchableList::new(0);
-        list.search = text.to_string();
-        list.cursor = 5;
+        list.input.text = text.to_string();
+        list.input.cursor = 5;
 
-        list.delete_word_forward();
-        assert_eq!(list.search, "alpha");
-        assert_eq!(list.cursor, 5);
+        list.input.delete_word_forward();
+        assert_eq!(list.input.text, "alpha");
+        assert_eq!(list.input.cursor, 5);
     }
 
     #[test]
     fn test_delete_to_start_clamps_cursor() {
         let mut list = SearchableList::new(0);
-        list.search = "café".to_string();
-        list.cursor = 4;
+        list.input.text = "café".to_string();
+        list.input.cursor = 4;
 
-        list.delete_to_start();
-        assert_eq!(list.search, "é");
-        assert_eq!(list.cursor, 0);
+        list.input.delete_to_start();
+        assert_eq!(list.input.text, "é");
+        assert_eq!(list.input.cursor, 0);
     }
 
     #[test]
     fn test_delete_to_end_clamps_cursor() {
         let mut list = SearchableList::new(0);
-        list.search = "café".to_string();
-        list.cursor = 4;
+        list.input.text = "café".to_string();
+        list.input.cursor = 4;
 
-        list.delete_to_end();
-        assert_eq!(list.search, "caf");
-        assert_eq!(list.cursor, 3);
+        list.input.delete_to_end();
+        assert_eq!(list.input.text, "caf");
+        assert_eq!(list.input.cursor, 3);
     }
 
     #[cfg(unix)]
@@ -1323,38 +1420,41 @@ mod tests {
     #[test]
     fn test_prev_word_boundary_edges() {
         let mut list = SearchableList::new(0);
-        list.search = "alpha   beta".to_string();
+        list.input.text = "alpha   beta".to_string();
 
-        assert_eq!(list.prev_word_boundary(0), 0);
-        assert_eq!(list.prev_word_boundary(list.search.len()), 8);
-        assert_eq!(list.prev_word_boundary(7), 0);
-        assert_eq!(list.prev_word_boundary(usize::MAX), 8);
+        assert_eq!(list.input.prev_word_boundary(0), 0);
+        assert_eq!(list.input.prev_word_boundary(list.input.text.len()), 8);
+        assert_eq!(list.input.prev_word_boundary(7), 0);
+        assert_eq!(list.input.prev_word_boundary(usize::MAX), 8);
     }
 
     #[test]
     fn test_next_word_boundary_edges() {
         let mut list = SearchableList::new(0);
-        list.search = "alpha   beta".to_string();
+        list.input.text = "alpha   beta".to_string();
 
-        assert_eq!(list.next_word_boundary(0), 5);
-        assert_eq!(list.next_word_boundary(5), 12);
+        assert_eq!(list.input.next_word_boundary(0), 5);
+        assert_eq!(list.input.next_word_boundary(5), 12);
         assert_eq!(
-            list.next_word_boundary(list.search.len()),
-            list.search.len()
+            list.input.next_word_boundary(list.input.text.len()),
+            list.input.text.len()
         );
-        assert_eq!(list.next_word_boundary(usize::MAX), list.search.len());
+        assert_eq!(
+            list.input.next_word_boundary(usize::MAX),
+            list.input.text.len()
+        );
     }
 
     #[test]
     fn test_word_boundary_empty_and_spaces_only() {
         let empty = SearchableList::new(0);
-        assert_eq!(empty.prev_word_boundary(3), 0);
-        assert_eq!(empty.next_word_boundary(3), 0);
+        assert_eq!(empty.input.prev_word_boundary(3), 0);
+        assert_eq!(empty.input.next_word_boundary(3), 0);
 
         let mut spaces = SearchableList::new(0);
-        spaces.search = "   ".to_string();
-        assert_eq!(spaces.prev_word_boundary(3), 0);
-        assert_eq!(spaces.next_word_boundary(0), 3);
+        spaces.input.text = "   ".to_string();
+        assert_eq!(spaces.input.prev_word_boundary(3), 0);
+        assert_eq!(spaces.input.next_word_boundary(0), 3);
     }
 
     #[test]
@@ -2014,5 +2114,35 @@ mod tests {
         let json = serde_json::to_string(&entry).unwrap();
         let decoded: BranchEntry = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded, entry);
+    }
+
+    #[test]
+    fn test_setup_state_new() {
+        let setup = SetupState::new();
+        assert!(setup.input.text.is_empty());
+        assert_eq!(setup.input.cursor, 0);
+        assert!(setup.completions.is_empty());
+        assert!(setup.selected_completion.is_none());
+        assert!(setup.dirs.is_empty());
+    }
+
+    #[test]
+    fn test_app_state_new_setup() {
+        let state = AppState::new_setup();
+        assert!(state.setup.is_some());
+        assert_eq!(state.mode, Mode::Setup(SetupStep::Welcome));
+        assert!(state.repos.is_empty());
+    }
+
+    #[test]
+    fn test_setup_step_supports_text_edit() {
+        assert!(Mode::Setup(SetupStep::SearchDirs).supports_text_edit());
+        assert!(!Mode::Setup(SetupStep::Welcome).supports_text_edit());
+    }
+
+    #[test]
+    fn test_setup_step_supports_modal() {
+        assert!(Mode::Setup(SetupStep::Welcome).supports_modal_actions());
+        assert!(Mode::Setup(SetupStep::SearchDirs).supports_modal_actions());
     }
 }

@@ -241,6 +241,11 @@ define_commands! {
         hint: "cancel",
         description: "Cancel",
     },
+    TabComplete {
+        config_name: "tab_complete",
+        hint: "complete",
+        description: "Tab completion",
+    },
 }
 
 /// Key bindings for a specific layer/mode
@@ -652,6 +657,10 @@ impl KeysConfig {
         map.insert(
             KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
             Command::Cancel,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+            Command::TabComplete,
         );
         map
     }
@@ -1237,6 +1246,7 @@ mod tests {
             Command::MoveCursorEnd,
             Command::Confirm,
             Command::Cancel,
+            Command::TabComplete,
         ];
 
         for cmd in &all_commands {
@@ -1285,6 +1295,7 @@ mod tests {
             Command::MoveCursorEnd,
             Command::Confirm,
             Command::Cancel,
+            Command::TabComplete,
         ];
 
         for cmd in &all_commands {

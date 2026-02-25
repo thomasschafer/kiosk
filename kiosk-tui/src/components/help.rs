@@ -55,8 +55,8 @@ pub fn draw(f: &mut Frame, state: &AppState, theme: &crate::theme::Theme) {
             border_color: theme.tertiary,
             muted_color: theme.muted,
         },
-        &overlay.list.search,
-        overlay.list.cursor,
+        &overlay.list.input.text,
+        overlay.list.input.cursor,
     );
 
     let (items, row_item_indices) = build_visible_items(overlay, theme.muted);

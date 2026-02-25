@@ -237,6 +237,12 @@ impl ConfigCommands {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let json_errors = command_wants_json(cli.command.as_ref());
+
+    // No explicit --config, default doesn't exist, TUI mode → setup wizard
+    if cli.config.is_none() && cli.command.is_none() && !config::config_file_exists() {
+        return run_setup_then_tui();
+    }
+
     let config = match config::load_config(cli.config.as_deref()) {
         Ok(config) => config,
         Err(error) => {
@@ -490,10 +496,84 @@ fn run_tui(
 
             tmux.switch_to_session(&session_name);
         }
-        Some(OpenAction::Quit) | None => {}
+        Some(OpenAction::Quit | OpenAction::SetupComplete) | None => {}
     }
 
     Ok(())
+}
+
+fn run_setup_then_tui() -> ExitCode {
+    let git: Arc<dyn GitProvider> = Arc::new(CliGitProvider);
+    let tmux: Arc<dyn TmuxProvider> = Arc::new(CliTmuxProvider);
+
+    let mut state = AppState::new_setup();
+    let theme = kiosk_tui::Theme::from_config(&config::ThemeConfig::default());
+    let keys = config::KeysConfig::default();
+
+    let mut terminal = if should_disable_alt_screen() {
+        ratatui::init_with_options(ratatui::TerminalOptions {
+            viewport: ratatui::Viewport::Inline(30),
+        })
+    } else {
+        ratatui::init()
+    };
+
+    let result = kiosk_tui::run(
+        &mut terminal,
+        &mut state,
+        &git,
+        &tmux,
+        &theme,
+        &keys,
+        vec![],
+    );
+    ratatui::restore();
+
+    match result {
+        Ok(Some(kiosk_tui::OpenAction::SetupComplete)) => {
+            let dirs: Vec<String> = state
+                .setup
+                .as_ref()
+                .map(|s| s.dirs.clone())
+                .unwrap_or_default();
+            if dirs.is_empty() {
+                eprintln!("Setup cancelled: no directories added.");
+                return ExitCode::from(1);
+            }
+            match config::write_default_config(&dirs) {
+                Ok(path) => {
+                    eprintln!("Config written to {}", path.display());
+                }
+                Err(e) => {
+                    eprintln!("Failed to write config: {e}");
+                    return ExitCode::from(2);
+                }
+            }
+            // Load the newly written config and continue into normal TUI
+            match config::load_config(None) {
+                Ok(config) => match run_tui(&config, &git, &tmux) {
+                    Ok(()) => ExitCode::from(0),
+                    Err(e) => {
+                        eprintln!("Error: {e}");
+                        ExitCode::from(2)
+                    }
+                },
+                Err(e) => {
+                    eprintln!("Failed to load config after setup: {e}");
+                    ExitCode::from(2)
+                }
+            }
+        }
+        Ok(Some(kiosk_tui::OpenAction::Quit) | None) => ExitCode::from(0),
+        Ok(Some(kiosk_tui::OpenAction::Open { .. })) => {
+            eprintln!("Unexpected OpenAction::Open during setup flow");
+            ExitCode::from(2)
+        }
+        Err(e) => {
+            eprintln!("Error: {e}");
+            ExitCode::from(2)
+        }
+    }
 }
 
 fn is_within_search_dirs(path: &Path, search_dirs: &[(std::path::PathBuf, u16)]) -> bool {

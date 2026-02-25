@@ -2308,3 +2308,284 @@ fn test_e2e_headless_branches_json_stable_schema() {
         "should NOT have internal 'session_activity_ts' field"
     );
 }
+
+// ── Setup wizard E2E tests ──
+
+#[test]
+fn test_e2e_setup_wizard_welcome_screen() {
+    let env = TestEnv::new("setup-welcome");
+    // Don't write a config — this triggers the setup wizard
+    env.launch_kiosk();
+
+    let screen = wait_for_screen(&env, 3000, |s| s.contains("Welcome to Kiosk"));
+    assert!(
+        screen.contains("Welcome to Kiosk"),
+        "Should show welcome screen when no config exists: {screen}"
+    );
+    assert!(screen.contains("Enter"), "Should show Enter hint: {screen}");
+}
+
+#[test]
+fn test_e2e_setup_wizard_enter_advances_to_search_dirs() {
+    let env = TestEnv::new("setup-enter");
+    env.launch_kiosk();
+
+    wait_for_screen(&env, 3000, |s| s.contains("Welcome to Kiosk"));
+    env.send_special("Enter");
+
+    let screen = wait_for_screen(&env, 2000, |s| s.contains("Add directory"));
+    assert!(
+        screen.contains("Add directory"),
+        "Should show search dirs screen after Enter: {screen}"
+    );
+    assert!(
+        screen.contains("search directories") || screen.contains("git repos"),
+        "Should describe what dirs are for: {screen}"
+    );
+}
+
+#[test]
+fn test_e2e_setup_wizard_add_dir_and_finish() {
+    let env = TestEnv::new("setup-add-finish");
+    let search_dir = env.search_dir();
+
+    // Create a repo so the normal TUI has something to show
+    let repo = search_dir.join("setup-test-repo");
+    fs::create_dir_all(&repo).unwrap();
+    init_test_repo(&repo);
+
+    env.launch_kiosk();
+
+    wait_for_screen(&env, 3000, |s| s.contains("Welcome to Kiosk"));
+    env.send_special("Enter");
+    wait_for_screen(&env, 2000, |s| s.contains("Add directory"));
+
+    // Type the search dir path
+    let dir_str = search_dir.to_string_lossy().to_string();
+    env.send(&dir_str);
+    wait_ms(500);
+
+    // Enter adds the typed path directly (no completion selected by default)
+    env.send_special("Enter");
+    let screen = wait_for_screen(&env, 2000, |s| s.contains("✓") || s.contains(&dir_str));
+    assert!(
+        screen.contains("✓") || screen.contains("Added"),
+        "Should show dir was added: {screen}"
+    );
+
+    // Enter on empty input finishes setup
+    env.send_special("Enter");
+
+    // Wait for either normal TUI or config written message
+    let screen = wait_for_screen(&env, 8000, |s| {
+        s.contains("setup-test-repo") || s.contains("select repo") || s.contains("Config written")
+    });
+
+    // Verify config file was created and includes the entered directory
+    let config_path = env.config_file_path();
+    assert!(
+        config_path.exists(),
+        "Config file should exist at {}. Screen: {screen}",
+        config_path.display()
+    );
+    let config_content = fs::read_to_string(&config_path).unwrap();
+    assert!(
+        config_content.contains(&dir_str),
+        "Config should include entered directory '{dir_str}'. config:\n{config_content}"
+    );
+}
+
+#[test]
+fn test_e2e_setup_wizard_not_triggered_with_config_flag() {
+    let env = TestEnv::new("setup-config-flag");
+    let nonexistent = env.tmp.path().join("nonexistent.toml");
+
+    // Use a fake XDG_CONFIG_HOME that has no kiosk config
+    let fake_xdg = env.tmp.path().join("fake-xdg");
+    fs::create_dir_all(&fake_xdg).unwrap();
+
+    env.launch_kiosk_with_config_arg(&nonexistent, &fake_xdg);
+    wait_ms(1000);
+
+    let screen = env.capture();
+    // With --config pointing to nonexistent file, should error, not show wizard
+    assert!(
+        !screen.contains("Welcome to Kiosk"),
+        "Should NOT show setup wizard when --config is specified: {screen}"
+    );
+    assert!(
+        screen.contains("Config file not found"),
+        "Should show config error when --config points to nonexistent file: {screen}"
+    );
+}
+
+#[test]
+fn test_e2e_setup_wizard_esc_quits() {
+    let env = TestEnv::new("setup-esc-quits");
+    env.launch_kiosk();
+
+    wait_for_screen(&env, 3000, |s| s.contains("Welcome to Kiosk"));
+    env.send_special("Escape");
+
+    // After quit, the kiosk process exits and the tmux command moves to `sleep 2`
+    // The screen should eventually no longer show the Welcome message
+    let screen = wait_for_screen(&env, 3000, |s| !s.contains("Welcome to Kiosk"));
+    assert!(
+        !screen.contains("Welcome to Kiosk"),
+        "Wizard should be gone after Esc: {screen}"
+    );
+}
+
+#[test]
+fn test_e2e_setup_wizard_not_triggered_for_cli_subcommand() {
+    let env = TestEnv::new("setup-cli-sub");
+    // No config written — but using a CLI subcommand should error, not wizard
+    let output = env.run_cli(&["list", "--json"]);
+    assert!(
+        !output.status.success(),
+        "CLI subcommand with no config should fail"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Config file not found") || stderr.contains("config"),
+        "Should show config error, not wizard: {stderr}"
+    );
+}
+
+#[test]
+fn test_e2e_setup_wizard_typing_shows_all_matching_completions() {
+    let env = TestEnv::new("setup-autocomplete");
+
+    // Create directories to complete against
+    let parent = env.tmp.path().join("autocomplete_root");
+    fs::create_dir_all(parent.join("Desktop")).unwrap();
+    fs::create_dir_all(parent.join("Development")).unwrap();
+    fs::create_dir_all(parent.join("Documents")).unwrap();
+
+    env.launch_kiosk();
+    wait_for_screen(&env, 3000, |s| s.contains("Welcome to Kiosk"));
+    env.send_special("Enter");
+    wait_for_screen(&env, 2000, |s| s.contains("Add directory"));
+
+    // Type path with prefix "De" — completions update as you type
+    env.send(&format!("{}/De", parent.display()));
+
+    // Both Desktop and Development match "De" and should be visible
+    let screen = wait_for_screen(&env, 2000, |s| {
+        s.contains("Desktop") && s.contains("Development")
+    });
+    assert!(
+        screen.contains("Desktop"),
+        "Should show Desktop in completions: {screen}"
+    );
+    assert!(
+        screen.contains("Development"),
+        "Should show Development in completions (both match 'De'): {screen}"
+    );
+    // Documents should NOT match "De"
+    assert!(
+        !screen.contains("Documents"),
+        "Should NOT show Documents (doesn't match 'De'): {screen}"
+    );
+}
+
+#[test]
+fn test_e2e_setup_wizard_tab_fills_common_prefix() {
+    let env = TestEnv::new("setup-tab-fill");
+
+    let parent = env.tmp.path().join("tab_fill_root");
+    fs::create_dir_all(parent.join("Desktop")).unwrap();
+    fs::create_dir_all(parent.join("Development")).unwrap();
+    fs::create_dir_all(parent.join("Documents")).unwrap();
+
+    env.launch_kiosk();
+    wait_for_screen(&env, 3000, |s| s.contains("Welcome to Kiosk"));
+    env.send_special("Enter");
+    wait_for_screen(&env, 2000, |s| s.contains("Add directory"));
+
+    // Type just "D" — 3 completions, common prefix is "D" (no advance)
+    env.send(&format!("{}/D", parent.display()));
+    wait_for_screen(&env, 2000, |s| s.contains("Desktop"));
+
+    // Tab fills first completion since common prefix "D" == input already
+    env.send_special("Tab");
+    let screen = wait_for_screen(&env, 2000, |s| s.contains("Desktop/"));
+    assert!(
+        screen.contains("Desktop/"),
+        "Tab should fill first completion: {screen}"
+    );
+}
+
+#[test]
+fn test_e2e_setup_wizard_arrow_navigation_highlights() {
+    let env = TestEnv::new("setup-arrow-nav");
+
+    let parent = env.tmp.path().join("arrow_nav_root");
+    fs::create_dir_all(parent.join("alpha")).unwrap();
+    fs::create_dir_all(parent.join("beta")).unwrap();
+
+    env.launch_kiosk();
+    wait_for_screen(&env, 3000, |s| s.contains("Welcome to Kiosk"));
+    env.send_special("Enter");
+    wait_for_screen(&env, 2000, |s| s.contains("Add directory"));
+
+    // Type to get both completions
+    env.send(&format!("{}/", parent.display()));
+    wait_for_screen(&env, 2000, |s| s.contains("alpha") && s.contains("beta"));
+
+    // No item should be highlighted initially (no ▸ marker)
+    let screen = env.capture();
+    assert!(
+        !screen.contains("▸"),
+        "No item should be highlighted initially: {screen}"
+    );
+
+    // Navigate down to highlight first item
+    env.send_special("Down");
+    let screen = wait_for_screen(&env, 1000, |s| s.contains("▸"));
+    assert!(
+        screen.contains("▸"),
+        "Down arrow should highlight an item: {screen}"
+    );
+}
+
+#[test]
+fn test_e2e_setup_wizard_enter_adds_typed_path_without_selection() {
+    let env = TestEnv::new("setup-enter-typed");
+
+    let parent = env.tmp.path().join("enter_typed_root");
+    let target = parent.join("my_projects");
+    fs::create_dir_all(&target).unwrap();
+    init_test_repo(&target);
+
+    env.launch_kiosk();
+    wait_for_screen(&env, 3000, |s| s.contains("Welcome to Kiosk"));
+    env.send_special("Enter");
+    wait_for_screen(&env, 2000, |s| s.contains("Add directory"));
+
+    // Type the exact path
+    env.send(target.to_string_lossy().as_ref());
+    wait_ms(500);
+
+    // Press Enter without navigating to any completion — should add the typed path
+    env.send_special("Enter");
+    let screen = wait_for_screen(&env, 2000, |s| s.contains("✓") || s.contains("my_projects"));
+    assert!(
+        screen.contains("✓") || screen.contains("my_projects"),
+        "Should show the added directory: {screen}"
+    );
+
+    // Press Enter on empty to finish setup
+    env.send_special("Enter");
+    let screen = wait_for_screen(&env, 8000, |s| {
+        s.contains("my_projects") || s.contains("select repo") || s.contains("Config written")
+    });
+
+    let config_path = env.config_file_path();
+    assert!(config_path.exists(), "Config should be written: {screen}");
+    let config = fs::read_to_string(&config_path).unwrap();
+    assert!(
+        config.contains("my_projects"),
+        "Config should include the entered directory: {config}"
+    );
+}

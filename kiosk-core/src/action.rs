@@ -40,4 +40,10 @@ pub enum Action {
     ConfirmDeleteWorktree,
     CancelDeleteWorktree,
     ShowHelp,
+
+    // Setup
+    SetupContinue,
+    SetupAddDir,
+    SetupTabComplete,
+    SetupCancel,
 }

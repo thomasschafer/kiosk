@@ -4,8 +4,10 @@ pub mod branch_picker;
 pub mod error_bar;
 pub mod help;
 pub mod new_branch;
+pub mod path_input;
 pub mod repo_list;
 pub mod search_bar;
+pub mod setup;
 
 /// Helper function to center a rect within another rect
 pub fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {

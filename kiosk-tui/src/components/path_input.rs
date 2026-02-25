@@ -52,7 +52,7 @@ pub fn complete(input: &str) -> Vec<String> {
     let prefix_lower = prefix.to_lowercase();
     let mut completions: Vec<String> = entries
         .filter_map(Result::ok)
-        .filter(|entry| entry.file_type().is_ok_and(|ft| ft.is_dir()))
+        .filter(|entry| entry.path().is_dir())
         .filter_map(|entry| {
             let name = entry.file_name().to_string_lossy().to_string();
             if name.starts_with('.') && !prefix.starts_with('.') {
@@ -208,5 +208,99 @@ mod tests {
         for item in &result {
             assert!(item.starts_with("/tmp/"));
         }
+    }
+
+    #[test]
+    fn test_complete_with_temp_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("Desktop")).unwrap();
+        std::fs::create_dir(tmp.path().join("Development")).unwrap();
+        std::fs::create_dir(tmp.path().join("Documents")).unwrap();
+
+        let input = format!("{}/De", tmp.path().display());
+        let results = complete(&input);
+
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().any(|r| r.contains("Desktop")));
+        assert!(results.iter().any(|r| r.contains("Development")));
+    }
+
+    #[test]
+    fn test_complete_case_insensitive() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("MyDir")).unwrap();
+
+        let input = format!("{}/my", tmp.path().display());
+        let results = complete(&input);
+        assert_eq!(results.len(), 1);
+        assert!(results[0].contains("MyDir"));
+    }
+
+    #[test]
+    fn test_complete_hides_dotfiles_unless_prefix() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join(".hidden")).unwrap();
+        std::fs::create_dir(tmp.path().join("visible")).unwrap();
+
+        let no_dot = complete(&format!("{}/", tmp.path().display()));
+        assert_eq!(no_dot.len(), 1);
+        assert!(no_dot[0].contains("visible"));
+
+        let with_dot = complete(&format!("{}/.h", tmp.path().display()));
+        assert_eq!(with_dot.len(), 1);
+        assert!(with_dot[0].contains(".hidden"));
+    }
+
+    #[test]
+    fn test_complete_only_dirs_not_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("subdir")).unwrap();
+        std::fs::write(tmp.path().join("subfile.txt"), "data").unwrap();
+
+        let results = complete(&format!("{}/sub", tmp.path().display()));
+        assert_eq!(results.len(), 1);
+        assert!(results[0].contains("subdir"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_complete_follows_symlinks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("real_dir");
+        std::fs::create_dir(&target).unwrap();
+        std::os::unix::fs::symlink(&target, tmp.path().join("link_dir")).unwrap();
+
+        let results = complete(&format!("{}/", tmp.path().display()));
+        assert!(
+            results.iter().any(|r| r.contains("link_dir")),
+            "Symlinked directory should appear in completions: {results:?}"
+        );
+        assert!(results.iter().any(|r| r.contains("real_dir")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_complete_ignores_broken_symlinks() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink("/nonexistent_target_xyz", tmp.path().join("broken")).unwrap();
+        std::fs::create_dir(tmp.path().join("valid")).unwrap();
+
+        let results = complete(&format!("{}/", tmp.path().display()));
+        assert_eq!(results.len(), 1);
+        assert!(results[0].contains("valid"));
+    }
+
+    #[test]
+    fn test_complete_sorted() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("charlie")).unwrap();
+        std::fs::create_dir(tmp.path().join("alpha")).unwrap();
+        std::fs::create_dir(tmp.path().join("bravo")).unwrap();
+
+        let results = complete(&format!("{}/", tmp.path().display()));
+        assert_eq!(results.len(), 3);
+        assert!(results[0].contains("alpha"));
+        assert!(results[1].contains("bravo"));
+        assert!(results[2].contains("charlie"));
     }
 }

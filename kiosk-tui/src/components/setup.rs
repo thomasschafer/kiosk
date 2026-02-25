@@ -1,5 +1,5 @@
 use crate::{
-    components::{centered_rect, path_input, search_bar},
+    components::{centered_fixed_rect, centered_rect, path_input, search_bar},
     theme::Theme,
 };
 use kiosk_core::state::{AppState, Mode, SetupStep};
@@ -12,7 +12,10 @@ use ratatui::{
 };
 
 fn draw_welcome(f: &mut Frame, theme: &Theme) {
-    let area = centered_rect(60, 50, f.area());
+    let term = f.area();
+    let w = (term.width * 9 / 10).min(60);
+    let h = (term.height * 9 / 10).min(20);
+    let area = centered_fixed_rect(w, h, term);
     f.render_widget(Clear, area);
 
     let block = Block::default()
@@ -76,6 +79,7 @@ fn draw_search_dirs(f: &mut Frame, state: &AppState, theme: &Theme) {
         u16::try_from(setup.completions.len())
             .unwrap_or(u16::MAX)
             .min(6)
+            + 1 // bottom border
     } else {
         0
     };

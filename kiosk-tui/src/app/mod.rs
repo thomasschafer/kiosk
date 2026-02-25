@@ -7,8 +7,8 @@ use actions::{
     handle_delete_worktree, handle_go_back, handle_open_branch, handle_search_delete_forward,
     handle_search_delete_to_end, handle_search_delete_to_start, handle_search_delete_word,
     handle_search_delete_word_forward, handle_search_pop, handle_search_push, handle_setup_add_dir,
-    handle_setup_continue, handle_setup_move_selection, handle_setup_tab_complete,
-    handle_show_help, handle_start_new_branch,
+    handle_setup_cancel, handle_setup_continue, handle_setup_move_selection,
+    handle_setup_tab_complete, handle_show_help, handle_start_new_branch,
 };
 use crossterm::event::{self, Event, KeyEventKind};
 use fuzzy_matcher::{FuzzyMatcher, skim::SkimMatcherV2};
@@ -931,6 +931,11 @@ fn process_action<T: TmuxProvider + ?Sized + 'static>(
             }
         }
         Action::SetupTabComplete => handle_setup_tab_complete(state),
+        Action::SetupCancel => {
+            if let Some(result) = handle_setup_cancel(state) {
+                return Some(result);
+            }
+        }
 
         // Movement, cursor, and cancel actions are handled by helper functions above.
         // If we reach here, it means the action wasn't applicable in the current mode
@@ -3046,5 +3051,457 @@ mod tests {
         assert_eq!(buf.cell((w - 1, 0)).unwrap().symbol(), "┐");
         assert_eq!(buf.cell((0, h - 1)).unwrap().symbol(), "└");
         assert_eq!(buf.cell((w - 1, h - 1)).unwrap().symbol(), "┘");
+    }
+
+    // ── Setup wizard unit tests ──
+
+    fn make_setup_state() -> AppState {
+        let mut state = AppState::new_setup();
+        state.mode = Mode::Setup(kiosk_core::state::SetupStep::SearchDirs);
+        state
+    }
+
+    /// Create a temp directory with the given subdirectory names and return
+    /// (tempdir_handle, base_path_with_trailing_slash).
+    fn setup_temp_dirs(names: &[&str]) -> (tempfile::TempDir, String) {
+        let tmp = tempfile::tempdir().unwrap();
+        for name in names {
+            std::fs::create_dir(tmp.path().join(name)).unwrap();
+        }
+        let base = format!("{}/", tmp.path().display());
+        (tmp, base)
+    }
+
+    // ── Tab completion ──
+
+    #[test]
+    fn setup_tab_generates_completions_without_selection() {
+        let (_tmp, base) = setup_temp_dirs(&["alpha", "beta"]);
+
+        let mut state = make_setup_state();
+        let setup = state.setup.as_mut().unwrap();
+        setup.input.text = base;
+        setup.input.cursor = setup.input.text.len();
+
+        handle_setup_tab_complete(&mut state);
+
+        let setup = state.setup.as_ref().unwrap();
+        assert_eq!(setup.completions.len(), 2);
+        assert_eq!(setup.selected_completion, None);
+    }
+
+    #[test]
+    fn setup_tab_single_completion_fills_in_with_slash() {
+        let (_tmp, base) = setup_temp_dirs(&["only_dir"]);
+
+        let mut state = make_setup_state();
+        let setup = state.setup.as_mut().unwrap();
+        setup.input.text = format!("{base}on");
+        setup.input.cursor = setup.input.text.len();
+
+        // First Tab generates completions
+        handle_setup_tab_complete(&mut state);
+        assert_eq!(state.setup.as_ref().unwrap().completions.len(), 1);
+
+        // Second Tab fills in the single completion
+        handle_setup_tab_complete(&mut state);
+
+        let setup = state.setup.as_ref().unwrap();
+        assert_eq!(setup.input.text, format!("{base}only_dir/"));
+    }
+
+    #[test]
+    fn setup_tab_fills_common_prefix() {
+        let (_tmp, base) = setup_temp_dirs(&["Desktop", "Development"]);
+
+        let mut state = make_setup_state();
+        let setup = state.setup.as_mut().unwrap();
+        setup.input.text = format!("{base}D");
+        setup.input.cursor = setup.input.text.len();
+
+        // First Tab generates completions
+        handle_setup_tab_complete(&mut state);
+        assert_eq!(state.setup.as_ref().unwrap().completions.len(), 2);
+
+        // Second Tab fills to common prefix
+        handle_setup_tab_complete(&mut state);
+
+        let setup = state.setup.as_ref().unwrap();
+        assert_eq!(setup.input.text, format!("{base}De"));
+        assert_eq!(setup.completions.len(), 2);
+        assert_eq!(setup.selected_completion, None);
+    }
+
+    #[test]
+    fn setup_tab_selects_highlighted_when_no_more_common_prefix() {
+        let (_tmp, base) = setup_temp_dirs(&["Desktop", "Development"]);
+
+        let mut state = make_setup_state();
+        let setup = state.setup.as_mut().unwrap();
+        setup.input.text = format!("{base}De");
+        setup.input.cursor = setup.input.text.len();
+        setup.completions = vec![
+            format!("{base}Desktop"),
+            format!("{base}Development"),
+        ];
+        setup.selected_completion = Some(1);
+
+        handle_setup_tab_complete(&mut state);
+
+        let setup = state.setup.as_ref().unwrap();
+        assert_eq!(setup.input.text, format!("{base}Development/"));
+    }
+
+    #[test]
+    fn setup_tab_selects_first_when_none_highlighted() {
+        let (_tmp, base) = setup_temp_dirs(&["Desktop", "Development"]);
+
+        let mut state = make_setup_state();
+        let setup = state.setup.as_mut().unwrap();
+        setup.input.text = format!("{base}De");
+        setup.input.cursor = setup.input.text.len();
+        setup.completions = vec![
+            format!("{base}Desktop"),
+            format!("{base}Development"),
+        ];
+        setup.selected_completion = None;
+
+        handle_setup_tab_complete(&mut state);
+
+        let setup = state.setup.as_ref().unwrap();
+        assert_eq!(setup.input.text, format!("{base}Desktop/"));
+    }
+
+    // ── Move selection ──
+
+    #[test]
+    fn setup_move_down_from_none_selects_first() {
+        let mut state = make_setup_state();
+        let setup = state.setup.as_mut().unwrap();
+        setup.completions = vec!["a".into(), "b".into()];
+        setup.selected_completion = None;
+
+        handle_setup_move_selection(&mut state, 1);
+        assert_eq!(state.setup.as_ref().unwrap().selected_completion, Some(0));
+    }
+
+    #[test]
+    fn setup_move_up_from_none_selects_last() {
+        let mut state = make_setup_state();
+        let setup = state.setup.as_mut().unwrap();
+        setup.completions = vec!["a".into(), "b".into(), "c".into()];
+        setup.selected_completion = None;
+
+        handle_setup_move_selection(&mut state, -1);
+        assert_eq!(state.setup.as_ref().unwrap().selected_completion, Some(2));
+    }
+
+    #[test]
+    fn setup_move_down_increments_selection() {
+        let mut state = make_setup_state();
+        let setup = state.setup.as_mut().unwrap();
+        setup.completions = vec!["a".into(), "b".into(), "c".into()];
+        setup.selected_completion = Some(0);
+
+        handle_setup_move_selection(&mut state, 1);
+        assert_eq!(state.setup.as_ref().unwrap().selected_completion, Some(1));
+    }
+
+    #[test]
+    fn setup_move_down_past_last_deselects() {
+        let mut state = make_setup_state();
+        let setup = state.setup.as_mut().unwrap();
+        setup.completions = vec!["a".into(), "b".into()];
+        setup.selected_completion = Some(1);
+
+        handle_setup_move_selection(&mut state, 1);
+        assert_eq!(state.setup.as_ref().unwrap().selected_completion, None);
+    }
+
+    #[test]
+    fn setup_move_up_from_first_deselects() {
+        let mut state = make_setup_state();
+        let setup = state.setup.as_mut().unwrap();
+        setup.completions = vec!["a".into(), "b".into()];
+        setup.selected_completion = Some(0);
+
+        handle_setup_move_selection(&mut state, -1);
+        assert_eq!(state.setup.as_ref().unwrap().selected_completion, None);
+    }
+
+    #[test]
+    fn setup_move_on_empty_completions_is_noop() {
+        let mut state = make_setup_state();
+        let setup = state.setup.as_mut().unwrap();
+        setup.completions = Vec::new();
+        setup.selected_completion = None;
+
+        handle_setup_move_selection(&mut state, 1);
+        assert_eq!(state.setup.as_ref().unwrap().selected_completion, None);
+    }
+
+    // ── Enter / add directory ──
+
+    #[test]
+    fn setup_enter_no_selection_adds_typed_text() {
+        let mut state = make_setup_state();
+        let setup = state.setup.as_mut().unwrap();
+        setup.input.text = "~/my-projects".into();
+        setup.input.cursor = setup.input.text.len();
+        setup.completions = vec!["~/my-projects-extra".into()];
+        setup.selected_completion = None;
+
+        let result = handle_setup_add_dir(&mut state);
+        assert!(result.is_none());
+
+        let setup = state.setup.as_ref().unwrap();
+        assert!(setup.dirs.contains(&"~/my-projects".to_string()));
+        assert!(setup.input.text.is_empty());
+    }
+
+    #[test]
+    fn setup_enter_with_selection_navigates_into_completion() {
+        let (_tmp, base) = setup_temp_dirs(&["Desktop", "Development"]);
+
+        let mut state = make_setup_state();
+        let setup = state.setup.as_mut().unwrap();
+        setup.input.text = format!("{base}De");
+        setup.input.cursor = setup.input.text.len();
+        setup.completions = vec![
+            format!("{base}Desktop"),
+            format!("{base}Development"),
+        ];
+        setup.selected_completion = Some(1);
+
+        let result = handle_setup_add_dir(&mut state);
+        assert!(result.is_none());
+
+        let setup = state.setup.as_ref().unwrap();
+        assert_eq!(setup.input.text, format!("{base}Development/"));
+        assert!(setup.dirs.is_empty());
+    }
+
+    #[test]
+    fn setup_enter_empty_with_dirs_completes_setup() {
+        let mut state = make_setup_state();
+        let setup = state.setup.as_mut().unwrap();
+        setup.input.text = String::new();
+        setup.dirs = vec!["~/Projects".into()];
+
+        let result = handle_setup_add_dir(&mut state);
+        assert!(matches!(result, Some(OpenAction::SetupComplete)));
+    }
+
+    #[test]
+    fn setup_enter_empty_without_dirs_shows_error() {
+        let mut state = make_setup_state();
+        let setup = state.setup.as_mut().unwrap();
+        setup.input.text = String::new();
+        setup.dirs = Vec::new();
+
+        let result = handle_setup_add_dir(&mut state);
+        assert!(result.is_none());
+        assert!(state.error.is_some());
+        assert!(state.error.as_ref().unwrap().contains("at least one"));
+    }
+
+    #[test]
+    fn setup_enter_does_not_add_duplicate_dirs() {
+        let mut state = make_setup_state();
+        let setup = state.setup.as_mut().unwrap();
+        setup.dirs = vec!["~/Projects".into()];
+        setup.input.text = "~/Projects".into();
+        setup.input.cursor = setup.input.text.len();
+
+        handle_setup_add_dir(&mut state);
+
+        let setup = state.setup.as_ref().unwrap();
+        assert_eq!(setup.dirs.len(), 1);
+    }
+
+    // ── Typing clears selection ──
+
+    #[test]
+    fn setup_typing_clears_selection() {
+        let (_tmp, base) = setup_temp_dirs(&["Desktop"]);
+
+        let mut state = make_setup_state();
+        let setup = state.setup.as_mut().unwrap();
+        setup.input.text = format!("{base}D");
+        setup.input.cursor = setup.input.text.len();
+        setup.completions = vec![format!("{base}Desktop")];
+        setup.selected_completion = Some(0);
+
+        let matcher = SkimMatcherV2::default();
+        handle_search_push(&mut state, &matcher, 'e');
+
+        let setup = state.setup.as_ref().unwrap();
+        assert_eq!(setup.selected_completion, None);
+        assert!(setup.input.text.ends_with("De"));
+    }
+
+    #[test]
+    fn setup_typing_updates_completions() {
+        let (_tmp, base) = setup_temp_dirs(&["Desktop", "Development", "Documents"]);
+
+        let mut state = make_setup_state();
+        let setup = state.setup.as_mut().unwrap();
+        setup.input.text = format!("{base}D");
+        setup.input.cursor = setup.input.text.len();
+
+        let matcher = SkimMatcherV2::default();
+        handle_search_push(&mut state, &matcher, 'e');
+
+        let setup = state.setup.as_ref().unwrap();
+        assert_eq!(setup.completions.len(), 2);
+        let names: Vec<&str> = setup.completions.iter().map(|s| s.as_str()).collect();
+        assert!(names.iter().any(|n| n.contains("Desktop")));
+        assert!(names.iter().any(|n| n.contains("Development")));
+    }
+
+    #[test]
+    fn setup_backspace_updates_completions() {
+        let (_tmp, base) = setup_temp_dirs(&["Desktop", "Development", "Documents"]);
+
+        let mut state = make_setup_state();
+        let setup = state.setup.as_mut().unwrap();
+        setup.input.text = format!("{base}De");
+        setup.input.cursor = setup.input.text.len();
+
+        let matcher = SkimMatcherV2::default();
+        handle_search_pop(&mut state, &matcher);
+
+        let setup = state.setup.as_ref().unwrap();
+        assert_eq!(setup.completions.len(), 3);
+        assert_eq!(setup.selected_completion, None);
+    }
+
+    // ── Welcome / continue ──
+
+    #[test]
+    fn setup_continue_transitions_to_search_dirs() {
+        let mut state = AppState::new_setup();
+        assert_eq!(state.mode, Mode::Setup(kiosk_core::state::SetupStep::Welcome));
+
+        handle_setup_continue(&mut state);
+        assert_eq!(state.mode, Mode::Setup(kiosk_core::state::SetupStep::SearchDirs));
+        assert!(state.setup.is_some());
+    }
+
+    // ── Full flow integration ──
+
+    #[test]
+    fn setup_full_flow_type_navigate_enter_finish() {
+        let (_tmp, base) = setup_temp_dirs(&["Desktop", "Development"]);
+
+        let mut state = make_setup_state();
+        let matcher = SkimMatcherV2::default();
+
+        // Type the base path + "De"
+        for c in format!("{base}De").chars() {
+            handle_search_push(&mut state, &matcher, c);
+        }
+
+        let setup = state.setup.as_ref().unwrap();
+        assert_eq!(setup.completions.len(), 2);
+        assert_eq!(setup.selected_completion, None);
+
+        // Navigate down to highlight first completion
+        handle_setup_move_selection(&mut state, 1);
+        assert_eq!(state.setup.as_ref().unwrap().selected_completion, Some(0));
+
+        // Navigate down again to highlight second completion (Development)
+        handle_setup_move_selection(&mut state, 1);
+        assert_eq!(state.setup.as_ref().unwrap().selected_completion, Some(1));
+
+        // Press Enter to navigate into Development/
+        handle_setup_add_dir(&mut state);
+        let setup = state.setup.as_ref().unwrap();
+        assert!(setup.input.text.ends_with("Development/"));
+        assert!(setup.dirs.is_empty());
+
+        // Clear input and type the path directly, then add it
+        let setup = state.setup.as_mut().unwrap();
+        setup.input.clear();
+        setup.completions.clear();
+        setup.selected_completion = None;
+        setup.input.text = format!("{base}Development");
+        setup.input.cursor = setup.input.text.len();
+
+        handle_setup_add_dir(&mut state);
+        let setup = state.setup.as_ref().unwrap();
+        assert_eq!(setup.dirs.len(), 1);
+        assert!(setup.dirs[0].ends_with("Development"));
+
+        // Empty Enter to finish
+        let result = handle_setup_add_dir(&mut state);
+        assert!(matches!(result, Some(OpenAction::SetupComplete)));
+    }
+
+    // ── Cancel / Escape ──
+
+    #[test]
+    fn setup_cancel_deselects_when_selected() {
+        let mut state = make_setup_state();
+        let setup = state.setup.as_mut().unwrap();
+        setup.completions = vec!["a".into(), "b".into()];
+        setup.selected_completion = Some(1);
+
+        let result = handle_setup_cancel(&mut state);
+        assert!(result.is_none());
+        assert_eq!(state.setup.as_ref().unwrap().selected_completion, None);
+    }
+
+    #[test]
+    fn setup_cancel_quits_when_no_selection() {
+        let mut state = make_setup_state();
+        let setup = state.setup.as_mut().unwrap();
+        setup.completions = vec!["a".into(), "b".into()];
+        setup.selected_completion = None;
+
+        let result = handle_setup_cancel(&mut state);
+        assert!(matches!(result, Some(OpenAction::Quit)));
+    }
+
+    #[test]
+    fn setup_cancel_quits_when_no_completions() {
+        let mut state = make_setup_state();
+
+        let result = handle_setup_cancel(&mut state);
+        assert!(matches!(result, Some(OpenAction::Quit)));
+    }
+
+    // ── Down/Up wrap-around deselection ──
+
+    #[test]
+    fn setup_move_down_up_cycle_through_and_back() {
+        let mut state = make_setup_state();
+        let setup = state.setup.as_mut().unwrap();
+        setup.completions = vec!["a".into(), "b".into()];
+        setup.selected_completion = None;
+
+        // Down from None → first
+        handle_setup_move_selection(&mut state, 1);
+        assert_eq!(state.setup.as_ref().unwrap().selected_completion, Some(0));
+
+        // Down → second
+        handle_setup_move_selection(&mut state, 1);
+        assert_eq!(state.setup.as_ref().unwrap().selected_completion, Some(1));
+
+        // Down past last → None (back to text)
+        handle_setup_move_selection(&mut state, 1);
+        assert_eq!(state.setup.as_ref().unwrap().selected_completion, None);
+
+        // Up from None → last
+        handle_setup_move_selection(&mut state, -1);
+        assert_eq!(state.setup.as_ref().unwrap().selected_completion, Some(1));
+
+        // Up → first
+        handle_setup_move_selection(&mut state, -1);
+        assert_eq!(state.setup.as_ref().unwrap().selected_completion, Some(0));
+
+        // Up past first → None (back to text)
+        handle_setup_move_selection(&mut state, -1);
+        assert_eq!(state.setup.as_ref().unwrap().selected_completion, None);
     }
 }

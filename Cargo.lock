@@ -708,6 +708,7 @@ dependencies = [
  "fuzzy-matcher",
  "kiosk-core",
  "ratatui",
+ "tempfile",
  "unicode-segmentation",
  "unicode-width",
 ]

@@ -352,26 +352,10 @@ pub(super) fn handle_setup_add_dir(state: &mut AppState) -> Option<super::OpenAc
         return None;
     };
 
-    // If a completion is selected and differs from current input, fill it in
-    if let Some(sel) = setup.selected_completion
-        && let Some(completion) = setup.completions.get(sel).cloned()
-    {
-        let with_slash = if completion.ends_with('/') {
-            completion.clone()
-        } else {
-            format!("{completion}/")
-        };
-        let current = setup.input.text.trim_end_matches('/');
-        let candidate = with_slash.trim_end_matches('/');
-        if current != candidate {
-            setup.input.text = with_slash;
-            setup.input.cursor = setup.input.text.len();
-            setup.completions.clear();
-            setup.selected_completion = None;
-            update_setup_completions(state);
-            return None;
-        }
-        // Completion matches input — fall through to add-dir logic
+    // If a completion is selected, navigate into it instead of adding
+    if let Some(sel) = setup.selected_completion {
+        fill_setup_completion(state, sel);
+        return None;
     }
 
     let input_text = setup.input.text.trim().to_string();
@@ -384,6 +368,7 @@ pub(super) fn handle_setup_add_dir(state: &mut AppState) -> Option<super::OpenAc
         return Some(super::OpenAction::SetupComplete);
     }
 
+    let setup = state.setup.as_mut().expect("setup checked above");
     if !setup.dirs.contains(&input_text) {
         setup.dirs.push(input_text);
     }
@@ -391,6 +376,27 @@ pub(super) fn handle_setup_add_dir(state: &mut AppState) -> Option<super::OpenAc
     setup.completions.clear();
     setup.selected_completion = None;
     None
+}
+
+/// Fill the selected (or first) completion into the input and re-generate.
+/// Shared by Tab-complete and Enter-with-selection flows.
+fn fill_setup_completion(state: &mut AppState, index: usize) {
+    let Some(setup) = &mut state.setup else {
+        return;
+    };
+    let Some(completion) = setup.completions.get(index).cloned() else {
+        return;
+    };
+    let with_slash = if completion.ends_with('/') {
+        completion
+    } else {
+        format!("{completion}/")
+    };
+    setup.input.text = with_slash;
+    setup.input.cursor = setup.input.text.len();
+    setup.completions.clear();
+    setup.selected_completion = None;
+    update_setup_completions(state);
 }
 
 pub(super) fn handle_setup_tab_complete(state: &mut AppState) {
@@ -401,36 +407,28 @@ pub(super) fn handle_setup_tab_complete(state: &mut AppState) {
     // Generate completions if not already present
     if setup.completions.is_empty() {
         setup.completions = crate::components::path_input::complete(&setup.input.text);
-        if !setup.completions.is_empty() {
-            setup.selected_completion = Some(0);
-        }
+        setup.selected_completion = None;
         return;
     }
 
     if setup.completions.len() == 1 {
-        // Single match: complete fully and append /
-        let c = setup.completions[0].clone();
-        setup.input.text = if c.ends_with('/') { c } else { format!("{c}/") };
-        setup.input.cursor = setup.input.text.len();
-        setup.completions.clear();
-        setup.selected_completion = None;
-        // Re-generate completions for new input
-        update_setup_completions(state);
+        fill_setup_completion(state, 0);
         return;
     }
 
-    // Multiple: fill to common prefix
+    // Multiple: fill to common prefix if it extends the input
     let common = crate::components::path_input::common_prefix(&setup.completions);
     if !common.is_empty() && common != setup.input.text {
         setup.input.text = common;
         setup.input.cursor = setup.input.text.len();
         setup.completions = crate::components::path_input::complete(&setup.input.text);
-        setup.selected_completion = if setup.completions.is_empty() {
-            None
-        } else {
-            Some(0)
-        };
+        setup.selected_completion = None;
+        return;
     }
+
+    // Common prefix already matches input: fill in the selected (or first) completion
+    let sel = setup.selected_completion.unwrap_or(0);
+    fill_setup_completion(state, sel);
 }
 
 pub(super) fn handle_setup_move_selection(state: &mut AppState, delta: i32) {
@@ -441,15 +439,42 @@ pub(super) fn handle_setup_move_selection(state: &mut AppState, delta: i32) {
         return;
     }
     let len = setup.completions.len();
-    let current = setup.selected_completion.unwrap_or(0);
-    let new = if delta > 0 {
-        current
-            .saturating_add(delta.unsigned_abs() as usize)
-            .min(len - 1)
-    } else {
-        current.saturating_sub(delta.unsigned_abs() as usize)
+    setup.selected_completion = match setup.selected_completion {
+        None => {
+            if delta > 0 {
+                Some(0)
+            } else {
+                Some(len - 1)
+            }
+        }
+        Some(current) => {
+            if delta > 0 {
+                let next = current.saturating_add(delta.unsigned_abs() as usize);
+                if next >= len {
+                    None
+                } else {
+                    Some(next)
+                }
+            } else if current == 0 {
+                None
+            } else {
+                Some(current.saturating_sub(delta.unsigned_abs() as usize))
+            }
+        }
     };
-    setup.selected_completion = Some(new);
+}
+
+/// Cancel in setup: deselect completion if one is highlighted, otherwise quit.
+pub(super) fn handle_setup_cancel(state: &mut AppState) -> Option<super::OpenAction> {
+    let Some(setup) = &mut state.setup else {
+        return Some(super::OpenAction::Quit);
+    };
+    if setup.selected_completion.is_some() {
+        setup.selected_completion = None;
+        None
+    } else {
+        Some(super::OpenAction::Quit)
+    }
 }
 
 fn update_setup_completions(state: &mut AppState) {
@@ -457,11 +482,7 @@ fn update_setup_completions(state: &mut AppState) {
         return;
     };
     setup.completions = crate::components::path_input::complete(&setup.input.text);
-    setup.selected_completion = if setup.completions.is_empty() {
-        None
-    } else {
-        Some(0)
-    };
+    setup.selected_completion = None;
 }
 
 fn update_active_filter(state: &mut AppState, matcher: &SkimMatcherV2) {

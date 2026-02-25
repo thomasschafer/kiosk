@@ -45,4 +45,5 @@ pub enum Action {
     SetupContinue,
     SetupAddDir,
     SetupTabComplete,
+    SetupCancel,
 }

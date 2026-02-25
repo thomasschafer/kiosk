@@ -95,7 +95,8 @@ fn command_to_action(command: &Command, state: &AppState) -> Option<Action> {
         Command::Cancel => match state.mode {
             Mode::ConfirmWorktreeDelete { .. } => Some(Action::CancelDeleteWorktree),
             Mode::SelectBaseBranch => Some(Action::GoBack),
-            Mode::Setup(_) => Some(Action::Quit),
+            Mode::Setup(SetupStep::Welcome) => Some(Action::Quit),
+            Mode::Setup(SetupStep::SearchDirs) => Some(Action::SetupCancel),
             _ => None,
         },
         Command::TabComplete => match state.mode {

@@ -2365,23 +2365,15 @@ fn test_e2e_setup_wizard_add_dir_and_finish() {
     env.send(&dir_str);
     wait_ms(500);
 
-    // Press Enter — if completion is selected this fills it, otherwise adds the dir.
-    // Keep pressing Enter until we see it in the Added list or leave the setup screen.
-    for _ in 0..5 {
-        env.send_special("Enter");
-        wait_ms(500);
-        let screen = env.capture();
-        if screen.contains("✓")
-            || screen.contains("select repo")
-            || screen.contains("Config written")
-        {
-            break;
-        }
-    }
-
-    // Press Enter on empty input to finish (if still in setup)
+    // Enter adds the typed path directly (no completion selected by default)
     env.send_special("Enter");
-    wait_ms(500);
+    let screen = wait_for_screen(&env, 2000, |s| s.contains("✓") || s.contains(&dir_str));
+    assert!(
+        screen.contains("✓") || screen.contains("Added"),
+        "Should show dir was added: {screen}"
+    );
+
+    // Enter on empty input finishes setup
     env.send_special("Enter");
 
     // Wait for either normal TUI or config written message
@@ -2457,5 +2449,143 @@ fn test_e2e_setup_wizard_not_triggered_for_cli_subcommand() {
     assert!(
         stderr.contains("Config file not found") || stderr.contains("config"),
         "Should show config error, not wizard: {stderr}"
+    );
+}
+
+#[test]
+fn test_e2e_setup_wizard_typing_shows_all_matching_completions() {
+    let env = TestEnv::new("setup-autocomplete");
+
+    // Create directories to complete against
+    let parent = env.tmp.path().join("autocomplete_root");
+    fs::create_dir_all(parent.join("Desktop")).unwrap();
+    fs::create_dir_all(parent.join("Development")).unwrap();
+    fs::create_dir_all(parent.join("Documents")).unwrap();
+
+    env.launch_kiosk();
+    wait_for_screen(&env, 3000, |s| s.contains("Welcome to Kiosk"));
+    env.send_special("Enter");
+    wait_for_screen(&env, 2000, |s| s.contains("Add directory"));
+
+    // Type path with prefix "De" — completions update as you type
+    env.send(&format!("{}/De", parent.display()));
+
+    // Both Desktop and Development match "De" and should be visible
+    let screen = wait_for_screen(&env, 2000, |s| {
+        s.contains("Desktop") && s.contains("Development")
+    });
+    assert!(
+        screen.contains("Desktop"),
+        "Should show Desktop in completions: {screen}"
+    );
+    assert!(
+        screen.contains("Development"),
+        "Should show Development in completions (both match 'De'): {screen}"
+    );
+    // Documents should NOT match "De"
+    assert!(
+        !screen.contains("Documents"),
+        "Should NOT show Documents (doesn't match 'De'): {screen}"
+    );
+}
+
+#[test]
+fn test_e2e_setup_wizard_tab_fills_common_prefix() {
+    let env = TestEnv::new("setup-tab-fill");
+
+    let parent = env.tmp.path().join("tab_fill_root");
+    fs::create_dir_all(parent.join("Desktop")).unwrap();
+    fs::create_dir_all(parent.join("Development")).unwrap();
+    fs::create_dir_all(parent.join("Documents")).unwrap();
+
+    env.launch_kiosk();
+    wait_for_screen(&env, 3000, |s| s.contains("Welcome to Kiosk"));
+    env.send_special("Enter");
+    wait_for_screen(&env, 2000, |s| s.contains("Add directory"));
+
+    // Type just "D" — 3 completions, common prefix is "D" (no advance)
+    env.send(&format!("{}/D", parent.display()));
+    wait_for_screen(&env, 2000, |s| s.contains("Desktop"));
+
+    // Tab fills first completion since common prefix "D" == input already
+    env.send_special("Tab");
+    let screen = wait_for_screen(&env, 2000, |s| s.contains("Desktop/"));
+    assert!(
+        screen.contains("Desktop/"),
+        "Tab should fill first completion: {screen}"
+    );
+}
+
+#[test]
+fn test_e2e_setup_wizard_arrow_navigation_highlights() {
+    let env = TestEnv::new("setup-arrow-nav");
+
+    let parent = env.tmp.path().join("arrow_nav_root");
+    fs::create_dir_all(parent.join("alpha")).unwrap();
+    fs::create_dir_all(parent.join("beta")).unwrap();
+
+    env.launch_kiosk();
+    wait_for_screen(&env, 3000, |s| s.contains("Welcome to Kiosk"));
+    env.send_special("Enter");
+    wait_for_screen(&env, 2000, |s| s.contains("Add directory"));
+
+    // Type to get both completions
+    env.send(&format!("{}/", parent.display()));
+    wait_for_screen(&env, 2000, |s| s.contains("alpha") && s.contains("beta"));
+
+    // No item should be highlighted initially (no ▸ marker)
+    let screen = env.capture();
+    assert!(
+        !screen.contains("▸"),
+        "No item should be highlighted initially: {screen}"
+    );
+
+    // Navigate down to highlight first item
+    env.send_special("Down");
+    let screen = wait_for_screen(&env, 1000, |s| s.contains("▸"));
+    assert!(
+        screen.contains("▸"),
+        "Down arrow should highlight an item: {screen}"
+    );
+}
+
+#[test]
+fn test_e2e_setup_wizard_enter_adds_typed_path_without_selection() {
+    let env = TestEnv::new("setup-enter-typed");
+
+    let parent = env.tmp.path().join("enter_typed_root");
+    let target = parent.join("my_projects");
+    fs::create_dir_all(&target).unwrap();
+    init_test_repo(&target);
+
+    env.launch_kiosk();
+    wait_for_screen(&env, 3000, |s| s.contains("Welcome to Kiosk"));
+    env.send_special("Enter");
+    wait_for_screen(&env, 2000, |s| s.contains("Add directory"));
+
+    // Type the exact path
+    env.send(&target.to_string_lossy().to_string());
+    wait_ms(500);
+
+    // Press Enter without navigating to any completion — should add the typed path
+    env.send_special("Enter");
+    let screen = wait_for_screen(&env, 2000, |s| s.contains("✓") || s.contains("my_projects"));
+    assert!(
+        screen.contains("✓") || screen.contains("my_projects"),
+        "Should show the added directory: {screen}"
+    );
+
+    // Press Enter on empty to finish setup
+    env.send_special("Enter");
+    let screen = wait_for_screen(&env, 8000, |s| {
+        s.contains("my_projects") || s.contains("select repo") || s.contains("Config written")
+    });
+
+    let config_path = env.config_file_path();
+    assert!(config_path.exists(), "Config should be written: {screen}");
+    let config = fs::read_to_string(&config_path).unwrap();
+    assert!(
+        config.contains("my_projects"),
+        "Config should include the entered directory: {config}"
     );
 }

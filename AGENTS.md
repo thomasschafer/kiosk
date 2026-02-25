@@ -8,7 +8,7 @@ Please use sentence case unless some other casing e.g. title case is absolutely 
 - We should aim to use Rust's features to simplify code - better to generate something with a macro or similar than risk it going out of sync. For instance, often when we enumerate over all variants of an enum we could instead use a macro, attributes on the struct fields or similar.
 
 ## Dev environment
-Use the Nix dev shell for all project tooling commands unless explicitly told otherwise.
+When running on NixOS, use the Nix dev shell for all project tooling commands unless explicitly told otherwise.
 This includes build, test, lint, formatting, and any `cargo`/Rust-related command.
 This prevents failures due to missing toolchain/system binaries.
 Examples: `nix develop -c cargo test`, `nix develop -c cargo run`, `nix develop -c cargo clippy`.

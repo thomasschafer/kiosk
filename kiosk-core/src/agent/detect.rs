@@ -1,6 +1,9 @@
 use super::{AgentKind, AgentState};
 
-/// Detect the kind of agent from tmux pane command or child process arguments
+/// Detect the kind of agent from tmux pane command or child process arguments.
+///
+/// Order matters: more specific patterns are checked first to avoid false positives
+/// (e.g. "cursor-agent" before "agent", "codex" before generic patterns).
 pub fn detect_agent_kind(pane_command: &str, child_process_args: Option<&str>) -> AgentKind {
     // Check pane command first
     let cmd_lower = pane_command.to_lowercase();
@@ -9,6 +12,9 @@ pub fn detect_agent_kind(pane_command: &str, child_process_args: Option<&str>) -
     }
     if cmd_lower.contains("codex") {
         return AgentKind::Codex;
+    }
+    if cmd_lower.contains("cursor-agent") {
+        return AgentKind::CursorAgent;
     }
 
     // Check child process args if available
@@ -19,6 +25,9 @@ pub fn detect_agent_kind(pane_command: &str, child_process_args: Option<&str>) -
         }
         if args_lower.contains("codex") {
             return AgentKind::Codex;
+        }
+        if args_lower.contains("cursor-agent") {
+            return AgentKind::CursorAgent;
         }
     }
 
@@ -47,7 +56,10 @@ const CLAUDE_WAITING_PATTERNS: &[&str] = &[
     "do you trust the files",
 ];
 
-const CODEX_RUNNING_PATTERNS: &[&str] = &["esc to interrupt", "working", "thinking"];
+/// Claude Code uses alt-screen so stale content is not an issue.
+const CLAUDE_IDLE_TAIL_PATTERNS: &[&str] = &[];
+
+const CODEX_RUNNING_PATTERNS: &[&str] = &["esc to interrupt"];
 
 const CODEX_WAITING_PATTERNS: &[&str] = &[
     "yes, proceed",
@@ -61,6 +73,24 @@ const CODEX_WAITING_PATTERNS: &[&str] = &[
     "esc to cancel",
 ];
 
+/// When Codex is idle, "? for shortcuts" appears at the bottom of the prompt.
+/// Checking this against the tail prevents stale waiting/running text from
+/// earlier in the buffer from causing false positives.
+const CODEX_IDLE_TAIL_PATTERNS: &[&str] = &["? for shortcuts"];
+
+const CURSOR_RUNNING_PATTERNS: &[&str] = &["esc to interrupt", "ctrl+c to interrupt"];
+
+const CURSOR_WAITING_PATTERNS: &[&str] = &[
+    "do you trust",
+    "trust this workspace",
+    "enter to select",
+    "(y/n)",
+    "[y/n]",
+    "esc to cancel",
+];
+
+const CURSOR_IDLE_TAIL_PATTERNS: &[&str] = &[];
+
 // ---------------------------------------------------------------------------
 // State detection
 // ---------------------------------------------------------------------------
@@ -69,27 +99,55 @@ const CODEX_WAITING_PATTERNS: &[&str] = &[
 /// Content is ANSI-stripped and lowercased once here; per-agent functions receive clean input.
 pub fn detect_state(content: &str, kind: AgentKind) -> AgentState {
     let clean = strip_ansi_codes(content);
-    let last_lines = get_last_non_empty_lines(&clean, 30);
-    let lowered = last_lines.to_lowercase();
+    let last_30 = get_last_non_empty_lines(&clean, 30);
+    let last_5 = get_last_non_empty_lines(&clean, 5);
+    let content_lowered = last_30.to_lowercase();
+    let tail_lowered = last_5.to_lowercase();
 
     match kind {
-        AgentKind::ClaudeCode => {
-            detect_agent_state(&lowered, CLAUDE_RUNNING_PATTERNS, CLAUDE_WAITING_PATTERNS)
-        }
-        AgentKind::Codex => {
-            detect_agent_state(&lowered, CODEX_RUNNING_PATTERNS, CODEX_WAITING_PATTERNS)
-        }
+        AgentKind::ClaudeCode => detect_agent_state(
+            &content_lowered,
+            &tail_lowered,
+            CLAUDE_RUNNING_PATTERNS,
+            CLAUDE_WAITING_PATTERNS,
+            CLAUDE_IDLE_TAIL_PATTERNS,
+        ),
+        AgentKind::Codex => detect_agent_state(
+            &content_lowered,
+            &tail_lowered,
+            CODEX_RUNNING_PATTERNS,
+            CODEX_WAITING_PATTERNS,
+            CODEX_IDLE_TAIL_PATTERNS,
+        ),
+        AgentKind::CursorAgent => detect_agent_state(
+            &content_lowered,
+            &tail_lowered,
+            CURSOR_RUNNING_PATTERNS,
+            CURSOR_WAITING_PATTERNS,
+            CURSOR_IDLE_TAIL_PATTERNS,
+        ),
         AgentKind::Unknown => AgentState::Idle,
     }
 }
 
-/// Generic agent state detection: checks running patterns (+ braille spinners),
-/// then waiting patterns, then defaults to Idle.
+/// Generic agent state detection.
+///
+/// 1. Check `idle_tail_patterns` against the tail (last ~5 lines) — if found,
+///    return Idle immediately. This prevents stale waiting/running text from
+///    earlier in the terminal buffer from causing false positives.
+/// 2. Check running patterns + braille spinners against the full content window.
+/// 3. Check waiting patterns against the full content window.
+/// 4. Default to Idle.
 fn detect_agent_state(
     content: &str,
+    tail: &str,
     running_patterns: &[&str],
     waiting_patterns: &[&str],
+    idle_tail_patterns: &[&str],
 ) -> AgentState {
+    if matches_any(tail, idle_tail_patterns) {
+        return AgentState::Idle;
+    }
     if matches_any(content, running_patterns) || contains_braille_spinner(content) {
         return AgentState::Running;
     }
@@ -168,6 +226,14 @@ mod tests {
     }
 
     #[test]
+    fn test_detect_agent_kind_cursor_agent_in_command() {
+        assert_eq!(
+            detect_agent_kind("cursor-agent", None),
+            AgentKind::CursorAgent
+        );
+    }
+
+    #[test]
     fn test_detect_agent_kind_child_process() {
         assert_eq!(
             detect_agent_kind("bash", Some("python claude_main.py")),
@@ -176,6 +242,13 @@ mod tests {
         assert_eq!(
             detect_agent_kind("node", Some("/usr/bin/codex --version")),
             AgentKind::Codex
+        );
+        assert_eq!(
+            detect_agent_kind(
+                "node",
+                Some("/home/user/.cursor-agent/versions/0.1.0/index.js")
+            ),
+            AgentKind::CursorAgent
         );
     }
 
@@ -186,6 +259,8 @@ mod tests {
             detect_agent_kind("vim", Some("vim file.txt")),
             AgentKind::Unknown
         );
+        // "agent" alone is too generic — should not match
+        assert_eq!(detect_agent_kind("agent", None), AgentKind::Unknown);
     }
 
     // -- detect_state (full pipeline: ANSI strip + lowercase + detect) -------
@@ -248,18 +323,11 @@ mod tests {
     #[test]
     fn test_codex_running() {
         assert_eq!(
-            detect_state(
-                "Codex is working on your request... esc to interrupt",
-                AgentKind::Codex
-            ),
+            detect_state("⠋ Searching codebase\nesc to interrupt", AgentKind::Codex),
             AgentState::Running
         );
         assert_eq!(
-            detect_state("Thinking ⠙ about your question", AgentKind::Codex),
-            AgentState::Running
-        );
-        assert_eq!(
-            detect_state("Processing files\nworking...", AgentKind::Codex),
+            detect_state("⠙ Processing your question", AgentKind::Codex),
             AgentState::Running
         );
     }
@@ -268,7 +336,7 @@ mod tests {
     fn test_codex_waiting() {
         assert_eq!(
             detect_state(
-                "Do you want to proceed? Yes, proceed / No",
+                "Would you like to run the following command?\n$ touch test.txt\n› 1. Yes, proceed (y)",
                 AgentKind::Codex
             ),
             AgentState::Waiting
@@ -290,6 +358,76 @@ mod tests {
             detect_state("Codex ready\n> ", AgentKind::Codex),
             AgentState::Idle
         );
+    }
+
+    #[test]
+    fn test_codex_idle_tail_overrides_stale_waiting() {
+        // After answering a permission prompt, stale "Yes, proceed" / "Press enter to confirm"
+        // text remains in the buffer. The idle tail pattern should override it.
+        let content = "\
+Would you like to run the following command?
+$ touch test.txt
+› 1. Yes, proceed (y)
+  2. Yes, and don't ask again (p)
+  3. No (esc)
+
+  Press enter to confirm or esc to cancel
+╭──────────────────────────────╮
+│ >_ OpenAI Codex (v0.104.0)   │
+╰──────────────────────────────╯
+
+› Type a message
+
+  ? for shortcuts";
+        assert_eq!(detect_state(content, AgentKind::Codex), AgentState::Idle);
+    }
+
+    #[test]
+    fn test_codex_current_working_directory_not_running() {
+        // "current working directory" contains "working" — should NOT trigger Running
+        // now that "working" has been removed from CODEX_RUNNING_PATTERNS.
+        let content = "current working directory: /home/user/project\n\n› Type a message\n\n  ? for shortcuts";
+        assert_eq!(detect_state(content, AgentKind::Codex), AgentState::Idle);
+    }
+
+    // -- Cursor Agent state detection ----------------------------------------
+
+    #[test]
+    fn test_cursor_running() {
+        assert_eq!(
+            detect_state(
+                "⠋ Editing file src/main.rs\nesc to interrupt",
+                AgentKind::CursorAgent
+            ),
+            AgentState::Running
+        );
+        assert_eq!(
+            detect_state("Processing... ctrl+c to interrupt", AgentKind::CursorAgent),
+            AgentState::Running
+        );
+    }
+
+    #[test]
+    fn test_cursor_waiting() {
+        assert_eq!(
+            detect_state(
+                "Do you trust the contents of this directory?\n\n▶ [a] Trust this workspace",
+                AgentKind::CursorAgent
+            ),
+            AgentState::Waiting
+        );
+        assert_eq!(
+            detect_state(
+                "Use arrow keys to navigate, Enter to select\nDo you trust this workspace?",
+                AgentKind::CursorAgent
+            ),
+            AgentState::Waiting
+        );
+    }
+
+    #[test]
+    fn test_cursor_idle() {
+        assert_eq!(detect_state("> ", AgentKind::CursorAgent), AgentState::Idle);
     }
 
     // -- Unknown kind returns Idle -------------------------------------------

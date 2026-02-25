@@ -6,6 +6,7 @@ use std::fmt;
 pub enum AgentKind {
     ClaudeCode,
     Codex,
+    CursorAgent,
     Unknown,
 }
 
@@ -14,6 +15,7 @@ impl fmt::Display for AgentKind {
         match self {
             AgentKind::ClaudeCode => write!(f, "Claude Code"),
             AgentKind::Codex => write!(f, "Codex"),
+            AgentKind::CursorAgent => write!(f, "Cursor"),
             AgentKind::Unknown => write!(f, "Unknown"),
         }
     }
@@ -206,7 +208,11 @@ mod tests {
 
     #[test]
     fn detect_codex_running() {
-        let tmux = mock_with_agent("codex-session", "codex", "working on your request...");
+        let tmux = mock_with_agent(
+            "codex-session",
+            "codex",
+            "⠋ Searching codebase\nesc to interrupt",
+        );
         let status = detect_for_session(&tmux, "codex-session").unwrap();
         assert_eq!(status.kind, AgentKind::Codex);
         assert_eq!(status.state, AgentState::Running);
@@ -214,10 +220,33 @@ mod tests {
 
     #[test]
     fn detect_codex_waiting() {
-        let tmux = mock_with_agent("codex-session", "codex", "Do you approve this? [y/n]");
+        let tmux = mock_with_agent(
+            "codex-session",
+            "codex",
+            "Would you like to run the following command?\n$ touch test.txt\n› 1. Yes, proceed (y)\n  2. Yes, and don't ask again (p)\n  3. No (esc)\n\n  Press enter to confirm or esc to cancel",
+        );
         let status = detect_for_session(&tmux, "codex-session").unwrap();
         assert_eq!(status.kind, AgentKind::Codex);
         assert_eq!(status.state, AgentState::Waiting);
+    }
+
+    #[test]
+    fn detect_cursor_agent_running() {
+        // Can't mock child process args, so test state detection directly
+        let state = detect::detect_state(
+            "⠋ Editing file src/main.rs\nesc to interrupt",
+            AgentKind::CursorAgent,
+        );
+        assert_eq!(state, AgentState::Running);
+    }
+
+    #[test]
+    fn detect_cursor_agent_waiting() {
+        let state = detect::detect_state(
+            "Do you trust the contents of this directory?\n\n▶ [a] Trust this workspace\n  [w] Trust without MCP\n  [q] Quit\n\nUse arrow keys to navigate, Enter to select",
+            AgentKind::CursorAgent,
+        );
+        assert_eq!(state, AgentState::Waiting);
     }
 
     #[test]
@@ -292,7 +321,7 @@ mod tests {
             .map(|(i, (command, _))| PaneInfo {
                 pane_id: format!("%{i}"),
                 command: command.to_string(),
-                pid: 90000 + u32::try_from(i),
+                pid: 90000 + u32::try_from(i).expect("test has fewer than u32::MAX agents"),
             })
             .collect();
         tmux.pane_info.insert(session.to_string(), panes);

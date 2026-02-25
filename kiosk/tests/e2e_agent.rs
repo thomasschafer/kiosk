@@ -1,10 +1,12 @@
 //! E2E tests for agent status detection.
 //!
-//! By default, tests use fake agent scripts that mimic Claude Code / Codex output.
-//! Set `KIOSK_E2E_REAL_AGENTS=1` to use real `claude` and `codex` binaries instead.
+//! By default, tests use fake agent scripts that mimic Claude Code / Codex / Cursor
+//! Agent (`agent` command) output.
+//! Set `KIOSK_E2E_REAL_AGENTS=1` to use real `claude`, `codex`, and `agent` binaries
+//! instead.
 //!
 //! Real-agent mode requires:
-//! - `claude` and/or `codex` on PATH
+//! - `claude`, `codex`, and/or `agent` on PATH
 //! - Valid authentication for each
 //!
 //! Fake-agent mode works in CI with no external dependencies.
@@ -71,6 +73,43 @@ fn wait_ms(ms: u64) {
     thread::sleep(Duration::from_millis(ms));
 }
 
+/// Poll the tmux pane until `expected` text (case-insensitive) appears, or timeout.
+fn wait_for_pane_content(session: &str, expected: &str, timeout_ms: u64) -> bool {
+    let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
+    let expected_lower = expected.to_lowercase();
+    loop {
+        let output = Command::new("tmux")
+            .args(["capture-pane", "-t", session, "-p", "-S", "-30"])
+            .output();
+        if let Ok(output) = output {
+            let content = String::from_utf8_lossy(&output.stdout).to_lowercase();
+            if content.contains(&expected_lower) {
+                return true;
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        wait_ms(250);
+    }
+}
+
+/// Write a fake agent shell script that prints `output_text` then sleeps.
+fn write_fake_agent_script(dir: &Path, agent_name: &str, output_text: &str) -> PathBuf {
+    let script_path = dir.join(agent_name);
+    let escaped = output_text.replace('\'', "'\\''");
+    let script = format!("#!/bin/sh\nprintf '{escaped}'\nsleep 86400\n");
+    fs::write(&script_path, &script).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&script_path).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script_path, perms).unwrap();
+    }
+    script_path
+}
+
 fn use_real_agents() -> bool {
     std::env::var("KIOSK_E2E_REAL_AGENTS").is_ok_and(|v| v == "1" || v == "true")
 }
@@ -104,6 +143,7 @@ fn has_binary(name: &str) -> bool {
 enum AgentKind {
     Claude,
     Codex,
+    CursorAgent,
 }
 
 #[derive(Clone, Copy)]
@@ -185,6 +225,13 @@ impl AgentTestEnvDefault {
                 );
                 "codex"
             }
+            AgentKind::CursorAgent => {
+                assert!(
+                    has_binary("agent"),
+                    "agent not on PATH — set KIOSK_E2E_REAL_AGENTS=0 or install cursor agent"
+                );
+                "agent"
+            }
         };
 
         // Create tmux session named as kiosk expects, starting in repo dir
@@ -233,32 +280,60 @@ impl AgentTestEnvDefault {
     }
 
     fn launch_fake_agent(&self, agent: AgentKind, state: FakeState) {
+        // Script filename must contain the agent name so kiosk detects the agent
+        // by inspecting child process args via /proc/PID/cmdline or pgrep/ps.
         let agent_name = match agent {
             AgentKind::Claude => "claude",
             AgentKind::Codex => "codex",
+            AgentKind::CursorAgent => "cursor-agent",
         };
 
-        let output_text = match state {
-            FakeState::Running => "⠋ Reading file src/main.rs\\nesc to interrupt",
-            FakeState::Waiting => "Allow write to src/main.rs?\\n  Yes, allow\\n  No, deny",
-            FakeState::Idle => "> ",
+        let output_text = match (agent, state) {
+            (AgentKind::Claude, FakeState::Running) => {
+                "⠋ Reading file src/main.rs\\nesc to interrupt"
+            }
+            (AgentKind::Claude, FakeState::Waiting) => {
+                "Allow write to src/main.rs?\\n  Yes, allow\\n  No, deny"
+            }
+            (AgentKind::Claude | AgentKind::CursorAgent, FakeState::Idle) => "> ",
+
+            (AgentKind::Codex, FakeState::Running) => "⠋ Searching codebase\\nesc to interrupt",
+            (AgentKind::Codex, FakeState::Waiting) => {
+                "Would you like to run the following command?\\n\
+                 $ touch test.txt\\n\
+                 › 1. Yes, proceed (y)\\n\
+                   2. Yes, and don't ask again (p)\\n\
+                   3. No (esc)\\n\
+                 \\n\
+                   Press enter to confirm or esc to cancel"
+            }
+            (AgentKind::Codex, FakeState::Idle) => {
+                "╭──────────────────────────────╮\\n\
+                 │ >_ OpenAI Codex (v0.104.0)   │\\n\
+                 ╰──────────────────────────────╯\\n\
+                 \\n\
+                 › Type a message\\n\
+                 \\n\
+                   ? for shortcuts"
+            }
+
+            (AgentKind::CursorAgent, FakeState::Running) => {
+                "⠋ Editing file src/main.rs\\nesc to interrupt"
+            }
+            (AgentKind::CursorAgent, FakeState::Waiting) => {
+                "⚠ Workspace Trust Required\\n\
+                 \\n\
+                 Do you trust the contents of this directory?\\n\
+                 \\n\
+                 ▶ [a] Trust this workspace\\n\
+                   [w] Trust without MCP\\n\
+                   [q] Quit\\n\
+                 \\n\
+                 Use arrow keys to navigate, Enter to select"
+            }
         };
 
-        // The script filename must contain the agent name because kiosk detects
-        // agents by inspecting child process args via /proc/PID/cmdline.
-        // When the shell runs this script, the child's cmdline will be:
-        //   /bin/sh /tmp/.../claude
-        // which contains "claude", triggering detection.
-        let script_path = self.tmp.path().join(agent_name);
-        let script = format!("#!/bin/sh\nprintf '{output_text}'\nsleep 86400\n");
-        fs::write(&script_path, &script).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(&script_path).unwrap().permissions();
-            perms.set_mode(0o755);
-            fs::set_permissions(&script_path, perms).unwrap();
-        }
+        let script_path = write_fake_agent_script(self.tmp.path(), agent_name, output_text);
 
         // Create tmux session
         let status = Command::new("tmux")
@@ -291,7 +366,26 @@ impl AgentTestEnvDefault {
             .status()
             .unwrap();
 
-        wait_ms(1000);
+        // Poll until the script output is visible in the pane (up to 10s).
+        // Using a content marker avoids flaky fixed sleeps under system load.
+        let marker = match (agent, state) {
+            (_, FakeState::Running) => Some("esc to interrupt"),
+            (AgentKind::Claude, FakeState::Waiting) => Some("yes, allow"),
+            (AgentKind::Codex, FakeState::Waiting) => Some("yes, proceed"),
+            (AgentKind::Codex, FakeState::Idle) => Some("? for shortcuts"),
+            (AgentKind::CursorAgent, FakeState::Waiting) => Some("trust this workspace"),
+            // Claude/CursorAgent idle output is just "> " — too minimal for
+            // reliable content polling (tmux strips trailing whitespace).
+            (AgentKind::Claude | AgentKind::CursorAgent, FakeState::Idle) => None,
+        };
+        if let Some(marker) = marker {
+            assert!(
+                wait_for_pane_content(&self.kiosk_session, marker, 10_000),
+                "Timed out waiting for fake {agent_name} script output (marker: {marker:?})"
+            );
+        } else {
+            wait_ms(3000);
+        }
     }
 
     fn run_cli(&self, args: &[&str]) -> std::process::Output {
@@ -579,6 +673,175 @@ fn test_e2e_agent_sessions_json_no_agent() {
             "plain session should not have agent_status: {session}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// CLI tests: Cursor Agent
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_e2e_agent_branches_json_cursor_running() {
+    if use_real_agents() {
+        return;
+    }
+
+    let env = AgentTestEnvDefault::new("br-cursor-run");
+    env.launch_agent(AgentKind::CursorAgent, FakeState::Running);
+
+    let json = env.run_cli_json(&["branches", &env.repo_name, "--json"]);
+    let branches = json.as_array().unwrap();
+    let main_branch = branches.iter().find(|b| b["name"] == "main").unwrap();
+
+    let agent = &main_branch["agent_status"];
+    assert!(
+        !agent.is_null(),
+        "should detect cursor agent: {main_branch}"
+    );
+    assert_eq!(agent["kind"], "CursorAgent");
+    assert_eq!(agent["state"], "Running");
+}
+
+#[test]
+fn test_e2e_agent_branches_json_cursor_waiting() {
+    if use_real_agents() {
+        return;
+    }
+
+    let env = AgentTestEnvDefault::new("br-cursor-wait");
+    env.launch_agent(AgentKind::CursorAgent, FakeState::Waiting);
+
+    let json = env.run_cli_json(&["branches", &env.repo_name, "--json"]);
+    let branches = json.as_array().unwrap();
+    let main_branch = branches.iter().find(|b| b["name"] == "main").unwrap();
+
+    assert_eq!(main_branch["agent_status"]["kind"], "CursorAgent");
+    assert_eq!(main_branch["agent_status"]["state"], "Waiting");
+}
+
+#[test]
+fn test_e2e_agent_branches_json_cursor_idle() {
+    if use_real_agents() {
+        return;
+    }
+
+    let env = AgentTestEnvDefault::new("br-cursor-idle");
+    env.launch_agent(AgentKind::CursorAgent, FakeState::Idle);
+
+    let json = env.run_cli_json(&["branches", &env.repo_name, "--json"]);
+    let branches = json.as_array().unwrap();
+    let main_branch = branches.iter().find(|b| b["name"] == "main").unwrap();
+
+    assert_eq!(main_branch["agent_status"]["kind"], "CursorAgent");
+    assert_eq!(main_branch["agent_status"]["state"], "Idle");
+}
+
+#[test]
+fn test_e2e_agent_status_json_cursor() {
+    if use_real_agents() {
+        return;
+    }
+
+    let env = AgentTestEnvDefault::new("st-cursor");
+    env.launch_agent(AgentKind::CursorAgent, FakeState::Waiting);
+
+    let json = env.run_cli_json(&["status", &env.repo_name, "main", "--json"]);
+    let agent = &json["agent_status"];
+    assert!(
+        !agent.is_null(),
+        "status should include agent_status: {json}"
+    );
+    assert_eq!(agent["kind"], "CursorAgent");
+    assert_eq!(agent["state"], "Waiting");
+}
+
+#[test]
+fn test_e2e_agent_sessions_json_cursor() {
+    if use_real_agents() {
+        return;
+    }
+
+    let env = AgentTestEnvDefault::new("sess-cursor");
+    env.launch_agent(AgentKind::CursorAgent, FakeState::Running);
+
+    let json = env.run_cli_json(&["sessions", "--json"]);
+    let sessions = json.as_array().expect("sessions should be an array");
+    let our_session = sessions
+        .iter()
+        .find(|s| s["session"] == env.kiosk_session)
+        .expect("should find our session");
+
+    let agent = &our_session["agent_status"];
+    assert!(
+        !agent.is_null(),
+        "session should have agent_status: {our_session}"
+    );
+    assert_eq!(agent["kind"], "CursorAgent");
+    assert_eq!(agent["state"], "Running");
+}
+
+// ---------------------------------------------------------------------------
+// Regression test: stale content should not cause false positives
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_e2e_agent_codex_stale_content_waiting_then_idle() {
+    if use_real_agents() {
+        return;
+    }
+
+    let env = AgentTestEnvDefault::new("codex-stale");
+
+    // Phase 1: launch Codex with waiting output
+    env.launch_agent(AgentKind::Codex, FakeState::Waiting);
+
+    let json = env.run_cli_json(&["branches", &env.repo_name, "--json"]);
+    let branches = json.as_array().unwrap();
+    let main_branch = branches.iter().find(|b| b["name"] == "main").unwrap();
+    assert_eq!(
+        main_branch["agent_status"]["state"], "Waiting",
+        "should initially detect Waiting"
+    );
+
+    // Phase 2: kill the fake agent process, then relaunch with idle output.
+    // This simulates answering a permission prompt — the old waiting text
+    // remains in the scrollback, but the tail now shows idle markers.
+    let _ = Command::new("tmux")
+        .args(["send-keys", "-t", &env.kiosk_session, "C-c", ""])
+        .status();
+    wait_ms(1000);
+
+    // Write new idle script (overwrite the old one)
+    let idle_output = "╭──────────────────────────────╮\\n\
+                       │ >_ OpenAI Codex (v0.104.0)   │\\n\
+                       ╰──────────────────────────────╯\\n\
+                       \\n\
+                       › Type a message\\n\
+                       \\n\
+                         ? for shortcuts";
+    let script_path = write_fake_agent_script(env.tmp.path(), "codex", idle_output);
+
+    Command::new("tmux")
+        .args([
+            "send-keys",
+            "-t",
+            &env.kiosk_session,
+            &script_path.to_string_lossy(),
+            "Enter",
+        ])
+        .status()
+        .unwrap();
+    assert!(
+        wait_for_pane_content(&env.kiosk_session, "? for shortcuts", 10_000),
+        "Timed out waiting for idle Codex output in phase 2"
+    );
+
+    let json = env.run_cli_json(&["branches", &env.repo_name, "--json"]);
+    let branches = json.as_array().unwrap();
+    let main_branch = branches.iter().find(|b| b["name"] == "main").unwrap();
+    assert_eq!(
+        main_branch["agent_status"]["state"], "Idle",
+        "should detect Idle after transitioning from Waiting (idle tail overrides stale content)"
+    );
 }
 
 // ---------------------------------------------------------------------------

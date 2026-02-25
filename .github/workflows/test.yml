@@ -67,7 +67,20 @@ jobs:
       - name: Run unit tests
         run: cargo test --workspace --lib --verbose
 
+      - name: Install tmux
+        if: runner.os != 'Windows'
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get update && sudo apt-get install -y tmux
+          elif [ "$RUNNER_OS" = "macOS" ]; then
+            brew install tmux
+          fi
+
       - name: Run E2E tests
         # E2E tests require tmux, which is not available on Windows
-        if: runner.os == 'Linux'
+        if: runner.os != 'Windows'
         run: cargo test --package kiosk --test e2e --verbose
+
+      - name: Run agent E2E tests
+        if: runner.os != 'Windows'
+        run: cargo test --package kiosk --test e2e_agent --verbose

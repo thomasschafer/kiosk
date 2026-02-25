@@ -586,9 +586,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
                 state.error = Some(format!("git fetch failed: {err}"));
             }
             // Only update if still in BranchSelect and the repo matches
-            let current_repo_path = state
-                .selected_repo_idx
-                .map(|idx| &state.repos[idx].path);
+            let current_repo_path = state.selected_repo_idx.map(|idx| &state.repos[idx].path);
             if state.mode == Mode::BranchSelect
                 && current_repo_path == Some(&repo_path)
                 && !branches.is_empty()
@@ -601,8 +599,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
                     .collect();
                 if !new_branches.is_empty() {
                     state.branches.extend(new_branches);
-                    let names: Vec<&str> =
-                        state.branches.iter().map(|b| b.name.as_str()).collect();
+                    let names: Vec<&str> = state.branches.iter().map(|b| b.name.as_str()).collect();
                     rebuild_filtered_preserving_search(&mut state.branch_list, &names);
                 }
             }
@@ -3614,7 +3611,13 @@ mod tests {
 
         assert!(!state.fetching_remotes);
         assert!(state.error.is_some());
-        assert!(state.error.as_ref().unwrap().contains("network unreachable"));
+        assert!(
+            state
+                .error
+                .as_ref()
+                .unwrap()
+                .contains("network unreachable")
+        );
     }
 
     #[test]

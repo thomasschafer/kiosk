@@ -28,7 +28,7 @@ pub fn resolve_action(
     }
 
     // Handle printable characters for search in search-enabled modes
-    if can_search_in_mode(&state.mode)
+    if state.mode.supports_text_edit()
         && let KeyCode::Char(c) = our_key.code
         && (our_key.modifiers == KeyModifiers::NONE && c.is_ascii_graphic() || c == ' ')
     {
@@ -104,16 +104,4 @@ fn command_to_action(command: &Command, state: &AppState) -> Option<Action> {
             _ => None,
         },
     }
-}
-
-/// Check if the current mode supports search input
-fn can_search_in_mode(mode: &Mode) -> bool {
-    matches!(
-        mode,
-        Mode::RepoSelect
-            | Mode::BranchSelect
-            | Mode::SelectBaseBranch
-            | Mode::Help { .. }
-            | Mode::Setup(SetupStep::SearchDirs)
-    )
 }

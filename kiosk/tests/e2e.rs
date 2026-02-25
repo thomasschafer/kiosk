@@ -2564,7 +2564,7 @@ fn test_e2e_setup_wizard_enter_adds_typed_path_without_selection() {
     wait_for_screen(&env, 2000, |s| s.contains("Add directory"));
 
     // Type the exact path
-    env.send(&target.to_string_lossy().to_string());
+    env.send(target.to_string_lossy().as_ref());
     wait_ms(500);
 
     // Press Enter without navigating to any completion — should add the typed path

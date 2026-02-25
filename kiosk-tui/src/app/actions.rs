@@ -348,9 +348,7 @@ pub(super) fn handle_setup_continue(state: &mut AppState) {
 }
 
 pub(super) fn handle_setup_add_dir(state: &mut AppState) -> Option<super::OpenAction> {
-    let Some(setup) = &mut state.setup else {
-        return None;
-    };
+    let setup = state.setup.as_ref()?;
 
     // If a completion is selected, navigate into it instead of adding
     if let Some(sel) = setup.selected_completion {
@@ -364,11 +362,10 @@ pub(super) fn handle_setup_add_dir(state: &mut AppState) -> Option<super::OpenAc
             state.error = Some("Add at least one directory".to_string());
             return None;
         }
-        // Finish setup
         return Some(super::OpenAction::SetupComplete);
     }
 
-    let setup = state.setup.as_mut().expect("setup checked above");
+    let setup = state.setup.as_mut()?;
     if !setup.dirs.contains(&input_text) {
         setup.dirs.push(input_text);
     }
@@ -450,11 +447,7 @@ pub(super) fn handle_setup_move_selection(state: &mut AppState, delta: i32) {
         Some(current) => {
             if delta > 0 {
                 let next = current.saturating_add(delta.unsigned_abs() as usize);
-                if next >= len {
-                    None
-                } else {
-                    Some(next)
-                }
+                if next >= len { None } else { Some(next) }
             } else if current == 0 {
                 None
             } else {

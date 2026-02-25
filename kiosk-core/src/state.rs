@@ -666,7 +666,7 @@ impl Mode {
         }
     }
 
-    pub(crate) fn supports_text_edit(&self) -> bool {
+    pub fn supports_text_edit(&self) -> bool {
         matches!(
             self,
             Mode::RepoSelect
@@ -749,73 +749,51 @@ pub struct AppState {
 }
 
 impl AppState {
+    fn base(mode: Mode) -> Self {
+        Self {
+            repos: Vec::new(),
+            repo_list: SearchableList::new(0),
+            loading_repos: false,
+            selected_repo_idx: None,
+            branches: Vec::new(),
+            branch_list: SearchableList::new(0),
+            base_branch_selection: None,
+            help_overlay: None,
+            setup: None,
+            split_command: None,
+            mode,
+            loading_branches: false,
+            error: None,
+            active_list_page_rows: 10,
+            pending_worktree_deletes: Vec::new(),
+            session_activity: HashMap::new(),
+            current_repo_path: None,
+            cwd_worktree_path: None,
+        }
+    }
+
     pub fn new(repos: Vec<Repo>, split_command: Option<String>) -> Self {
         let repo_list = SearchableList::new(repos.len());
         Self {
             repos,
             repo_list,
-            loading_repos: false,
-            selected_repo_idx: None,
-            branches: Vec::new(),
-            branch_list: SearchableList::new(0),
-            base_branch_selection: None,
-            help_overlay: None,
-            setup: None,
             split_command,
             mode: Mode::RepoSelect,
-            loading_branches: false,
-            error: None,
-            active_list_page_rows: 10,
-            pending_worktree_deletes: Vec::new(),
-            session_activity: HashMap::new(),
-            current_repo_path: None,
-            cwd_worktree_path: None,
+            ..Self::base(Mode::RepoSelect)
         }
     }
 
     pub fn new_loading(loading_message: &str, split_command: Option<String>) -> Self {
         Self {
-            repos: Vec::new(),
-            repo_list: SearchableList::new(0),
-            loading_repos: false,
-            selected_repo_idx: None,
-            branches: Vec::new(),
-            branch_list: SearchableList::new(0),
-            base_branch_selection: None,
-            help_overlay: None,
-            setup: None,
             split_command,
-            mode: Mode::Loading(loading_message.to_string()),
-            loading_branches: false,
-            error: None,
-            active_list_page_rows: 10,
-            pending_worktree_deletes: Vec::new(),
-            session_activity: HashMap::new(),
-            current_repo_path: None,
-            cwd_worktree_path: None,
+            ..Self::base(Mode::Loading(loading_message.to_string()))
         }
     }
 
     pub fn new_setup() -> Self {
         Self {
-            repos: Vec::new(),
-            repo_list: SearchableList::new(0),
-            loading_repos: false,
-            selected_repo_idx: None,
-            branches: Vec::new(),
-            branch_list: SearchableList::new(0),
-            base_branch_selection: None,
-            help_overlay: None,
             setup: Some(SetupState::new()),
-            split_command: None,
-            mode: Mode::Setup(SetupStep::Welcome),
-            loading_branches: false,
-            error: None,
-            active_list_page_rows: 10,
-            pending_worktree_deletes: Vec::new(),
-            session_activity: HashMap::new(),
-            current_repo_path: None,
-            cwd_worktree_path: None,
+            ..Self::base(Mode::Setup(SetupStep::Welcome))
         }
     }
 

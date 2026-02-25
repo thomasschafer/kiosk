@@ -670,7 +670,7 @@ dependencies = [
 
 [[package]]
 name = "kiosk"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -685,7 +685,7 @@ dependencies = [
 
 [[package]]
 name = "kiosk-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "bitflags 2.11.0",
@@ -700,11 +700,10 @@ dependencies = [
 
 [[package]]
 name = "kiosk-tui"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "crossterm",
- "dirs",
  "fuzzy-matcher",
  "kiosk-core",
  "ratatui",

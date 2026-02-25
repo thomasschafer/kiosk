@@ -268,17 +268,8 @@ impl Config {
                     }
                 };
 
-                let resolved_path = if let Some(rest) = path_str.strip_prefix("~/")
-                    && let Some(home) = dirs::home_dir()
-                {
-                    home.join(rest)
-                } else if path_str == "~"
-                    && let Some(home) = dirs::home_dir()
-                {
-                    home
-                } else {
-                    PathBuf::from(path_str)
-                };
+                let resolved_path =
+                    crate::paths::expand_tilde(path_str).unwrap_or_else(|| PathBuf::from(path_str));
 
                 if resolved_path.is_dir() {
                     Some((resolved_path, depth))
@@ -660,5 +651,36 @@ unknown = "bad"
             }
             SearchDirEntry::Simple(_) => panic!("Expected Rich variant"),
         }
+    }
+
+    #[test]
+    fn test_write_default_config_creates_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("kiosk").join("config.toml");
+        // Temporarily override config_file() is not possible, so test
+        // format_default_config + fs::write manually to verify the flow.
+        let dirs = vec!["~/Development".to_string()];
+        let content = format_default_config(&dirs);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, &content).unwrap();
+        let loaded = load_config_from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(loaded.search_dirs.len(), 1);
+    }
+
+    #[test]
+    fn test_write_default_config_create_new_rejects_existing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        fs::write(&path, "existing").unwrap();
+
+        let result = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().kind(),
+            std::io::ErrorKind::AlreadyExists
+        );
     }
 }

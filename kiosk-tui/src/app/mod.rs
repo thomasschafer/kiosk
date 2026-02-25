@@ -3062,7 +3062,7 @@ mod tests {
     }
 
     /// Create a temp directory with the given subdirectory names and return
-    /// (tempdir_handle, base_path_with_trailing_slash).
+    /// (`tempdir_handle`, `base_path_with_trailing_slash`).
     fn setup_temp_dirs(names: &[&str]) -> (tempfile::TempDir, String) {
         let tmp = tempfile::tempdir().unwrap();
         for name in names {
@@ -3140,10 +3140,7 @@ mod tests {
         let setup = state.setup.as_mut().unwrap();
         setup.input.text = format!("{base}De");
         setup.input.cursor = setup.input.text.len();
-        setup.completions = vec![
-            format!("{base}Desktop"),
-            format!("{base}Development"),
-        ];
+        setup.completions = vec![format!("{base}Desktop"), format!("{base}Development")];
         setup.selected_completion = Some(1);
 
         handle_setup_tab_complete(&mut state);
@@ -3160,10 +3157,7 @@ mod tests {
         let setup = state.setup.as_mut().unwrap();
         setup.input.text = format!("{base}De");
         setup.input.cursor = setup.input.text.len();
-        setup.completions = vec![
-            format!("{base}Desktop"),
-            format!("{base}Development"),
-        ];
+        setup.completions = vec![format!("{base}Desktop"), format!("{base}Development")];
         setup.selected_completion = None;
 
         handle_setup_tab_complete(&mut state);
@@ -3267,10 +3261,7 @@ mod tests {
         let setup = state.setup.as_mut().unwrap();
         setup.input.text = format!("{base}De");
         setup.input.cursor = setup.input.text.len();
-        setup.completions = vec![
-            format!("{base}Desktop"),
-            format!("{base}Development"),
-        ];
+        setup.completions = vec![format!("{base}Desktop"), format!("{base}Development")];
         setup.selected_completion = Some(1);
 
         let result = handle_setup_add_dir(&mut state);
@@ -3354,7 +3345,11 @@ mod tests {
 
         let setup = state.setup.as_ref().unwrap();
         assert_eq!(setup.completions.len(), 2);
-        let names: Vec<&str> = setup.completions.iter().map(|s| s.as_str()).collect();
+        let names: Vec<&str> = setup
+            .completions
+            .iter()
+            .map(std::string::String::as_str)
+            .collect();
         assert!(names.iter().any(|n| n.contains("Desktop")));
         assert!(names.iter().any(|n| n.contains("Development")));
     }
@@ -3381,11 +3376,31 @@ mod tests {
     #[test]
     fn setup_continue_transitions_to_search_dirs() {
         let mut state = AppState::new_setup();
-        assert_eq!(state.mode, Mode::Setup(kiosk_core::state::SetupStep::Welcome));
+        assert_eq!(
+            state.mode,
+            Mode::Setup(kiosk_core::state::SetupStep::Welcome)
+        );
 
         handle_setup_continue(&mut state);
-        assert_eq!(state.mode, Mode::Setup(kiosk_core::state::SetupStep::SearchDirs));
+        assert_eq!(
+            state.mode,
+            Mode::Setup(kiosk_core::state::SetupStep::SearchDirs)
+        );
         assert!(state.setup.is_some());
+    }
+
+    #[test]
+    fn setup_continue_preserves_existing_state() {
+        let mut state = make_setup_state();
+        let setup = state.setup.as_mut().unwrap();
+        setup.dirs.push("~/existing".to_string());
+
+        handle_setup_continue(&mut state);
+        assert_eq!(
+            state.mode,
+            Mode::Setup(kiosk_core::state::SetupStep::SearchDirs)
+        );
+        assert_eq!(state.setup.as_ref().unwrap().dirs.len(), 1);
     }
 
     // ── Full flow integration ──

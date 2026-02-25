@@ -17,12 +17,12 @@ Add a keybinding to your `tmux.conf` to open Kiosk in a popup - the following us
 bind-key f popup -xC -yC -w90% -h90% -E "kiosk"
 ```
 
-- On first interactive launch (when no config file exists), you'll see a setup wizard to create your config file. If you'd rather do this manually, see the [configuration](#configuration) section
-- You'll start in the repo view, which shows all repos in the folders defined in your config
+- On first interactive launch (when no config file exists), you'll see a setup wizard to create your config file. If you'd rather do this manually, see the [configuration](#configuration) section.
+- You'll start in the repo view, which shows all repos in the folders defined in your config:
   - Start typing to fuzzy search across repos
   - Enter opens the repo with the primary checkout
   - Tab opens the branch view for that repo
-- From the branch view, you can again fuzzy match across branches
+- From the branch view, you can again fuzzy match across branches:
   - Enter opens a session in a worktree on that branch, either attaching to an existing session if one exists, or creating a new one otherwise
 
 ### CLI
@@ -111,7 +111,7 @@ The `open --json` response includes the exact session name in the `session` fiel
 
 ## Installing
 
-### crates.io
+### Cargo
 
 Ensure you have the Rust toolchain installed, then run:
 

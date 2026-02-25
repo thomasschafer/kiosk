@@ -1,16 +1,9 @@
 use std::{fs, path::PathBuf};
 
-/// Expand `~` to home directory for filesystem operations
-pub fn expand_tilde(path: &str) -> PathBuf {
-    if path == "~" {
-        dirs::home_dir().unwrap_or_else(|| PathBuf::from("."))
-    } else if let Some(rest) = path.strip_prefix("~/") {
-        dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(rest)
-    } else {
-        PathBuf::from(path)
-    }
+/// Expand `~` to home directory for filesystem operations.
+/// Falls back to `.` if the home directory cannot be determined.
+fn expand_tilde(path: &str) -> PathBuf {
+    kiosk_core::paths::expand_tilde(path).unwrap_or_else(|| PathBuf::from("."))
 }
 
 /// Split input into (`parent_dir`, prefix).
@@ -123,21 +116,6 @@ mod tests {
             split_input("/usr/local/bin"),
             ("/usr/local/".to_string(), "bin".to_string())
         );
-    }
-
-    #[test]
-    fn test_expand_tilde_absolute() {
-        assert_eq!(
-            expand_tilde("/absolute/path"),
-            PathBuf::from("/absolute/path")
-        );
-    }
-
-    #[test]
-    fn test_expand_tilde_with_rest() {
-        let expanded = expand_tilde("~/test");
-        assert!(expanded.to_string_lossy().contains("test"));
-        assert!(!expanded.to_string_lossy().starts_with('~'));
     }
 
     #[test]

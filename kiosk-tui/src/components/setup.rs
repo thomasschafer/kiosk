@@ -6,7 +6,7 @@ use kiosk_core::state::{AppState, Mode, SetupStep};
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Layout},
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Padding, Paragraph, Wrap},
 };
@@ -67,7 +67,7 @@ fn draw_search_dirs(f: &mut Frame, state: &AppState, theme: &Theme) {
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" Setup: Add search directories ")
+        .title(" Add search directories ")
         .border_style(Style::default().fg(theme.accent))
         .padding(Padding::uniform(1));
     let inner = block.inner(area);
@@ -95,7 +95,7 @@ fn draw_search_dirs(f: &mut Frame, state: &AppState, theme: &Theme) {
 
     // Description
     let desc = Paragraph::new("Kiosk scans these directories for git repos.")
-        .style(Style::default().fg(theme.muted))
+        .style(Style::default())
         .alignment(Alignment::Center);
     f.render_widget(desc, chunks[0]);
 
@@ -105,8 +105,8 @@ fn draw_search_dirs(f: &mut Frame, state: &AppState, theme: &Theme) {
         chunks[1],
         &search_bar::SearchBarStyle {
             title: "Add directory",
-            placeholder: "~/Development",
-            border_color: theme.accent,
+            placeholder: "",
+            border_color: Color::Reset,
             muted_color: theme.muted,
         },
         &setup.input.text,
@@ -196,7 +196,7 @@ fn draw_search_dirs(f: &mut Frame, state: &AppState, theme: &Theme) {
             "[Esc]",
             Style::default().fg(theme.hint).add_modifier(Modifier::BOLD),
         ),
-        Span::raw(" quit"),
+        Span::raw(" deselect / quit"),
     ]);
     let instructions = Paragraph::new(hints).alignment(Alignment::Center);
     f.render_widget(instructions, instructions_area);

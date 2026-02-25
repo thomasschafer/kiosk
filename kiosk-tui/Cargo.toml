@@ -14,7 +14,6 @@ categories = ["command-line-utilities"]
 [dependencies]
 anyhow.workspace = true
 crossterm = "0.29"
-dirs = "6"
 fuzzy-matcher = "0.3"
 kiosk-core.workspace = true
 ratatui = "0.30"

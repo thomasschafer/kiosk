@@ -397,7 +397,6 @@ pub(super) fn spawn_tracking_worktree_creation(
 pub(super) fn spawn_agent_status_poller<T: TmuxProvider + ?Sized + 'static>(
     tmux: &Arc<T>,
     sender: &EventSender,
-    sessions: Vec<String>,
     cancel: Arc<AtomicBool>,
     poll_interval: std::time::Duration,
 ) {
@@ -411,7 +410,13 @@ pub(super) fn spawn_agent_status_poller<T: TmuxProvider + ?Sized + 'static>(
                 return;
             }
 
-            // Always emit a full snapshot so consumers can clear stale statuses
+            // Query tmux for all active sessions each cycle so newly created
+            // worktrees/sessions are detected without restarting the poller.
+            let sessions: Vec<String> = tmux
+                .list_sessions_with_activity()
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect();
             let states = detect_agent_statuses(&*tmux, &sessions);
             sender.send(AppEvent::AgentStatesUpdated { states });
 

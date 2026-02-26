@@ -4,34 +4,37 @@ use super::{AgentKind, AgentState};
 ///
 /// Order matters: more specific patterns are checked first to avoid false positives
 /// (e.g. "cursor-agent" before "agent", "codex" before generic patterns).
-pub fn detect_agent_kind(pane_command: &str, child_process_args: Option<&str>) -> AgentKind {
+pub fn detect_agent_kind(
+    pane_command: &str,
+    child_process_args: Option<&str>,
+) -> Option<AgentKind> {
     // Check pane command first
     let cmd_lower = pane_command.to_lowercase();
     if cmd_lower.contains("claude") {
-        return AgentKind::ClaudeCode;
+        return Some(AgentKind::ClaudeCode);
     }
     if cmd_lower.contains("codex") {
-        return AgentKind::Codex;
+        return Some(AgentKind::Codex);
     }
     if cmd_lower.contains("cursor-agent") {
-        return AgentKind::CursorAgent;
+        return Some(AgentKind::CursorAgent);
     }
 
     // Check child process args if available
     if let Some(args) = child_process_args {
         let args_lower = args.to_lowercase();
         if args_lower.contains("claude") {
-            return AgentKind::ClaudeCode;
+            return Some(AgentKind::ClaudeCode);
         }
         if args_lower.contains("codex") {
-            return AgentKind::Codex;
+            return Some(AgentKind::Codex);
         }
         if args_lower.contains("cursor-agent") {
-            return AgentKind::CursorAgent;
+            return Some(AgentKind::CursorAgent);
         }
     }
 
-    AgentKind::Unknown
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -121,7 +124,6 @@ pub fn detect_state(content: &str, kind: AgentKind) -> AgentState {
             CURSOR_WAITING_PATTERNS,
             CURSOR_IDLE_TAIL_PATTERNS,
         ),
-        AgentKind::Unknown => AgentState::Idle,
     }
 }
 
@@ -306,24 +308,30 @@ mod tests {
 
     #[test]
     fn test_detect_agent_kind_claude_in_command() {
-        assert_eq!(detect_agent_kind("claude", None), AgentKind::ClaudeCode);
+        assert_eq!(
+            detect_agent_kind("claude", None),
+            Some(AgentKind::ClaudeCode)
+        );
         assert_eq!(
             detect_agent_kind("Claude Code", None),
-            AgentKind::ClaudeCode
+            Some(AgentKind::ClaudeCode),
         );
     }
 
     #[test]
     fn test_detect_agent_kind_codex_in_command() {
-        assert_eq!(detect_agent_kind("codex", None), AgentKind::Codex);
-        assert_eq!(detect_agent_kind("some-codex-tool", None), AgentKind::Codex);
+        assert_eq!(detect_agent_kind("codex", None), Some(AgentKind::Codex));
+        assert_eq!(
+            detect_agent_kind("some-codex-tool", None),
+            Some(AgentKind::Codex)
+        );
     }
 
     #[test]
     fn test_detect_agent_kind_cursor_agent_in_command() {
         assert_eq!(
             detect_agent_kind("cursor-agent", None),
-            AgentKind::CursorAgent
+            Some(AgentKind::CursorAgent),
         );
     }
 
@@ -331,30 +339,27 @@ mod tests {
     fn test_detect_agent_kind_child_process() {
         assert_eq!(
             detect_agent_kind("bash", Some("python claude_main.py")),
-            AgentKind::ClaudeCode
+            Some(AgentKind::ClaudeCode),
         );
         assert_eq!(
             detect_agent_kind("node", Some("/usr/bin/codex --version")),
-            AgentKind::Codex
+            Some(AgentKind::Codex),
         );
         assert_eq!(
             detect_agent_kind(
                 "node",
                 Some("/home/user/.cursor-agent/versions/0.1.0/index.js")
             ),
-            AgentKind::CursorAgent
+            Some(AgentKind::CursorAgent),
         );
     }
 
     #[test]
     fn test_detect_agent_kind_unknown() {
-        assert_eq!(detect_agent_kind("bash", None), AgentKind::Unknown);
-        assert_eq!(
-            detect_agent_kind("vim", Some("vim file.txt")),
-            AgentKind::Unknown
-        );
+        assert_eq!(detect_agent_kind("bash", None), None);
+        assert_eq!(detect_agent_kind("vim", Some("vim file.txt")), None);
         // "agent" alone is too generic — should not match
-        assert_eq!(detect_agent_kind("agent", None), AgentKind::Unknown);
+        assert_eq!(detect_agent_kind("agent", None), None);
     }
 
     // -- detect_state (full pipeline: ANSI strip + lowercase + detect) -------
@@ -677,18 +682,6 @@ $ touch test.txt
         assert_eq!(detect_state("> ", AgentKind::CursorAgent), AgentState::Idle);
     }
 
-    // -- Unknown kind returns Idle -------------------------------------------
-
-    #[test]
-    fn test_unknown_always_idle() {
-        assert_eq!(
-            detect_state("esc to interrupt", AgentKind::Unknown),
-            AgentState::Idle
-        );
-        assert_eq!(detect_state("(Y/n)", AgentKind::Unknown), AgentState::Idle);
-        assert_eq!(detect_state("", AgentKind::Unknown), AgentState::Idle);
-    }
-
     // -- ANSI stripping ------------------------------------------------------
 
     #[test]
@@ -783,7 +776,6 @@ $ touch test.txt
         // Claude and Codex default to Unknown when no patterns match
         assert_eq!(detect_state("", AgentKind::ClaudeCode), AgentState::Unknown);
         assert_eq!(detect_state("", AgentKind::Codex), AgentState::Unknown);
-        assert_eq!(detect_state("", AgentKind::Unknown), AgentState::Idle);
     }
 
     #[test]
@@ -800,11 +792,14 @@ $ touch test.txt
     #[test]
     fn test_detect_agent_kind_from_child_args() {
         // Direct command detection takes priority
-        assert_eq!(detect_agent_kind("claude", None), AgentKind::ClaudeCode);
-        assert_eq!(detect_agent_kind("codex", None), AgentKind::Codex);
+        assert_eq!(
+            detect_agent_kind("claude", None),
+            Some(AgentKind::ClaudeCode)
+        );
+        assert_eq!(detect_agent_kind("codex", None), Some(AgentKind::Codex));
         assert_eq!(
             detect_agent_kind("cursor-agent", None),
-            AgentKind::CursorAgent
+            Some(AgentKind::CursorAgent),
         );
 
         // Unknown command, but child args contain agent name
@@ -813,22 +808,19 @@ $ touch test.txt
                 "node",
                 Some("/usr/bin/node /home/user/.claude/local/claude")
             ),
-            AgentKind::ClaudeCode
+            Some(AgentKind::ClaudeCode),
         );
         assert_eq!(
             detect_agent_kind("node", Some("codex --full-auto")),
-            AgentKind::Codex
+            Some(AgentKind::Codex),
         );
         assert_eq!(
             detect_agent_kind("bash", Some("/opt/cursor-agent serve")),
-            AgentKind::CursorAgent
+            Some(AgentKind::CursorAgent),
         );
 
         // Neither command nor args match
-        assert_eq!(
-            detect_agent_kind("bash", Some("vim main.rs")),
-            AgentKind::Unknown
-        );
-        assert_eq!(detect_agent_kind("bash", None), AgentKind::Unknown);
+        assert_eq!(detect_agent_kind("bash", Some("vim main.rs")), None);
+        assert_eq!(detect_agent_kind("bash", None), None);
     }
 }

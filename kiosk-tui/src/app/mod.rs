@@ -705,26 +705,17 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
                 state.fetching_remotes = true;
                 spawn::spawn_git_fetch(git, sender, repo_path);
 
-                // Kick off agent status detection for sessions
-                let sessions_to_check: Vec<String> = state
-                    .branches
-                    .iter()
-                    .filter(|branch| branch.has_session)
-                    .filter_map(|branch| {
-                        branch
-                            .worktree_path
-                            .as_ref()
-                            .map(|path| state.repos[repo_idx].tmux_session_name(path))
-                    })
-                    .collect();
+                // Kick off agent status polling. The poller queries tmux for
+                // active sessions each cycle, so it automatically picks up
+                // sessions created after branch view was entered.
+                let has_any_session = state.branches.iter().any(|branch| branch.has_session);
 
-                if !sessions_to_check.is_empty() {
+                if has_any_session {
                     state.cancel_agent_poller();
                     let cancel = Arc::new(AtomicBool::new(false));
                     spawn_agent_status_poller(
                         tmux,
                         sender,
-                        sessions_to_check,
                         Arc::clone(&cancel),
                         state.agent_poll_interval,
                     );

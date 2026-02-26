@@ -473,6 +473,7 @@ fn run_tui(
         s
     };
     state.pending_worktree_deletes = load_pending_worktree_deletes();
+    state.agent_poll_interval = std::time::Duration::from_millis(config.agent.poll_interval_ms);
 
     let theme = Theme::from_config(&config.theme);
 

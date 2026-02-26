@@ -173,7 +173,7 @@ fn detect_codex_state(content: &str, tail: &str) -> AgentState {
 /// 2. Idle tail patterns (e.g. `? for shortcuts`) → Idle
 /// 3. Running patterns in full content + braille spinners → Running
 /// 4. Waiting patterns → Waiting
-/// 5. Default → **Running** (not Idle)
+/// 5. Default → **Unknown** (no recognisable pattern matched)
 fn detect_active_agent_state(
     content: &str,
     tail: &str,
@@ -195,7 +195,7 @@ fn detect_active_agent_state(
     if matches_any(content, waiting_patterns) {
         return AgentState::Waiting;
     }
-    AgentState::Running
+    AgentState::Unknown
 }
 
 /// Generic agent state detection.
@@ -238,22 +238,48 @@ fn contains_braille_spinner(content: &str) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Strip ANSI escape codes from terminal content without regex.
-/// Scans for ESC[ sequences and skips to the terminating byte.
+/// Handles CSI (`ESC [`) sequences, OSC (`ESC ]`) sequences (terminated by
+/// BEL `\x07` or ST `ESC \`), and unknown two-byte `ESC X` sequences.
 fn strip_ansi_codes(content: &str) -> String {
     let mut out = String::with_capacity(content.len());
-    let mut chars = content.chars();
+    let mut chars = content.chars().peekable();
     while let Some(c) = chars.next() {
         if c == '\x1B' {
-            // Check for CSI sequence (ESC + '[')
-            if let Some('[') = chars.next() {
-                // Skip parameter bytes and intermediate bytes until final byte (0x40-0x7E)
-                for c in chars.by_ref() {
-                    if c.is_ascii() && (0x40..=0x7E).contains(&(c as u8)) {
-                        break;
+            match chars.peek() {
+                Some('[') => {
+                    // CSI sequence: ESC [ ... final_byte (0x40-0x7E)
+                    chars.next(); // consume '['
+                    for c in chars.by_ref() {
+                        if c.is_ascii() && (0x40..=0x7E).contains(&(c as u8)) {
+                            break;
+                        }
                     }
                 }
+                Some(']') => {
+                    // OSC sequence: ESC ] ... terminated by BEL (\x07) or ST (ESC \)
+                    chars.next(); // consume ']'
+                    loop {
+                        match chars.next() {
+                            None | Some('\x07') => break,
+                            Some('\x1B') => {
+                                // Check for ST (ESC \)
+                                if chars.peek() == Some(&'\\') {
+                                    chars.next();
+                                }
+                                break;
+                            }
+                            Some(_) => {} // skip OSC payload
+                        }
+                    }
+                }
+                Some(_) => {
+                    // Unknown two-byte escape sequence (ESC X) — drop both
+                    chars.next();
+                }
+                None => {
+                    // Lone ESC at end of string — drop it
+                }
             }
-            // else: lone ESC or other escape — drop both bytes
         } else {
             out.push(c);
         }
@@ -395,20 +421,21 @@ mod tests {
 
     #[test]
     fn test_claude_processing_no_indicators() {
-        // When Claude is processing on alt-screen, no idle footer is visible.
-        // This should be detected as Running, not Idle.
+        // When Claude is processing on alt-screen, no idle footer is visible
+        // and no explicit running indicators are shown either. Without any
+        // recognisable pattern the state is Unknown.
         assert_eq!(
             detect_state(
                 "❯ what files are in this directory?\n\n",
                 AgentKind::ClaudeCode
             ),
-            AgentState::Running
+            AgentState::Unknown
         );
-        // Empty pane (just started up, loading) should also be Running
-        assert_eq!(detect_state("", AgentKind::ClaudeCode), AgentState::Running);
+        // Empty pane (just started up, loading) — Unknown
+        assert_eq!(detect_state("", AgentKind::ClaudeCode), AgentState::Unknown);
         assert_eq!(
             detect_state("$ ", AgentKind::ClaudeCode),
-            AgentState::Running
+            AgentState::Unknown
         );
     }
 
@@ -476,17 +503,17 @@ mod tests {
 
     #[test]
     fn test_codex_processing_no_indicators() {
-        // When Codex is waiting for an API response, no idle footer is visible.
-        // This should be detected as Running, not Idle.
+        // When Codex is waiting for an API response, no idle footer is visible
+        // and no explicit running indicators are shown. State is Unknown.
         assert_eq!(
             detect_state(
                 "› Review main.py and find all the bugs\n\n  100% context left",
                 AgentKind::Codex
             ),
-            AgentState::Running
+            AgentState::Unknown
         );
-        // Just "> " with no "? for shortcuts" → Running
-        assert_eq!(detect_state("> ", AgentKind::Codex), AgentState::Running);
+        // Just "> " with no "? for shortcuts" → Unknown
+        assert_eq!(detect_state("> ", AgentKind::Codex), AgentState::Unknown);
     }
 
     #[test]
@@ -541,7 +568,7 @@ mod tests {
 › Review main.py and find all the bugs
 
                                                                                                      100% context left";
-        assert_eq!(detect_state(content, AgentKind::Codex), AgentState::Running);
+        assert_eq!(detect_state(content, AgentKind::Codex), AgentState::Unknown);
     }
 
     #[test]
@@ -672,6 +699,25 @@ $ touch test.txt
             strip_ansi_codes("\x1B[1;31mBold red\x1B[0m and normal"),
             "Bold red and normal"
         );
+        // OSC sequence terminated by BEL
+        assert_eq!(
+            strip_ansi_codes("\x1B]0;my title\x07some text"),
+            "some text"
+        );
+        // OSC sequence terminated by ST (ESC \)
+        assert_eq!(
+            strip_ansi_codes("\x1B]0;my title\x1B\\some text"),
+            "some text"
+        );
+        // Unknown two-byte escape (e.g. ESC =)
+        assert_eq!(strip_ansi_codes("\x1B=normal"), "normal");
+        // Lone ESC at end of string
+        assert_eq!(strip_ansi_codes("text\x1B"), "text");
+        // Mixed CSI + OSC
+        assert_eq!(
+            strip_ansi_codes("\x1B]2;title\x07\x1B[32mgreen\x1B[0m"),
+            "green"
+        );
     }
 
     #[test]
@@ -734,18 +780,55 @@ $ touch test.txt
 
     #[test]
     fn test_empty_content() {
-        // Claude and Codex default to Running when no patterns match
-        assert_eq!(detect_state("", AgentKind::ClaudeCode), AgentState::Running);
-        assert_eq!(detect_state("", AgentKind::Codex), AgentState::Running);
+        // Claude and Codex default to Unknown when no patterns match
+        assert_eq!(detect_state("", AgentKind::ClaudeCode), AgentState::Unknown);
+        assert_eq!(detect_state("", AgentKind::Codex), AgentState::Unknown);
         assert_eq!(detect_state("", AgentKind::Unknown), AgentState::Idle);
     }
 
     #[test]
     fn test_only_whitespace_content() {
-        // Claude defaults to Running on empty/whitespace content (alt-screen)
+        // Claude returns Unknown on empty/whitespace content (no recognisable pattern)
         assert_eq!(
             detect_state("   \n\n  \t  ", AgentKind::ClaudeCode),
-            AgentState::Running
+            AgentState::Unknown
         );
+    }
+
+    // -- Child process arg parsing -------------------------------------------
+
+    #[test]
+    fn test_detect_agent_kind_from_child_args() {
+        // Direct command detection takes priority
+        assert_eq!(detect_agent_kind("claude", None), AgentKind::ClaudeCode);
+        assert_eq!(detect_agent_kind("codex", None), AgentKind::Codex);
+        assert_eq!(
+            detect_agent_kind("cursor-agent", None),
+            AgentKind::CursorAgent
+        );
+
+        // Unknown command, but child args contain agent name
+        assert_eq!(
+            detect_agent_kind(
+                "node",
+                Some("/usr/bin/node /home/user/.claude/local/claude")
+            ),
+            AgentKind::ClaudeCode
+        );
+        assert_eq!(
+            detect_agent_kind("node", Some("codex --full-auto")),
+            AgentKind::Codex
+        );
+        assert_eq!(
+            detect_agent_kind("bash", Some("/opt/cursor-agent serve")),
+            AgentKind::CursorAgent
+        );
+
+        // Neither command nor args match
+        assert_eq!(
+            detect_agent_kind("bash", Some("vim main.rs")),
+            AgentKind::Unknown
+        );
+        assert_eq!(detect_agent_kind("bash", None), AgentKind::Unknown);
     }
 }

@@ -74,12 +74,26 @@ fn wait_ms(ms: u64) {
 }
 
 /// Poll the tmux pane until `expected` text (case-insensitive) appears, or timeout.
-fn wait_for_pane_content(session: &str, expected: &str, timeout_ms: u64) -> bool {
+fn wait_for_pane_content(
+    session: &str,
+    expected: &str,
+    timeout_ms: u64,
+    tmux_socket: &str,
+) -> bool {
     let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
     let expected_lower = expected.to_lowercase();
     loop {
         let output = Command::new("tmux")
-            .args(["capture-pane", "-t", session, "-p", "-S", "-30"])
+            .args([
+                "-L",
+                tmux_socket,
+                "capture-pane",
+                "-t",
+                session,
+                "-p",
+                "-S",
+                "-30",
+            ])
             .output();
         if let Ok(output) = output {
             let content = String::from_utf8_lossy(&output.stdout).to_lowercase();
@@ -160,6 +174,7 @@ struct AgentTestEnvDefault {
     repo_dir: PathBuf,
     kiosk_session: String,
     repo_name: String,
+    tmux_socket: String,
 }
 
 impl AgentTestEnvDefault {
@@ -188,6 +203,7 @@ impl AgentTestEnvDefault {
 
         // kiosk session name for main worktree = repo name
         let kiosk_session = repo_name.clone();
+        let tmux_socket = format!("kiosk-e2e-agent-{id}");
 
         Self {
             tmp,
@@ -196,10 +212,18 @@ impl AgentTestEnvDefault {
             repo_dir,
             kiosk_session,
             repo_name,
+            tmux_socket,
         }
     }
 
-    /// Launch a fake/real agent in a tmux session on the DEFAULT server.
+    /// Create a `tmux` command with the custom socket.
+    fn tmux_cmd(&self) -> Command {
+        let mut cmd = Command::new("tmux");
+        cmd.args(["-L", &self.tmux_socket]);
+        cmd
+    }
+
+    /// Launch a fake/real agent in a tmux session.
     /// This is what kiosk CLI will find when it runs `tmux list-sessions`.
     fn launch_agent(&self, agent: AgentKind, state: FakeState) {
         if use_real_agents() {
@@ -235,7 +259,8 @@ impl AgentTestEnvDefault {
         };
 
         // Create tmux session named as kiosk expects, starting in repo dir
-        let status = Command::new("tmux")
+        let status = self
+            .tmux_cmd()
             .args([
                 "new-session",
                 "-d",
@@ -254,7 +279,7 @@ impl AgentTestEnvDefault {
 
         // Ensure agent binaries are on PATH inside the tmux session
         let path = agent_path();
-        Command::new("tmux")
+        self.tmux_cmd()
             .args([
                 "send-keys",
                 "-t",
@@ -269,7 +294,7 @@ impl AgentTestEnvDefault {
         // Launch agent interactively in the temp repo dir.
         // This is safe: the repo is a temp dir with only a README.md.
         // The agent will reach its idle prompt without making any changes.
-        Command::new("tmux")
+        self.tmux_cmd()
             .args(["send-keys", "-t", &self.kiosk_session, bin, "Enter"])
             .status()
             .unwrap();
@@ -337,7 +362,8 @@ impl AgentTestEnvDefault {
         let script_path = write_fake_agent_script(self.tmp.path(), agent_name, output_text);
 
         // Create tmux session
-        let status = Command::new("tmux")
+        let status = self
+            .tmux_cmd()
             .args([
                 "new-session",
                 "-d",
@@ -356,7 +382,7 @@ impl AgentTestEnvDefault {
 
         // Run the script (don't use exec -a — it replaces the shell so
         // /proc/pane_pid/children shows the script's children, not the script itself)
-        Command::new("tmux")
+        self.tmux_cmd()
             .args([
                 "send-keys",
                 "-t",
@@ -382,7 +408,7 @@ impl AgentTestEnvDefault {
         };
         if let Some(marker) = marker {
             assert!(
-                wait_for_pane_content(&self.kiosk_session, marker, 10_000),
+                wait_for_pane_content(&self.kiosk_session, marker, 10_000, &self.tmux_socket,),
                 "Timed out waiting for fake {agent_name} script output (marker: {marker:?})"
             );
         } else {
@@ -395,6 +421,7 @@ impl AgentTestEnvDefault {
             .args(args)
             .env("XDG_CONFIG_HOME", &self.config_dir)
             .env("XDG_STATE_HOME", &self.state_dir)
+            .env("KIOSK_TMUX_SOCKET", &self.tmux_socket)
             .output()
             .unwrap();
         assert!(
@@ -416,7 +443,7 @@ impl AgentTestEnvDefault {
 impl Drop for AgentTestEnvDefault {
     fn drop(&mut self) {
         let _ = Command::new("tmux")
-            .args(["kill-session", "-t", &self.kiosk_session])
+            .args(["-L", &self.tmux_socket, "kill-server"])
             .output();
     }
 }
@@ -509,7 +536,8 @@ fn test_e2e_agent_branches_json_codex_running() {
 fn test_e2e_agent_branches_json_no_agent() {
     let env = AgentTestEnvDefault::new("br-no-agent");
     // Create a session but with just a shell — no agent
-    let status = Command::new("tmux")
+    let status = env
+        .tmux_cmd()
         .args([
             "new-session",
             "-d",
@@ -598,7 +626,7 @@ fn test_e2e_agent_status_json_includes_agent() {
 fn test_e2e_agent_status_json_no_agent() {
     let env = AgentTestEnvDefault::new("st-no-agent");
     // Create a plain session
-    Command::new("tmux")
+    env.tmux_cmd()
         .args([
             "new-session",
             "-d",
@@ -651,7 +679,7 @@ fn test_e2e_agent_sessions_json_includes_agent() {
 #[test]
 fn test_e2e_agent_sessions_json_no_agent() {
     let env = AgentTestEnvDefault::new("sess-no-agent");
-    Command::new("tmux")
+    env.tmux_cmd()
         .args([
             "new-session",
             "-d",
@@ -807,7 +835,8 @@ fn test_e2e_agent_codex_stale_content_waiting_then_idle() {
     // Phase 2: kill the fake agent process, then relaunch with idle output.
     // This simulates answering a permission prompt — the old waiting text
     // remains in the scrollback, but the tail now shows idle markers.
-    let _ = Command::new("tmux")
+    let _ = env
+        .tmux_cmd()
         .args(["send-keys", "-t", &env.kiosk_session, "C-c", ""])
         .status();
     wait_ms(1000);
@@ -822,7 +851,7 @@ fn test_e2e_agent_codex_stale_content_waiting_then_idle() {
                          ? for shortcuts";
     let script_path = write_fake_agent_script(env.tmp.path(), "codex", idle_output);
 
-    Command::new("tmux")
+    env.tmux_cmd()
         .args([
             "send-keys",
             "-t",
@@ -833,7 +862,12 @@ fn test_e2e_agent_codex_stale_content_waiting_then_idle() {
         .status()
         .unwrap();
     assert!(
-        wait_for_pane_content(&env.kiosk_session, "? for shortcuts", 10_000),
+        wait_for_pane_content(
+            &env.kiosk_session,
+            "? for shortcuts",
+            10_000,
+            &env.tmux_socket
+        ),
         "Timed out waiting for idle Codex output in phase 2"
     );
 
@@ -864,7 +898,8 @@ fn test_e2e_agent_tui_shows_indicator() {
     // Now launch kiosk TUI in a SEPARATE tmux session to observe it
     let tui_session = format!("{}-tui", env.kiosk_session);
     let binary = kiosk_binary();
-    let status = Command::new("tmux")
+    let status = env
+        .tmux_cmd()
         .args([
             "new-session",
             "-d",
@@ -875,9 +910,10 @@ fn test_e2e_agent_tui_shows_indicator() {
             "-y",
             "30",
             &format!(
-                "XDG_CONFIG_HOME={} XDG_STATE_HOME={} KIOSK_NO_ALT_SCREEN=1 {} ; sleep 2",
+                "XDG_CONFIG_HOME={} XDG_STATE_HOME={} KIOSK_NO_ALT_SCREEN=1 KIOSK_TMUX_SOCKET={} {} ; sleep 2",
                 env.config_dir.to_string_lossy(),
                 env.state_dir.to_string_lossy(),
+                env.tmux_socket,
                 binary.to_string_lossy()
             ),
         ])
@@ -889,7 +925,8 @@ fn test_e2e_agent_tui_shows_indicator() {
     wait_ms(3000);
 
     // Verify the TUI session exists
-    let has_session = Command::new("tmux")
+    let has_session = env
+        .tmux_cmd()
         .args(["has-session", "-t", &tui_session])
         .status()
         .unwrap()
@@ -901,7 +938,8 @@ fn test_e2e_agent_tui_shows_indicator() {
 
     // Verify TUI launched — should show repo list
     let repo_screen = {
-        let output = Command::new("tmux")
+        let output = env
+            .tmux_cmd()
             .args(["capture-pane", "-t", &tui_session, "-p"])
             .output()
             .unwrap();
@@ -909,7 +947,8 @@ fn test_e2e_agent_tui_shows_indicator() {
     };
     if !repo_screen.contains(&env.repo_name) && !repo_screen.contains("repo") {
         // TUI didn't render — skip rather than fail flakily
-        let _ = Command::new("tmux")
+        let _ = env
+            .tmux_cmd()
             .args(["kill-session", "-t", &tui_session])
             .output();
         eprintln!("TUI did not render repo list, skipping: {repo_screen}");
@@ -917,7 +956,7 @@ fn test_e2e_agent_tui_shows_indicator() {
     }
 
     // Navigate: Tab goes to branch picker (Enter opens tmux session)
-    Command::new("tmux")
+    env.tmux_cmd()
         .args(["send-keys", "-t", &tui_session, "Tab"])
         .status()
         .unwrap();
@@ -926,22 +965,24 @@ fn test_e2e_agent_tui_shows_indicator() {
     wait_ms(5000);
 
     let screen = {
-        let output = Command::new("tmux")
+        let output = env
+            .tmux_cmd()
             .args(["capture-pane", "-t", &tui_session, "-p"])
             .output()
             .unwrap();
         String::from_utf8_lossy(&output.stdout).to_string()
     };
 
-    // The TUI should show an agent indicator (⏳ for Waiting, ⚡ for Running)
-    let has_indicator = screen.contains('⏳') || screen.contains('⚡') || screen.contains("Claude");
+    // The TUI should show an agent indicator (● colored dot for any active state)
+    let has_indicator = screen.contains('●');
     assert!(
         has_indicator,
         "TUI branch view should show agent indicator: {screen}"
     );
 
     // Cleanup the TUI session
-    let _ = Command::new("tmux")
+    let _ = env
+        .tmux_cmd()
         .args(["kill-session", "-t", &tui_session])
         .output();
 }

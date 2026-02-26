@@ -34,6 +34,8 @@ pub enum AgentState {
     Waiting,
     /// Agent is at prompt, not doing anything
     Idle,
+    /// Terminal content not yet recognised as any known pattern
+    Unknown,
 }
 
 impl AgentState {
@@ -42,7 +44,7 @@ impl AgentState {
         match self {
             AgentState::Waiting => 2,
             AgentState::Idle => 1,
-            AgentState::Running => 0,
+            AgentState::Running | AgentState::Unknown => 0,
         }
     }
 }
@@ -53,6 +55,7 @@ impl fmt::Display for AgentState {
             AgentState::Running => write!(f, "Running"),
             AgentState::Waiting => write!(f, "Waiting"),
             AgentState::Idle => write!(f, "Idle"),
+            AgentState::Unknown => write!(f, "Unknown"),
         }
     }
 }
@@ -104,39 +107,75 @@ pub fn detect_for_session(
     best
 }
 
-/// Get command-line arguments of child processes for a given PID.
+/// Maximum depth when recursively walking child processes, to prevent
+/// infinite loops in case of unexpected process tree cycles.
+const MAX_CHILD_DEPTH: usize = 8;
+
+/// Get command-line arguments of all descendant processes for a given PID.
+/// Walks the process tree recursively (depth-first) up to [`MAX_CHILD_DEPTH`].
 /// Portable across Linux (incl. WSL) and macOS.
 fn get_child_process_args(pid: u32) -> Option<String> {
-    // Try /proc first (Linux, WSL) — children file contains space-separated child PIDs
-    if let Ok(children) = std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children")) {
-        let mut args = String::new();
-        for child_pid in children.split_whitespace() {
-            if let Ok(cmdline) = std::fs::read_to_string(format!("/proc/{child_pid}/cmdline")) {
-                let readable = cmdline.replace('\0', " ");
-                args.push_str(&readable);
-                args.push('\n');
-            }
+    let mut args = String::new();
+
+    // Try /proc first (Linux, WSL)
+    if get_child_args_procfs(pid, &mut args, 0) {
+        if !args.is_empty() {
+            return Some(args);
         }
+    } else {
+        // Fallback: use pgrep + ps (works on Linux and macOS)
+        get_child_args_pgrep(pid, &mut args, 0);
         if !args.is_empty() {
             return Some(args);
         }
     }
 
-    // Fallback: use pgrep + ps (works on Linux and macOS)
-    let pgrep_output = std::process::Command::new("pgrep")
+    None
+}
+
+/// Recursively collect descendant command lines via `/proc`.
+/// Returns `true` if `/proc` is available (even if no children found).
+fn get_child_args_procfs(pid: u32, args: &mut String, depth: usize) -> bool {
+    if depth >= MAX_CHILD_DEPTH {
+        return true;
+    }
+    let children_path = format!("/proc/{pid}/task/{pid}/children");
+    let Ok(children) = std::fs::read_to_string(&children_path) else {
+        return false; // /proc not available
+    };
+    for child_pid_str in children.split_whitespace() {
+        if let Ok(cmdline) = std::fs::read_to_string(format!("/proc/{child_pid_str}/cmdline")) {
+            let readable = cmdline.replace('\0', " ");
+            args.push_str(&readable);
+            args.push('\n');
+        }
+        // Recurse into this child's children
+        if let Ok(child_pid) = child_pid_str.parse::<u32>() {
+            get_child_args_procfs(child_pid, args, depth + 1);
+        }
+    }
+    true
+}
+
+/// Recursively collect descendant command lines via `pgrep` + `ps`.
+fn get_child_args_pgrep(pid: u32, args: &mut String, depth: usize) {
+    if depth >= MAX_CHILD_DEPTH {
+        return;
+    }
+    let Ok(pgrep_output) = std::process::Command::new("pgrep")
         .args(["-P", &pid.to_string()])
         .output()
-        .ok()?;
-
+    else {
+        return;
+    };
     if !pgrep_output.status.success() {
-        return None;
+        return;
     }
 
-    let pgrep_str = String::from_utf8_lossy(&pgrep_output.stdout).to_string();
+    let pgrep_str = String::from_utf8_lossy(&pgrep_output.stdout);
     let child_pids: Vec<&str> = pgrep_str.lines().filter(|s| !s.is_empty()).collect();
-
     if child_pids.is_empty() {
-        return None;
+        return;
     }
 
     let mut ps_cmd = std::process::Command::new("ps");
@@ -144,16 +183,21 @@ fn get_child_process_args(pid: u32) -> Option<String> {
     for cpid in &child_pids {
         ps_cmd.args(["-p", cpid]);
     }
-    let output = ps_cmd.output().ok()?;
-
-    if output.status.success() {
-        let args = String::from_utf8_lossy(&output.stdout).to_string();
-        if !args.trim().is_empty() {
-            return Some(args);
+    if let Ok(output) = ps_cmd.output()
+        && output.status.success()
+    {
+        let text = String::from_utf8_lossy(&output.stdout);
+        if !text.trim().is_empty() {
+            args.push_str(&text);
         }
     }
 
-    None
+    // Recurse into each child
+    for cpid_str in &child_pids {
+        if let Ok(cpid) = cpid_str.parse::<u32>() {
+            get_child_args_pgrep(cpid, args, depth + 1);
+        }
+    }
 }
 
 #[cfg(test)]

@@ -4,6 +4,17 @@ use std::{path::Path, process::Command};
 
 pub struct CliTmuxProvider;
 
+/// Create a tmux `Command` with optional custom socket from `KIOSK_TMUX_SOCKET` env.
+fn tmux_command() -> Command {
+    let mut cmd = Command::new("tmux");
+    if let Ok(socket) = std::env::var("KIOSK_TMUX_SOCKET")
+        && !socket.is_empty()
+    {
+        cmd.args(["-L", &socket]);
+    }
+    cmd
+}
+
 fn create_session_commands(
     name: &str,
     dir_str: &str,
@@ -34,7 +45,7 @@ fn create_session_commands(
 
 impl TmuxProvider for CliTmuxProvider {
     fn list_sessions_with_activity(&self) -> Vec<(String, u64)> {
-        let output = Command::new("tmux")
+        let output = tmux_command()
             .args(["list-sessions", "-F", "#{session_name}:#{session_activity}"])
             .output();
 
@@ -53,7 +64,7 @@ impl TmuxProvider for CliTmuxProvider {
     }
 
     fn session_exists(&self, name: &str) -> bool {
-        Command::new("tmux")
+        tmux_command()
             .args(["has-session", "-t", &format!("={name}")])
             .output()
             .is_ok_and(|o| o.status.success())
@@ -63,7 +74,7 @@ impl TmuxProvider for CliTmuxProvider {
         let dir_str = dir.to_string_lossy();
 
         for args in create_session_commands(name, &dir_str, split_command) {
-            let output = Command::new("tmux")
+            let output = tmux_command()
                 .args(&args)
                 .output()
                 .with_context(|| format!("failed to execute tmux {}", args.join(" ")))?;
@@ -78,7 +89,7 @@ impl TmuxProvider for CliTmuxProvider {
 
     fn capture_pane(&self, session: &str, lines: usize) -> Result<String> {
         let target = format!("={session}:0.0");
-        let output = Command::new("tmux")
+        let output = tmux_command()
             .args([
                 "capture-pane",
                 "-t",
@@ -102,7 +113,7 @@ impl TmuxProvider for CliTmuxProvider {
         let target = format!("={session}:0.0");
         // Use -l (literal) so tmux doesn't interpret words like "Enter" or "Escape"
         // as special key names, then send Enter separately to submit.
-        let literal = Command::new("tmux")
+        let literal = tmux_command()
             .args(["send-keys", "-t", &target, "-l", keys])
             .output()
             .with_context(|| format!("failed to execute tmux send-keys for session {session}"))?;
@@ -110,7 +121,7 @@ impl TmuxProvider for CliTmuxProvider {
             let stderr = String::from_utf8_lossy(&literal.stderr);
             bail!("tmux send-keys failed: {}", stderr.trim());
         }
-        let enter = Command::new("tmux")
+        let enter = tmux_command()
             .args(["send-keys", "-t", &target, "Enter"])
             .output()
             .with_context(|| {
@@ -128,7 +139,7 @@ impl TmuxProvider for CliTmuxProvider {
         let mut args = vec!["send-keys", "-t", &target];
         args.extend(keys);
 
-        let output = Command::new("tmux").args(&args).output().with_context(|| {
+        let output = tmux_command().args(&args).output().with_context(|| {
             format!("failed to execute tmux send-keys for session {session} pane {pane}")
         })?;
         if !output.status.success() {
@@ -140,7 +151,7 @@ impl TmuxProvider for CliTmuxProvider {
 
     fn send_text_raw(&self, session: &str, pane: &str, text: &str) -> Result<()> {
         let target = format!("={session}:0.{pane}");
-        let output = Command::new("tmux")
+        let output = tmux_command()
             .args(["send-keys", "-t", &target, "-l", text])
             .output()
             .with_context(|| {
@@ -155,7 +166,7 @@ impl TmuxProvider for CliTmuxProvider {
 
     fn capture_pane_with_pane(&self, session: &str, pane: &str, lines: usize) -> Result<String> {
         let target = format!("={session}:0.{pane}");
-        let output = Command::new("tmux")
+        let output = tmux_command()
             .args([
                 "capture-pane",
                 "-t",
@@ -177,7 +188,7 @@ impl TmuxProvider for CliTmuxProvider {
 
     fn pane_current_command(&self, session: &str, pane: &str) -> Result<String> {
         let target = format!("={session}:0.{pane}");
-        let output = Command::new("tmux")
+        let output = tmux_command()
             .args([
                 "display-message",
                 "-t",
@@ -197,7 +208,7 @@ impl TmuxProvider for CliTmuxProvider {
     }
 
     fn session_activity(&self, session: &str) -> Result<u64> {
-        let output = Command::new("tmux")
+        let output = tmux_command()
             .args([
                 "display-message",
                 "-t",
@@ -221,7 +232,7 @@ impl TmuxProvider for CliTmuxProvider {
     }
 
     fn pane_count(&self, session: &str) -> Result<usize> {
-        let output = Command::new("tmux")
+        let output = tmux_command()
             .args([
                 "list-panes",
                 "-t",
@@ -244,7 +255,7 @@ impl TmuxProvider for CliTmuxProvider {
         let target = format!("={session}:0.0");
         let escaped_path = log_path.to_string_lossy().replace('\'', "'\\''");
         let command = format!("cat >> '{escaped_path}'");
-        let output = Command::new("tmux")
+        let output = tmux_command()
             .args(["pipe-pane", "-t", &target, "-o", &command])
             .output()
             .with_context(|| format!("failed to execute tmux pipe-pane for session {session}"))?;
@@ -256,7 +267,7 @@ impl TmuxProvider for CliTmuxProvider {
     }
 
     fn list_clients(&self, session: &str) -> Vec<String> {
-        let output = Command::new("tmux")
+        let output = tmux_command()
             .args([
                 "list-clients",
                 "-t",
@@ -279,18 +290,18 @@ impl TmuxProvider for CliTmuxProvider {
 
     fn switch_to_session(&self, name: &str) {
         if self.is_inside_tmux() {
-            let _ = Command::new("tmux")
+            let _ = tmux_command()
                 .args(["switch-client", "-t", &format!("={name}")])
                 .status();
         } else {
-            let _ = Command::new("tmux")
+            let _ = tmux_command()
                 .args(["attach-session", "-t", &format!("={name}")])
                 .status();
         }
     }
 
     fn kill_session(&self, name: &str) {
-        let _ = Command::new("tmux")
+        let _ = tmux_command()
             .args(["kill-session", "-t", &format!("={name}")])
             .status();
     }
@@ -300,7 +311,7 @@ impl TmuxProvider for CliTmuxProvider {
     }
 
     fn list_panes_detailed(&self, session: &str) -> Vec<PaneInfo> {
-        let output = Command::new("tmux")
+        let output = tmux_command()
             .args([
                 "list-panes",
                 "-s",
@@ -326,7 +337,7 @@ impl TmuxProvider for CliTmuxProvider {
     }
 
     fn capture_pane_content(&self, pane_id: &str, lines: u32) -> Option<String> {
-        let output = Command::new("tmux")
+        let output = tmux_command()
             .args([
                 "capture-pane",
                 "-t",

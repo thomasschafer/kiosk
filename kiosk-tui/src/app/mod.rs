@@ -96,13 +96,6 @@ pub fn run(
     loop {
         terminal.draw(|f| draw(f, state, theme, keys, &spinner_start))?;
 
-        // Auto-dismiss error after 5 seconds
-        if let Some(set_at) = state.error_set_at
-            && set_at.elapsed() >= Duration::from_secs(5)
-        {
-            state.clear_error();
-        }
-
         // Check background channel (non-blocking)
         if let Ok(app_event) = rx.try_recv() {
             if let Some(result) = process_app_event(app_event, state, git, tmux, &event_sender) {
@@ -133,8 +126,18 @@ pub fn run(
                 continue;
             }
 
-            // Clear error on any keypress
-            state.clear_error();
+            // Error toast blocks all input except Cancel (dismiss) and Quit
+            if state.error.is_some() {
+                let mut our_key: kiosk_core::keyboard::KeyEvent = key.into();
+                our_key.canonicalize();
+                if keys.modal.get(&our_key) == Some(&Command::Cancel) {
+                    state.clear_error();
+                } else if keys.general.get(&our_key) == Some(&Command::Quit) {
+                    cancel.store(true, Ordering::Relaxed);
+                    return Ok(Some(OpenAction::Quit));
+                }
+                continue;
+            }
 
             let ctx = ActionContext {
                 git,
@@ -223,7 +226,7 @@ fn draw(
     }
 
     // Error toast overlay (rendered on top of everything)
-    components::error_toast::draw(f, f.area(), state, theme);
+    components::error_toast::draw(f, f.area(), state, keys, theme);
 
     // Footer with key hints
     let footer_hints = build_footer_hints(effective_mode, keys);
@@ -586,7 +589,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             if state.reconcile_pending_worktree_deletes()
                 && let Err(e) = save_pending_worktree_deletes(&state.pending_worktree_deletes)
             {
-                state.set_error(format!("Failed to persist pending deletes: {e}"));
+                state.set_error(&format!("Failed to persist pending deletes: {e}"));
             }
         }
         AppEvent::WorktreeCreated { path, session_name } => {
@@ -602,7 +605,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
         } => {
             state.clear_pending_worktree_delete_by_path(&worktree_path);
             if let Err(e) = save_pending_worktree_deletes(&state.pending_worktree_deletes) {
-                state.set_error(format!("Failed to persist pending deletes: {e}"));
+                state.set_error(&format!("Failed to persist pending deletes: {e}"));
             }
             // Return to branch select and refresh the branch list
             if let Some(repo_idx) = state.selected_repo_idx {
@@ -628,7 +631,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
                     " (also failed to persist pending deletes: {e})"
                 );
             }
-            state.set_error(error_message);
+            state.set_error(&error_message);
             state.loading_branches = false;
             state.mode = Mode::BranchSelect;
         }
@@ -651,7 +654,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             if state.reconcile_pending_worktree_deletes()
                 && let Err(e) = save_pending_worktree_deletes(&state.pending_worktree_deletes)
             {
-                state.set_error(format!("Failed to persist pending deletes: {e}"));
+                state.set_error(&format!("Failed to persist pending deletes: {e}"));
             }
             state.mode = Mode::BranchSelect;
 
@@ -687,7 +690,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             if state.mode == Mode::BranchSelect && current_repo_path == Some(&repo_path) {
                 state.fetching_remotes = false;
                 if let Some(err) = error {
-                    state.error = Some(format!("git fetch failed: {err}"));
+                    state.set_error(&format!("git fetch failed: {err}"));
                 }
                 extend_branches_deduped(state, branches);
             }
@@ -701,7 +704,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
                 state.mode = Mode::BranchSelect;
             }
             state.loading_branches = false;
-            state.set_error(msg);
+            state.set_error(&msg);
         }
     }
     None

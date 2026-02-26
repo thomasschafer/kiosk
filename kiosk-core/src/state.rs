@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
-    time::Instant,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -741,7 +740,6 @@ pub struct AppState {
     pub loading_branches: bool,
     pub fetching_remotes: bool,
     pub error: Option<String>,
-    pub error_set_at: Option<Instant>,
     active_list_page_rows: usize,
     pub pending_worktree_deletes: Vec<PendingWorktreeDelete>,
     pub session_activity: HashMap<String, u64>,
@@ -771,7 +769,6 @@ impl AppState {
             loading_branches: false,
             fetching_remotes: false,
             error: None,
-            error_set_at: None,
             active_list_page_rows: 10,
             pending_worktree_deletes: Vec::new(),
             session_activity: HashMap::new(),
@@ -801,16 +798,14 @@ impl AppState {
         }
     }
 
-    /// Set an error message with a timestamp for auto-dismiss.
-    pub fn set_error(&mut self, msg: String) {
-        self.error = Some(msg);
-        self.error_set_at = Some(Instant::now());
+    pub fn set_error(&mut self, msg: &str) {
+        // Collapse newlines/whitespace runs into single spaces so multi-line
+        // stderr output (e.g. from git) renders cleanly in the error toast.
+        self.error = Some(msg.split_whitespace().collect::<Vec<_>>().join(" "));
     }
 
-    /// Clear the error message and timestamp.
     pub fn clear_error(&mut self) {
         self.error = None;
-        self.error_set_at = None;
     }
 
     pub fn new_setup() -> Self {
@@ -2167,5 +2162,35 @@ mod tests {
     fn test_setup_step_supports_modal() {
         assert!(Mode::Setup(SetupStep::Welcome).supports_modal_actions());
         assert!(Mode::Setup(SetupStep::SearchDirs).supports_modal_actions());
+    }
+
+    #[test]
+    fn test_set_error_collapses_newlines_to_spaces() {
+        let mut state = AppState::new(Vec::new(), None);
+        state.set_error("line one\nline two\nline three");
+        assert_eq!(state.error.as_deref(), Some("line one line two line three"));
+    }
+
+    #[test]
+    fn test_set_error_collapses_carriage_return_newlines() {
+        let mut state = AppState::new(Vec::new(), None);
+        state.set_error("first\r\nsecond\r\nthird");
+        assert_eq!(state.error.as_deref(), Some("first second third"));
+    }
+
+    #[test]
+    fn test_set_error_collapses_multiple_whitespace() {
+        let mut state = AppState::new(Vec::new(), None);
+        state.set_error("spaced   out\n\n\ntext");
+        assert_eq!(state.error.as_deref(), Some("spaced out text"));
+    }
+
+    #[test]
+    fn test_clear_error() {
+        let mut state = AppState::new(Vec::new(), None);
+        state.set_error("something failed");
+        assert!(state.error.is_some());
+        state.clear_error();
+        assert!(state.error.is_none());
     }
 }

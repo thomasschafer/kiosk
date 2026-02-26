@@ -202,15 +202,31 @@ impl GitProvider for CliGitProvider {
         Ok(())
     }
 
-    fn fetch_all(&self, repo_path: &Path) -> Result<()> {
+    fn list_remotes(&self, repo_path: &Path) -> Vec<String> {
+        let Ok(output) = Command::new("git")
+            .arg("remote")
+            .current_dir(repo_path)
+            .output()
+        else {
+            return Vec::new();
+        };
+
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(String::from)
+            .collect()
+    }
+
+    fn fetch_remote(&self, repo_path: &Path, remote: &str) -> Result<()> {
         let output = Command::new("git")
-            .args(["fetch", "--all"])
+            .args(["fetch", remote])
             .current_dir(repo_path)
             .output()?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("git fetch --all failed: {stderr}");
+            anyhow::bail!("git fetch {remote} failed: {stderr}");
         }
 
         Ok(())
@@ -550,7 +566,7 @@ mod tests {
     }
 
     #[test]
-    fn test_fetch_all() {
+    fn test_list_remotes_and_fetch_remote() {
         let tmp = tempfile::tempdir().unwrap();
 
         // Create a "remote" bare repo
@@ -584,6 +600,10 @@ mod tests {
 
         let provider = CliGitProvider;
 
+        // list_remotes should return the configured remote
+        let remotes = provider.list_remotes(&local_dir);
+        assert_eq!(remotes, vec!["origin"]);
+
         // Before fetch, the local repo shouldn't see the new remote branch
         let before = provider.list_remote_branches(&local_dir);
         assert!(
@@ -591,13 +611,33 @@ mod tests {
             "Should not see new-feature before fetch: {before:?}"
         );
 
-        // Fetch and verify the branch appears
-        provider.fetch_all(&local_dir).unwrap();
+        // Fetch the single remote and verify the branch appears
+        provider.fetch_remote(&local_dir, "origin").unwrap();
         let after = provider.list_remote_branches(&local_dir);
         assert!(
             after.contains(&"new-feature".to_string()),
             "Should see new-feature after fetch: {after:?}"
         );
+    }
+
+    #[test]
+    fn test_list_remotes_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_test_repo(tmp.path());
+
+        let provider = CliGitProvider;
+        let remotes = provider.list_remotes(tmp.path());
+        assert!(remotes.is_empty(), "Repo with no remotes: {remotes:?}");
+    }
+
+    #[test]
+    fn test_fetch_remote_nonexistent() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_test_repo(tmp.path());
+
+        let provider = CliGitProvider;
+        let result = provider.fetch_remote(tmp.path(), "nonexistent");
+        assert!(result.is_err());
     }
 }
 

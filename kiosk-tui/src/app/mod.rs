@@ -682,15 +682,14 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
         AppEvent::GitFetchCompleted {
             branches,
             repo_path,
-            error,
+            is_final,
         } => {
             let current_repo_path = state
                 .selected_repo_idx
                 .and_then(|idx| state.repos.get(idx).map(|r| &r.path));
             if state.mode == Mode::BranchSelect && current_repo_path == Some(&repo_path) {
-                state.fetching_remotes = false;
-                if let Some(err) = error {
-                    state.set_error(&format!("git fetch failed: {err}"));
+                if is_final {
+                    state.fetching_remotes = false;
                 }
                 extend_branches_deduped(state, branches);
             }
@@ -3417,7 +3416,7 @@ mod tests {
             AppEvent::GitFetchCompleted {
                 branches: vec![make_branch("feature-new", true)],
                 repo_path: PathBuf::from("/tmp/alpha"),
-                error: None,
+                is_final: true,
             },
             &mut state,
             &git,
@@ -3456,7 +3455,7 @@ mod tests {
                     make_branch("brand-new", true),
                 ],
                 repo_path: PathBuf::from("/tmp/alpha"),
-                error: None,
+                is_final: true,
             },
             &mut state,
             &git,
@@ -3491,7 +3490,7 @@ mod tests {
             AppEvent::GitFetchCompleted {
                 branches: vec![make_branch("feature-x", true)],
                 repo_path: PathBuf::from("/tmp/alpha"),
-                error: None,
+                is_final: true,
             },
             &mut state,
             &git,
@@ -3524,7 +3523,7 @@ mod tests {
             AppEvent::GitFetchCompleted {
                 branches: vec![make_branch("feature-x", true)],
                 repo_path: PathBuf::from("/tmp/alpha"),
-                error: None,
+                is_final: true,
             },
             &mut state,
             &git,
@@ -3593,7 +3592,7 @@ mod tests {
             AppEvent::GitFetchCompleted {
                 branches: vec![make_branch("feature-x", true)],
                 repo_path: PathBuf::from("/tmp/wrong-repo"),
-                error: None,
+                is_final: true,
             },
             &mut state,
             &git,
@@ -3607,7 +3606,45 @@ mod tests {
     }
 
     #[test]
-    fn test_git_fetch_completed_shows_error() {
+    fn test_git_fetch_completed_non_final_keeps_fetching() {
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+        state.selected_repo_idx = Some(0);
+        state.mode = Mode::BranchSelect;
+        state.branches = vec![make_branch("main", false)];
+        state.branch_list.reset(1);
+        state.fetching_remotes = true;
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let sender = make_sender();
+
+        process_app_event(
+            AppEvent::GitFetchCompleted {
+                branches: vec![make_branch("feature-x", true)],
+                repo_path: PathBuf::from("/tmp/alpha"),
+                is_final: false,
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+        );
+
+        assert!(
+            state.fetching_remotes,
+            "non-final event should keep spinner"
+        );
+        assert_eq!(
+            state.branches.len(),
+            2,
+            "branches should extend from non-final events"
+        );
+        assert_eq!(state.branches[1].name, "feature-x");
+    }
+
+    #[test]
+    fn test_git_fetch_completed_final_empty_clears_fetching() {
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
         state.selected_repo_idx = Some(0);
@@ -3622,7 +3659,7 @@ mod tests {
             AppEvent::GitFetchCompleted {
                 branches: vec![],
                 repo_path: PathBuf::from("/tmp/alpha"),
-                error: Some("network unreachable".to_string()),
+                is_final: true,
             },
             &mut state,
             &git,
@@ -3631,14 +3668,7 @@ mod tests {
         );
 
         assert!(!state.fetching_remotes);
-        assert!(state.error.is_some());
-        assert!(
-            state
-                .error
-                .as_ref()
-                .unwrap()
-                .contains("network unreachable")
-        );
+        assert!(state.error.is_none());
     }
 
     #[test]
@@ -3700,7 +3730,7 @@ mod tests {
             AppEvent::GitFetchCompleted {
                 branches: vec![],
                 repo_path: PathBuf::from("/tmp/alpha"),
-                error: None,
+                is_final: true,
             },
             &mut state,
             &git,

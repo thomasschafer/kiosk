@@ -26,9 +26,7 @@ fn build_error_dialog<'a>(error: &'a str, dismiss_key: &str, theme: &Theme) -> D
     let hint = Line::from(vec![
         Span::styled(
             dismiss_key.to_string(),
-            Style::default()
-                .fg(theme.hint)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(theme.hint).add_modifier(Modifier::BOLD),
         ),
         Span::raw(": close"),
     ]);
@@ -41,8 +39,7 @@ fn build_error_dialog<'a>(error: &'a str, dismiss_key: &str, theme: &Theme) -> D
 }
 
 fn cancel_key_label(keys: &KeysConfig) -> String {
-    KeysConfig::find_key(&keys.modal, &Command::Cancel)
-        .map_or("esc".to_string(), |k| k.to_string())
+    KeysConfig::find_key(&keys.modal, &Command::Cancel).map_or("esc".to_string(), |k| k.to_string())
 }
 
 /// Compute the width and height for an error toast dialog.

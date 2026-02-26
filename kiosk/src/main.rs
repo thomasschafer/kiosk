@@ -1,4 +1,5 @@
 mod cli;
+mod logging;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -22,6 +23,10 @@ struct Cli {
     /// Override path to config file
     #[arg(short, long)]
     config: Option<std::path::PathBuf>,
+
+    /// Logging level (trace, debug, info, warn, error)
+    #[arg(long, default_value = logging::DEFAULT_LOG_LEVEL)]
+    log_level: log::LevelFilter,
 
     #[command(subcommand)]
     command: Option<Commands>,
@@ -236,6 +241,11 @@ impl ConfigCommands {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+
+    if let Err(e) = logging::setup_logging(cli.log_level) {
+        eprintln!("Warning: failed to initialise logging: {e}");
+    }
+
     let json_errors = command_wants_json(cli.command.as_ref());
 
     // No explicit --config, default doesn't exist, TUI mode → setup wizard

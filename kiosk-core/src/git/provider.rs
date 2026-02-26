@@ -34,8 +34,10 @@ pub trait GitProvider: Send + Sync {
         branch: &str,
         worktree_path: &Path,
     ) -> Result<()>;
-    /// Run `git fetch --all` to update remote refs.
-    fn fetch_all(&self, repo_path: &Path) -> Result<()>;
+    /// List configured remotes for a repository.
+    fn list_remotes(&self, repo_path: &Path) -> Vec<String>;
+    /// Fetch a single remote.
+    fn fetch_remote(&self, repo_path: &Path, remote: &str) -> Result<()>;
     /// Detect the default branch (main/master) for a repository.
     /// Accepts the already-fetched local branch list to avoid redundant git calls in the fallback.
     fn default_branch(&self, repo_path: &Path, local_branches: &[String]) -> Option<String>;

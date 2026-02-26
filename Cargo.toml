@@ -4,6 +4,7 @@ default-members = ["kiosk"]
 resolver = "3"
 
 [workspace.package]
+# NOTE: also update kiosk-core and kiosk-tui versions in [workspace.dependencies] below
 version = "0.2.2"
 edition = "2024"
 

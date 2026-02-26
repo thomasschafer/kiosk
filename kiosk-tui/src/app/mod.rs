@@ -89,6 +89,7 @@ pub fn run(
     // Start repo discovery in background
     if state.loading_repos || state.repos.is_empty() {
         state.loading_repos = true;
+        state.seen_repo_paths.clear();
         spawn_repo_discovery(git, tmux, &event_sender, search_dirs);
     }
 
@@ -453,6 +454,26 @@ fn rebuild_filtered_preserving_search(list: &mut SearchableList, names: &[&str])
     }
 }
 
+/// Sort repos by activity/name, remap the selected index to follow the same repo,
+/// and rebuild the filtered list preserving any active search query.
+fn sort_repos_preserving_selection(state: &mut AppState) {
+    let selected_repo_path = state
+        .selected_repo_idx
+        .and_then(|idx| state.repos.get(idx).map(|r| r.path.clone()));
+
+    kiosk_core::state::sort_repos(
+        &mut state.repos,
+        state.current_repo_path.as_deref(),
+        &state.session_activity,
+    );
+
+    state.selected_repo_idx =
+        selected_repo_path.and_then(|path| state.repos.iter().position(|r| r.path == path));
+
+    let names: Vec<&str> = state.repos.iter().map(|r| r.name.as_str()).collect();
+    rebuild_filtered_preserving_search(&mut state.repo_list, &names);
+}
+
 /// Handle events from background tasks
 #[allow(clippy::too_many_lines)]
 fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
@@ -482,28 +503,11 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
                 }
             }
 
-            // Sort repos (sort_repos handles current_repo_path priority)
-            kiosk_core::state::sort_repos(
-                &mut repos,
-                state.current_repo_path.as_deref(),
-                &state.session_activity,
-            );
-
-            // Track selected repo so we can update the index after re-sort
-            let selected_repo_path = state
-                .selected_repo_idx
-                .and_then(|idx| state.repos.get(idx).map(|r| r.path.clone()));
-
             state.repos = repos;
             state.loading_repos = false;
             state.loading_branches = false;
 
-            // Update selected_repo_idx to follow the same repo after re-sort
-            state.selected_repo_idx =
-                selected_repo_path.and_then(|path| state.repos.iter().position(|r| r.path == path));
-
-            let names: Vec<&str> = state.repos.iter().map(|r| r.name.as_str()).collect();
-            rebuild_filtered_preserving_search(&mut state.repo_list, &names);
+            sort_repos_preserving_selection(state);
 
             // Only switch to RepoSelect from Loading — don't kick users out of BranchSelect
             if matches!(state.mode, Mode::Loading(_)) {
@@ -555,21 +559,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             }
 
             // Sort repos now that all have been discovered
-            let selected_repo_path = state
-                .selected_repo_idx
-                .and_then(|idx| state.repos.get(idx).map(|r| r.path.clone()));
-
-            kiosk_core::state::sort_repos(
-                &mut state.repos,
-                state.current_repo_path.as_deref(),
-                &state.session_activity,
-            );
-
-            state.selected_repo_idx =
-                selected_repo_path.and_then(|path| state.repos.iter().position(|r| r.path == path));
-
-            let names: Vec<&str> = state.repos.iter().map(|r| r.name.as_str()).collect();
-            rebuild_filtered_preserving_search(&mut state.repo_list, &names);
+            sort_repos_preserving_selection(state);
 
             state.loading_repos = false;
 
@@ -581,21 +571,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             state.session_activity = session_activity;
 
             // Re-sort with activity data
-            let selected_repo_path = state
-                .selected_repo_idx
-                .and_then(|idx| state.repos.get(idx).map(|r| r.path.clone()));
-
-            kiosk_core::state::sort_repos(
-                &mut state.repos,
-                state.current_repo_path.as_deref(),
-                &state.session_activity,
-            );
-
-            state.selected_repo_idx =
-                selected_repo_path.and_then(|path| state.repos.iter().position(|r| r.path == path));
-
-            let names: Vec<&str> = state.repos.iter().map(|r| r.name.as_str()).collect();
-            rebuild_filtered_preserving_search(&mut state.repo_list, &names);
+            sort_repos_preserving_selection(state);
         }
         AppEvent::RepoEnriched {
             repo_path,
@@ -607,8 +583,10 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
                 repo.worktrees = worktrees;
             }
 
-            if state.reconcile_pending_worktree_deletes() {
-                let _ = save_pending_worktree_deletes(&state.pending_worktree_deletes);
+            if state.reconcile_pending_worktree_deletes()
+                && let Err(e) = save_pending_worktree_deletes(&state.pending_worktree_deletes)
+            {
+                state.set_error(format!("Failed to persist pending deletes: {e}"));
             }
         }
         AppEvent::WorktreeCreated { path, session_name } => {
@@ -638,9 +616,8 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             worktree_path,
             error,
         } => {
-            if let Some(repo_idx) = state.selected_repo_idx {
-                let repo_path = state.repos[repo_idx].path.clone();
-                state.clear_pending_worktree_delete_by_branch(&repo_path, &branch_name);
+            if let Some(repo) = state.selected_repo_idx.and_then(|idx| state.repos.get(idx)) {
+                state.clear_pending_worktree_delete_by_branch(&repo.path.clone(), &branch_name);
             } else {
                 state.clear_pending_worktree_delete_by_path(&worktree_path);
             }
@@ -662,20 +639,28 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             session_activity,
         } => {
             state.session_activity = session_activity;
-            if let Some(repo_idx) = state.selected_repo_idx {
-                state.repos[repo_idx].worktrees = worktrees;
+            if let Some(repo) = state
+                .selected_repo_idx
+                .and_then(|idx| state.repos.get_mut(idx))
+            {
+                repo.worktrees = worktrees;
             }
             state.branches = branches;
             state.branch_list.reset(state.branches.len());
             state.loading_branches = false;
-            if state.reconcile_pending_worktree_deletes() {
-                let _ = save_pending_worktree_deletes(&state.pending_worktree_deletes);
+            if state.reconcile_pending_worktree_deletes()
+                && let Err(e) = save_pending_worktree_deletes(&state.pending_worktree_deletes)
+            {
+                state.set_error(format!("Failed to persist pending deletes: {e}"));
             }
             state.mode = Mode::BranchSelect;
 
             // Kick off remote branch loading and background fetch
-            if let Some(repo_idx) = state.selected_repo_idx {
-                let repo_path = state.repos[repo_idx].path.clone();
+            if let Some(repo_path) = state
+                .selected_repo_idx
+                .and_then(|idx| state.repos.get(idx))
+                .map(|r| r.path.clone())
+            {
                 spawn::spawn_remote_branch_loading(
                     git,
                     sender,
@@ -696,7 +681,9 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             repo_path,
             error,
         } => {
-            let current_repo_path = state.selected_repo_idx.map(|idx| &state.repos[idx].path);
+            let current_repo_path = state
+                .selected_repo_idx
+                .and_then(|idx| state.repos.get(idx).map(|r| &r.path));
             if state.mode == Mode::BranchSelect && current_repo_path == Some(&repo_path) {
                 state.fetching_remotes = false;
                 if let Some(err) = error {
@@ -3989,6 +3976,13 @@ mod tests {
 
         // Activity should be stored
         assert_eq!(state.session_activity.get("gamma"), Some(&9999));
+
+        // Selection should still point to beta
+        let selected_name = state
+            .selected_repo_idx
+            .and_then(|idx| state.repos.get(idx))
+            .map(|r| r.name.as_str());
+        assert_eq!(selected_name, Some("beta"));
     }
 
     #[test]

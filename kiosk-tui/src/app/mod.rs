@@ -3867,10 +3867,9 @@ mod tests {
             &sender,
         );
 
-        // Should be ignored since we're not in BranchSelect
+        // Stale event should clear fetching flag but not touch branches
+        assert!(!state.fetching_remotes);
         assert_eq!(state.branches.len(), 1);
-        // fetching_remotes stays true because the event was ignored (wrong mode)
-        assert!(state.fetching_remotes);
     }
 
     #[test]
@@ -4032,8 +4031,8 @@ mod tests {
             &sender,
         );
 
-        // Stale event should leave state untouched
-        assert!(state.fetching_remotes);
+        // Stale event should clear fetching flag but not touch branches
+        assert!(!state.fetching_remotes);
         assert_eq!(state.branches.len(), 1);
     }
 

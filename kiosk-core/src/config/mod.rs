@@ -693,6 +693,40 @@ unknown = "bad"
     }
 
     #[test]
+    fn test_agent_config_defaults() {
+        let config = load_config_from_str(r#"search_dirs = ["~/Dev"]"#).unwrap();
+        assert_eq!(config.agent.poll_interval_ms, 2000);
+    }
+
+    #[test]
+    fn test_agent_config_custom_poll_interval() {
+        let config = load_config_from_str(
+            r#"
+search_dirs = ["~/Dev"]
+
+[agent]
+poll_interval_ms = 5000
+"#,
+        )
+        .unwrap();
+        assert_eq!(config.agent.poll_interval_ms, 5000);
+    }
+
+    #[test]
+    fn test_agent_config_rejects_unknown_fields() {
+        let result = load_config_from_str(
+            r#"
+search_dirs = ["~/Dev"]
+
+[agent]
+poll_interval_ms = 2000
+unknown_field = true
+"#,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn test_write_default_config_create_new_rejects_existing() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("config.toml");

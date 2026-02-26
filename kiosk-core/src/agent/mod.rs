@@ -7,7 +7,6 @@ pub enum AgentKind {
     ClaudeCode,
     Codex,
     CursorAgent,
-    Unknown,
 }
 
 impl fmt::Display for AgentKind {
@@ -16,7 +15,6 @@ impl fmt::Display for AgentKind {
             AgentKind::ClaudeCode => write!(f, "Claude Code"),
             AgentKind::Codex => write!(f, "Codex"),
             AgentKind::CursorAgent => write!(f, "Cursor"),
-            AgentKind::Unknown => write!(f, "Unknown"),
         }
     }
 }
@@ -82,15 +80,13 @@ pub fn detect_for_session(
     let mut best: Option<AgentStatus> = None;
 
     for pane in panes {
-        let mut kind = detect::detect_agent_kind(&pane.command, None);
+        let kind = detect::detect_agent_kind(&pane.command, None).or_else(|| {
+            get_child_process_args(pane.pid)
+                .as_deref()
+                .and_then(|args| detect::detect_agent_kind(&pane.command, Some(args)))
+        });
 
-        if kind == AgentKind::Unknown
-            && let Some(ref args) = get_child_process_args(pane.pid)
-        {
-            kind = detect::detect_agent_kind(&pane.command, Some(args));
-        }
-
-        if kind != AgentKind::Unknown
+        if let Some(kind) = kind
             && let Some(content) = tmux.capture_pane_content(&pane.pane_id, 30)
         {
             let state = detect::detect_state(&content, kind);
@@ -339,6 +335,24 @@ mod tests {
         let tmux = mock_with_agent("ansi-session", "claude", "\x1B[32m⠹ Running tool\x1B[0m");
         let status = detect_for_session(&tmux, "ansi-session").unwrap();
         assert_eq!(status.state, AgentState::Running);
+    }
+
+    #[test]
+    fn pane_has_agent_command_with_empty_content() {
+        // capture_pane_content returns Some("") — agent detected but state is Unknown
+        let mut tmux = MockTmuxProvider::default();
+        tmux.pane_info.insert(
+            "empty-content".to_string(),
+            vec![PaneInfo {
+                pane_id: "%0".to_string(),
+                command: "claude".to_string(),
+                pid: 44444,
+            }],
+        );
+        tmux.pane_content.insert("%0".to_string(), String::new());
+        let status = detect_for_session(&tmux, "empty-content").unwrap();
+        assert_eq!(status.kind, AgentKind::ClaudeCode);
+        assert_eq!(status.state, AgentState::Unknown);
     }
 
     #[test]

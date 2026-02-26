@@ -749,6 +749,9 @@ pub struct AppState {
     pub current_repo_path: Option<PathBuf>,
     /// CWD resolved to repo/worktree root (for branch current detection)
     pub cwd_worktree_path: Option<PathBuf>,
+    /// Tracks repo paths already seen during streaming discovery (O(1) dedup).
+    /// Cleared when a new scan starts.
+    pub seen_repo_paths: HashSet<PathBuf>,
 }
 
 impl AppState {
@@ -774,15 +777,18 @@ impl AppState {
             session_activity: HashMap::new(),
             current_repo_path: None,
             cwd_worktree_path: None,
+            seen_repo_paths: HashSet::new(),
         }
     }
 
     pub fn new(repos: Vec<Repo>, split_command: Option<String>) -> Self {
         let repo_list = SearchableList::new(repos.len());
+        let seen_repo_paths: HashSet<PathBuf> = repos.iter().map(|r| r.path.clone()).collect();
         Self {
             repos,
             repo_list,
             split_command,
+            seen_repo_paths,
             mode: Mode::RepoSelect,
             ..Self::base(Mode::RepoSelect)
         }

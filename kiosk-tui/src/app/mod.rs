@@ -505,48 +505,36 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             let names: Vec<&str> = state.repos.iter().map(|r| r.name.as_str()).collect();
             rebuild_filtered_preserving_search(&mut state.repo_list, &names);
 
-            // Don't reconcile pending deletes here — worktree data may be incomplete
-            // (scan_repos sends stubs). ReposEnriched handles reconciliation.
-
             // Only switch to RepoSelect from Loading — don't kick users out of BranchSelect
             if matches!(state.mode, Mode::Loading(_)) {
                 state.mode = Mode::RepoSelect;
             }
         }
-        AppEvent::ReposFound { repos } => {
-            let selected_repo_path = state
-                .selected_repo_idx
-                .and_then(|idx| state.repos.get(idx).map(|r| r.path.clone()));
+        AppEvent::ReposFound { repo } => {
+            // O(1) dedup via HashSet
+            if state.seen_repo_paths.insert(repo.path.clone()) {
+                state.repos.push(repo);
 
-            // Append new repos, deduplicating by path
-            for repo in repos {
-                if !state.repos.iter().any(|r| r.path == repo.path) {
-                    state.repos.push(repo);
-                }
+                let names: Vec<&str> = state.repos.iter().map(|r| r.name.as_str()).collect();
+                rebuild_filtered_preserving_search(&mut state.repo_list, &names);
             }
 
-            // Sort and rebuild filtered list
-            kiosk_core::state::sort_repos(
-                &mut state.repos,
-                state.current_repo_path.as_deref(),
-                &state.session_activity,
-            );
-
-            state.selected_repo_idx =
-                selected_repo_path.and_then(|path| state.repos.iter().position(|r| r.path == path));
-
-            let names: Vec<&str> = state.repos.iter().map(|r| r.name.as_str()).collect();
-            rebuild_filtered_preserving_search(&mut state.repo_list, &names);
-
-            state.loading_repos = false;
-
-            // Switch to RepoSelect from Loading
+            // Switch to RepoSelect from Loading (so user sees repos appearing)
             if matches!(state.mode, Mode::Loading(_)) {
                 state.mode = Mode::RepoSelect;
             }
         }
         AppEvent::ScanComplete { search_dirs } => {
-            // Run collision resolution using the correct search dir names
+            // Scan is done — clear dedup set (no longer needed until next scan)
+            state.seen_repo_paths.clear();
+
+            // Run collision resolution: disambiguate repos with the same name
+            // by appending the search dir name to session_name.
+            // Uses `path.starts_with(dir)` with longest-prefix matching, which
+            // is equivalent to the batch-mode `apply_collision_resolution` that
+            // pairs each repo with its direct search dir — a repo found under
+            // `dir` always has `path.starts_with(dir)` true, and the longest
+            // matching dir is the one that discovered it.
             let mut name_counts = std::collections::HashMap::<String, usize>::new();
             for repo in &state.repos {
                 *name_counts.entry(repo.name.clone()).or_insert(0) += 1;
@@ -554,7 +542,6 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             if name_counts.values().any(|&count| count > 1) {
                 for repo in &mut state.repos {
                     if name_counts[&repo.name] > 1 {
-                        // Find which search dir this repo belongs to
                         let search_dir_name = search_dirs
                             .iter()
                             .filter(|(dir, _)| repo.path.starts_with(dir))
@@ -566,6 +553,20 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
                     }
                 }
             }
+
+            // Sort repos now that all have been discovered
+            let selected_repo_path = state
+                .selected_repo_idx
+                .and_then(|idx| state.repos.get(idx).map(|r| r.path.clone()));
+
+            kiosk_core::state::sort_repos(
+                &mut state.repos,
+                state.current_repo_path.as_deref(),
+                &state.session_activity,
+            );
+
+            state.selected_repo_idx =
+                selected_repo_path.and_then(|path| state.repos.iter().position(|r| r.path == path));
 
             let names: Vec<&str> = state.repos.iter().map(|r| r.name.as_str()).collect();
             rebuild_filtered_preserving_search(&mut state.repo_list, &names);
@@ -702,42 +703,6 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
                     state.error = Some(format!("git fetch failed: {err}"));
                 }
                 extend_branches_deduped(state, branches);
-            }
-        }
-        AppEvent::ReposEnriched {
-            worktrees_by_repo,
-            session_activity,
-        } => {
-            state.session_activity = session_activity;
-
-            // Update worktrees for each repo
-            for (repo_path, worktrees) in worktrees_by_repo {
-                if let Some(repo) = state.repos.iter_mut().find(|r| r.path == repo_path) {
-                    repo.worktrees = worktrees;
-                }
-            }
-
-            // Track selected repo so we can update the index after re-sort
-            let selected_repo_path = state
-                .selected_repo_idx
-                .and_then(|idx| state.repos.get(idx).map(|r| r.path.clone()));
-
-            // Re-sort repos with full recency data
-            kiosk_core::state::sort_repos(
-                &mut state.repos,
-                state.current_repo_path.as_deref(),
-                &state.session_activity,
-            );
-
-            // Update selected_repo_idx to follow the same repo after re-sort
-            state.selected_repo_idx =
-                selected_repo_path.and_then(|path| state.repos.iter().position(|r| r.path == path));
-
-            let names: Vec<&str> = state.repos.iter().map(|r| r.name.as_str()).collect();
-            rebuild_filtered_preserving_search(&mut state.repo_list, &names);
-
-            if state.reconcile_pending_worktree_deletes() {
-                let _ = save_pending_worktree_deletes(&state.pending_worktree_deletes);
             }
         }
         AppEvent::GitError(msg) => {
@@ -2707,76 +2672,6 @@ mod tests {
         assert_eq!(state.repos.len(), 2);
     }
 
-    #[test]
-    fn test_repos_enriched_updates_worktrees_and_preserves_search() {
-        let repos = vec![make_repo("alpha"), make_repo("beta")];
-        let mut state = AppState::new(repos, None);
-        state.mode = Mode::RepoSelect;
-        // Both repos should have empty worktrees (simulating scan phase)
-        assert!(state.repos[0].worktrees.len() <= 1);
-
-        // Simulate user typing in search
-        state.repo_list.input.text = "bet".to_string();
-        state.repo_list.input.cursor = 3;
-        let matcher = SkimMatcherV2::default();
-        state.repo_list.filtered = state
-            .repos
-            .iter()
-            .enumerate()
-            .filter_map(|(i, r)| matcher.fuzzy_match(&r.name, "bet").map(|score| (i, score)))
-            .collect();
-        state.repo_list.selected = Some(0);
-
-        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
-        let tmux = Arc::new(MockTmuxProvider::default());
-        let sender = make_sender();
-
-        let new_worktrees = vec![Worktree {
-            path: PathBuf::from("/tmp/alpha"),
-            branch: Some("main".to_string()),
-            is_main: true,
-        }];
-
-        let mut activity = std::collections::HashMap::new();
-        activity.insert("alpha".to_string(), 500);
-
-        process_app_event(
-            AppEvent::ReposEnriched {
-                worktrees_by_repo: vec![
-                    (PathBuf::from("/tmp/alpha"), new_worktrees),
-                    (
-                        PathBuf::from("/tmp/beta"),
-                        vec![Worktree {
-                            path: PathBuf::from("/tmp/beta"),
-                            branch: Some("main".to_string()),
-                            is_main: true,
-                        }],
-                    ),
-                ],
-                session_activity: activity,
-            },
-            &mut state,
-            &git,
-            &tmux,
-            &sender,
-        );
-
-        // Worktrees should be updated
-        let alpha = state.repos.iter().find(|r| r.name == "alpha").unwrap();
-        assert_eq!(alpha.worktrees.len(), 1);
-        assert_eq!(alpha.worktrees[0].branch.as_deref(), Some("main"));
-
-        let beta = state.repos.iter().find(|r| r.name == "beta").unwrap();
-        assert_eq!(beta.worktrees.len(), 1);
-
-        // Search state preserved
-        assert_eq!(state.repo_list.input.text, "bet");
-        assert_eq!(state.repo_list.input.cursor, 3);
-
-        // Session activity updated
-        assert_eq!(state.session_activity.get("alpha"), Some(&500));
-    }
-
     // -- loading dialog sizing tests (via Dialog) --
 
     #[test]
@@ -3668,7 +3563,16 @@ mod tests {
 
         process_app_event(
             AppEvent::ReposFound {
-                repos: vec![make_repo("alpha"), make_repo("beta")],
+                repo: make_repo("alpha"),
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+        );
+        process_app_event(
+            AppEvent::ReposFound {
+                repo: make_repo("beta"),
             },
             &mut state,
             &git,
@@ -3760,7 +3664,7 @@ mod tests {
 
         process_app_event(
             AppEvent::ReposFound {
-                repos: vec![make_repo("beta")],
+                repo: make_repo("beta"),
             },
             &mut state,
             &git,
@@ -3842,7 +3746,16 @@ mod tests {
 
         process_app_event(
             AppEvent::ReposFound {
-                repos: vec![make_repo("delta"), make_repo("beta")],
+                repo: make_repo("delta"),
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+        );
+        process_app_event(
+            AppEvent::ReposFound {
+                repo: make_repo("beta"),
             },
             &mut state,
             &git,
@@ -3865,10 +3778,10 @@ mod tests {
         let tmux = Arc::new(MockTmuxProvider::default());
         let sender = make_sender();
 
-        // First batch
+        // First repo
         process_app_event(
             AppEvent::ReposFound {
-                repos: vec![make_repo("alpha")],
+                repo: make_repo("alpha"),
             },
             &mut state,
             &git,
@@ -3878,10 +3791,10 @@ mod tests {
         assert_eq!(state.repos.len(), 1);
         assert_eq!(state.mode, Mode::RepoSelect);
 
-        // Second batch
+        // Second repo
         process_app_event(
             AppEvent::ReposFound {
-                repos: vec![make_repo("beta")],
+                repo: make_repo("beta"),
             },
             &mut state,
             &git,
@@ -3890,10 +3803,10 @@ mod tests {
         );
         assert_eq!(state.repos.len(), 2);
 
-        // Third batch
+        // Third repo
         process_app_event(
             AppEvent::ReposFound {
-                repos: vec![make_repo("gamma")],
+                repo: make_repo("gamma"),
             },
             &mut state,
             &git,
@@ -4112,7 +4025,7 @@ mod tests {
 
         process_app_event(
             AppEvent::ReposFound {
-                repos: vec![make_repo("alpha")],
+                repo: make_repo("alpha"),
             },
             &mut state,
             &git,
@@ -4121,6 +4034,5 @@ mod tests {
         );
 
         assert_eq!(state.mode, Mode::RepoSelect);
-        assert!(!state.loading_repos);
     }
 }

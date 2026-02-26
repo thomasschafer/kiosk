@@ -23,11 +23,8 @@ impl GitProvider for CliGitProvider {
         Self::apply_collision_resolution(repos_with_dirs)
     }
 
-    fn scan_repos_streaming(&self, dir: &Path, depth: u16, on_found: &dyn Fn(Vec<Repo>)) {
-        // Use the per-repo streaming scanner, batching into single-element vecs
-        Self::scan_dir_streaming(dir, depth, &|repo| {
-            on_found(vec![repo]);
-        });
+    fn scan_repos_streaming(&self, dir: &Path, depth: u16, on_found: &dyn Fn(Repo)) {
+        Self::scan_dir_streaming(dir, depth, on_found);
     }
 
     fn discover_repos(&self, dirs: &[(PathBuf, u16)]) -> Vec<Repo> {

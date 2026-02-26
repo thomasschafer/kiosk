@@ -57,26 +57,24 @@ pub(super) fn spawn_repo_discovery<T: TmuxProvider + ?Sized + 'static>(
 
         // Phase 1: Stream repos as they're found.
         // Each repo also kicks off enrichment on the pool immediately.
-        let scan_callback = |repos: Vec<Repo>,
+        let scan_callback = |repo: Repo,
                              git: &Arc<dyn GitProvider>,
                              sender: &EventSender,
                              pool: &rayon::ThreadPool| {
             // Send discovery event first so the repo exists in state
             // before any enrichment event can arrive on the channel.
-            let paths: Vec<_> = repos.iter().map(|r| r.path.clone()).collect();
-            sender.send(AppEvent::ReposFound { repos });
+            let path = repo.path.clone();
+            sender.send(AppEvent::ReposFound { repo });
 
-            for path in paths {
-                let git = Arc::clone(git);
-                let sender = sender.clone();
-                pool.spawn(move || {
-                    let worktrees = git.list_worktrees(&path);
-                    sender.send(AppEvent::RepoEnriched {
-                        repo_path: path,
-                        worktrees,
-                    });
+            let git = Arc::clone(git);
+            let sender = sender.clone();
+            pool.spawn(move || {
+                let worktrees = git.list_worktrees(&path);
+                sender.send(AppEvent::RepoEnriched {
+                    repo_path: path,
+                    worktrees,
                 });
-            }
+            });
         };
 
         if search_dirs.len() == 1 {
@@ -84,9 +82,9 @@ pub(super) fn spawn_repo_discovery<T: TmuxProvider + ?Sized + 'static>(
             let git_ref = &git;
             let sender_ref = &sender;
             let pool_ref = &enrich_pool;
-            git.scan_repos_streaming(dir, *depth, &|repos| {
+            git.scan_repos_streaming(dir, *depth, &|repo| {
                 if !sender_ref.cancel.load(Ordering::Relaxed) {
-                    scan_callback(repos, git_ref, sender_ref, pool_ref);
+                    scan_callback(repo, git_ref, sender_ref, pool_ref);
                 }
             });
         } else {
@@ -100,9 +98,9 @@ pub(super) fn spawn_repo_discovery<T: TmuxProvider + ?Sized + 'static>(
                         if sender.cancel.load(Ordering::Relaxed) {
                             return;
                         }
-                        git.scan_repos_streaming(dir, *depth, &|repos| {
+                        git.scan_repos_streaming(dir, *depth, &|repo| {
                             if !sender.cancel.load(Ordering::Relaxed) {
-                                scan_callback(repos, git, sender, pool);
+                                scan_callback(repo, git, sender, pool);
                             }
                         });
                     });

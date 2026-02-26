@@ -12,8 +12,8 @@ pub enum AppEvent {
         session_activity: HashMap<String, u64>,
     },
 
-    /// Incremental repo scan results (appended to existing list)
-    ReposFound { repos: Vec<Repo> },
+    /// Single repo discovered during streaming scan (appended to existing list)
+    ReposFound { repo: Repo },
 
     /// All scan threads finished — triggers collision resolution and final sort.
     /// Carries `search_dirs` so collision resolution can use the correct search dir names.
@@ -65,12 +65,6 @@ pub enum AppEvent {
 
     /// Session activity data loaded (from tmux, sent once)
     SessionActivityLoaded {
-        session_activity: HashMap<String, u64>,
-    },
-
-    /// Background worktree enrichment completed (phase 2 of discovery)
-    ReposEnriched {
-        worktrees_by_repo: Vec<(PathBuf, Vec<Worktree>)>,
         session_activity: HashMap<String, u64>,
     },
 

@@ -399,11 +399,10 @@ impl AgentTestEnvDefault {
             (_, FakeState::Running) => Some("esc to interrupt"),
             (AgentKind::Claude, FakeState::Waiting) => Some("yes, allow"),
             (AgentKind::Codex, FakeState::Waiting) => Some("yes, proceed"),
-            (AgentKind::Codex, FakeState::Idle) => Some("? for shortcuts"),
+            (AgentKind::Codex | AgentKind::Claude, FakeState::Idle) => Some("? for shortcuts"),
             (AgentKind::CursorAgent, FakeState::Waiting) => Some("trust this workspace"),
-            // Claude/CursorAgent idle output is just "> " — too minimal for
+            // CursorAgent idle output is just "> " — too minimal for
             // reliable content polling (tmux strips trailing whitespace).
-            (AgentKind::Claude, FakeState::Idle) => Some("? for shortcuts"),
             (AgentKind::CursorAgent, FakeState::Idle) => None,
         };
         if let Some(marker) = marker {

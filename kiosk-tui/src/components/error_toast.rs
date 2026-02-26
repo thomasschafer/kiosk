@@ -113,10 +113,7 @@ mod tests {
         let output = render_error_toast(&long_msg, 100, 30);
         assert!(output.contains("Error:"), "should contain 'Error:' label");
         // Long message should be word-wrapped, so multiple lines contain 'a's
-        let content_lines: Vec<&str> = output
-            .lines()
-            .filter(|l| l.contains("aaa"))
-            .collect();
+        let content_lines: Vec<&str> = output.lines().filter(|l| l.contains("aaa")).collect();
         assert!(
             content_lines.len() > 1,
             "long message should wrap across multiple lines"
@@ -151,6 +148,9 @@ mod tests {
                 output.push(buffer[(x, y)].symbol().chars().next().unwrap_or(' '));
             }
         }
-        assert!(!output.contains("Error"), "should not render anything when no error");
+        assert!(
+            !output.contains("Error"),
+            "should not render anything when no error"
+        );
     }
 }

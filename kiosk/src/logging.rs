@@ -6,26 +6,9 @@ const LOG_FILE_NAME: &str = "kiosk.log";
 pub const DEFAULT_LOG_LEVEL: &str = "warn";
 
 pub fn cache_dir() -> PathBuf {
-    #[cfg(unix)]
-    {
-        if let Ok(xdg_cache_home) = std::env::var("XDG_CACHE_HOME")
-            && !xdg_cache_home.is_empty()
-        {
-            return PathBuf::from(xdg_cache_home).join(APP_NAME);
-        }
-        dirs::home_dir()
-            .expect("Unable to find home directory")
-            .join(".cache")
-            .join(APP_NAME)
-    }
-    #[cfg(windows)]
-    {
-        if let Some(cache) = dirs::cache_dir() {
-            cache.join(APP_NAME)
-        } else {
-            std::env::temp_dir().join(APP_NAME)
-        }
-    }
+    dirs::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join(APP_NAME)
 }
 
 pub fn default_log_file() -> PathBuf {
@@ -48,27 +31,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cache_dir_respects_xdg_override() {
-        let dir = tempfile::tempdir().unwrap();
-        let custom = dir.path().join("custom-cache");
-
-        unsafe { std::env::set_var("XDG_CACHE_HOME", &custom) };
-        let result = cache_dir();
-        unsafe { std::env::remove_var("XDG_CACHE_HOME") };
-
-        assert_eq!(result, custom.join(APP_NAME));
-    }
-
-    #[test]
-    fn cache_dir_ignores_empty_xdg() {
-        unsafe { std::env::set_var("XDG_CACHE_HOME", "") };
-        let result = cache_dir();
-        unsafe { std::env::remove_var("XDG_CACHE_HOME") };
-
-        assert!(
-            result.ends_with(format!(".cache/{APP_NAME}").as_str()),
-            "expected default .cache/kiosk path, got: {result:?}"
-        );
+    fn cache_dir_ends_with_app_name() {
+        let dir = cache_dir();
+        assert_eq!(dir.file_name().unwrap(), APP_NAME);
     }
 
     #[test]

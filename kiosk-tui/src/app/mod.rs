@@ -177,10 +177,7 @@ fn draw(
     state.set_active_list_page_rows(page_rows);
 
     // Determine the effective mode for footer hints
-    let effective_mode = match &state.mode {
-        Mode::Help { previous } => previous.as_ref(),
-        other => other,
-    };
+    let effective_mode = state.mode.effective();
 
     match &state.mode {
         Mode::RepoSelect => components::repo_list::draw(f, main_area, state, theme, keys),
@@ -675,7 +672,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             }
         }
         AppEvent::RemoteBranchesLoaded { branches } => {
-            if state.mode == Mode::BranchSelect {
+            if *state.mode.effective() == Mode::BranchSelect {
                 extend_branches_deduped(state, branches);
             }
         }
@@ -687,7 +684,9 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             let current_repo_path = state
                 .selected_repo_idx
                 .and_then(|idx| state.repos.get(idx).map(|r| &r.path));
-            if state.mode == Mode::BranchSelect && current_repo_path == Some(&repo_path) {
+            if *state.mode.effective() == Mode::BranchSelect
+                && current_repo_path == Some(&repo_path)
+            {
                 if is_final {
                     state.fetching_remotes = false;
                 }
@@ -3535,6 +3534,71 @@ mod tests {
         assert_eq!(state.branches.len(), 1);
         // fetching_remotes stays true because the event was ignored (wrong mode)
         assert!(state.fetching_remotes);
+    }
+
+    #[test]
+    fn test_git_fetch_completed_processed_during_help_over_branch_select() {
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+        state.selected_repo_idx = Some(0);
+        state.mode = Mode::Help {
+            previous: Box::new(Mode::BranchSelect),
+        };
+        state.branches = vec![make_branch("main", false)];
+        state.branch_list.reset(1);
+        state.fetching_remotes = true;
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let sender = make_sender();
+
+        process_app_event(
+            AppEvent::GitFetchCompleted {
+                branches: vec![make_branch("feature-x", true)],
+                repo_path: PathBuf::from("/tmp/alpha"),
+                is_final: true,
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+        );
+
+        assert!(
+            !state.fetching_remotes,
+            "is_final should clear spinner even during Help"
+        );
+        assert_eq!(state.branches.len(), 2);
+        assert_eq!(state.branches[1].name, "feature-x");
+    }
+
+    #[test]
+    fn test_remote_branches_loaded_processed_during_help_over_branch_select() {
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+        state.selected_repo_idx = Some(0);
+        state.mode = Mode::Help {
+            previous: Box::new(Mode::BranchSelect),
+        };
+        state.branches = vec![make_branch("main", false)];
+        state.branch_list.reset(1);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let sender = make_sender();
+
+        process_app_event(
+            AppEvent::RemoteBranchesLoaded {
+                branches: vec![make_branch("feature-y", true)],
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+        );
+
+        assert_eq!(state.branches.len(), 2);
+        assert_eq!(state.branches[1].name, "feature-y");
     }
 
     // ── Streaming discovery event tests ──

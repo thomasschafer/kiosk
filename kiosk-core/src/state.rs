@@ -634,6 +634,14 @@ pub enum Mode {
 }
 
 impl Mode {
+    /// The effective mode, looking through overlays like Help.
+    pub fn effective(&self) -> &Mode {
+        match self {
+            Mode::Help { previous } => previous.effective(),
+            other => other,
+        }
+    }
+
     /// Commands to show in the footer bar, in display order.
     pub fn footer_commands(&self) -> &'static [Command] {
         match self {
@@ -2192,5 +2200,29 @@ mod tests {
         assert!(state.error.is_some());
         state.clear_error();
         assert!(state.error.is_none());
+    }
+
+    #[test]
+    fn test_mode_effective_plain() {
+        assert_eq!(*Mode::BranchSelect.effective(), Mode::BranchSelect);
+        assert_eq!(*Mode::RepoSelect.effective(), Mode::RepoSelect);
+    }
+
+    #[test]
+    fn test_mode_effective_sees_through_help() {
+        let mode = Mode::Help {
+            previous: Box::new(Mode::BranchSelect),
+        };
+        assert_eq!(*mode.effective(), Mode::BranchSelect);
+    }
+
+    #[test]
+    fn test_mode_effective_nested_help() {
+        let mode = Mode::Help {
+            previous: Box::new(Mode::Help {
+                previous: Box::new(Mode::RepoSelect),
+            }),
+        };
+        assert_eq!(*mode.effective(), Mode::RepoSelect);
     }
 }

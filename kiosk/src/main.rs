@@ -241,12 +241,13 @@ impl ConfigCommands {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    let json_errors = command_wants_json(cli.command.as_ref());
 
-    if let Err(e) = logging::setup_logging(cli.log_level) {
+    if let Err(e) = logging::setup_logging(cli.log_level)
+        && !json_errors
+    {
         eprintln!("Warning: failed to initialise logging: {e}");
     }
-
-    let json_errors = command_wants_json(cli.command.as_ref());
 
     // No explicit --config, default doesn't exist, TUI mode → setup wizard
     if cli.config.is_none() && cli.command.is_none() && !config::config_file_exists() {

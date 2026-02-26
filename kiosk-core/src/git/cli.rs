@@ -23,6 +23,10 @@ impl GitProvider for CliGitProvider {
         Self::apply_collision_resolution(repos_with_dirs)
     }
 
+    fn scan_repos_streaming(&self, dir: &Path, depth: u16, on_found: &dyn Fn(Repo)) {
+        Self::scan_dir_streaming(dir, depth, on_found);
+    }
+
     fn discover_repos(&self, dirs: &[(PathBuf, u16)]) -> Vec<Repo> {
         let mut repos_with_dirs = Vec::new();
 
@@ -598,14 +602,9 @@ mod tests {
 }
 
 impl CliGitProvider {
-    fn scan_dir_recursive<'a>(
-        &self,
-        dir: &Path,
-        search_root: &'a Path,
-        depth: u16,
-        repos: &mut Vec<(Repo, &'a Path)>,
-        with_worktrees: bool,
-    ) {
+    /// Walk a directory tree up to `depth`, calling `on_repo` for each git repo found.
+    /// Shared traversal logic for both batch and streaming scan paths.
+    fn walk_repos(dir: &Path, depth: u16, on_repo: &mut dyn FnMut(&Path)) {
         let entries = match std::fs::read_dir(dir) {
             Ok(entries) => entries,
             Err(err) => {
@@ -620,22 +619,42 @@ impl CliGitProvider {
                 continue;
             }
 
-            // If this directory is a git repo, add it
             if path.join(GIT_DIR_ENTRY).exists() {
                 let canonical = std::fs::canonicalize(&path).unwrap_or(path);
-                let repo = if with_worktrees {
-                    self.build_repo(&canonical)
-                } else {
-                    Self::build_repo_stub(&canonical)
-                };
-                if let Some(repo) = repo {
-                    repos.push((repo, search_root));
-                }
+                on_repo(&canonical);
             } else if depth > 1 {
-                // Recurse into subdirectories if we have remaining depth
-                self.scan_dir_recursive(&path, search_root, depth - 1, repos, with_worktrees);
+                Self::walk_repos(&path, depth - 1, on_repo);
             }
         }
+    }
+
+    /// Streaming scan: emits each repo via callback as it's found.
+    fn scan_dir_streaming(dir: &Path, depth: u16, on_found: &dyn Fn(Repo)) {
+        Self::walk_repos(dir, depth, &mut |path| {
+            if let Some(repo) = Self::build_repo_stub(path) {
+                on_found(repo);
+            }
+        });
+    }
+
+    fn scan_dir_recursive<'a>(
+        &self,
+        dir: &Path,
+        search_root: &'a Path,
+        depth: u16,
+        repos: &mut Vec<(Repo, &'a Path)>,
+        with_worktrees: bool,
+    ) {
+        Self::walk_repos(dir, depth, &mut |path| {
+            let repo = if with_worktrees {
+                self.build_repo(path)
+            } else {
+                Self::build_repo_stub(path)
+            };
+            if let Some(repo) = repo {
+                repos.push((repo, search_root));
+            }
+        });
     }
 
     /// Sorts repos by name and disambiguates session names for collisions.

@@ -1,4 +1,5 @@
 use kiosk_core::{event::AppEvent, git::GitProvider, state::BranchEntry};
+use rayon::ThreadPoolBuilder;
 use std::{
     collections::HashMap,
     path::PathBuf,
@@ -10,6 +11,9 @@ use kiosk_core::git::Repo;
 use kiosk_core::tmux::TmuxProvider;
 
 use super::EventSender;
+
+/// Maximum number of concurrent `git worktree list` enrichment calls.
+const ENRICHMENT_POOL_SIZE: usize = 8;
 
 pub(super) fn spawn_repo_discovery<T: TmuxProvider + ?Sized + 'static>(
     git: &Arc<dyn GitProvider>,
@@ -25,38 +29,91 @@ pub(super) fn spawn_repo_discovery<T: TmuxProvider + ?Sized + 'static>(
             return;
         }
 
-        // Phase 1: fast dir-only scan (no git calls)
-        let repos = git.scan_repos(&search_dirs);
-        sender.send(AppEvent::ReposDiscovered {
-            repos: repos.clone(),
-            session_activity: HashMap::new(),
-        });
+        // Kick off session activity fetch immediately — it'll send its own event
+        // as soon as tmux responds, independent of scan/enrichment progress.
+        {
+            let tmux = Arc::clone(&tmux);
+            let sender = sender.clone();
+            thread::spawn(move || {
+                let sessions = tmux.list_sessions_with_activity();
+                let session_activity: HashMap<String, u64> = sessions.into_iter().collect();
+                sender.send(AppEvent::SessionActivityLoaded { session_activity });
+            });
+        }
+
+        // Bounded pool for worktree enrichment — prevents thread explosion
+        // with hundreds of repos.
+        let enrich_pool = match ThreadPoolBuilder::new()
+            .num_threads(ENRICHMENT_POOL_SIZE)
+            .build()
+        {
+            Ok(pool) => Arc::new(pool),
+            Err(e) => {
+                eprintln!("Warning: failed to build enrichment pool: {e}");
+                sender.send(AppEvent::ScanComplete { search_dirs });
+                return;
+            }
+        };
+
+        // Phase 1: Stream repos as they're found.
+        // Each repo also kicks off enrichment on the pool immediately.
+        let scan_callback = |repo: Repo,
+                             git: &Arc<dyn GitProvider>,
+                             sender: &EventSender,
+                             pool: &rayon::ThreadPool| {
+            // Send discovery event first so the repo exists in state
+            // before any enrichment event can arrive on the channel.
+            let path = repo.path.clone();
+            sender.send(AppEvent::ReposFound { repo });
+
+            let git = Arc::clone(git);
+            let sender = sender.clone();
+            pool.spawn(move || {
+                let worktrees = git.list_worktrees(&path);
+                sender.send(AppEvent::RepoEnriched {
+                    repo_path: path,
+                    worktrees,
+                });
+            });
+        };
+
+        if search_dirs.len() == 1 {
+            let (dir, depth) = &search_dirs[0];
+            let git_ref = &git;
+            let sender_ref = &sender;
+            let pool_ref = &enrich_pool;
+            git.scan_repos_streaming(dir, *depth, &|repo| {
+                if !sender_ref.cancel.load(Ordering::Relaxed) {
+                    scan_callback(repo, git_ref, sender_ref, pool_ref);
+                }
+            });
+        } else {
+            // Multiple dirs: scan each in a parallel thread
+            thread::scope(|s| {
+                for (dir, depth) in &search_dirs {
+                    let git = &git;
+                    let sender = &sender;
+                    let pool = &enrich_pool;
+                    s.spawn(move || {
+                        if sender.cancel.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        git.scan_repos_streaming(dir, *depth, &|repo| {
+                            if !sender.cancel.load(Ordering::Relaxed) {
+                                scan_callback(repo, git, sender, pool);
+                            }
+                        });
+                    });
+                }
+            });
+        }
 
         if sender.cancel.load(Ordering::Relaxed) {
             return;
         }
 
-        // Phase 2: enrich with worktrees (parallel git calls) + session activity
-        let repo_paths: Vec<PathBuf> = repos.iter().map(|r| r.path.clone()).collect();
-        let worktrees_by_repo: Vec<(PathBuf, Vec<kiosk_core::git::Worktree>)> =
-            thread::scope(|s| {
-                let handles: Vec<_> = repo_paths
-                    .iter()
-                    .map(|path| {
-                        let git = &git;
-                        s.spawn(move || (path.clone(), git.list_worktrees(path)))
-                    })
-                    .collect();
-                handles.into_iter().map(|h| h.join().unwrap()).collect()
-            });
-
-        let session_activity: HashMap<String, u64> =
-            tmux.list_sessions_with_activity().into_iter().collect();
-
-        sender.send(AppEvent::ReposEnriched {
-            worktrees_by_repo,
-            session_activity,
-        });
+        // Signal scan complete so the UI can run collision resolution
+        sender.send(AppEvent::ScanComplete { search_dirs });
     });
 }
 

@@ -6,11 +6,18 @@ use crate::git::{Repo, Worktree};
 /// These get merged into the main event loop alongside keyboard input.
 #[derive(Debug, Clone)]
 pub enum AppEvent {
-    /// Repository discovery completed
+    /// Repository discovery completed (full batch — replaces repo list)
     ReposDiscovered {
         repos: Vec<Repo>,
         session_activity: HashMap<String, u64>,
     },
+
+    /// Single repo discovered during streaming scan (appended to existing list)
+    ReposFound { repo: Repo },
+
+    /// All scan threads finished — triggers collision resolution and final sort.
+    /// Carries `search_dirs` so collision resolution can use the correct search dir names.
+    ScanComplete { search_dirs: Vec<(PathBuf, u16)> },
 
     /// A background git operation completed successfully
     WorktreeCreated { path: PathBuf, session_name: String },
@@ -50,9 +57,14 @@ pub enum AppEvent {
         error: Option<String>,
     },
 
-    /// Background worktree enrichment completed (phase 2 of discovery)
-    ReposEnriched {
-        worktrees_by_repo: Vec<(PathBuf, Vec<Worktree>)>,
+    /// Single repo enriched with worktree data (streamed from phase 2)
+    RepoEnriched {
+        repo_path: PathBuf,
+        worktrees: Vec<Worktree>,
+    },
+
+    /// Session activity data loaded (from tmux, sent once)
+    SessionActivityLoaded {
         session_activity: HashMap<String, u64>,
     },
 

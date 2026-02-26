@@ -75,12 +75,15 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, _keys: &
                     Style::default().fg(theme.warning),
                 ));
             }
-            // Add agent status indicator if present
-            if let Some(ref agent_status) = branch.agent_status {
+            // Add agent status indicator if present (skip Unknown — no confirmed detection yet)
+            if let Some(ref agent_status) = branch.agent_status
+                && agent_status.state != AgentState::Unknown
+            {
                 let (icon, color) = match agent_status.state {
-                    AgentState::Running => ("⚡", theme.accent),
-                    AgentState::Waiting => ("⏳", theme.warning),
-                    AgentState::Idle => ("🟡", theme.muted),
+                    AgentState::Running => ("●", theme.accent),
+                    AgentState::Waiting => ("●", theme.warning),
+                    AgentState::Idle => ("●", theme.muted),
+                    AgentState::Unknown => unreachable!(),
                 };
                 spans.push(Span::raw(" "));
                 spans.push(Span::styled(icon, Style::default().fg(color)));

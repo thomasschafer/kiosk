@@ -273,4 +273,12 @@ Defaults are shown below.
 
 ```
 
+### `[agent]` section
+
+Agent detection configuration.
+
+#### `poll_interval_ms`
+
+Interval in milliseconds between agent status polls (default: 2000).
+
 <!-- CONFIG END -->

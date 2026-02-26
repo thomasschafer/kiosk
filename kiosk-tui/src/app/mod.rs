@@ -97,13 +97,13 @@ pub fn run(
         spawn_repo_discovery(git, tmux, &event_sender, search_dirs);
     }
 
-    loop {
+    let result = loop {
         terminal.draw(|f| draw(f, state, theme, keys, &spinner_start))?;
 
         // Check background channel (non-blocking)
         if let Ok(app_event) = rx.try_recv() {
             if let Some(result) = process_app_event(app_event, state, git, tmux, &event_sender) {
-                return Ok(Some(result));
+                break result;
             }
             continue;
         }
@@ -125,7 +125,7 @@ pub fn run(
                 {
                     // Signal cancellation to background threads
                     cancel.store(true, Ordering::Relaxed);
-                    return Ok(Some(OpenAction::Quit));
+                    break OpenAction::Quit;
                 }
                 continue;
             }
@@ -153,10 +153,14 @@ pub fn run(
             if let Some(action) = keymap::resolve_action(key, state, keys)
                 && let Some(result) = process_action(action, state, &ctx)
             {
-                return Ok(Some(result));
+                break result;
             }
         }
-    }
+    };
+
+    // Ensure background agent poller is cancelled before exiting
+    state.cancel_agent_poller();
+    Ok(Some(result))
 }
 
 fn draw(
@@ -486,6 +490,9 @@ fn sort_repos_preserving_selection(state: &mut AppState) {
 #[allow(clippy::too_many_lines)]
 /// Deduplicate `incoming` branches against `state.branches`, append any new ones,
 /// and rebuild the filtered list preserving search.
+///
+/// Deduplication is intentionally by name only: local branches take priority
+/// over remote ones with the same name, so a remote-only duplicate is dropped.
 fn extend_branches_deduped(state: &mut AppState, incoming: Vec<BranchEntry>) {
     if incoming.is_empty() {
         return;
@@ -696,7 +703,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
                     local_names.clone(),
                 );
                 state.fetching_remotes = true;
-                spawn::spawn_git_fetch(git, sender, repo_path, local_names);
+                spawn::spawn_git_fetch(git, sender, repo_path);
 
                 // Kick off agent status detection for sessions
                 let sessions_to_check: Vec<String> = state
@@ -714,7 +721,13 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
                 if !sessions_to_check.is_empty() {
                     state.cancel_agent_poller();
                     let cancel = Arc::new(AtomicBool::new(false));
-                    spawn_agent_status_poller(tmux, sender, sessions_to_check, Arc::clone(&cancel));
+                    spawn_agent_status_poller(
+                        tmux,
+                        sender,
+                        sessions_to_check,
+                        Arc::clone(&cancel),
+                        state.agent_poll_interval,
+                    );
                     state.agent_poller_cancel = Some(cancel);
                 }
             }
@@ -729,14 +742,18 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             repo_path,
             is_final,
         } => {
+            // Always clear fetching_remotes — even on repo mismatch — so the
+            // flag doesn't stay stuck if the user switched repos mid-fetch.
+            state.fetching_remotes = false;
+
             let current_repo_path = state
                 .selected_repo_idx
                 .and_then(|idx| state.repos.get(idx).map(|r| &r.path));
             if *state.mode.effective() == Mode::BranchSelect
                 && current_repo_path == Some(&repo_path)
             {
-                if is_final {
-                    state.fetching_remotes = false;
+                if let Some(err) = error {
+                    state.set_error(format!("git fetch failed: {err}"));
                 }
                 extend_branches_deduped(state, branches);
             }

@@ -275,7 +275,6 @@ pub(super) fn spawn_git_fetch(
     git: &Arc<dyn GitProvider>,
     sender: &EventSender,
     repo_path: PathBuf,
-    local_names: Vec<String>,
 ) {
     let git = Arc::clone(git);
     let sender = sender.clone();
@@ -355,6 +354,16 @@ pub(super) fn spawn_git_fetch(
                 });
             });
         }
+        // Re-derive local names after fetch so we use fresh data rather than
+        // the potentially stale set captured at branch-load time.
+        let local_names = git.list_branches(&repo_path);
+        let remote_names = git.list_remote_branches(&repo_path);
+        let branches = BranchEntry::build_remote(&remote_names, &local_names);
+        sender.send(AppEvent::GitFetchCompleted {
+            branches,
+            repo_path,
+            error: None,
+        });
     });
 }
 
@@ -382,9 +391,6 @@ pub(super) fn spawn_tracking_worktree_creation(
     });
 }
 
-/// Interval between agent status polls
-const AGENT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
-
 /// Spawns a background thread that periodically detects agent states for the
 /// given tmux sessions. Runs until `cancel` is set or the sender's app-wide
 /// cancel flag is set.
@@ -393,6 +399,7 @@ pub fn spawn_agent_status_poller<T: TmuxProvider + ?Sized + 'static>(
     sender: &EventSender,
     sessions: Vec<String>,
     cancel: Arc<AtomicBool>,
+    poll_interval: std::time::Duration,
 ) {
     let tmux = Arc::clone(tmux);
     let sender = sender.clone();
@@ -409,7 +416,7 @@ pub fn spawn_agent_status_poller<T: TmuxProvider + ?Sized + 'static>(
             sender.send(AppEvent::AgentStatesUpdated { states });
 
             // Sleep in small increments so we can check cancel promptly
-            let mut remaining = AGENT_POLL_INTERVAL;
+            let mut remaining = poll_interval;
             while !remaining.is_zero() {
                 if is_cancelled() {
                     return;

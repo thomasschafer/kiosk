@@ -70,6 +70,31 @@ pub struct Config {
     /// To unbind an inherited key mapping, assign it to `noop`.
     #[serde(default)]
     pub keys: KeysConfig,
+
+    /// Agent detection configuration.
+    #[serde(default)]
+    pub agent: AgentConfig,
+}
+
+/// Agent detection configuration.
+///
+/// ```toml
+/// [agent]
+/// poll_interval_ms = 2000
+/// ```
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(deny_unknown_fields, default)]
+pub struct AgentConfig {
+    /// Interval in milliseconds between agent status polls (default: 2000).
+    pub poll_interval_ms: u64,
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            poll_interval_ms: 2000,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]

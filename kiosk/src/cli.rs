@@ -934,154 +934,156 @@ fn format_repo_table(repos: &[RepoOutput]) -> String {
     out
 }
 
-fn format_branch_table(entries: &[BranchEntry]) -> String {
-    let branch_header = "branch";
-    let stat_header = "stat";
-    let agent_header = "agent";
-    let worktree_header = "worktree";
-    let branch_width = entries
+/// Build a formatted table with optional agent column.
+/// Each column is a `(header, min_width)` pair. Rows are `Vec<String>`.
+/// When `has_agents` is true an agent column is inserted before the last column.
+fn format_table_with_optional_agent(
+    columns: &[(&str, usize)],
+    rows: &[Vec<String>],
+    agent_values: &[String],
+    has_agents: bool,
+) -> String {
+    // Compute column widths from data
+    let widths: Vec<usize> = columns
         .iter()
-        .map(|entry| entry.name.len())
-        .max()
-        .unwrap_or(branch_header.len())
-        .max(branch_header.len());
-    let stat_width = stat_header.len().max(4);
-    let has_agents = entries.iter().any(|e| e.agent_status.is_some());
+        .enumerate()
+        .map(|(col_idx, (header, min_w))| {
+            rows.iter()
+                .map(|row| row.get(col_idx).map_or(0, String::len))
+                .max()
+                .unwrap_or(header.len())
+                .max(header.len())
+                .max(*min_w)
+        })
+        .collect();
+
+    let agent_header = "agent";
     let agent_width = if has_agents {
-        agent_header.len().max(7)
+        agent_values
+            .iter()
+            .map(String::len)
+            .max()
+            .unwrap_or(agent_header.len())
+            .max(agent_header.len())
     } else {
         0
     };
 
+    // Insert agent column before the last column
+    let agent_insert_pos = columns.len().saturating_sub(1);
+
     let mut out = String::new();
-    if has_agents {
-        let _ = writeln!(
-            out,
-            "{branch_header:<branch_width$}  {stat_header:<stat_width$}  {agent_header:<agent_width$}  {worktree_header}"
-        );
-    } else {
-        let _ = writeln!(
-            out,
-            "{branch_header:<branch_width$}  {stat_header:<stat_width$}  {worktree_header}"
-        );
-    }
-    for entry in entries {
-        let stat = format!(
-            "{}{}{}{}",
-            if entry.is_current { '*' } else { '-' },
-            if entry.worktree_path.is_some() {
-                'W'
-            } else {
-                '-'
-            },
-            if entry.has_session { 'S' } else { '-' },
-            if entry.remote.is_some() { 'R' } else { '-' },
-        );
-        let worktree = entry
-            .worktree_path
-            .as_ref()
-            .map_or_else(|| "-".to_string(), |path| path.display().to_string());
-        if has_agents {
-            let agent = entry
-                .agent_status
-                .map_or_else(|| "-".to_string(), |s| s.state.to_string());
-            let _ = writeln!(
-                out,
-                "{:<branch_width$}  {:<stat_width$}  {:<agent_width$}  {}",
-                entry.name, stat, agent, worktree
-            );
-        } else {
-            let _ = writeln!(
-                out,
-                "{:<branch_width$}  {:<stat_width$}  {}",
-                entry.name, stat, worktree
-            );
+    // Header
+    for (i, (header, _)) in columns.iter().enumerate() {
+        if i > 0 {
+            out.push_str("  ");
         }
+        if has_agents && i == agent_insert_pos {
+            let _ = write!(out, "{agent_header:<agent_width$}  ");
+        }
+        // Last column (when no agent after it): no padding
+        if i == columns.len() - 1 && !(has_agents && i == agent_insert_pos) {
+            let _ = write!(out, "{header}");
+        } else {
+            let _ = write!(out, "{:<width$}", header, width = widths[i]);
+        }
+    }
+    out.push('\n');
+
+    // Rows
+    for (row_idx, row) in rows.iter().enumerate() {
+        for (i, cell) in row.iter().enumerate() {
+            if i > 0 {
+                out.push_str("  ");
+            }
+            if has_agents && i == agent_insert_pos {
+                let agent = agent_values.get(row_idx).map_or("-", String::as_str);
+                let _ = write!(out, "{agent:<agent_width$}  ");
+            }
+            // Last column: no padding
+            if i == row.len() - 1 {
+                let _ = write!(out, "{cell}");
+            } else {
+                let _ = write!(out, "{cell:<width$}", width = widths[i]);
+            }
+        }
+        out.push('\n');
     }
     out
 }
 
+fn format_branch_table(entries: &[BranchEntry]) -> String {
+    let has_agents = entries.iter().any(|e| e.agent_status.is_some());
+    let rows: Vec<Vec<String>> = entries
+        .iter()
+        .map(|entry| {
+            let stat = format!(
+                "{}{}{}{}",
+                if entry.is_current { '*' } else { '-' },
+                if entry.worktree_path.is_some() {
+                    'W'
+                } else {
+                    '-'
+                },
+                if entry.has_session { 'S' } else { '-' },
+                if entry.is_remote { 'R' } else { '-' },
+            );
+            let worktree = entry
+                .worktree_path
+                .as_ref()
+                .map_or_else(|| "-".to_string(), |path| path.display().to_string());
+            vec![entry.name.clone(), stat, worktree]
+        })
+        .collect();
+    let agent_values: Vec<String> = entries
+        .iter()
+        .map(|e| {
+            e.agent_status
+                .map_or_else(|| "-".to_string(), |s| s.state.to_string())
+        })
+        .collect();
+    format_table_with_optional_agent(
+        &[("branch", 0), ("stat", 4), ("worktree", 0)],
+        &rows,
+        &agent_values,
+        has_agents,
+    )
+}
+
 fn format_session_table(rows: &[SessionOutput]) -> String {
-    let session_header = "session";
-    let repo_header = "repo";
-    let branch_header = "branch";
-    let path_header = "path";
-    let attached_header = "attached";
-
-    let session_width = rows
-        .iter()
-        .map(|row| row.session.len())
-        .max()
-        .unwrap_or(session_header.len())
-        .max(session_header.len());
-    let repo_width = rows
-        .iter()
-        .map(|row| row.repo.len())
-        .max()
-        .unwrap_or(repo_header.len())
-        .max(repo_header.len());
-    let branch_width = rows
-        .iter()
-        .map(|row| row.branch.as_deref().unwrap_or("(detached)").len())
-        .max()
-        .unwrap_or(branch_header.len())
-        .max(branch_header.len());
-    let path_width = rows
-        .iter()
-        .map(|row| row.path.display().to_string().len())
-        .max()
-        .unwrap_or(path_header.len())
-        .max(path_header.len());
-
     let has_agents = rows.iter().any(|r| r.agent_status.is_some());
-    let agent_header = "agent";
-    let agent_width = if has_agents {
-        agent_header.len().max(7)
-    } else {
-        0
-    };
-
-    let mut out = String::new();
-    if has_agents {
-        let _ = writeln!(
-            out,
-            "{session_header:<session_width$}  {repo_header:<repo_width$}  {branch_header:<branch_width$}  {agent_header:<agent_width$}  {path_header:<path_width$}  {attached_header}"
-        );
-    } else {
-        let _ = writeln!(
-            out,
-            "{session_header:<session_width$}  {repo_header:<repo_width$}  {branch_header:<branch_width$}  {path_header:<path_width$}  {attached_header}"
-        );
-    }
-    for row in rows {
-        let branch = row.branch.as_deref().unwrap_or("(detached)");
-        if has_agents {
-            let agent = row
-                .agent_status
-                .map_or_else(|| "-".to_string(), |s| s.state.to_string());
-            let _ = writeln!(
-                out,
-                "{:<session_width$}  {:<repo_width$}  {:<branch_width$}  {:<agent_width$}  {:<path_width$}  {}",
-                row.session,
-                row.repo,
+    let table_rows: Vec<Vec<String>> = rows
+        .iter()
+        .map(|row| {
+            let branch = row.branch.as_deref().unwrap_or("(detached)").to_string();
+            vec![
+                row.session.clone(),
+                row.repo.clone(),
                 branch,
-                agent,
-                row.path.display(),
-                row.attached
-            );
-        } else {
-            let _ = writeln!(
-                out,
-                "{:<session_width$}  {:<repo_width$}  {:<branch_width$}  {:<path_width$}  {}",
-                row.session,
-                row.repo,
-                branch,
-                row.path.display(),
-                row.attached
-            );
-        }
-    }
-    out
+                row.path.display().to_string(),
+                row.attached.to_string(),
+            ]
+        })
+        .collect();
+    let agent_values: Vec<String> = rows
+        .iter()
+        .map(|r| {
+            r.agent_status
+                .map_or_else(|| "-".to_string(), |s| s.state.to_string())
+        })
+        .collect();
+    format_table_with_optional_agent(
+        &[
+            ("session", 0),
+            ("repo", 0),
+            ("branch", 0),
+            ("path", 0),
+            ("attached", 0),
+        ],
+        &table_rows,
+        &agent_values,
+        has_agents,
+    )
 }
 
 fn log_dir() -> CliResult<PathBuf> {

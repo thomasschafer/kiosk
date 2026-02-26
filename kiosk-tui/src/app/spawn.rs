@@ -394,7 +394,7 @@ pub(super) fn spawn_tracking_worktree_creation(
 /// Spawns a background thread that periodically detects agent states for the
 /// given tmux sessions. Runs until `cancel` is set or the sender's app-wide
 /// cancel flag is set.
-pub fn spawn_agent_status_poller<T: TmuxProvider + ?Sized + 'static>(
+pub(super) fn spawn_agent_status_poller<T: TmuxProvider + ?Sized + 'static>(
     tmux: &Arc<T>,
     sender: &EventSender,
     sessions: Vec<String>,

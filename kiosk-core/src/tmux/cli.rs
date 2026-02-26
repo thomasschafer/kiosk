@@ -318,7 +318,7 @@ impl TmuxProvider for CliTmuxProvider {
                 "-t",
                 &format!("={session}"),
                 "-F",
-                "#{pane_id}|#{pane_current_command}|#{pane_pid}",
+                "#{pane_id}|#{pane_pid}|#{pane_current_command}",
             ])
             .output();
 
@@ -358,13 +358,16 @@ impl TmuxProvider for CliTmuxProvider {
 }
 
 /// Parse a single line of tmux list-panes output in the format:
-/// `{pane_id}|{pane_current_command}|{pane_pid}`
+/// `{pane_id}|{pane_pid}|{pane_current_command}`
+///
+/// pid is placed before command so that `splitn(3, '|')` absorbs any `|`
+/// characters in the command name into the last field.
 fn parse_pane_line(line: &str) -> Option<PaneInfo> {
     let parts: Vec<&str> = line.splitn(3, '|').collect();
     if parts.len() == 3 {
         let pane_id = parts[0].to_string();
-        let command = parts[1].to_string();
-        let pid = parts[2].parse().ok()?;
+        let pid = parts[1].parse().ok()?;
+        let command = parts[2].to_string();
         Some(PaneInfo {
             pane_id,
             command,
@@ -416,7 +419,7 @@ mod tests {
 
     #[test]
     fn test_parse_pane_line_basic() {
-        let info = parse_pane_line("%0|bash|12345").unwrap();
+        let info = parse_pane_line("%0|12345|bash").unwrap();
         assert_eq!(info.pane_id, "%0");
         assert_eq!(info.command, "bash");
         assert_eq!(info.pid, 12345);
@@ -424,15 +427,24 @@ mod tests {
 
     #[test]
     fn test_parse_pane_line_complex_command() {
-        let info = parse_pane_line("%5|claude-code|99999").unwrap();
+        let info = parse_pane_line("%5|99999|claude-code").unwrap();
         assert_eq!(info.pane_id, "%5");
         assert_eq!(info.command, "claude-code");
         assert_eq!(info.pid, 99999);
     }
 
     #[test]
+    fn test_parse_pane_line_command_with_pipe() {
+        // Command containing | should be absorbed into the last field
+        let info = parse_pane_line("%2|42|some|weird|cmd").unwrap();
+        assert_eq!(info.pane_id, "%2");
+        assert_eq!(info.pid, 42);
+        assert_eq!(info.command, "some|weird|cmd");
+    }
+
+    #[test]
     fn test_parse_pane_line_invalid_pid() {
-        assert!(parse_pane_line("%0|bash|notapid").is_none());
+        assert!(parse_pane_line("%0|notapid|bash").is_none());
     }
 
     #[test]

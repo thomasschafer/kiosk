@@ -625,7 +625,8 @@ fn test_e2e_agent_status_json_includes_agent() {
 fn test_e2e_agent_status_json_no_agent() {
     let env = AgentTestEnvDefault::new("st-no-agent");
     // Create a plain session
-    env.tmux_cmd()
+    let status = env
+        .tmux_cmd()
         .args([
             "new-session",
             "-d",
@@ -636,6 +637,7 @@ fn test_e2e_agent_status_json_no_agent() {
         ])
         .status()
         .unwrap();
+    assert!(status.success(), "Failed to create tmux session");
     wait_ms(500);
 
     let json = env.run_cli_json(&["status", &env.repo_name, "main", "--json"]);
@@ -678,7 +680,8 @@ fn test_e2e_agent_sessions_json_includes_agent() {
 #[test]
 fn test_e2e_agent_sessions_json_no_agent() {
     let env = AgentTestEnvDefault::new("sess-no-agent");
-    env.tmux_cmd()
+    let status = env
+        .tmux_cmd()
         .args([
             "new-session",
             "-d",
@@ -689,6 +692,7 @@ fn test_e2e_agent_sessions_json_no_agent() {
         ])
         .status()
         .unwrap();
+    assert!(status.success(), "Failed to create tmux session");
     wait_ms(500);
 
     let json = env.run_cli_json(&["sessions", "--json"]);

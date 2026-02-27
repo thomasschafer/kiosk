@@ -698,7 +698,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
                     })
                     .collect();
 
-                if !session_names.is_empty() {
+                if !session_names.is_empty() && state.agent_enabled {
                     state.cancel_agent_poller();
                     let cancel = Arc::new(AtomicBool::new(false));
                     spawn_agent_status_poller(

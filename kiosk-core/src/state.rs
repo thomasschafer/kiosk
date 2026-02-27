@@ -744,6 +744,7 @@ pub struct HelpOverlayState {
 
 /// Central application state. Components read from this, actions modify it.
 #[derive(Debug, Clone)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct AppState {
     pub repos: Vec<Repo>,
     pub repo_list: SearchableList,
@@ -769,6 +770,8 @@ pub struct AppState {
     /// Setting this flag stops the current poller; clearing it (via `cancel_agent_poller`)
     /// prepares for a new one.
     pub agent_poller_cancel: Option<Arc<AtomicBool>>,
+    /// Whether agent status detection is enabled (configurable via `[agent] enabled`).
+    pub agent_enabled: bool,
     /// Agent poll interval (configurable via `[agent] poll_interval_ms`).
     pub agent_poll_interval: std::time::Duration,
     /// Main repo root path from CWD (for repo ordering)
@@ -801,6 +804,7 @@ impl AppState {
             pending_worktree_deletes: Vec::new(),
             session_activity: HashMap::new(),
             agent_poller_cancel: None,
+            agent_enabled: true,
             agent_poll_interval: std::time::Duration::from_millis(2000),
             current_repo_path: None,
             cwd_worktree_path: None,

@@ -40,9 +40,10 @@ impl AgentState {
     /// Attention priority: higher means the user should look at this agent first.
     fn attention_priority(self) -> u8 {
         match self {
-            AgentState::Waiting => 2,
-            AgentState::Idle => 1,
-            AgentState::Running | AgentState::Unknown => 0,
+            AgentState::Waiting => 3,
+            AgentState::Idle => 2,
+            AgentState::Running => 1,
+            AgentState::Unknown => 0,
         }
     }
 }
@@ -81,9 +82,16 @@ pub fn detect_for_session(
 
     for pane in panes {
         let kind = detect::detect_agent_kind(&pane.command, None).or_else(|| {
-            get_child_process_args(pane.pid)
-                .as_deref()
-                .and_then(|args| detect::detect_agent_kind(&pane.command, Some(args)))
+            // Only walk the process tree for shell commands where an agent
+            // might be running as a child. Skipping editors, TUI apps, etc.
+            // avoids unnecessary /proc reads and pgrep calls every poll cycle.
+            if is_shell_command(&pane.command) {
+                get_child_process_args(pane.pid)
+                    .as_deref()
+                    .and_then(|args| detect::detect_agent_kind(&pane.command, Some(args)))
+            } else {
+                None
+            }
         });
 
         if let Some(kind) = kind
@@ -101,6 +109,17 @@ pub fn detect_for_session(
     }
 
     best
+}
+
+/// Shell commands where an agent might be running as a child process.
+/// We only walk the process tree for these to avoid unnecessary I/O.
+const SHELL_COMMANDS: &[&str] = &[
+    "bash", "zsh", "fish", "sh", "dash", "ksh", "tcsh", "csh", "nu", "nushell", "pwsh",
+];
+
+fn is_shell_command(command: &str) -> bool {
+    let cmd_lower = command.to_lowercase();
+    SHELL_COMMANDS.iter().any(|s| cmd_lower == *s)
 }
 
 /// Maximum depth when recursively walking child processes, to prevent
@@ -455,5 +474,77 @@ mod tests {
 
         let status = detect_for_session(&tmux, session).unwrap();
         assert_eq!(status.state, AgentState::Waiting);
+    }
+
+    #[test]
+    fn is_shell_command_matches_common_shells() {
+        assert!(super::is_shell_command("bash"));
+        assert!(super::is_shell_command("zsh"));
+        assert!(super::is_shell_command("fish"));
+        assert!(super::is_shell_command("sh"));
+        assert!(super::is_shell_command("dash"));
+        assert!(super::is_shell_command("nu"));
+        assert!(super::is_shell_command("nushell"));
+    }
+
+    #[test]
+    fn is_shell_command_rejects_non_shells() {
+        assert!(!super::is_shell_command("vim"));
+        assert!(!super::is_shell_command("hx"));
+        assert!(!super::is_shell_command("node"));
+        assert!(!super::is_shell_command("python3"));
+        assert!(!super::is_shell_command("cargo"));
+        assert!(!super::is_shell_command("claude"));
+        assert!(!super::is_shell_command("codex"));
+    }
+
+    #[test]
+    fn is_shell_command_case_insensitive() {
+        assert!(super::is_shell_command("Bash"));
+        assert!(super::is_shell_command("ZSH"));
+        assert!(super::is_shell_command("Fish"));
+    }
+
+    #[test]
+    fn attention_priority_ordering() {
+        // Waiting > Idle > Running > Unknown
+        assert!(AgentState::Waiting.attention_priority() > AgentState::Idle.attention_priority());
+        assert!(AgentState::Idle.attention_priority() > AgentState::Running.attention_priority());
+        assert!(
+            AgentState::Running.attention_priority() > AgentState::Unknown.attention_priority()
+        );
+    }
+
+    #[test]
+    fn multi_agent_running_beats_unknown() {
+        // Running should now beat Unknown (they were equal before)
+        let tmux = mock_multi_agent(
+            "multi",
+            &[
+                ("claude", ""),                           // Unknown (empty content)
+                ("claude", "⠋ Reading file src/main.rs"), // Running
+            ],
+        );
+        let status = detect_for_session(&tmux, "multi").unwrap();
+        assert_eq!(status.state, AgentState::Running);
+    }
+
+    #[test]
+    fn child_process_skipped_for_non_shell() {
+        // When pane command is "hx" (not a shell), child process walking
+        // should be skipped entirely — no agent should be detected even if
+        // a child process would match. We test this indirectly: "hx" with
+        // no agent content should return None.
+        let tmux = mock_with_agent("editor-session", "hx", "normal mode");
+        assert!(detect_for_session(&tmux, "editor-session").is_none());
+    }
+
+    #[test]
+    fn child_process_checked_for_shell() {
+        // When pane command is a shell like "bash", detection should still
+        // fall through to child process checking. Since we can't mock /proc,
+        // verify that a shell with no agent content and no children returns None.
+        let tmux = mock_with_agent("shell-session", "bash", "$ ls -la");
+        assert!(detect_for_session(&tmux, "shell-session").is_none());
     }
 }

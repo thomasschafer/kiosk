@@ -381,37 +381,55 @@ pub(super) fn spawn_tracking_worktree_creation(
     });
 }
 
-/// Spawns a background thread that periodically detects agent states for the
-/// given tmux sessions. Runs until `cancel` is set or the sender's app-wide
-/// cancel flag is set.
+/// Spawns a background thread that periodically detects agent states for
+/// sessions relevant to the current branch view. Only polls sessions that
+/// correspond to branches with active tmux sessions, avoiding unnecessary
+/// work for unrelated sessions.
+///
+/// Uses adaptive polling: when any agent is Running or Waiting, polls at
+/// `base_interval`. When all agents are Idle/Unknown, backs off to
+/// `3 × base_interval` to save resources.
 pub(super) fn spawn_agent_status_poller<T: TmuxProvider + ?Sized + 'static>(
     tmux: &Arc<T>,
     sender: &EventSender,
     cancel: Arc<AtomicBool>,
-    poll_interval: std::time::Duration,
+    base_interval: std::time::Duration,
+    session_names: Vec<String>,
 ) {
     let tmux = Arc::clone(tmux);
     let sender = sender.clone();
+    let idle_interval = base_interval.saturating_mul(3);
     thread::spawn(move || {
         let is_cancelled =
             || cancel.load(Ordering::Relaxed) || sender.cancel.load(Ordering::Relaxed);
+        let mut current_interval;
         loop {
             if is_cancelled() {
                 return;
             }
 
-            // Query tmux for all active sessions each cycle so newly created
-            // worktrees/sessions are detected without restarting the poller.
-            let sessions: Vec<String> = tmux
-                .list_sessions_with_activity()
-                .into_iter()
-                .map(|(name, _)| name)
-                .collect();
-            let states = detect_agent_statuses(&*tmux, &sessions);
+            let states = detect_agent_statuses(&*tmux, &session_names);
+
+            // Adapt interval: use fast polling when any agent is active,
+            // slow polling when all are idle/unknown.
+            let any_active = states.iter().any(|(_, status)| {
+                status.as_ref().is_some_and(|s| {
+                    matches!(
+                        s.state,
+                        agent::AgentState::Running | agent::AgentState::Waiting
+                    )
+                })
+            });
+            current_interval = if any_active {
+                base_interval
+            } else {
+                idle_interval
+            };
+
             sender.send(AppEvent::AgentStatesUpdated { states });
 
             // Sleep in small increments so we can check cancel promptly
-            let mut remaining = poll_interval;
+            let mut remaining = current_interval;
             while !remaining.is_zero() {
                 if is_cancelled() {
                     return;

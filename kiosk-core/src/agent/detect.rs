@@ -61,9 +61,18 @@ const CLAUDE_WAITING_PATTERNS: &[&str] = &[
     "do you trust the files",
 ];
 
-/// Claude Code uses alt-screen so stale content is not an issue, but
-/// `? for shortcuts` reliably indicates the idle prompt.
+/// Claude Code uses alt-screen so stale content is not an issue.
+/// `? for shortcuts` is the canonical idle indicator but is NOT reliably
+/// captured by `tmux capture-pane` in Claude Code >= v2.1 (it's rendered as
+/// a status-bar element outside the normal text flow). We fall back to
+/// detecting the input prompt character (`❯`) in the tail.
 const CLAUDE_IDLE_TAIL_PATTERNS: &[&str] = &["? for shortcuts"];
+
+/// Fallback idle patterns for Claude Code: the input prompt `❯` appears on
+/// its own line (possibly with placeholder text) when idle. We check these
+/// against the *last non-empty line* only, after confirming no running or
+/// waiting indicators are present anywhere.
+const CLAUDE_IDLE_PROMPT_PATTERNS: &[&str] = &["❯"];
 
 const CODEX_RUNNING_PATTERNS: &[&str] = &["esc to interrupt"];
 
@@ -132,16 +141,41 @@ pub fn detect_state(content: &str, kind: AgentKind) -> AgentState {
 /// Claude Code uses the alternate screen, so there is no scrollback — the
 /// captured pane content IS what the user sees. When Claude is processing,
 /// the pane shows the user's prompt and empty lines but NO running indicators
-/// (no "esc to interrupt", no spinners). The `? for shortcuts` footer is only
-/// visible when Claude is idle at the input prompt.
+/// (no "esc to interrupt", no spinners).
+///
+/// `? for shortcuts` is the ideal idle signal but isn't reliably captured by
+/// tmux. As a fallback, the input prompt `❯` on the last non-empty line
+/// (with no running/waiting indicators elsewhere) indicates idle.
 fn detect_claude_state(content: &str, tail: &str) -> AgentState {
-    detect_active_agent_state(
+    // First try the standard detection (handles running, waiting, and
+    // the `? for shortcuts` idle pattern if tmux happens to capture it).
+    let state = detect_active_agent_state(
         content,
         tail,
         CLAUDE_RUNNING_PATTERNS,
         CLAUDE_WAITING_PATTERNS,
         CLAUDE_IDLE_TAIL_PATTERNS,
-    )
+    );
+    if state != AgentState::Unknown {
+        return state;
+    }
+
+    // Fallback: check if the last non-empty line starts with the input
+    // prompt character `❯`. This reliably indicates idle even when tmux
+    // doesn't capture the `? for shortcuts` status bar.
+    let last_line = tail
+        .lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("");
+    if CLAUDE_IDLE_PROMPT_PATTERNS
+        .iter()
+        .any(|p| last_line.trim_start().starts_with(p))
+    {
+        return AgentState::Idle;
+    }
+
+    AgentState::Unknown
 }
 
 /// Codex-specific state detection.
@@ -420,6 +454,94 @@ mod tests {
                 "Welcome to Claude Code\n❯ Try \"fix errors\"\n? for shortcuts",
                 AgentKind::ClaudeCode
             ),
+            AgentState::Idle
+        );
+    }
+
+    #[test]
+    fn test_claude_idle_prompt_fallback_without_shortcuts() {
+        // Real Claude Code v2.1+ behaviour: `? for shortcuts` is NOT in the
+        // tmux capture. The `❯` prompt line is the only idle signal.
+        assert_eq!(
+            detect_state(
+                " ▐▛███▜▌   Claude Code v2.1.59\n                 ▝▜█████▛▘  Opus 4.6 · Claude Max\n                   ▘▘ ▝▝    ~/Development/kiosk\n                 \n                 ────────────\n                 ❯ Try \"create a util logging.py that...\"\n                 ────────────\n                   PR #12",
+                AgentKind::ClaudeCode
+            ),
+            AgentState::Idle
+        );
+    }
+
+    #[test]
+    fn test_claude_idle_prompt_bare() {
+        // Just the prompt character on a line — idle
+        assert_eq!(detect_state("❯ ", AgentKind::ClaudeCode), AgentState::Idle);
+    }
+
+    #[test]
+    fn test_claude_idle_prompt_with_user_text() {
+        // User is typing at the prompt — still idle (not running/waiting)
+        assert_eq!(
+            detect_state(
+                "────────────\n❯ fix the bug in main.rs\n────────────\n  PR #12",
+                AgentKind::ClaudeCode
+            ),
+            AgentState::Idle
+        );
+    }
+
+    #[test]
+    fn test_claude_prompt_not_idle_when_running_indicator_present() {
+        // If running indicators are present, the prompt fallback should NOT
+        // override them. Running > Idle.
+        assert_eq!(
+            detect_state(
+                "❯ my question\nProcessing... esc to interrupt",
+                AgentKind::ClaudeCode
+            ),
+            AgentState::Running
+        );
+    }
+
+    #[test]
+    fn test_claude_prompt_not_idle_when_waiting_indicator_present() {
+        // Waiting patterns should take priority over prompt fallback.
+        assert_eq!(
+            detect_state(
+                "❯ my question\nAllow write?\n  Yes, allow\n  No, deny",
+                AgentKind::ClaudeCode
+            ),
+            AgentState::Waiting
+        );
+    }
+
+    #[test]
+    fn test_claude_idle_real_capture_after_response() {
+        // Real tmux capture of Claude after it responded and is back at idle.
+        // Note: no `? for shortcuts` anywhere in this output.
+        let content = "\
+ ▐▛███▜▌   Claude Code v2.1.59\n\
+▝▜█████▛▘  Opus 4.6 · Claude Max\n\
+  ▘▘ ▝▝    ~/Development/kiosk\n\
+\n\
+❯ what is 2+2? reply with just the number\n\
+\n\
+● 4\n\
+\n\
+────────────────────────────────────────\n\
+❯ \n\
+────────────────────────────────────────\n\
+  PR #12";
+        assert_eq!(
+            detect_state(content, AgentKind::ClaudeCode),
+            AgentState::Idle
+        );
+    }
+
+    #[test]
+    fn test_claude_idle_prompt_with_cursor_block() {
+        // Sometimes tmux captures the cursor block character after ❯
+        assert_eq!(
+            detect_state("❯  \n──────\n  PR #12", AgentKind::ClaudeCode),
             AgentState::Idle
         );
     }

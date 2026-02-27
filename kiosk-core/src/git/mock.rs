@@ -14,6 +14,7 @@ pub struct MockGitProvider {
     pub repos: Vec<Repo>,
     pub branches: Vec<String>,
     pub remote_branches: Vec<String>,
+    pub remote_branches_by_remote: HashMap<String, Vec<String>>,
     pub worktrees: Vec<Worktree>,
     pub add_worktree_result: Mutex<Option<Result<()>>>,
     pub create_branch_result: Mutex<Option<Result<()>>>,
@@ -109,8 +110,11 @@ impl GitProvider for MockGitProvider {
             .unwrap_or(Ok(()))
     }
 
-    fn list_remote_branches_for_remote(&self, _repo_path: &Path, _remote: &str) -> Vec<String> {
-        self.remote_branches.clone()
+    fn list_remote_branches_for_remote(&self, _repo_path: &Path, remote: &str) -> Vec<String> {
+        self.remote_branches_by_remote
+            .get(remote)
+            .cloned()
+            .unwrap_or_else(|| self.remote_branches.clone())
     }
 
     fn list_remotes(&self, _repo_path: &Path) -> Vec<String> {

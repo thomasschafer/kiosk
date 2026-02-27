@@ -280,10 +280,21 @@ pub(super) fn spawn_git_fetch(
         let remaining = Arc::new(std::sync::atomic::AtomicUsize::new(remotes.len()));
         let local_names = Arc::new(local_names);
 
-        let pool = ThreadPoolBuilder::new()
+        let pool = match ThreadPoolBuilder::new()
             .num_threads(FETCH_POOL_SIZE)
             .build()
-            .expect("failed to build fetch thread pool");
+        {
+            Ok(pool) => pool,
+            Err(e) => {
+                log::warn!("failed to build fetch thread pool: {e}");
+                sender.send(AppEvent::GitFetchCompleted {
+                    branches: vec![],
+                    repo_path,
+                    is_final: true,
+                });
+                return;
+            }
+        };
 
         for remote in remotes {
             let git = Arc::clone(&git);

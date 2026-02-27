@@ -409,11 +409,11 @@ fn extend_branches_deduped(state: &mut AppState, incoming: Vec<BranchEntry>) {
     if incoming.is_empty() {
         return;
     }
-    let existing_names: std::collections::HashSet<&str> =
-        state.branches.iter().map(|b| b.name.as_str()).collect();
+    let mut seen: std::collections::HashSet<String> =
+        state.branches.iter().map(|b| b.name.clone()).collect();
     let new_branches: Vec<_> = incoming
         .into_iter()
-        .filter(|b| !existing_names.contains(b.name.as_str()))
+        .filter(|b| seen.insert(b.name.clone()))
         .collect();
     if !new_branches.is_empty() {
         state.branches.extend(new_branches);

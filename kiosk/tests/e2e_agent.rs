@@ -158,6 +158,7 @@ enum AgentKind {
     Claude,
     Codex,
     CursorAgent,
+    OpenCode,
 }
 
 #[derive(Clone, Copy)]
@@ -256,6 +257,13 @@ impl AgentTestEnvDefault {
                 );
                 "agent"
             }
+            AgentKind::OpenCode => {
+                assert!(
+                    has_binary("opencode"),
+                    "opencode not on PATH — set KIOSK_E2E_REAL_AGENTS=0 or install opencode"
+                );
+                "opencode"
+            }
         };
 
         // Create tmux session named as kiosk expects, starting in repo dir
@@ -311,6 +319,7 @@ impl AgentTestEnvDefault {
             AgentKind::Claude => "claude",
             AgentKind::Codex => "codex",
             AgentKind::CursorAgent => "cursor-agent",
+            AgentKind::OpenCode => "opencode",
         };
 
         let output_text = match (agent, state) {
@@ -341,6 +350,17 @@ impl AgentTestEnvDefault {
                  › Type a message\\n\
                  \\n\
                    ? for shortcuts"
+            }
+
+            (AgentKind::OpenCode, FakeState::Running) => {
+                "⬝■■■■■■⬝  esc interrupt  ctrl+t variants  tab agents  ctrl+p commands"
+            }
+            (AgentKind::OpenCode, FakeState::Waiting) => {
+                // OpenCode doesn't have approval prompts; treat as idle.
+                "  ┃  Build  GPT-5.3 Codex OpenAI\n                 ╹▀▀▀▀▀▀\n                   ctrl+t variants  tab agents  ctrl+p commands"
+            }
+            (AgentKind::OpenCode, FakeState::Idle) => {
+                "  ┃\n                 ┃  Build  GPT-5.3 Codex OpenAI\n                 ╹▀▀▀▀▀▀\n                   ctrl+t variants  tab agents  ctrl+p commands"
             }
 
             (AgentKind::CursorAgent, FakeState::Running) => {
@@ -396,11 +416,13 @@ impl AgentTestEnvDefault {
         // Poll until the script output is visible in the pane (up to 10s).
         // Using a content marker avoids flaky fixed sleeps under system load.
         let marker = match (agent, state) {
+            (AgentKind::OpenCode, FakeState::Running) => Some("esc interrupt"),
             (_, FakeState::Running) => Some("esc to interrupt"),
             (AgentKind::Claude, FakeState::Waiting) => Some("yes, allow"),
             (AgentKind::Codex, FakeState::Waiting) => Some("yes, proceed"),
             (AgentKind::Codex | AgentKind::Claude, FakeState::Idle) => Some("? for shortcuts"),
             (AgentKind::CursorAgent, FakeState::Waiting) => Some("trust this workspace"),
+            (AgentKind::OpenCode, FakeState::Waiting | FakeState::Idle) => Some("ctrl+p commands"),
             // CursorAgent idle output is just "> " — too minimal for
             // reliable content polling (tmux strips trailing whitespace).
             (AgentKind::CursorAgent, FakeState::Idle) => None,
@@ -988,4 +1010,51 @@ fn test_e2e_agent_tui_shows_indicator() {
         .tmux_cmd()
         .args(["kill-session", "-t", &tui_session])
         .output();
+}
+
+// ---------------------------------------------------------------------------
+// OpenCode tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_e2e_agent_branches_json_opencode_running() {
+    let env = AgentTestEnvDefault::new("opencode-run");
+    env.launch_agent(AgentKind::OpenCode, FakeState::Running);
+    let branches = env.run_cli_json(&["branches", "--json", &env.repo_name]);
+    let branches = branches.as_array().unwrap();
+    let main = &branches[0];
+    assert_eq!(main["agent_status"]["kind"], "OpenCode");
+    assert_eq!(main["agent_status"]["state"], "Running");
+}
+
+#[test]
+fn test_e2e_agent_branches_json_opencode_idle() {
+    let env = AgentTestEnvDefault::new("opencode-idle");
+    env.launch_agent(AgentKind::OpenCode, FakeState::Idle);
+    let branches = env.run_cli_json(&["branches", "--json", &env.repo_name]);
+    let branches = branches.as_array().unwrap();
+    let main = &branches[0];
+    assert_eq!(main["agent_status"]["kind"], "OpenCode");
+    assert_eq!(main["agent_status"]["state"], "Idle");
+}
+
+#[test]
+fn test_e2e_agent_sessions_json_opencode() {
+    let env = AgentTestEnvDefault::new("opencode-session");
+    env.launch_agent(AgentKind::OpenCode, FakeState::Running);
+    let sessions = env.run_cli_json(&["sessions", "--json"]);
+    let sessions = sessions.as_array().unwrap();
+    let session = sessions.iter().find(|s| s["session"] == env.kiosk_session);
+    assert!(session.is_some(), "expected session in output");
+    let s = session.unwrap();
+    assert_eq!(s["agent_status"]["kind"], "OpenCode");
+}
+
+#[test]
+fn test_e2e_agent_status_json_opencode() {
+    let env = AgentTestEnvDefault::new("opencode-status");
+    env.launch_agent(AgentKind::OpenCode, FakeState::Idle);
+    let status = env.run_cli_json(&["status", "--json", &env.repo_name]);
+    assert_eq!(status["agent_status"]["kind"], "OpenCode");
+    assert_eq!(status["agent_status"]["state"], "Idle");
 }

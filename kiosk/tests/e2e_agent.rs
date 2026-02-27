@@ -178,6 +178,63 @@ struct AgentTestEnvDefault {
     tmux_socket: String,
 }
 
+fn fake_agent_output(agent: AgentKind, state: FakeState) -> &'static str {
+    match (agent, state) {
+        (AgentKind::Claude, FakeState::Running) => "⠋ Reading file src/main.rs\\nesc to interrupt",
+        (AgentKind::Claude, FakeState::Waiting) => {
+            "Allow write to src/main.rs?\\n  Yes, allow\\n  No, deny"
+        }
+        (AgentKind::Claude, FakeState::Idle) => "❯ \\n? for shortcuts",
+        (AgentKind::CursorAgent, FakeState::Idle) => "> ",
+
+        (AgentKind::Codex, FakeState::Running) => "⠋ Searching codebase\\nesc to interrupt",
+        (AgentKind::Codex, FakeState::Waiting) => {
+            "Would you like to run the following command?\\n\
+         $ touch test.txt\\n\
+         › 1. Yes, proceed (y)\\n\
+           2. Yes, and don't ask again (p)\\n\
+           3. No (esc)\\n\
+         \\n\
+           Press enter to confirm or esc to cancel"
+        }
+        (AgentKind::Codex, FakeState::Idle) => {
+            "╭──────────────────────────────╮\\n\
+         │ >_ OpenAI Codex (v0.104.0)   │\\n\
+         ╰──────────────────────────────╯\\n\
+         \\n\
+         › Type a message\\n\
+         \\n\
+           ? for shortcuts"
+        }
+
+        (AgentKind::OpenCode, FakeState::Running) => {
+            "⬝■■■■■■⬝  esc interrupt  ctrl+t variants  tab agents  ctrl+p commands"
+        }
+        (AgentKind::OpenCode, FakeState::Waiting) => {
+            // OpenCode doesn't have approval prompts; treat as idle.
+            "  ┃  Build  GPT-5.3 Codex OpenAI\n                 ╹▀▀▀▀▀▀\n                   ctrl+t variants  tab agents  ctrl+p commands"
+        }
+        (AgentKind::OpenCode, FakeState::Idle) => {
+            "  ┃\n                 ┃  Build  GPT-5.3 Codex OpenAI\n                 ╹▀▀▀▀▀▀\n                   ctrl+t variants  tab agents  ctrl+p commands"
+        }
+
+        (AgentKind::CursorAgent, FakeState::Running) => {
+            "⠋ Editing file src/main.rs\\nesc to interrupt"
+        }
+        (AgentKind::CursorAgent, FakeState::Waiting) => {
+            "⚠ Workspace Trust Required\\n\
+         \\n\
+         Do you trust the contents of this directory?\\n\
+         \\n\
+         ▶ [a] Trust this workspace\\n\
+           [w] Trust without MCP\\n\
+           [q] Quit\\n\
+         \\n\
+         Use arrow keys to navigate, Enter to select"
+        }
+    }
+}
+
 impl AgentTestEnvDefault {
     fn new(test_name: &str) -> Self {
         let tmp = tempfile::tempdir().unwrap();
@@ -322,62 +379,7 @@ impl AgentTestEnvDefault {
             AgentKind::OpenCode => "opencode",
         };
 
-        let output_text = match (agent, state) {
-            (AgentKind::Claude, FakeState::Running) => {
-                "⠋ Reading file src/main.rs\\nesc to interrupt"
-            }
-            (AgentKind::Claude, FakeState::Waiting) => {
-                "Allow write to src/main.rs?\\n  Yes, allow\\n  No, deny"
-            }
-            (AgentKind::Claude, FakeState::Idle) => "❯ \\n? for shortcuts",
-            (AgentKind::CursorAgent, FakeState::Idle) => "> ",
-
-            (AgentKind::Codex, FakeState::Running) => "⠋ Searching codebase\\nesc to interrupt",
-            (AgentKind::Codex, FakeState::Waiting) => {
-                "Would you like to run the following command?\\n\
-                 $ touch test.txt\\n\
-                 › 1. Yes, proceed (y)\\n\
-                   2. Yes, and don't ask again (p)\\n\
-                   3. No (esc)\\n\
-                 \\n\
-                   Press enter to confirm or esc to cancel"
-            }
-            (AgentKind::Codex, FakeState::Idle) => {
-                "╭──────────────────────────────╮\\n\
-                 │ >_ OpenAI Codex (v0.104.0)   │\\n\
-                 ╰──────────────────────────────╯\\n\
-                 \\n\
-                 › Type a message\\n\
-                 \\n\
-                   ? for shortcuts"
-            }
-
-            (AgentKind::OpenCode, FakeState::Running) => {
-                "⬝■■■■■■⬝  esc interrupt  ctrl+t variants  tab agents  ctrl+p commands"
-            }
-            (AgentKind::OpenCode, FakeState::Waiting) => {
-                // OpenCode doesn't have approval prompts; treat as idle.
-                "  ┃  Build  GPT-5.3 Codex OpenAI\n                 ╹▀▀▀▀▀▀\n                   ctrl+t variants  tab agents  ctrl+p commands"
-            }
-            (AgentKind::OpenCode, FakeState::Idle) => {
-                "  ┃\n                 ┃  Build  GPT-5.3 Codex OpenAI\n                 ╹▀▀▀▀▀▀\n                   ctrl+t variants  tab agents  ctrl+p commands"
-            }
-
-            (AgentKind::CursorAgent, FakeState::Running) => {
-                "⠋ Editing file src/main.rs\\nesc to interrupt"
-            }
-            (AgentKind::CursorAgent, FakeState::Waiting) => {
-                "⚠ Workspace Trust Required\\n\
-                 \\n\
-                 Do you trust the contents of this directory?\\n\
-                 \\n\
-                 ▶ [a] Trust this workspace\\n\
-                   [w] Trust without MCP\\n\
-                   [q] Quit\\n\
-                 \\n\
-                 Use arrow keys to navigate, Enter to select"
-            }
-        };
+        let output_text = fake_agent_output(agent, state);
 
         let script_path = write_fake_agent_script(self.tmp.path(), agent_name, output_text);
 

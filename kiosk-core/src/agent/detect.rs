@@ -136,7 +136,13 @@ pub fn detect_state(content: &str, kind: AgentKind) -> AgentState {
     let tail_lowered = last_5.to_lowercase();
 
     match kind {
-        AgentKind::ClaudeCode => detect_claude_state(&content_lowered, &tail_lowered),
+        AgentKind::ClaudeCode => {
+            // Claude prompt fallback uses a tighter window (last 3 lines) to
+            // reduce false Idle during the brief processing transition when
+            // the user's question line (containing ❯) is still near the bottom.
+            let prompt_tail = get_last_non_empty_lines(&clean, 3).to_lowercase();
+            detect_claude_state(&content_lowered, &tail_lowered, &prompt_tail)
+        }
         AgentKind::Codex => detect_codex_state(&content_lowered, &tail_lowered),
         AgentKind::CursorAgent => detect_agent_state(
             &content_lowered,
@@ -159,7 +165,7 @@ pub fn detect_state(content: &str, kind: AgentKind) -> AgentState {
 /// `? for shortcuts` is the ideal idle signal but isn't reliably captured by
 /// tmux. As a fallback, the input prompt `❯` on the last non-empty line
 /// (with no running/waiting indicators elsewhere) indicates idle.
-fn detect_claude_state(content: &str, tail: &str) -> AgentState {
+fn detect_claude_state(content: &str, tail: &str, prompt_tail: &str) -> AgentState {
     // First try the standard detection (handles running, waiting, and
     // the `? for shortcuts` idle pattern if tmux happens to capture it).
     let state = detect_active_agent_state(
@@ -173,11 +179,20 @@ fn detect_claude_state(content: &str, tail: &str) -> AgentState {
         return state;
     }
 
-    // Fallback: check if any line in the tail starts with the input
-    // prompt character `❯`. In real captures, status bar text (e.g.
-    // "PR #12") appears below the prompt, so checking just the last
-    // line is insufficient.
-    if tail.lines().any(|line| {
+    // Fallback: check if any line in a tight prompt window (last 3 lines)
+    // starts with the input prompt character `❯`. Using 3 lines instead of
+    // the broader tail (5 lines) reduces false Idle during the brief
+    // processing transition when the user's question (containing `❯`)
+    // hasn't scrolled out of the tail yet.
+    //
+    // When idle, the prompt structure is:
+    //   ────────────
+    //   ❯ <placeholder or user text>
+    //   ────────────          ← divider
+    //   PR #12                ← status bar (optional)
+    //
+    // The `❯` line is always within the last 3 non-empty lines when idle.
+    if prompt_tail.lines().any(|line| {
         let trimmed = line.trim_start();
         CLAUDE_IDLE_PROMPT_PATTERNS
             .iter()
@@ -213,13 +228,28 @@ fn detect_codex_state(content: &str, tail: &str) -> AgentState {
 /// back to detecting the input prompt bar (`┃`) with the agent label
 /// (e.g. `Build`) in the tail when no other indicators match.
 fn detect_opencode_state(content: &str, tail: &str) -> AgentState {
-    detect_active_agent_state(
+    let state = detect_active_agent_state(
         content,
         tail,
         OPENCODE_RUNNING_PATTERNS,
         OPENCODE_WAITING_PATTERNS,
         OPENCODE_IDLE_TAIL_PATTERNS,
-    )
+    );
+    if state != AgentState::Unknown {
+        return state;
+    }
+
+    // Fallback: OpenCode's input prompt shows a vertical bar `┃` followed
+    // by the agent mode label (e.g. "Build", "Plan"). If we see this in the
+    // tail without running indicators, the agent is idle at the prompt.
+    if tail
+        .lines()
+        .any(|line| line.contains('┃') || line.contains('╹'))
+    {
+        return AgentState::Idle;
+    }
+
+    AgentState::Unknown
 }
 
 /// State detection for agents where absence of the idle footer means "processing".
@@ -596,11 +626,9 @@ mod tests {
 
     #[test]
     fn test_claude_processing_no_indicators() {
-        // When Claude is processing on alt-screen, the user's query line
-        // still shows `❯`. With the prompt fallback, this briefly appears
-        // as Idle before running indicators (`esc to interrupt`) appear.
-        // This ~1s transition is acceptable; once running indicators show,
-        // the state correctly switches to Running.
+        // When Claude is processing on alt-screen with minimal content,
+        // the user's query line may still be within the prompt tail window.
+        // This shows as Idle briefly (~1s) until running indicators appear.
         assert_eq!(
             detect_state(
                 "❯ what files are in this directory?\n\n",
@@ -613,6 +641,55 @@ mod tests {
         assert_eq!(
             detect_state("$ ", AgentKind::ClaudeCode),
             AgentState::Unknown
+        );
+    }
+
+    #[test]
+    fn test_claude_processing_prompt_scrolled_out_of_tight_window() {
+        // When Claude has been processing long enough for substantial output,
+        // the user's ❯ question line scrolls above the prompt tail window
+        // (last 3 non-empty lines). With enough response lines between the
+        // question and the bottom, the ❯ is no longer in the tight window.
+        let content = "\
+ ▐▛███▜▌   Claude Code v2.1.59\n\
+▝▜█████▛▘  Opus 4.6 · Claude Max\n\
+  ▘▘ ▝▝    ~/Development/kiosk\n\
+\n\
+❯ refactor the config module\n\
+\n\
+● I'll start by reading the current config module to understand\n\
+  the current structure.\n\
+\n\
+  Read kiosk-core/src/config/mod.rs\n\
+  Read kiosk-core/src/config/theme.rs\n\
+  Read kiosk-core/src/config/keys.rs\n\
+  Reading kiosk-core/src/agent/mod.rs";
+        assert_eq!(
+            detect_state(content, AgentKind::ClaudeCode),
+            AgentState::Unknown,
+            "Should be Unknown when ❯ has scrolled above prompt tail and no running indicators yet"
+        );
+    }
+
+    #[test]
+    fn test_claude_processing_early_still_idle_briefly() {
+        // Accepted limitation: when Claude just started processing and has
+        // minimal output, the user's ❯ question is still within the prompt
+        // tail window. This causes a brief Idle→Running flicker (~1-2s).
+        let content = "\
+ ▐▛███▜▌   Claude Code v2.1.59\n\
+▝▜█████▛▘  Opus 4.6 · Claude Max\n\
+  ▘▘ ▝▝    ~/Development/kiosk\n\
+\n\
+❯ refactor the config module\n\
+\n\
+● I'll start by reading the current config...";
+        // The ❯ line is within last 3 non-empty lines, so it shows as Idle
+        // until enough output pushes it out (or esc to interrupt appears).
+        assert_eq!(
+            detect_state(content, AgentKind::ClaudeCode),
+            AgentState::Idle,
+            "Brief Idle during early processing is an accepted limitation"
         );
     }
 
@@ -939,6 +1016,21 @@ $ touch test.txt
   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n\
                                                                           ctrl+t variants  tab agents  ctrl+p commands";
         assert_eq!(detect_state(content, AgentKind::OpenCode), AgentState::Idle);
+    }
+
+    #[test]
+    fn test_opencode_idle_fallback_prompt_bar_only() {
+        // When footer patterns are not captured by tmux, the prompt bar
+        // characters (┃ or ╹) in the tail indicate idle state.
+        let content = "\
+  ┃\n\
+  ┃  Build  GPT-5.3 Codex OpenAI\n\
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀";
+        assert_eq!(
+            detect_state(content, AgentKind::OpenCode),
+            AgentState::Idle,
+            "Should detect idle via prompt bar fallback when footer is missing"
+        );
     }
 
     // -- ANSI stripping ------------------------------------------------------

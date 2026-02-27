@@ -1026,7 +1026,7 @@ fn format_branch_table(entries: &[BranchEntry]) -> String {
                     '-'
                 },
                 if entry.has_session { 'S' } else { '-' },
-                if entry.is_remote { 'R' } else { '-' },
+                if entry.remote.is_some() { 'R' } else { '-' },
             );
             let worktree = entry
                 .worktree_path
@@ -2440,7 +2440,7 @@ mod tests {
                 has_session: true,
                 is_current: true,
                 is_default: false,
-                is_remote: false,
+                remote: None,
                 session_activity_ts: None,
                 agent_status: Some(AgentStatus {
                     kind: AgentKind::ClaudeCode,
@@ -2453,7 +2453,7 @@ mod tests {
                 has_session: true,
                 is_current: false,
                 is_default: false,
-                is_remote: false,
+                remote: None,
                 session_activity_ts: None,
                 agent_status: Some(AgentStatus {
                     kind: AgentKind::Codex,
@@ -2466,7 +2466,7 @@ mod tests {
                 has_session: false,
                 is_current: false,
                 is_default: false,
-                is_remote: false,
+                remote: None,
                 session_activity_ts: None,
                 agent_status: None,
             },
@@ -2657,7 +2657,7 @@ mod tests {
             has_session: false,
             is_current: true,
             is_default: false,
-            is_remote: false,
+            remote: None,
             session_activity_ts: None,
             agent_status: None,
         }];
@@ -2720,7 +2720,7 @@ mod tests {
             has_session: true,
             is_current: false,
             is_default: false,
-            is_remote: false,
+            remote: None,
             session_activity_ts: None,
             agent_status: Some(AgentStatus {
                 kind: AgentKind::ClaudeCode,
@@ -2741,7 +2741,7 @@ mod tests {
             has_session: false,
             is_current: true,
             is_default: false,
-            is_remote: false,
+            remote: None,
             session_activity_ts: None,
             agent_status: None,
         };

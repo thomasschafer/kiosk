@@ -2636,14 +2636,16 @@ mod tests {
         let mut config = test_config();
         config.agent.enabled = false;
 
-        let mut git = MockGitProvider::default();
-        git.repos = vec![repo("/tmp/demo", "demo")];
-        git.worktrees = vec![Worktree {
-            path: PathBuf::from("/tmp/demo"),
-            branch: Some("main".to_string()),
-            is_main: true,
-        }];
-        git.branches = vec!["main".to_string()];
+        let git = MockGitProvider {
+            repos: vec![repo("/tmp/demo", "demo")],
+            worktrees: vec![Worktree {
+                path: PathBuf::from("/tmp/demo"),
+                branch: Some("main".to_string()),
+                is_main: true,
+            }],
+            branches: vec!["main".to_string()],
+            ..Default::default()
+        };
 
         // Create a session with "claude" as the command — would normally trigger detection
         let mut tmux = MockTmuxProvider::default();

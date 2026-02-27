@@ -3,7 +3,7 @@ use super::{
     provider::GitProvider,
     repo::{Repo, Worktree},
 };
-use crate::constants::GIT_DIR_ENTRY;
+use crate::constants::{GIT_DIR_ENTRY, GITDIR_FILE_PREFIX};
 use anyhow::Result;
 use std::{
     path::{Path, PathBuf},
@@ -318,6 +318,7 @@ impl GitProvider for CliGitProvider {
 mod tests {
     use super::*;
     use crate::constants::WORKTREE_NAME_SEPARATOR;
+    use std::cell::RefCell;
     use std::fs;
 
     fn init_test_repo(dir: &Path) {
@@ -590,6 +591,99 @@ mod tests {
         assert_eq!(repos[0].name, "parent-repo");
     }
 
+    #[test]
+    fn test_discover_repos_deduplicates_linked_worktree_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        let repo_dir = tmp.path().join("my-repo");
+        fs::create_dir_all(&repo_dir).unwrap();
+        init_test_repo(&repo_dir);
+
+        run_git(&repo_dir, &["branch", "feat/worktree"]);
+        let linked_worktree_dir = tmp.path().join("my-repo-worktree");
+        let linked_worktree_dir_str = linked_worktree_dir.to_string_lossy().into_owned();
+        run_git(
+            &repo_dir,
+            &["worktree", "add", &linked_worktree_dir_str, "feat/worktree"],
+        );
+
+        let provider = CliGitProvider;
+        let repos = provider.discover_repos(&[(tmp.path().to_path_buf(), 1)]);
+        assert_eq!(
+            repos.len(),
+            1,
+            "linked worktree should not create duplicate"
+        );
+        assert_eq!(repos[0].name, "my-repo");
+        assert_eq!(
+            repos[0].path,
+            std::fs::canonicalize(&repo_dir).unwrap_or(repo_dir)
+        );
+    }
+
+    #[test]
+    fn test_scan_repos_deduplicates_linked_worktree_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        let repo_dir = tmp.path().join("my-repo");
+        fs::create_dir_all(&repo_dir).unwrap();
+        init_test_repo(&repo_dir);
+
+        run_git(&repo_dir, &["branch", "feat/worktree"]);
+        let linked_worktree_dir = tmp.path().join("my-repo-worktree");
+        let linked_worktree_dir_str = linked_worktree_dir.to_string_lossy().into_owned();
+        run_git(
+            &repo_dir,
+            &["worktree", "add", &linked_worktree_dir_str, "feat/worktree"],
+        );
+
+        let provider = CliGitProvider;
+        let repos = provider.scan_repos(&[(tmp.path().to_path_buf(), 1)]);
+        assert_eq!(
+            repos.len(),
+            1,
+            "linked worktree should not create duplicate in scan_repos"
+        );
+        assert_eq!(repos[0].name, "my-repo");
+        assert_eq!(
+            repos[0].path,
+            std::fs::canonicalize(&repo_dir).unwrap_or(repo_dir)
+        );
+    }
+
+    #[test]
+    fn test_scan_repos_streaming_deduplicates_linked_worktree_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        let repo_dir = tmp.path().join("my-repo");
+        fs::create_dir_all(&repo_dir).unwrap();
+        init_test_repo(&repo_dir);
+
+        run_git(&repo_dir, &["branch", "feat/worktree"]);
+        let linked_worktree_dir = tmp.path().join("my-repo-worktree");
+        let linked_worktree_dir_str = linked_worktree_dir.to_string_lossy().into_owned();
+        run_git(
+            &repo_dir,
+            &["worktree", "add", &linked_worktree_dir_str, "feat/worktree"],
+        );
+
+        let provider = CliGitProvider;
+        let streamed = RefCell::new(Vec::new());
+        provider.scan_repos_streaming(tmp.path(), 1, &|repo| streamed.borrow_mut().push(repo));
+        let streamed = streamed.into_inner();
+
+        assert_eq!(
+            streamed.len(),
+            1,
+            "linked worktree should not create duplicate in streaming scan"
+        );
+        assert_eq!(streamed[0].name, "my-repo");
+        assert_eq!(
+            streamed[0].path,
+            std::fs::canonicalize(&repo_dir).unwrap_or(repo_dir)
+        );
+    }
+
     fn run_git(dir: &Path, args: &[&str]) {
         let output = Command::new("git")
             .args(args)
@@ -681,6 +775,40 @@ mod tests {
 }
 
 impl CliGitProvider {
+    fn resolve_main_repo_from_linked_worktree(path: &Path) -> Option<PathBuf> {
+        let git_entry = path.join(GIT_DIR_ENTRY);
+        if !git_entry.is_file() {
+            return None;
+        }
+
+        let content = std::fs::read_to_string(&git_entry).ok()?;
+        let gitdir_str = content
+            .lines()
+            .find_map(|line| line.strip_prefix(GITDIR_FILE_PREFIX))
+            .map(str::trim)?;
+
+        let gitdir_raw = Path::new(gitdir_str);
+        let gitdir = if gitdir_raw.is_relative() {
+            path.join(gitdir_raw)
+        } else {
+            gitdir_raw.to_path_buf()
+        };
+
+        // Only treat `.git` file indirections of the form
+        // `<repo>/.git/worktrees/<name>` as linked worktrees.
+        let worktrees_dir = gitdir.parent()?;
+        if worktrees_dir.file_name()? != "worktrees" {
+            return None;
+        }
+
+        let git_dir = worktrees_dir.parent()?;
+        if git_dir.file_name()? != GIT_DIR_ENTRY {
+            return None;
+        }
+
+        Some(git_dir.parent()?.to_path_buf())
+    }
+
     /// Walk a directory tree up to `depth`, calling `on_repo` for each git repo found.
     /// Shared traversal logic for both batch and streaming scan paths.
     fn walk_repos(dir: &Path, depth: u16, on_repo: &mut dyn FnMut(&Path)) {
@@ -699,8 +827,11 @@ impl CliGitProvider {
             }
 
             if path.join(GIT_DIR_ENTRY).exists() {
-                let canonical = std::fs::canonicalize(&path).unwrap_or(path);
-                on_repo(&canonical);
+                let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+                let repo_root = Self::resolve_main_repo_from_linked_worktree(&canonical)
+                    .map(|root| std::fs::canonicalize(&root).unwrap_or(root))
+                    .unwrap_or(canonical);
+                on_repo(&repo_root);
             } else if depth > 1 {
                 Self::walk_repos(&path, depth - 1, on_repo);
             }
@@ -709,7 +840,11 @@ impl CliGitProvider {
 
     /// Streaming scan: emits each repo via callback as it's found.
     fn scan_dir_streaming(dir: &Path, depth: u16, on_found: &dyn Fn(Repo)) {
+        let mut seen_paths = std::collections::HashSet::new();
         Self::walk_repos(dir, depth, &mut |path| {
+            if !seen_paths.insert(path.to_path_buf()) {
+                return;
+            }
             if let Some(repo) = Self::build_repo_stub(path) {
                 on_found(repo);
             }
@@ -738,6 +873,9 @@ impl CliGitProvider {
 
     /// Sorts repos by name and disambiguates session names for collisions.
     fn apply_collision_resolution(mut repos_with_dirs: Vec<(Repo, &Path)>) -> Vec<Repo> {
+        let mut seen_paths = std::collections::HashSet::new();
+        repos_with_dirs.retain(|(repo, _)| seen_paths.insert(repo.path.clone()));
+
         repos_with_dirs.sort_by(|a, b| a.0.name.to_lowercase().cmp(&b.0.name.to_lowercase()));
 
         let mut name_counts = std::collections::HashMap::<String, usize>::new();

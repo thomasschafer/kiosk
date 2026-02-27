@@ -68,6 +68,11 @@ impl EventSender {
 
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
+fn initialize_repo_scan(state: &mut AppState) {
+    state.loading_repos = true;
+    state.seen_repo_paths = state.repos.iter().map(|repo| repo.path.clone()).collect();
+}
+
 pub fn run(
     terminal: &mut DefaultTerminal,
     state: &mut AppState,
@@ -88,8 +93,7 @@ pub fn run(
 
     // Start repo discovery in background
     if state.loading_repos || state.repos.is_empty() {
-        state.loading_repos = true;
-        state.seen_repo_paths.clear();
+        initialize_repo_scan(state);
         spawn_repo_discovery(git, tmux, &event_sender, search_dirs);
     }
 
@@ -3639,6 +3643,37 @@ mod tests {
         assert_eq!(state.repos.len(), 2, "alpha should not be duplicated");
         assert!(state.repos.iter().any(|r| r.name == "alpha"));
         assert!(state.repos.iter().any(|r| r.name == "beta"));
+    }
+
+    #[test]
+    fn test_repos_found_deduplicates_preloaded_repo_after_scan_init() {
+        // Simulate TUI scan startup behavior where discovery begins after an
+        // initial repo is preloaded from CWD.
+        let repos = vec![make_repo("kiosk")];
+        let mut state = AppState::new(repos, None);
+        state.mode = Mode::RepoSelect;
+
+        initialize_repo_scan(&mut state);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let sender = make_sender();
+
+        process_app_event(
+            AppEvent::ReposFound {
+                repo: make_repo("kiosk"),
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+        );
+
+        assert_eq!(
+            state.repos.len(),
+            1,
+            "preloaded current repo should not be duplicated during streaming scan"
+        );
     }
 
     #[test]

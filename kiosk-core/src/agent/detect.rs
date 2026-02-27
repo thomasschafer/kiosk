@@ -120,7 +120,7 @@ const OPENCODE_WAITING_PATTERNS: &[&str] = &[];
 
 /// `OpenCode`'s idle footer shows `ctrl+p commands` when at the input prompt.
 /// Like Claude, it uses the alternate screen so stale content is not an issue.
-const OPENCODE_IDLE_TAIL_PATTERNS: &[&str] = &["ctrl+p commands"];
+const OPENCODE_IDLE_TAIL_PATTERNS: &[&str] = &["ctrl+p commands", "ctrl+t variants", "tab agents"];
 
 // ---------------------------------------------------------------------------
 // State detection
@@ -213,25 +213,13 @@ fn detect_codex_state(content: &str, tail: &str) -> AgentState {
 /// back to detecting the input prompt bar (`┃`) with the agent label
 /// (e.g. `Build`) in the tail when no other indicators match.
 fn detect_opencode_state(content: &str, tail: &str) -> AgentState {
-    let state = detect_active_agent_state(
+    detect_active_agent_state(
         content,
         tail,
         OPENCODE_RUNNING_PATTERNS,
         OPENCODE_WAITING_PATTERNS,
         OPENCODE_IDLE_TAIL_PATTERNS,
-    );
-    if state != AgentState::Unknown {
-        return state;
-    }
-
-    // Fallback: the input prompt area in OpenCode contains the agent name
-    // (e.g. "Build", "Plan") and model info. If the tail contains these
-    // but no running indicators, the agent is idle.
-    if tail.contains("ctrl+t variants") || tail.contains("tab agents") {
-        return AgentState::Idle;
-    }
-
-    AgentState::Unknown
+    )
 }
 
 /// State detection for agents where absence of the idle footer means "processing".

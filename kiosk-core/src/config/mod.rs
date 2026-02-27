@@ -311,9 +311,23 @@ impl Config {
     }
 }
 
+/// Minimum allowed poll interval to prevent accidental busy loops.
+pub const MIN_POLL_INTERVAL_MS: u64 = 100;
+
 pub fn load_config_from_str(s: &str) -> Result<Config> {
     let config: Config = toml::from_str(s)?;
+    validate_config(&config)?;
     Ok(config)
+}
+
+fn validate_config(config: &Config) -> Result<()> {
+    if config.agent.poll_interval_ms < MIN_POLL_INTERVAL_MS {
+        anyhow::bail!(
+            "agent.poll_interval_ms must be at least {MIN_POLL_INTERVAL_MS}ms, got {}",
+            config.agent.poll_interval_ms
+        );
+    }
+    Ok(())
 }
 
 /// Check whether the default config file exists
@@ -382,6 +396,7 @@ pub fn load_config(config_override: Option<&Path>) -> Result<Config> {
     }
     let contents = fs::read_to_string(&config_file)?;
     let config: Config = toml::from_str(&contents)?;
+    validate_config(&config)?;
     Ok(config)
 }
 
@@ -799,6 +814,51 @@ enabled = false
         .unwrap();
         assert!(!config.agent.enabled);
         assert_eq!(config.agent.poll_interval_ms, 2000);
+    }
+
+    #[test]
+    fn test_agent_config_poll_interval_minimum_enforced() {
+        let result = load_config_from_str(
+            r#"
+search_dirs = ["~/Dev"]
+
+[agent]
+poll_interval_ms = 50
+"#,
+        );
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("at least"),
+            "Error should mention minimum: {err}"
+        );
+    }
+
+    #[test]
+    fn test_agent_config_poll_interval_zero_rejected() {
+        let result = load_config_from_str(
+            r#"
+search_dirs = ["~/Dev"]
+
+[agent]
+poll_interval_ms = 0
+"#,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_agent_config_poll_interval_at_minimum_accepted() {
+        let config = load_config_from_str(
+            r#"
+search_dirs = ["~/Dev"]
+
+[agent]
+poll_interval_ms = 100
+"#,
+        )
+        .unwrap();
+        assert_eq!(config.agent.poll_interval_ms, 100);
     }
 
     #[test]

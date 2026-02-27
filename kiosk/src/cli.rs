@@ -316,12 +316,14 @@ pub fn cmd_branches(
     BranchEntry::sort_entries(&mut entries);
 
     // Detect agent status for branches with active sessions
-    for entry in &mut entries {
-        if entry.has_session
-            && let Some(ref wt_path) = entry.worktree_path
-        {
-            let session_name = repo.tmux_session_name(wt_path);
-            entry.agent_status = kiosk_core::agent::detect_for_session(tmux, &session_name);
+    if config.agent.enabled {
+        for entry in &mut entries {
+            if entry.has_session
+                && let Some(ref wt_path) = entry.worktree_path
+            {
+                let session_name = repo.tmux_session_name(wt_path);
+                entry.agent_status = kiosk_core::agent::detect_for_session(tmux, &session_name);
+            }
         }
     }
 
@@ -654,7 +656,7 @@ fn status_internal(
         (tail_lines(&log, lines), Vec::new(), StatusSource::Log)
     };
 
-    let agent_status = if session_exists {
+    let agent_status = if session_exists && config.agent.enabled {
         kiosk_core::agent::detect_for_session(tmux, &session_name)
     } else {
         None
@@ -692,7 +694,11 @@ pub fn cmd_sessions(
             let current_command = tmux
                 .pane_current_command(&session, "0")
                 .unwrap_or_else(|_| "unknown".to_string());
-            let agent_status = kiosk_core::agent::detect_for_session(tmux, &session);
+            let agent_status = if config.agent.enabled {
+                kiosk_core::agent::detect_for_session(tmux, &session)
+            } else {
+                None
+            };
 
             output.push(SessionOutput {
                 session: session.clone(),

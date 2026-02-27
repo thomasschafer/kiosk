@@ -247,8 +247,16 @@ pub(super) fn spawn_remote_branch_loading(
         if sender.cancel.load(Ordering::Relaxed) {
             return;
         }
-        let remote_names = git.list_remote_branches(&repo_path);
-        let branches = BranchEntry::build_remote(&remote_names, &local_names);
+        let remotes = git.list_remotes(&repo_path);
+        let mut branches = Vec::new();
+        for remote in &remotes {
+            let remote_names = git.list_remote_branches_for_remote(&repo_path, remote);
+            branches.extend(BranchEntry::build_remote(
+                remote,
+                &remote_names,
+                &local_names,
+            ));
+        }
         if !branches.is_empty() {
             sender.send(AppEvent::RemoteBranchesLoaded { branches });
         }
@@ -324,7 +332,7 @@ pub(super) fn spawn_git_fetch(
                             return;
                         }
                         let remote_names = git.list_remote_branches_for_remote(&repo_path, &remote);
-                        BranchEntry::build_remote(&remote_names, &local_names)
+                        BranchEntry::build_remote(&remote, &remote_names, &local_names)
                     }
                     Err(e) => {
                         log::warn!("git fetch failed for remote {remote}: {e}");

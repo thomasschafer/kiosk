@@ -142,7 +142,7 @@ struct BranchOutput {
     worktree_path: Option<PathBuf>,
     has_session: bool,
     is_current: bool,
-    is_remote: bool,
+    remote: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -301,7 +301,11 @@ pub fn cmd_branches(
     let local = git.list_branches(&repo.path);
     let active_sessions = tmux.list_session_names();
     let mut entries = BranchEntry::build(&repo, &local, &active_sessions);
-    let remote = BranchEntry::build_remote(&git.list_remote_branches(&repo.path), &local);
+    let mut remote = Vec::new();
+    for r in git.list_remotes(&repo.path) {
+        let names = git.list_remote_branches_for_remote(&repo.path, &r);
+        remote.extend(BranchEntry::build_remote(&r, &names, &local));
+    }
     entries.extend(remote);
     BranchEntry::sort_entries(&mut entries);
 
@@ -853,7 +857,7 @@ impl From<&BranchEntry> for BranchOutput {
             worktree_path: entry.worktree_path.clone(),
             has_session: entry.has_session,
             is_current: entry.is_current,
-            is_remote: entry.is_remote,
+            remote: entry.remote.clone(),
         }
     }
 }
@@ -928,7 +932,7 @@ fn format_branch_table(entries: &[BranchEntry]) -> String {
                 '-'
             },
             if entry.has_session { 'S' } else { '-' },
-            if entry.is_remote { 'R' } else { '-' },
+            if entry.remote.is_some() { 'R' } else { '-' },
         );
         let worktree = entry
             .worktree_path
@@ -1617,7 +1621,7 @@ mod tests {
                 has_session: false,
                 is_current: true,
                 is_default: false,
-                is_remote: false,
+                remote: None,
                 session_activity_ts: None,
             },
             BranchEntry {
@@ -1626,7 +1630,7 @@ mod tests {
                 has_session: false,
                 is_current: false,
                 is_default: false,
-                is_remote: true,
+                remote: Some("origin".to_string()),
                 session_activity_ts: None,
             },
         ];
@@ -2203,7 +2207,7 @@ mod tests {
             has_session: true,
             is_current: false,
             is_default: true,
-            is_remote: false,
+            remote: None,
             session_activity_ts: Some(12345),
         };
 
@@ -2212,7 +2216,7 @@ mod tests {
         assert_eq!(output.worktree_path, Some(PathBuf::from("/tmp/wt")));
         assert!(output.has_session);
         assert!(!output.is_current);
-        assert!(!output.is_remote);
+        assert!(output.remote.is_none());
 
         let json = serde_json::to_value(&output).unwrap();
         assert!(json.get("is_default").is_none());

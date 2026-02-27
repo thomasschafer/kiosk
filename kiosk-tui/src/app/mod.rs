@@ -409,11 +409,14 @@ fn extend_branches_deduped(state: &mut AppState, incoming: Vec<BranchEntry>) {
     if incoming.is_empty() {
         return;
     }
-    let mut seen: std::collections::HashSet<String> =
-        state.branches.iter().map(|b| b.name.clone()).collect();
+    let mut seen: std::collections::HashSet<(String, Option<String>)> = state
+        .branches
+        .iter()
+        .map(|b| (b.name.clone(), b.remote.clone()))
+        .collect();
     let new_branches: Vec<_> = incoming
         .into_iter()
-        .filter(|b| seen.insert(b.name.clone()))
+        .filter(|b| seen.insert((b.name.clone(), b.remote.clone())))
         .collect();
     if !new_branches.is_empty() {
         state.branches.extend(new_branches);
@@ -1059,7 +1062,7 @@ mod tests {
             worktree_path: None,
             has_session: false,
             is_current: true,
-            is_remote: false,
+            remote: None,
             is_default: false,
             session_activity_ts: None,
         }];
@@ -1076,7 +1079,7 @@ mod tests {
                 worktree_path: None,
                 has_session: false,
                 is_current: false,
-                is_remote: true,
+                remote: Some("origin".to_string()),
                 is_default: false,
                 session_activity_ts: None,
             },
@@ -1085,7 +1088,7 @@ mod tests {
                 worktree_path: None,
                 has_session: false,
                 is_current: false,
-                is_remote: true,
+                remote: Some("origin".to_string()),
                 is_default: false,
                 session_activity_ts: None,
             },
@@ -1103,9 +1106,9 @@ mod tests {
 
         assert_eq!(state.branches.len(), 3);
         assert_eq!(state.branch_list.filtered.len(), 3);
-        assert!(!state.branches[0].is_remote); // main stays first
-        assert!(state.branches[1].is_remote); // feature-x
-        assert!(state.branches[2].is_remote); // feature-y
+        assert!(state.branches[0].remote.is_none()); // main stays first
+        assert!(state.branches[1].remote.is_some()); // feature-x
+        assert!(state.branches[2].remote.is_some()); // feature-y
     }
 
     #[test]
@@ -1119,7 +1122,7 @@ mod tests {
             worktree_path: None,
             has_session: false,
             is_current: true,
-            is_remote: false,
+            remote: None,
             is_default: false,
             session_activity_ts: None,
         }];
@@ -1141,7 +1144,7 @@ mod tests {
                     worktree_path: None,
                     has_session: false,
                     is_current: false,
-                    is_remote: true,
+                    remote: Some("origin".to_string()),
                     is_default: false,
                     session_activity_ts: None,
                 }],
@@ -1343,7 +1346,7 @@ mod tests {
             worktree_path: Some(PathBuf::from("/tmp/alpha")),
             has_session: false,
             is_current: true,
-            is_remote: false,
+            remote: None,
             is_default: false,
             session_activity_ts: None,
         }];
@@ -1381,7 +1384,7 @@ mod tests {
             worktree_path: None,
             has_session: false,
             is_current: false,
-            is_remote: false,
+            remote: None,
             is_default: false,
             session_activity_ts: None,
         }];
@@ -1621,7 +1624,7 @@ mod tests {
             worktree_path: Some(PathBuf::from("/tmp/alpha")),
             has_session: false,
             is_current: true,
-            is_remote: false,
+            remote: None,
             is_default: true,
             session_activity_ts: None,
         }];
@@ -1653,7 +1656,7 @@ mod tests {
             worktree_path: None,
             has_session: false,
             is_current: false,
-            is_remote: false,
+            remote: None,
             is_default: false,
             session_activity_ts: None,
         }];
@@ -1684,7 +1687,7 @@ mod tests {
             worktree_path: Some(PathBuf::from("/tmp/alpha")),
             has_session: false,
             is_current: true,
-            is_remote: false,
+            remote: None,
             is_default: false,
             session_activity_ts: None,
         }];
@@ -1715,7 +1718,7 @@ mod tests {
             worktree_path: Some(PathBuf::from("/tmp/alpha-dev")),
             has_session: false,
             is_current: false,
-            is_remote: false,
+            remote: None,
             is_default: false,
             session_activity_ts: None,
         }];
@@ -1751,7 +1754,7 @@ mod tests {
             worktree_path: Some(PathBuf::from("/tmp/alpha-dev")),
             has_session: true,
             is_current: false,
-            is_remote: false,
+            remote: None,
             is_default: false,
             session_activity_ts: None,
         }];
@@ -1795,7 +1798,7 @@ mod tests {
             worktree_path: Some(PathBuf::from("/tmp/alpha-dev")),
             has_session: true,
             is_current: false,
-            is_remote: false,
+            remote: None,
             is_default: false,
             session_activity_ts: None,
         }];
@@ -1840,7 +1843,7 @@ mod tests {
             worktree_path: Some(PathBuf::from("/tmp/alpha-dev")),
             has_session: false,
             is_current: false,
-            is_remote: false,
+            remote: None,
             is_default: false,
             session_activity_ts: None,
         }];
@@ -3385,14 +3388,14 @@ mod tests {
 
     // ── GitFetchCompleted tests ──
 
-    fn make_branch(name: &str, is_remote: bool) -> BranchEntry {
+    fn make_branch(name: &str, remote: Option<&str>) -> BranchEntry {
         BranchEntry {
             name: name.to_string(),
             worktree_path: None,
             has_session: false,
             is_current: false,
             is_default: false,
-            is_remote,
+            remote: remote.map(String::from),
             session_activity_ts: None,
         }
     }
@@ -3403,7 +3406,7 @@ mod tests {
         let mut state = AppState::new(repos, None);
         state.selected_repo_idx = Some(0);
         state.mode = Mode::BranchSelect;
-        state.branches = vec![make_branch("main", false)];
+        state.branches = vec![make_branch("main", None)];
         state.branch_list.reset(1);
         state.fetching_remotes = true;
 
@@ -3413,7 +3416,7 @@ mod tests {
 
         process_app_event(
             AppEvent::GitFetchCompleted {
-                branches: vec![make_branch("feature-new", true)],
+                branches: vec![make_branch("feature-new", Some("origin"))],
                 repo_path: PathBuf::from("/tmp/alpha"),
                 is_final: true,
             },
@@ -3426,7 +3429,7 @@ mod tests {
         assert!(!state.fetching_remotes);
         assert_eq!(state.branches.len(), 2);
         assert_eq!(state.branches[1].name, "feature-new");
-        assert!(state.branches[1].is_remote);
+        assert!(state.branches[1].remote.is_some());
         assert_eq!(state.branch_list.filtered.len(), 2);
     }
 
@@ -3437,8 +3440,8 @@ mod tests {
         state.selected_repo_idx = Some(0);
         state.mode = Mode::BranchSelect;
         state.branches = vec![
-            make_branch("main", false),
-            make_branch("existing-remote", true),
+            make_branch("main", None),
+            make_branch("existing-remote", Some("origin")),
         ];
         state.branch_list.reset(2);
         state.fetching_remotes = true;
@@ -3450,8 +3453,8 @@ mod tests {
         process_app_event(
             AppEvent::GitFetchCompleted {
                 branches: vec![
-                    make_branch("existing-remote", true),
-                    make_branch("brand-new", true),
+                    make_branch("existing-remote", Some("origin")),
+                    make_branch("brand-new", Some("origin")),
                 ],
                 repo_path: PathBuf::from("/tmp/alpha"),
                 is_final: true,
@@ -3473,7 +3476,7 @@ mod tests {
         let mut state = AppState::new(repos, None);
         state.selected_repo_idx = Some(0);
         state.mode = Mode::BranchSelect;
-        state.branches = vec![make_branch("main", false)];
+        state.branches = vec![make_branch("main", None)];
         state.branch_list.reset(1);
         state.branch_list.input.text = "feat".to_string();
         state.branch_list.input.cursor = 4;
@@ -3487,7 +3490,7 @@ mod tests {
 
         process_app_event(
             AppEvent::GitFetchCompleted {
-                branches: vec![make_branch("feature-x", true)],
+                branches: vec![make_branch("feature-x", Some("origin"))],
                 repo_path: PathBuf::from("/tmp/alpha"),
                 is_final: true,
             },
@@ -3511,7 +3514,7 @@ mod tests {
         let mut state = AppState::new(repos, None);
         state.selected_repo_idx = Some(0);
         state.mode = Mode::RepoSelect;
-        state.branches = vec![make_branch("main", false)];
+        state.branches = vec![make_branch("main", None)];
         state.fetching_remotes = true;
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
@@ -3520,7 +3523,7 @@ mod tests {
 
         process_app_event(
             AppEvent::GitFetchCompleted {
-                branches: vec![make_branch("feature-x", true)],
+                branches: vec![make_branch("feature-x", Some("origin"))],
                 repo_path: PathBuf::from("/tmp/alpha"),
                 is_final: true,
             },
@@ -3544,7 +3547,7 @@ mod tests {
         state.mode = Mode::Help {
             previous: Box::new(Mode::BranchSelect),
         };
-        state.branches = vec![make_branch("main", false)];
+        state.branches = vec![make_branch("main", None)];
         state.branch_list.reset(1);
         state.fetching_remotes = true;
 
@@ -3554,7 +3557,7 @@ mod tests {
 
         process_app_event(
             AppEvent::GitFetchCompleted {
-                branches: vec![make_branch("feature-x", true)],
+                branches: vec![make_branch("feature-x", Some("origin"))],
                 repo_path: PathBuf::from("/tmp/alpha"),
                 is_final: true,
             },
@@ -3580,7 +3583,7 @@ mod tests {
         state.mode = Mode::Help {
             previous: Box::new(Mode::BranchSelect),
         };
-        state.branches = vec![make_branch("main", false)];
+        state.branches = vec![make_branch("main", None)];
         state.branch_list.reset(1);
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
@@ -3589,7 +3592,7 @@ mod tests {
 
         process_app_event(
             AppEvent::RemoteBranchesLoaded {
-                branches: vec![make_branch("feature-y", true)],
+                branches: vec![make_branch("feature-y", Some("origin"))],
             },
             &mut state,
             &git,
@@ -3644,7 +3647,7 @@ mod tests {
         let mut state = AppState::new(repos, None);
         state.selected_repo_idx = Some(0);
         state.mode = Mode::BranchSelect;
-        state.branches = vec![make_branch("main", false)];
+        state.branches = vec![make_branch("main", None)];
         state.branch_list.reset(1);
         state.fetching_remotes = true;
 
@@ -3654,7 +3657,7 @@ mod tests {
 
         process_app_event(
             AppEvent::GitFetchCompleted {
-                branches: vec![make_branch("feature-x", true)],
+                branches: vec![make_branch("feature-x", Some("origin"))],
                 repo_path: PathBuf::from("/tmp/wrong-repo"),
                 is_final: true,
             },
@@ -3675,7 +3678,7 @@ mod tests {
         let mut state = AppState::new(repos, None);
         state.selected_repo_idx = Some(0);
         state.mode = Mode::BranchSelect;
-        state.branches = vec![make_branch("main", false)];
+        state.branches = vec![make_branch("main", None)];
         state.branch_list.reset(1);
         state.fetching_remotes = true;
 
@@ -3685,7 +3688,7 @@ mod tests {
 
         process_app_event(
             AppEvent::GitFetchCompleted {
-                branches: vec![make_branch("feature-x", true)],
+                branches: vec![make_branch("feature-x", Some("origin"))],
                 repo_path: PathBuf::from("/tmp/alpha"),
                 is_final: false,
             },

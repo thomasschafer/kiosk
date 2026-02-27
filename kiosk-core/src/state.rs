@@ -365,8 +365,8 @@ pub struct BranchEntry {
     pub is_current: bool,
     /// Whether this is the default branch (main/master)
     pub is_default: bool,
-    /// Remote-only branch (no local tracking branch)
-    pub is_remote: bool,
+    /// The remote this branch comes from, if it is a remote-only branch.
+    pub remote: Option<String>,
     /// Last activity timestamp for the session (if any)
     pub session_activity_ts: Option<u64>,
 }
@@ -466,7 +466,7 @@ impl BranchEntry {
                     has_session,
                     is_current,
                     is_default,
-                    is_remote: false,
+                    remote: None,
                     session_activity_ts,
                 }
             })
@@ -474,7 +474,11 @@ impl BranchEntry {
     }
 
     /// Build remote-only branch entries, skipping branches that already exist locally.
-    pub fn build_remote(remote_names: &[String], local_names: &[String]) -> Vec<Self> {
+    pub fn build_remote(
+        remote: &str,
+        remote_names: &[String],
+        local_names: &[String],
+    ) -> Vec<Self> {
         let local_set: std::collections::HashSet<&str> =
             local_names.iter().map(String::as_str).collect();
 
@@ -487,7 +491,7 @@ impl BranchEntry {
                 has_session: false,
                 is_current: false,
                 is_default: false,
-                is_remote: true,
+                remote: Some(remote.to_string()),
                 session_activity_ts: None,
             })
             .collect()
@@ -496,8 +500,9 @@ impl BranchEntry {
     pub fn sort_entries(entries: &mut [Self]) {
         entries.sort_by(|a, b| {
             // Remote branches always sort after local
-            a.is_remote
-                .cmp(&b.is_remote)
+            a.remote
+                .is_some()
+                .cmp(&b.remote.is_some())
                 // Current branch first
                 .then(b.is_current.cmp(&a.is_current))
                 // Default branch second
@@ -1262,12 +1267,12 @@ mod tests {
         let remote = vec!["main".into(), "dev".into(), "remote-only".into()];
         let local = vec!["main".into(), "dev".into()];
 
-        let entries = BranchEntry::build_remote(&remote, &local);
+        let entries = BranchEntry::build_remote("origin", &remote, &local);
 
         // Only "remote-only" should appear (main and dev are local)
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, "remote-only");
-        assert!(entries[0].is_remote);
+        assert!(entries[0].remote.is_some());
     }
 
     #[test]
@@ -1275,7 +1280,7 @@ mod tests {
         let remote = vec!["main".into(), "dev".into()];
         let local = vec!["main".into(), "dev".into()];
 
-        let entries = BranchEntry::build_remote(&remote, &local);
+        let entries = BranchEntry::build_remote("origin", &remote, &local);
         assert!(entries.is_empty());
     }
 
@@ -1297,15 +1302,15 @@ mod tests {
 
         // Add remote branches
         let remote_names = vec!["feature-a".into(), "feature-b".into()];
-        let remote = BranchEntry::build_remote(&remote_names, &local_names);
+        let remote = BranchEntry::build_remote("origin", &remote_names, &local_names);
         entries.extend(remote);
         BranchEntry::sort_entries(&mut entries);
 
         // Local branches should come before remote
-        assert!(!entries[0].is_remote); // main (current)
-        assert!(!entries[1].is_remote); // dev
-        assert!(entries[2].is_remote); // feature-a
-        assert!(entries[3].is_remote); // feature-b
+        assert!(entries[0].remote.is_none()); // main (current)
+        assert!(entries[1].remote.is_none()); // dev
+        assert!(entries[2].remote.is_some()); // feature-a
+        assert!(entries[3].remote.is_some()); // feature-b
     }
 
     #[test]
@@ -1930,7 +1935,7 @@ mod tests {
                 has_session: false,
                 is_current: false,
                 is_default: false,
-                is_remote: true,
+                remote: Some("origin".to_string()),
                 session_activity_ts: None,
             },
             BranchEntry {
@@ -1939,7 +1944,7 @@ mod tests {
                 has_session: false,
                 is_current: false,
                 is_default: false,
-                is_remote: false,
+                remote: None,
                 session_activity_ts: None,
             },
             BranchEntry {
@@ -1948,7 +1953,7 @@ mod tests {
                 has_session: false,
                 is_current: false,
                 is_default: false,
-                is_remote: false,
+                remote: None,
                 session_activity_ts: None,
             },
         ];
@@ -1957,11 +1962,11 @@ mod tests {
 
         // Local branches first (alphabetical), then remote
         assert_eq!(entries[0].name, "mmm-local");
-        assert!(!entries[0].is_remote);
+        assert!(entries[0].remote.is_none());
         assert_eq!(entries[1].name, "zzz-local");
-        assert!(!entries[1].is_remote);
+        assert!(entries[1].remote.is_none());
         assert_eq!(entries[2].name, "aaa-remote");
-        assert!(entries[2].is_remote);
+        assert!(entries[2].remote.is_some());
     }
 
     #[test]
@@ -2083,7 +2088,7 @@ mod tests {
         let remote = vec!["feat-x".into(), "feat-y".into()];
         let local: Vec<String> = vec![];
 
-        let entries = BranchEntry::build_remote(&remote, &local);
+        let entries = BranchEntry::build_remote("origin", &remote, &local);
 
         assert_eq!(entries.len(), 2);
         for entry in &entries {
@@ -2092,7 +2097,10 @@ mod tests {
                 entry.session_activity_ts.is_none(),
                 "remote entries should have no activity ts"
             );
-            assert!(entry.is_remote, "remote entries should be marked remote");
+            assert!(
+                entry.remote.is_some(),
+                "remote entries should be marked remote"
+            );
             assert!(!entry.has_session);
             assert!(!entry.is_current);
             assert!(entry.worktree_path.is_none());
@@ -2133,7 +2141,7 @@ mod tests {
             has_session: true,
             is_current: false,
             is_default: false,
-            is_remote: false,
+            remote: None,
             session_activity_ts: Some(12345),
         };
 

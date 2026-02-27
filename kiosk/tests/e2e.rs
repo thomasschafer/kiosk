@@ -1527,8 +1527,8 @@ fn test_e2e_remote_branches_shown() {
 
     // Should show remote branches with (remote) indicator
     assert!(
-        screen.contains("feature-alpha") && screen.contains("(remote)"),
-        "Should show remote branches with (remote) tag: {screen}"
+        screen.contains("feature-alpha") && screen.contains("(origin)"),
+        "Should show remote branches with (origin) tag: {screen}"
     );
     assert!(
         screen.contains("feature-beta"),
@@ -1563,7 +1563,7 @@ fn test_e2e_remote_branches_searchable() {
     wait_ms(200);
     env.send_special("Tab");
     wait_for_screen(&env, 3000, |s| {
-        s.contains("feat-search-target") && s.contains("(remote)")
+        s.contains("feat-search-target") && s.contains("(origin)")
     });
 
     // Search for the remote branch
@@ -1572,7 +1572,7 @@ fn test_e2e_remote_branches_searchable() {
 
     let screen = env.capture();
     assert!(
-        screen.contains("feat-search-target") && screen.contains("(remote)"),
+        screen.contains("feat-search-target") && screen.contains("(origin)"),
         "Should find remote branch via search: {screen}"
     );
     // "main" should be filtered out
@@ -2294,10 +2294,7 @@ fn test_e2e_headless_branches_json_stable_schema() {
         first.get("is_current").is_some(),
         "should have 'is_current' field"
     );
-    assert!(
-        first.get("is_remote").is_some(),
-        "should have 'is_remote' field"
-    );
+    assert!(first.get("remote").is_some(), "should have 'remote' field");
     // Internal fields should NOT be exposed
     assert!(
         first.get("is_default").is_none(),

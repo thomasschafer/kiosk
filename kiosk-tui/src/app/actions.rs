@@ -67,7 +67,7 @@ pub(super) fn handle_start_new_branch(state: &mut AppState) {
     let bases: Vec<String> = state
         .branches
         .iter()
-        .filter(|b| !b.is_remote)
+        .filter(|b| b.remote.is_none())
         .map(|b| b.name.clone())
         .collect();
     if bases.is_empty() {
@@ -173,7 +173,7 @@ pub(super) fn handle_open_branch(
                         split_command: state.split_command.clone(),
                     });
                 }
-                let is_remote = branch.is_remote;
+                let is_remote = branch.remote.is_some();
                 match worktree_dir(repo, &branch.name) {
                     Ok(wt_path) => {
                         let branch_name = branch.name.clone();

@@ -4,33 +4,33 @@ use super::{AgentKind, AgentState};
 ///
 /// Order matters: more specific patterns are checked first to avoid false positives
 /// (e.g. "cursor-agent" before "agent", "codex" before generic patterns).
+/// Mapping of substring patterns to agent kinds, checked in order.
+/// More specific patterns (e.g. "cursor-agent") must come before
+/// less specific ones to avoid false matches.
+const AGENT_PATTERNS: &[(&str, AgentKind)] = &[
+    ("cursor-agent", AgentKind::CursorAgent),
+    ("opencode", AgentKind::OpenCode),
+    ("claude", AgentKind::ClaudeCode),
+    ("codex", AgentKind::Codex),
+];
+
 pub fn detect_agent_kind(
     pane_command: &str,
     child_process_args: Option<&str>,
 ) -> Option<AgentKind> {
-    // Check pane command first
     let cmd_lower = pane_command.to_lowercase();
-    if cmd_lower.contains("claude") {
-        return Some(AgentKind::ClaudeCode);
-    }
-    if cmd_lower.contains("codex") {
-        return Some(AgentKind::Codex);
-    }
-    if cmd_lower.contains("cursor-agent") {
-        return Some(AgentKind::CursorAgent);
+    for &(pattern, kind) in AGENT_PATTERNS {
+        if cmd_lower.contains(pattern) {
+            return Some(kind);
+        }
     }
 
-    // Check child process args if available
     if let Some(args) = child_process_args {
         let args_lower = args.to_lowercase();
-        if args_lower.contains("claude") {
-            return Some(AgentKind::ClaudeCode);
-        }
-        if args_lower.contains("codex") {
-            return Some(AgentKind::Codex);
-        }
-        if args_lower.contains("cursor-agent") {
-            return Some(AgentKind::CursorAgent);
+        for &(pattern, kind) in AGENT_PATTERNS {
+            if args_lower.contains(pattern) {
+                return Some(kind);
+            }
         }
     }
 
@@ -110,6 +110,18 @@ const CURSOR_WAITING_PATTERNS: &[&str] = &[
 
 const CURSOR_IDLE_TAIL_PATTERNS: &[&str] = &[];
 
+/// `OpenCode` running patterns. The `esc interrupt` text appears in the footer
+/// alongside the block spinner `⬝■` during active work.
+const OPENCODE_RUNNING_PATTERNS: &[&str] = &["esc interrupt"];
+
+/// `OpenCode` currently auto-approves in Build mode and Plan mode is read-only,
+/// so there are no user-facing approval prompts. Empty for now.
+const OPENCODE_WAITING_PATTERNS: &[&str] = &[];
+
+/// `OpenCode`'s idle footer shows `ctrl+p commands` when at the input prompt.
+/// Like Claude, it uses the alternate screen so stale content is not an issue.
+const OPENCODE_IDLE_TAIL_PATTERNS: &[&str] = &["ctrl+p commands"];
+
 // ---------------------------------------------------------------------------
 // State detection
 // ---------------------------------------------------------------------------
@@ -133,6 +145,7 @@ pub fn detect_state(content: &str, kind: AgentKind) -> AgentState {
             CURSOR_WAITING_PATTERNS,
             CURSOR_IDLE_TAIL_PATTERNS,
         ),
+        AgentKind::OpenCode => detect_opencode_state(&content_lowered, &tail_lowered),
     }
 }
 
@@ -160,18 +173,16 @@ fn detect_claude_state(content: &str, tail: &str) -> AgentState {
         return state;
     }
 
-    // Fallback: check if the last non-empty line starts with the input
-    // prompt character `❯`. This reliably indicates idle even when tmux
-    // doesn't capture the `? for shortcuts` status bar.
-    let last_line = tail
-        .lines()
-        .rev()
-        .find(|l| !l.trim().is_empty())
-        .unwrap_or("");
-    if CLAUDE_IDLE_PROMPT_PATTERNS
-        .iter()
-        .any(|p| last_line.trim_start().starts_with(p))
-    {
+    // Fallback: check if any line in the tail starts with the input
+    // prompt character `❯`. In real captures, status bar text (e.g.
+    // "PR #12") appears below the prompt, so checking just the last
+    // line is insufficient.
+    if tail.lines().any(|line| {
+        let trimmed = line.trim_start();
+        CLAUDE_IDLE_PROMPT_PATTERNS
+            .iter()
+            .any(|p| trimmed.starts_with(p))
+    }) {
         return AgentState::Idle;
     }
 
@@ -192,6 +203,35 @@ fn detect_codex_state(content: &str, tail: &str) -> AgentState {
         CODEX_WAITING_PATTERNS,
         CODEX_IDLE_TAIL_PATTERNS,
     )
+}
+
+/// OpenCode-specific state detection.
+///
+/// `OpenCode` uses the alternate screen (TUI app). It shows `esc interrupt`
+/// during active work and `ctrl+p commands` in the idle footer. Like Claude,
+/// it may not always capture the footer text reliably via tmux, so we fall
+/// back to detecting the input prompt bar (`┃`) with the agent label
+/// (e.g. `Build`) in the tail when no other indicators match.
+fn detect_opencode_state(content: &str, tail: &str) -> AgentState {
+    let state = detect_active_agent_state(
+        content,
+        tail,
+        OPENCODE_RUNNING_PATTERNS,
+        OPENCODE_WAITING_PATTERNS,
+        OPENCODE_IDLE_TAIL_PATTERNS,
+    );
+    if state != AgentState::Unknown {
+        return state;
+    }
+
+    // Fallback: the input prompt area in OpenCode contains the agent name
+    // (e.g. "Build", "Plan") and model info. If the tail contains these
+    // but no running indicators, the agent is idle.
+    if tail.contains("ctrl+t variants") || tail.contains("tab agents") {
+        return AgentState::Idle;
+    }
+
+    AgentState::Unknown
 }
 
 /// State detection for agents where absence of the idle footer means "processing".
@@ -396,6 +436,26 @@ mod tests {
         assert_eq!(detect_agent_kind("agent", None), None);
     }
 
+    #[test]
+    fn test_detect_agent_kind_opencode_in_command() {
+        assert_eq!(
+            detect_agent_kind("opencode", None),
+            Some(AgentKind::OpenCode)
+        );
+    }
+
+    #[test]
+    fn test_detect_agent_kind_opencode_in_child_args() {
+        assert_eq!(
+            detect_agent_kind("node", Some("/home/user/.local/bin/opencode")),
+            Some(AgentKind::OpenCode),
+        );
+        assert_eq!(
+            detect_agent_kind("node", Some("node /home/user/.local/bin/opencode")),
+            Some(AgentKind::OpenCode),
+        );
+    }
+
     // -- detect_state (full pipeline: ANSI strip + lowercase + detect) -------
 
     #[test]
@@ -548,15 +608,17 @@ mod tests {
 
     #[test]
     fn test_claude_processing_no_indicators() {
-        // When Claude is processing on alt-screen, no idle footer is visible
-        // and no explicit running indicators are shown either. Without any
-        // recognisable pattern the state is Unknown.
+        // When Claude is processing on alt-screen, the user's query line
+        // still shows `❯`. With the prompt fallback, this briefly appears
+        // as Idle before running indicators (`esc to interrupt`) appear.
+        // This ~1s transition is acceptable; once running indicators show,
+        // the state correctly switches to Running.
         assert_eq!(
             detect_state(
                 "❯ what files are in this directory?\n\n",
                 AgentKind::ClaudeCode
             ),
-            AgentState::Unknown
+            AgentState::Idle
         );
         // Empty pane (just started up, loading) — Unknown
         assert_eq!(detect_state("", AgentKind::ClaudeCode), AgentState::Unknown);
@@ -802,6 +864,93 @@ $ touch test.txt
     #[test]
     fn test_cursor_idle() {
         assert_eq!(detect_state("> ", AgentKind::CursorAgent), AgentState::Idle);
+    }
+
+    // -- OpenCode state detection -------------------------------------------
+
+    #[test]
+    fn test_opencode_running() {
+        let content = "\
+  ┃\n\
+  ┃  Build  GPT-5.3 Codex OpenAI\n\
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n\
+   ⬝⬝■■■■■■  esc interrupt                                                ctrl+t variants  tab agents  ctrl+p commands";
+        assert_eq!(
+            detect_state(content, AgentKind::OpenCode),
+            AgentState::Running
+        );
+    }
+
+    #[test]
+    fn test_opencode_idle_with_footer() {
+        let content = "\
+  ┃\n\
+  ┃\n\
+  ┃  Build  GPT-5.3 Codex OpenAI\n\
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n\
+                                                                          ctrl+t variants  tab agents  ctrl+p commands";
+        assert_eq!(detect_state(content, AgentKind::OpenCode), AgentState::Idle);
+    }
+
+    #[test]
+    fn test_opencode_idle_fallback_without_ctrl_p() {
+        // When ctrl+p commands is captured but in a different form
+        let content = "\
+  ┃\n\
+  ┃  Build  GPT-5.3 Codex OpenAI\n\
+  ╹▀▀▀▀▀▀▀▀\n\
+                                  tab agents  ctrl+t variants";
+        assert_eq!(detect_state(content, AgentKind::OpenCode), AgentState::Idle);
+    }
+
+    #[test]
+    fn test_opencode_running_esc_interrupt_only() {
+        // Minimal running indicator
+        assert_eq!(
+            detect_state("esc interrupt", AgentKind::OpenCode),
+            AgentState::Running
+        );
+    }
+
+    #[test]
+    fn test_opencode_idle_full_screen_capture() {
+        // Real idle capture from tmux (simplified)
+        let content = "\
+                                         █▀▀█ █▀▀█ █▀▀█ █▀▀▄ █▀▀▀ █▀▀█ █▀▀█ █▀▀█\n\
+                                         █  █ █  █ █▀▀▀ █  █ █    █  █ █  █ █▀▀▀\n\
+                       ┃\n\
+                       ┃  Ask anything...\n\
+                       ┃\n\
+                       ┃  Build  GPT-5.3 Codex OpenAI\n\
+                       ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n\
+                                                      ctrl+t variants  tab agents  ctrl+p commands\n\
+  /tmp                                                                                                          1.2.15";
+        assert_eq!(detect_state(content, AgentKind::OpenCode), AgentState::Idle);
+    }
+
+    #[test]
+    fn test_opencode_running_with_block_spinner() {
+        // Block spinner characters used by OpenCode
+        let content = "⬝■■■■■■⬝  esc interrupt  ctrl+t variants  tab agents  ctrl+p commands";
+        assert_eq!(
+            detect_state(content, AgentKind::OpenCode),
+            AgentState::Running
+        );
+    }
+
+    #[test]
+    fn test_opencode_unknown_empty_content() {
+        assert_eq!(detect_state("", AgentKind::OpenCode), AgentState::Unknown);
+    }
+
+    #[test]
+    fn test_opencode_plan_mode_idle() {
+        let content = "\
+  ┃\n\
+  ┃  Plan  GPT-5.3 Codex OpenAI\n\
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n\
+                                                                          ctrl+t variants  tab agents  ctrl+p commands";
+        assert_eq!(detect_state(content, AgentKind::OpenCode), AgentState::Idle);
     }
 
     // -- ANSI stripping ------------------------------------------------------

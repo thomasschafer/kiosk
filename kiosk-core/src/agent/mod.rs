@@ -7,6 +7,7 @@ pub enum AgentKind {
     ClaudeCode,
     Codex,
     CursorAgent,
+    OpenCode,
 }
 
 impl fmt::Display for AgentKind {
@@ -15,6 +16,7 @@ impl fmt::Display for AgentKind {
             AgentKind::ClaudeCode => write!(f, "Claude Code"),
             AgentKind::Codex => write!(f, "Codex"),
             AgentKind::CursorAgent => write!(f, "Cursor"),
+            AgentKind::OpenCode => write!(f, "OpenCode"),
         }
     }
 }
@@ -85,7 +87,7 @@ pub fn detect_for_session(
             // Only walk the process tree for shell commands where an agent
             // might be running as a child. Skipping editors, TUI apps, etc.
             // avoids unnecessary /proc reads and pgrep calls every poll cycle.
-            if is_shell_command(&pane.command) {
+            if may_host_agent(&pane.command) {
                 get_child_process_args(pane.pid)
                     .as_deref()
                     .and_then(|args| detect::detect_agent_kind(&pane.command, Some(args)))
@@ -111,15 +113,17 @@ pub fn detect_for_session(
     best
 }
 
-/// Shell commands where an agent might be running as a child process.
-/// We only walk the process tree for these to avoid unnecessary I/O.
-const SHELL_COMMANDS: &[&str] = &[
-    "bash", "zsh", "fish", "sh", "dash", "ksh", "tcsh", "csh", "nu", "nushell", "pwsh",
+/// Commands that may host an agent as a child process. We walk the process
+/// tree for these to check if an agent binary is running underneath.
+/// Includes shells (where users launch agents) and `node` (which hosts
+/// Node.js-based agents like `OpenCode` and Cursor Agent).
+const AGENT_HOST_COMMANDS: &[&str] = &[
+    "bash", "zsh", "fish", "sh", "dash", "ksh", "tcsh", "csh", "nu", "nushell", "pwsh", "node",
 ];
 
-fn is_shell_command(command: &str) -> bool {
+fn may_host_agent(command: &str) -> bool {
     let cmd_lower = command.to_lowercase();
-    SHELL_COMMANDS.iter().any(|s| cmd_lower == *s)
+    AGENT_HOST_COMMANDS.iter().any(|s| cmd_lower == *s)
 }
 
 /// Maximum depth when recursively walking child processes, to prevent
@@ -477,32 +481,32 @@ mod tests {
     }
 
     #[test]
-    fn is_shell_command_matches_common_shells() {
-        assert!(super::is_shell_command("bash"));
-        assert!(super::is_shell_command("zsh"));
-        assert!(super::is_shell_command("fish"));
-        assert!(super::is_shell_command("sh"));
-        assert!(super::is_shell_command("dash"));
-        assert!(super::is_shell_command("nu"));
-        assert!(super::is_shell_command("nushell"));
+    fn may_host_agent_matches_common_shells() {
+        assert!(super::may_host_agent("bash"));
+        assert!(super::may_host_agent("zsh"));
+        assert!(super::may_host_agent("fish"));
+        assert!(super::may_host_agent("sh"));
+        assert!(super::may_host_agent("dash"));
+        assert!(super::may_host_agent("nu"));
+        assert!(super::may_host_agent("nushell"));
     }
 
     #[test]
-    fn is_shell_command_rejects_non_shells() {
-        assert!(!super::is_shell_command("vim"));
-        assert!(!super::is_shell_command("hx"));
-        assert!(!super::is_shell_command("node"));
-        assert!(!super::is_shell_command("python3"));
-        assert!(!super::is_shell_command("cargo"));
-        assert!(!super::is_shell_command("claude"));
-        assert!(!super::is_shell_command("codex"));
+    fn may_host_agent_rejects_non_shells() {
+        assert!(!super::may_host_agent("vim"));
+        assert!(!super::may_host_agent("hx"));
+
+        assert!(!super::may_host_agent("python3"));
+        assert!(!super::may_host_agent("cargo"));
+        assert!(!super::may_host_agent("claude"));
+        assert!(!super::may_host_agent("codex"));
     }
 
     #[test]
-    fn is_shell_command_case_insensitive() {
-        assert!(super::is_shell_command("Bash"));
-        assert!(super::is_shell_command("ZSH"));
-        assert!(super::is_shell_command("Fish"));
+    fn may_host_agent_case_insensitive() {
+        assert!(super::may_host_agent("Bash"));
+        assert!(super::may_host_agent("ZSH"));
+        assert!(super::may_host_agent("Fish"));
     }
 
     #[test]
@@ -546,5 +550,48 @@ mod tests {
         // verify that a shell with no agent content and no children returns None.
         let tmux = mock_with_agent("shell-session", "bash", "$ ls -la");
         assert!(detect_for_session(&tmux, "shell-session").is_none());
+    }
+
+    #[test]
+    fn detect_opencode_running() {
+        let tmux = mock_with_agent(
+            "oc-session",
+            "node",
+            "⬝■■■■■■⬝  esc interrupt  ctrl+t variants  tab agents  ctrl+p commands",
+        );
+        // node pane won't match directly — needs child process.
+        // Since we can't mock /proc, test state detection directly:
+        let state = detect::detect_state(
+            "⬝■■■■■■⬝  esc interrupt  ctrl+t variants  tab agents  ctrl+p commands",
+            AgentKind::OpenCode,
+        );
+        assert_eq!(state, AgentState::Running);
+    }
+
+    #[test]
+    fn detect_opencode_idle() {
+        let state = detect::detect_state(
+            "  ┃  Build  GPT-5.3 Codex OpenAI\n  ╹▀▀▀\n                ctrl+t variants  tab agents  ctrl+p commands",
+            AgentKind::OpenCode,
+        );
+        assert_eq!(state, AgentState::Idle);
+    }
+
+    #[test]
+    fn detect_opencode_via_command_name() {
+        let tmux = mock_with_agent(
+            "oc-session",
+            "opencode",
+            "  ctrl+t variants  tab agents  ctrl+p commands",
+        );
+        let status = detect_for_session(&tmux, "oc-session").unwrap();
+        assert_eq!(status.kind, AgentKind::OpenCode);
+        assert_eq!(status.state, AgentState::Idle);
+    }
+
+    #[test]
+    fn may_host_agent_includes_node() {
+        assert!(super::may_host_agent("node"));
+        assert!(super::may_host_agent("Node"));
     }
 }

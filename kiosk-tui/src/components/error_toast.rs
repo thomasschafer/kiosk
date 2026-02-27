@@ -67,6 +67,10 @@ mod tests {
     use kiosk_core::state::AppState;
     use ratatui::{Terminal, backend::TestBackend};
 
+    fn test_keys() -> KeysConfig {
+        KeysConfig::default()
+    }
+
     fn test_theme() -> Theme {
         Theme::from_config(&ThemeConfig::default())
     }

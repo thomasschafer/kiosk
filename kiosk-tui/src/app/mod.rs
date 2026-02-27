@@ -682,12 +682,23 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
                 state.fetching_remotes = true;
                 spawn::spawn_git_fetch(git, sender, repo_path);
 
-                // Kick off agent status polling. The poller queries tmux for
-                // active sessions each cycle, so it automatically picks up
-                // sessions created after branch view was entered.
-                let has_any_session = state.branches.iter().any(|branch| branch.has_session);
+                // Kick off agent status polling for sessions in the current
+                // branch view. Only polls sessions that actually exist.
+                let session_names: Vec<String> = state
+                    .branches
+                    .iter()
+                    .filter(|b| b.has_session)
+                    .filter_map(|b| {
+                        b.worktree_path.as_ref().and_then(|wt_path| {
+                            state
+                                .selected_repo_idx
+                                .and_then(|idx| state.repos.get(idx))
+                                .map(|repo| repo.tmux_session_name(wt_path))
+                        })
+                    })
+                    .collect();
 
-                if has_any_session {
+                if !session_names.is_empty() {
                     state.cancel_agent_poller();
                     let cancel = Arc::new(AtomicBool::new(false));
                     spawn_agent_status_poller(
@@ -695,6 +706,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
                         sender,
                         Arc::clone(&cancel),
                         state.agent_poll_interval,
+                        session_names,
                     );
                     state.agent_poller_cancel = Some(cancel);
                 }
@@ -726,7 +738,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             }
         }
         AppEvent::AgentStatesUpdated { states } => {
-            if state.mode == Mode::BranchSelect {
+            if *state.mode.effective() == Mode::BranchSelect {
                 // Update agent states in-place — no re-sorting or filter changes.
                 // None values clear stale statuses (agent exited since last poll).
                 for (session_name, agent_status) in states {
@@ -3468,7 +3480,7 @@ mod tests {
             has_session: true,
             is_current: false,
             is_default: false,
-            is_remote: false,
+            remote: None,
             session_activity_ts: None,
             agent_status: None,
         }];
@@ -3512,7 +3524,7 @@ mod tests {
             has_session: true,
             is_current: false,
             is_default: false,
-            is_remote: false,
+            remote: None,
             session_activity_ts: None,
             agent_status: None,
         }];
@@ -3556,7 +3568,7 @@ mod tests {
                 has_session: true,
                 is_current: false,
                 is_default: false,
-                is_remote: false,
+                remote: None,
                 session_activity_ts: None,
                 agent_status: None,
             },
@@ -3566,7 +3578,7 @@ mod tests {
                 has_session: true,
                 is_current: false,
                 is_default: false,
-                is_remote: false,
+                remote: None,
                 session_activity_ts: None,
                 agent_status: None,
             },
@@ -3621,7 +3633,7 @@ mod tests {
             has_session: true,
             is_current: false,
             is_default: false,
-            is_remote: false,
+            remote: None,
             session_activity_ts: None,
             agent_status: None,
         }];
@@ -3648,6 +3660,53 @@ mod tests {
 
         // Should be ignored when not in BranchSelect
         assert_eq!(state.branches[0].agent_status, None);
+    }
+
+    #[test]
+    fn test_agent_states_updated_applies_during_help_overlay() {
+        use kiosk_core::agent::{AgentKind, AgentState, AgentStatus};
+
+        let repos = vec![make_repo("my-repo")];
+        let mut state = AppState::new(repos, None);
+        state.selected_repo_idx = Some(0);
+        // Help overlay wrapping BranchSelect — effective() should still be BranchSelect
+        state.mode = Mode::Help {
+            previous: Box::new(Mode::BranchSelect),
+        };
+        state.branches = vec![BranchEntry {
+            name: "feat/test".to_string(),
+            worktree_path: Some(std::path::PathBuf::from("/tmp/wt")),
+            has_session: true,
+            is_current: false,
+            is_default: false,
+            remote: None,
+            session_activity_ts: None,
+            agent_status: None,
+        }];
+        state.branch_list.filtered = vec![(0, 0)];
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let sender = make_sender();
+
+        let session_name = state.repos[0].tmux_session_name(&std::path::PathBuf::from("/tmp/wt"));
+        let status = AgentStatus {
+            kind: AgentKind::ClaudeCode,
+            state: AgentState::Running,
+        };
+
+        process_app_event(
+            AppEvent::AgentStatesUpdated {
+                states: vec![(session_name, Some(status))],
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+        );
+
+        // Agent status should be applied even though Help overlay is active
+        assert_eq!(state.branches[0].agent_status, Some(status));
     }
 
     // ── GitFetchCompleted tests ──
@@ -3722,7 +3781,7 @@ mod tests {
                     make_branch("brand-new", Some("origin")),
                 ],
                 repo_path: PathBuf::from("/tmp/alpha"),
-                error: None,
+                is_final: true,
             },
             &mut state,
             &git,
@@ -3757,7 +3816,7 @@ mod tests {
             AppEvent::GitFetchCompleted {
                 branches: vec![make_branch("feature-x", Some("origin"))],
                 repo_path: PathBuf::from("/tmp/alpha"),
-                error: None,
+                is_final: true,
             },
             &mut state,
             &git,
@@ -3954,7 +4013,7 @@ mod tests {
             AppEvent::GitFetchCompleted {
                 branches: vec![make_branch("feature-x", Some("origin"))],
                 repo_path: PathBuf::from("/tmp/wrong-repo"),
-                error: None,
+                is_final: true,
             },
             &mut state,
             &git,
@@ -4021,7 +4080,7 @@ mod tests {
             AppEvent::GitFetchCompleted {
                 branches: vec![],
                 repo_path: PathBuf::from("/tmp/alpha"),
-                error: Some("network unreachable".to_string()),
+                is_final: true,
             },
             &mut state,
             &git,

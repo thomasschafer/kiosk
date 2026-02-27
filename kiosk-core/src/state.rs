@@ -13,7 +13,6 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    time::Instant,
 };
 use unicode_segmentation::UnicodeSegmentation;
 

@@ -293,7 +293,7 @@ pub(super) fn spawn_git_fetch(
         }
 
         let remaining = Arc::new(std::sync::atomic::AtomicUsize::new(remotes.len()));
-        let local_names = Arc::new(local_names);
+        let local_names = Arc::new(git.list_branches(&repo_path));
 
         let pool = match ThreadPoolBuilder::new()
             .num_threads(FETCH_POOL_SIZE)
@@ -354,16 +354,6 @@ pub(super) fn spawn_git_fetch(
                 });
             });
         }
-        // Re-derive local names after fetch so we use fresh data rather than
-        // the potentially stale set captured at branch-load time.
-        let local_names = git.list_branches(&repo_path);
-        let remote_names = git.list_remote_branches(&repo_path);
-        let branches = BranchEntry::build_remote(&remote_names, &local_names);
-        sender.send(AppEvent::GitFetchCompleted {
-            branches,
-            repo_path,
-            error: None,
-        });
     });
 }
 

@@ -411,29 +411,6 @@ fn draw_confirm_delete_dialog(
     }
 }
 
-/// Deduplicate `incoming` branches against `state.branches`, append any new ones,
-/// and rebuild the filtered list preserving search.
-fn extend_branches_deduped(state: &mut AppState, incoming: Vec<BranchEntry>) {
-    if incoming.is_empty() {
-        return;
-    }
-    let mut seen: std::collections::HashSet<(String, Option<String>)> = state
-        .branches
-        .iter()
-        .map(|b| (b.name.clone(), b.remote.clone()))
-        .collect();
-    let new_branches: Vec<_> = incoming
-        .into_iter()
-        .filter(|b| seen.insert((b.name.clone(), b.remote.clone())))
-        .collect();
-    if !new_branches.is_empty() {
-        state.branches.extend(new_branches);
-        let names: Vec<&str> = state.branches.iter().map(|b| b.name.as_str()).collect();
-        rebuild_filtered_preserving_search(&mut state.branch_list, &names);
-    }
-}
-
-
 /// Rebuild a `SearchableList`'s filtered entries from new item names while preserving
 /// the current search text, cursor position, and selection (clamped to bounds).
 fn rebuild_filtered_preserving_search(list: &mut SearchableList, names: &[&str]) {
@@ -733,9 +710,11 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             repo_path,
             is_final,
         } => {
-            // Always clear fetching_remotes — even on repo mismatch — so the
-            // flag doesn't stay stuck if the user switched repos mid-fetch.
-            state.fetching_remotes = false;
+            // Clear fetching_remotes when the last remote finishes, even on
+            // repo mismatch, so the flag doesn't stay stuck if user switched.
+            if is_final {
+                state.fetching_remotes = false;
+            }
 
             let current_repo_path = state
                 .selected_repo_idx
@@ -743,46 +722,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             if *state.mode.effective() == Mode::BranchSelect
                 && current_repo_path == Some(&repo_path)
             {
-                if let Some(err) = error {
-                    state.set_error(format!("git fetch failed: {err}"));
-                }
                 extend_branches_deduped(state, branches);
-            }
-        }
-        AppEvent::ReposEnriched {
-            worktrees_by_repo,
-            session_activity,
-        } => {
-            state.session_activity = session_activity;
-
-            // Update worktrees for each repo
-            for (repo_path, worktrees) in worktrees_by_repo {
-                if let Some(repo) = state.repos.iter_mut().find(|r| r.path == repo_path) {
-                    repo.worktrees = worktrees;
-                }
-            }
-
-            // Track selected repo so we can update the index after re-sort
-            let selected_repo_path = state
-                .selected_repo_idx
-                .map(|idx| state.repos[idx].path.clone());
-
-            // Re-sort repos with full recency data
-            kiosk_core::state::sort_repos(
-                &mut state.repos,
-                state.current_repo_path.as_deref(),
-                &state.session_activity,
-            );
-
-            // Update selected_repo_idx to follow the same repo after re-sort
-            state.selected_repo_idx =
-                selected_repo_path.and_then(|path| state.repos.iter().position(|r| r.path == path));
-
-            let names: Vec<&str> = state.repos.iter().map(|r| r.name.as_str()).collect();
-            rebuild_filtered_preserving_search(&mut state.repo_list, &names);
-
-            if state.reconcile_pending_worktree_deletes() {
-                let _ = save_pending_worktree_deletes(&state.pending_worktree_deletes);
             }
         }
         AppEvent::AgentStatesUpdated { states } => {

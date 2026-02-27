@@ -52,7 +52,6 @@ pub fn error_toast_size(
     build_error_dialog(error, &cancel_key_label(keys), theme).size(terminal_width)
 }
 
-
 /// Draw an error toast popup centered on the screen.
 pub fn draw(f: &mut Frame, area: Rect, state: &AppState, keys: &KeysConfig, theme: &Theme) {
     if let Some(error) = &state.error {

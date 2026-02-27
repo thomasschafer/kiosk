@@ -16,6 +16,7 @@ anyhow.workspace = true
 crossterm = "0.29"
 fuzzy-matcher = "0.3"
 kiosk-core.workspace = true
+log = "0.4"
 rayon = "1"
 ratatui = "0.30"
 unicode-width = "0.2"

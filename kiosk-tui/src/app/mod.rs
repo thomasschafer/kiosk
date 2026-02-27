@@ -96,13 +96,6 @@ pub fn run(
     loop {
         terminal.draw(|f| draw(f, state, theme, keys, &spinner_start))?;
 
-        // Auto-dismiss error after 5 seconds
-        if let Some(set_at) = state.error_set_at
-            && set_at.elapsed() >= Duration::from_secs(5)
-        {
-            state.clear_error();
-        }
-
         // Check background channel (non-blocking)
         if let Ok(app_event) = rx.try_recv() {
             if let Some(result) = process_app_event(app_event, state, git, tmux, &event_sender) {
@@ -133,8 +126,18 @@ pub fn run(
                 continue;
             }
 
-            // Clear error on any keypress
-            state.clear_error();
+            // Error toast blocks all input except Cancel (dismiss) and Quit
+            if state.error.is_some() {
+                let mut our_key: kiosk_core::keyboard::KeyEvent = key.into();
+                our_key.canonicalize();
+                if keys.modal.get(&our_key) == Some(&Command::Cancel) {
+                    state.clear_error();
+                } else if keys.general.get(&our_key) == Some(&Command::Quit) {
+                    cancel.store(true, Ordering::Relaxed);
+                    return Ok(Some(OpenAction::Quit));
+                }
+                continue;
+            }
 
             let ctx = ActionContext {
                 git,
@@ -174,10 +177,7 @@ fn draw(
     state.set_active_list_page_rows(page_rows);
 
     // Determine the effective mode for footer hints
-    let effective_mode = match &state.mode {
-        Mode::Help { previous } => previous.as_ref(),
-        other => other,
-    };
+    let effective_mode = state.mode.effective();
 
     match &state.mode {
         Mode::RepoSelect => components::repo_list::draw(f, main_area, state, theme, keys),
@@ -223,7 +223,7 @@ fn draw(
     }
 
     // Error toast overlay (rendered on top of everything)
-    components::error_toast::draw(f, f.area(), state, theme);
+    components::error_toast::draw(f, f.area(), state, keys, theme);
 
     // Footer with key hints
     let footer_hints = build_footer_hints(effective_mode, keys);
@@ -409,11 +409,14 @@ fn extend_branches_deduped(state: &mut AppState, incoming: Vec<BranchEntry>) {
     if incoming.is_empty() {
         return;
     }
-    let existing_names: std::collections::HashSet<&str> =
-        state.branches.iter().map(|b| b.name.as_str()).collect();
+    let mut seen: std::collections::HashSet<(String, Option<String>)> = state
+        .branches
+        .iter()
+        .map(|b| (b.name.clone(), b.remote.clone()))
+        .collect();
     let new_branches: Vec<_> = incoming
         .into_iter()
-        .filter(|b| !existing_names.contains(b.name.as_str()))
+        .filter(|b| seen.insert((b.name.clone(), b.remote.clone())))
         .collect();
     if !new_branches.is_empty() {
         state.branches.extend(new_branches);
@@ -586,7 +589,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             if state.reconcile_pending_worktree_deletes()
                 && let Err(e) = save_pending_worktree_deletes(&state.pending_worktree_deletes)
             {
-                state.set_error(format!("Failed to persist pending deletes: {e}"));
+                state.set_error(&format!("Failed to persist pending deletes: {e}"));
             }
         }
         AppEvent::WorktreeCreated { path, session_name } => {
@@ -602,7 +605,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
         } => {
             state.clear_pending_worktree_delete_by_path(&worktree_path);
             if let Err(e) = save_pending_worktree_deletes(&state.pending_worktree_deletes) {
-                state.set_error(format!("Failed to persist pending deletes: {e}"));
+                state.set_error(&format!("Failed to persist pending deletes: {e}"));
             }
             // Return to branch select and refresh the branch list
             if let Some(repo_idx) = state.selected_repo_idx {
@@ -628,7 +631,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
                     " (also failed to persist pending deletes: {e})"
                 );
             }
-            state.set_error(error_message);
+            state.set_error(&error_message);
             state.loading_branches = false;
             state.mode = Mode::BranchSelect;
         }
@@ -651,7 +654,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             if state.reconcile_pending_worktree_deletes()
                 && let Err(e) = save_pending_worktree_deletes(&state.pending_worktree_deletes)
             {
-                state.set_error(format!("Failed to persist pending deletes: {e}"));
+                state.set_error(&format!("Failed to persist pending deletes: {e}"));
             }
             state.mode = Mode::BranchSelect;
 
@@ -672,22 +675,23 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             }
         }
         AppEvent::RemoteBranchesLoaded { branches } => {
-            if state.mode == Mode::BranchSelect {
+            if *state.mode.effective() == Mode::BranchSelect {
                 extend_branches_deduped(state, branches);
             }
         }
         AppEvent::GitFetchCompleted {
             branches,
             repo_path,
-            error,
+            is_final,
         } => {
             let current_repo_path = state
                 .selected_repo_idx
                 .and_then(|idx| state.repos.get(idx).map(|r| &r.path));
-            if state.mode == Mode::BranchSelect && current_repo_path == Some(&repo_path) {
-                state.fetching_remotes = false;
-                if let Some(err) = error {
-                    state.error = Some(format!("git fetch failed: {err}"));
+            if *state.mode.effective() == Mode::BranchSelect
+                && current_repo_path == Some(&repo_path)
+            {
+                if is_final {
+                    state.fetching_remotes = false;
                 }
                 extend_branches_deduped(state, branches);
             }
@@ -701,7 +705,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
                 state.mode = Mode::BranchSelect;
             }
             state.loading_branches = false;
-            state.set_error(msg);
+            state.set_error(&msg);
         }
     }
     None
@@ -1058,7 +1062,7 @@ mod tests {
             worktree_path: None,
             has_session: false,
             is_current: true,
-            is_remote: false,
+            remote: None,
             is_default: false,
             session_activity_ts: None,
         }];
@@ -1075,7 +1079,7 @@ mod tests {
                 worktree_path: None,
                 has_session: false,
                 is_current: false,
-                is_remote: true,
+                remote: Some("origin".to_string()),
                 is_default: false,
                 session_activity_ts: None,
             },
@@ -1084,7 +1088,7 @@ mod tests {
                 worktree_path: None,
                 has_session: false,
                 is_current: false,
-                is_remote: true,
+                remote: Some("origin".to_string()),
                 is_default: false,
                 session_activity_ts: None,
             },
@@ -1102,9 +1106,9 @@ mod tests {
 
         assert_eq!(state.branches.len(), 3);
         assert_eq!(state.branch_list.filtered.len(), 3);
-        assert!(!state.branches[0].is_remote); // main stays first
-        assert!(state.branches[1].is_remote); // feature-x
-        assert!(state.branches[2].is_remote); // feature-y
+        assert!(state.branches[0].remote.is_none()); // main stays first
+        assert!(state.branches[1].remote.is_some()); // feature-x
+        assert!(state.branches[2].remote.is_some()); // feature-y
     }
 
     #[test]
@@ -1118,7 +1122,7 @@ mod tests {
             worktree_path: None,
             has_session: false,
             is_current: true,
-            is_remote: false,
+            remote: None,
             is_default: false,
             session_activity_ts: None,
         }];
@@ -1140,7 +1144,7 @@ mod tests {
                     worktree_path: None,
                     has_session: false,
                     is_current: false,
-                    is_remote: true,
+                    remote: Some("origin".to_string()),
                     is_default: false,
                     session_activity_ts: None,
                 }],
@@ -1342,7 +1346,7 @@ mod tests {
             worktree_path: Some(PathBuf::from("/tmp/alpha")),
             has_session: false,
             is_current: true,
-            is_remote: false,
+            remote: None,
             is_default: false,
             session_activity_ts: None,
         }];
@@ -1380,7 +1384,7 @@ mod tests {
             worktree_path: None,
             has_session: false,
             is_current: false,
-            is_remote: false,
+            remote: None,
             is_default: false,
             session_activity_ts: None,
         }];
@@ -1620,7 +1624,7 @@ mod tests {
             worktree_path: Some(PathBuf::from("/tmp/alpha")),
             has_session: false,
             is_current: true,
-            is_remote: false,
+            remote: None,
             is_default: true,
             session_activity_ts: None,
         }];
@@ -1652,7 +1656,7 @@ mod tests {
             worktree_path: None,
             has_session: false,
             is_current: false,
-            is_remote: false,
+            remote: None,
             is_default: false,
             session_activity_ts: None,
         }];
@@ -1683,7 +1687,7 @@ mod tests {
             worktree_path: Some(PathBuf::from("/tmp/alpha")),
             has_session: false,
             is_current: true,
-            is_remote: false,
+            remote: None,
             is_default: false,
             session_activity_ts: None,
         }];
@@ -1714,7 +1718,7 @@ mod tests {
             worktree_path: Some(PathBuf::from("/tmp/alpha-dev")),
             has_session: false,
             is_current: false,
-            is_remote: false,
+            remote: None,
             is_default: false,
             session_activity_ts: None,
         }];
@@ -1750,7 +1754,7 @@ mod tests {
             worktree_path: Some(PathBuf::from("/tmp/alpha-dev")),
             has_session: true,
             is_current: false,
-            is_remote: false,
+            remote: None,
             is_default: false,
             session_activity_ts: None,
         }];
@@ -1794,7 +1798,7 @@ mod tests {
             worktree_path: Some(PathBuf::from("/tmp/alpha-dev")),
             has_session: true,
             is_current: false,
-            is_remote: false,
+            remote: None,
             is_default: false,
             session_activity_ts: None,
         }];
@@ -1839,7 +1843,7 @@ mod tests {
             worktree_path: Some(PathBuf::from("/tmp/alpha-dev")),
             has_session: false,
             is_current: false,
-            is_remote: false,
+            remote: None,
             is_default: false,
             session_activity_ts: None,
         }];
@@ -3384,14 +3388,14 @@ mod tests {
 
     // ── GitFetchCompleted tests ──
 
-    fn make_branch(name: &str, is_remote: bool) -> BranchEntry {
+    fn make_branch(name: &str, remote: Option<&str>) -> BranchEntry {
         BranchEntry {
             name: name.to_string(),
             worktree_path: None,
             has_session: false,
             is_current: false,
             is_default: false,
-            is_remote,
+            remote: remote.map(String::from),
             session_activity_ts: None,
         }
     }
@@ -3402,7 +3406,7 @@ mod tests {
         let mut state = AppState::new(repos, None);
         state.selected_repo_idx = Some(0);
         state.mode = Mode::BranchSelect;
-        state.branches = vec![make_branch("main", false)];
+        state.branches = vec![make_branch("main", None)];
         state.branch_list.reset(1);
         state.fetching_remotes = true;
 
@@ -3412,9 +3416,9 @@ mod tests {
 
         process_app_event(
             AppEvent::GitFetchCompleted {
-                branches: vec![make_branch("feature-new", true)],
+                branches: vec![make_branch("feature-new", Some("origin"))],
                 repo_path: PathBuf::from("/tmp/alpha"),
-                error: None,
+                is_final: true,
             },
             &mut state,
             &git,
@@ -3425,7 +3429,7 @@ mod tests {
         assert!(!state.fetching_remotes);
         assert_eq!(state.branches.len(), 2);
         assert_eq!(state.branches[1].name, "feature-new");
-        assert!(state.branches[1].is_remote);
+        assert!(state.branches[1].remote.is_some());
         assert_eq!(state.branch_list.filtered.len(), 2);
     }
 
@@ -3436,8 +3440,8 @@ mod tests {
         state.selected_repo_idx = Some(0);
         state.mode = Mode::BranchSelect;
         state.branches = vec![
-            make_branch("main", false),
-            make_branch("existing-remote", true),
+            make_branch("main", None),
+            make_branch("existing-remote", Some("origin")),
         ];
         state.branch_list.reset(2);
         state.fetching_remotes = true;
@@ -3449,11 +3453,11 @@ mod tests {
         process_app_event(
             AppEvent::GitFetchCompleted {
                 branches: vec![
-                    make_branch("existing-remote", true),
-                    make_branch("brand-new", true),
+                    make_branch("existing-remote", Some("origin")),
+                    make_branch("brand-new", Some("origin")),
                 ],
                 repo_path: PathBuf::from("/tmp/alpha"),
-                error: None,
+                is_final: true,
             },
             &mut state,
             &git,
@@ -3472,7 +3476,7 @@ mod tests {
         let mut state = AppState::new(repos, None);
         state.selected_repo_idx = Some(0);
         state.mode = Mode::BranchSelect;
-        state.branches = vec![make_branch("main", false)];
+        state.branches = vec![make_branch("main", None)];
         state.branch_list.reset(1);
         state.branch_list.input.text = "feat".to_string();
         state.branch_list.input.cursor = 4;
@@ -3486,9 +3490,9 @@ mod tests {
 
         process_app_event(
             AppEvent::GitFetchCompleted {
-                branches: vec![make_branch("feature-x", true)],
+                branches: vec![make_branch("feature-x", Some("origin"))],
                 repo_path: PathBuf::from("/tmp/alpha"),
-                error: None,
+                is_final: true,
             },
             &mut state,
             &git,
@@ -3510,7 +3514,7 @@ mod tests {
         let mut state = AppState::new(repos, None);
         state.selected_repo_idx = Some(0);
         state.mode = Mode::RepoSelect;
-        state.branches = vec![make_branch("main", false)];
+        state.branches = vec![make_branch("main", None)];
         state.fetching_remotes = true;
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
@@ -3519,9 +3523,9 @@ mod tests {
 
         process_app_event(
             AppEvent::GitFetchCompleted {
-                branches: vec![make_branch("feature-x", true)],
+                branches: vec![make_branch("feature-x", Some("origin"))],
                 repo_path: PathBuf::from("/tmp/alpha"),
-                error: None,
+                is_final: true,
             },
             &mut state,
             &git,
@@ -3533,6 +3537,71 @@ mod tests {
         assert_eq!(state.branches.len(), 1);
         // fetching_remotes stays true because the event was ignored (wrong mode)
         assert!(state.fetching_remotes);
+    }
+
+    #[test]
+    fn test_git_fetch_completed_processed_during_help_over_branch_select() {
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+        state.selected_repo_idx = Some(0);
+        state.mode = Mode::Help {
+            previous: Box::new(Mode::BranchSelect),
+        };
+        state.branches = vec![make_branch("main", None)];
+        state.branch_list.reset(1);
+        state.fetching_remotes = true;
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let sender = make_sender();
+
+        process_app_event(
+            AppEvent::GitFetchCompleted {
+                branches: vec![make_branch("feature-x", Some("origin"))],
+                repo_path: PathBuf::from("/tmp/alpha"),
+                is_final: true,
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+        );
+
+        assert!(
+            !state.fetching_remotes,
+            "is_final should clear spinner even during Help"
+        );
+        assert_eq!(state.branches.len(), 2);
+        assert_eq!(state.branches[1].name, "feature-x");
+    }
+
+    #[test]
+    fn test_remote_branches_loaded_processed_during_help_over_branch_select() {
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+        state.selected_repo_idx = Some(0);
+        state.mode = Mode::Help {
+            previous: Box::new(Mode::BranchSelect),
+        };
+        state.branches = vec![make_branch("main", None)];
+        state.branch_list.reset(1);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let sender = make_sender();
+
+        process_app_event(
+            AppEvent::RemoteBranchesLoaded {
+                branches: vec![make_branch("feature-y", Some("origin"))],
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+        );
+
+        assert_eq!(state.branches.len(), 2);
+        assert_eq!(state.branches[1].name, "feature-y");
     }
 
     // ── Streaming discovery event tests ──
@@ -3578,7 +3647,7 @@ mod tests {
         let mut state = AppState::new(repos, None);
         state.selected_repo_idx = Some(0);
         state.mode = Mode::BranchSelect;
-        state.branches = vec![make_branch("main", false)];
+        state.branches = vec![make_branch("main", None)];
         state.branch_list.reset(1);
         state.fetching_remotes = true;
 
@@ -3588,9 +3657,9 @@ mod tests {
 
         process_app_event(
             AppEvent::GitFetchCompleted {
-                branches: vec![make_branch("feature-x", true)],
+                branches: vec![make_branch("feature-x", Some("origin"))],
                 repo_path: PathBuf::from("/tmp/wrong-repo"),
-                error: None,
+                is_final: true,
             },
             &mut state,
             &git,
@@ -3604,7 +3673,45 @@ mod tests {
     }
 
     #[test]
-    fn test_git_fetch_completed_shows_error() {
+    fn test_git_fetch_completed_non_final_keeps_fetching() {
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+        state.selected_repo_idx = Some(0);
+        state.mode = Mode::BranchSelect;
+        state.branches = vec![make_branch("main", None)];
+        state.branch_list.reset(1);
+        state.fetching_remotes = true;
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let sender = make_sender();
+
+        process_app_event(
+            AppEvent::GitFetchCompleted {
+                branches: vec![make_branch("feature-x", Some("origin"))],
+                repo_path: PathBuf::from("/tmp/alpha"),
+                is_final: false,
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+        );
+
+        assert!(
+            state.fetching_remotes,
+            "non-final event should keep spinner"
+        );
+        assert_eq!(
+            state.branches.len(),
+            2,
+            "branches should extend from non-final events"
+        );
+        assert_eq!(state.branches[1].name, "feature-x");
+    }
+
+    #[test]
+    fn test_git_fetch_completed_final_empty_clears_fetching() {
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
         state.selected_repo_idx = Some(0);
@@ -3619,7 +3726,7 @@ mod tests {
             AppEvent::GitFetchCompleted {
                 branches: vec![],
                 repo_path: PathBuf::from("/tmp/alpha"),
-                error: Some("network unreachable".to_string()),
+                is_final: true,
             },
             &mut state,
             &git,
@@ -3628,14 +3735,7 @@ mod tests {
         );
 
         assert!(!state.fetching_remotes);
-        assert!(state.error.is_some());
-        assert!(
-            state
-                .error
-                .as_ref()
-                .unwrap()
-                .contains("network unreachable")
-        );
+        assert!(state.error.is_none());
     }
 
     #[test]
@@ -3697,7 +3797,7 @@ mod tests {
             AppEvent::GitFetchCompleted {
                 branches: vec![],
                 repo_path: PathBuf::from("/tmp/alpha"),
-                error: None,
+                is_final: true,
             },
             &mut state,
             &git,

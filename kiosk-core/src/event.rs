@@ -50,11 +50,12 @@ pub enum AppEvent {
         branches: Vec<crate::state::BranchEntry>,
     },
 
-    /// Background git fetch completed, with any newly discovered remote branches
+    /// Background git fetch completed for one remote (or all remotes if `is_final`).
     GitFetchCompleted {
         branches: Vec<crate::state::BranchEntry>,
         repo_path: PathBuf,
-        error: Option<String>,
+        /// True when this is the last remote to finish, so the UI can clear the spinner.
+        is_final: bool,
     },
 
     /// Single repo enriched with worktree data (streamed from phase 2)

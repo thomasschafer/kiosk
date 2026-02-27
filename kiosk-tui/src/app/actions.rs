@@ -56,7 +56,7 @@ pub(super) fn handle_show_help(state: &mut AppState, keys: &KeysConfig) {
 
 pub(super) fn handle_start_new_branch(state: &mut AppState) {
     if state.branch_list.input.text.is_empty() {
-        state.set_error("Type a branch name first".to_string());
+        state.set_error("Type a branch name first");
         return;
     }
     if state.selected_repo_idx.is_none() {
@@ -67,11 +67,11 @@ pub(super) fn handle_start_new_branch(state: &mut AppState) {
     let bases: Vec<String> = state
         .branches
         .iter()
-        .filter(|b| !b.is_remote)
+        .filter(|b| b.remote.is_none())
         .map(|b| b.name.clone())
         .collect();
     if bases.is_empty() {
-        state.set_error("No local branches to use as base".to_string());
+        state.set_error("No local branches to use as base");
         return;
     }
     let list = SearchableList::new(bases.len());
@@ -92,14 +92,14 @@ pub(super) fn handle_delete_worktree(state: &mut AppState) {
         if let Some(repo_idx) = state.selected_repo_idx {
             let repo_path = state.repos[repo_idx].path.clone();
             if state.is_branch_pending_delete(&repo_path, &branch.name) {
-                state.set_error("Worktree deletion already in progress".to_string());
+                state.set_error("Worktree deletion already in progress");
                 return;
             }
         }
         if branch.worktree_path.is_none() {
-            state.set_error("No worktree to delete".to_string());
+            state.set_error("No worktree to delete");
         } else if branch.is_current {
-            state.set_error("Cannot delete the current branch's worktree".to_string());
+            state.set_error("Cannot delete the current branch's worktree");
         } else {
             state.mode = Mode::ConfirmWorktreeDelete {
                 branch_name: branch.name.clone(),
@@ -142,7 +142,7 @@ pub(super) fn handle_confirm_delete<T: TmuxProvider + ?Sized>(
                 );
                 state.mark_pending_worktree_delete(pending);
                 if let Err(e) = save_pending_worktree_deletes(&state.pending_worktree_deletes) {
-                    state.set_error(format!("Failed to persist pending deletes: {e}"));
+                    state.set_error(&format!("Failed to persist pending deletes: {e}"));
                 }
             }
             state.mode = Mode::BranchSelect;
@@ -173,7 +173,7 @@ pub(super) fn handle_open_branch(
                         split_command: state.split_command.clone(),
                     });
                 }
-                let is_remote = branch.is_remote;
+                let is_remote = branch.remote.is_some();
                 match worktree_dir(repo, &branch.name) {
                     Ok(wt_path) => {
                         let branch_name = branch.name.clone();
@@ -204,7 +204,7 @@ pub(super) fn handle_open_branch(
                         }
                     }
                     Err(e) => {
-                        state.set_error(format!("Failed to determine worktree path: {e}"));
+                        state.set_error(&format!("Failed to determine worktree path: {e}"));
                         return None;
                     }
                 }
@@ -235,7 +235,7 @@ pub(super) fn handle_open_branch(
                         );
                     }
                     Err(e) => {
-                        state.set_error(format!("Failed to determine worktree path: {e}"));
+                        state.set_error(&format!("Failed to determine worktree path: {e}"));
                         return None;
                     }
                 }
@@ -360,7 +360,7 @@ pub(super) fn handle_setup_add_dir(state: &mut AppState) -> Option<super::OpenAc
     let input_text = setup.input.text.trim().to_string();
     if input_text.is_empty() {
         if setup.dirs.is_empty() {
-            state.set_error("Add at least one directory".to_string());
+            state.set_error("Add at least one directory");
             return None;
         }
         return Some(super::OpenAction::SetupComplete);

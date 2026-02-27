@@ -4,6 +4,7 @@ use super::{
 };
 use anyhow::Result;
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
     sync::Mutex,
 };
@@ -13,14 +14,16 @@ pub struct MockGitProvider {
     pub repos: Vec<Repo>,
     pub branches: Vec<String>,
     pub remote_branches: Vec<String>,
+    pub remote_branches_by_remote: HashMap<String, Vec<String>>,
     pub worktrees: Vec<Worktree>,
     pub add_worktree_result: Mutex<Option<Result<()>>>,
     pub create_branch_result: Mutex<Option<Result<()>>>,
     pub remove_worktree_result: Mutex<Option<Result<()>>>,
     pub prune_worktrees_result: Mutex<Option<Result<()>>>,
     pub prune_worktrees_calls: Mutex<Vec<PathBuf>>,
-    pub fetch_all_result: Mutex<Option<Result<()>>>,
-    pub fetch_all_calls: Mutex<Vec<PathBuf>>,
+    pub remotes: Vec<String>,
+    pub fetch_remote_results: Mutex<HashMap<(PathBuf, String), Result<()>>>,
+    pub fetch_remote_calls: Mutex<Vec<(PathBuf, String)>>,
     pub default_branch: Option<String>,
     pub current_repo_path: Option<PathBuf>,
 }
@@ -107,15 +110,26 @@ impl GitProvider for MockGitProvider {
             .unwrap_or(Ok(()))
     }
 
-    fn fetch_all(&self, repo_path: &Path) -> Result<()> {
-        self.fetch_all_calls
+    fn list_remote_branches_for_remote(&self, _repo_path: &Path, remote: &str) -> Vec<String> {
+        self.remote_branches_by_remote
+            .get(remote)
+            .cloned()
+            .unwrap_or_else(|| self.remote_branches.clone())
+    }
+
+    fn list_remotes(&self, _repo_path: &Path) -> Vec<String> {
+        self.remotes.clone()
+    }
+
+    fn fetch_remote(&self, repo_path: &Path, remote: &str) -> Result<()> {
+        self.fetch_remote_calls
             .lock()
             .unwrap()
-            .push(repo_path.to_path_buf());
-        self.fetch_all_result
+            .push((repo_path.to_path_buf(), remote.to_string()));
+        self.fetch_remote_results
             .lock()
             .unwrap()
-            .take()
+            .remove(&(repo_path.to_path_buf(), remote.to_string()))
             .unwrap_or(Ok(()))
     }
 

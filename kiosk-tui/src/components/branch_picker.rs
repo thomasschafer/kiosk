@@ -41,11 +41,11 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, _keys: &
         .map(|(idx, _)| {
             let branch = &state.branches[*idx];
 
-            if branch.is_remote {
+            if let Some(remote) = &branch.remote {
                 // Remote branches rendered with muted style
                 let mut spans = vec![Span::styled(&branch.name, Style::default().fg(theme.muted))];
                 spans.push(Span::styled(
-                    " (remote)",
+                    format!(" ({remote})"),
                     Style::default()
                         .fg(theme.muted)
                         .add_modifier(Modifier::ITALIC),

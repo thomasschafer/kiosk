@@ -1527,8 +1527,8 @@ fn test_e2e_remote_branches_shown() {
 
     // Should show remote branches with (remote) indicator
     assert!(
-        screen.contains("feature-alpha") && screen.contains("(remote)"),
-        "Should show remote branches with (remote) tag: {screen}"
+        screen.contains("feature-alpha") && screen.contains("(origin)"),
+        "Should show remote branches with (origin) tag: {screen}"
     );
     assert!(
         screen.contains("feature-beta"),
@@ -1563,7 +1563,7 @@ fn test_e2e_remote_branches_searchable() {
     wait_ms(200);
     env.send_special("Tab");
     wait_for_screen(&env, 3000, |s| {
-        s.contains("feat-search-target") && s.contains("(remote)")
+        s.contains("feat-search-target") && s.contains("(origin)")
     });
 
     // Search for the remote branch
@@ -1572,7 +1572,7 @@ fn test_e2e_remote_branches_searchable() {
 
     let screen = env.capture();
     assert!(
-        screen.contains("feat-search-target") && screen.contains("(remote)"),
+        screen.contains("feat-search-target") && screen.contains("(origin)"),
         "Should find remote branch via search: {screen}"
     );
     // "main" should be filtered out
@@ -2294,10 +2294,7 @@ fn test_e2e_headless_branches_json_stable_schema() {
         first.get("is_current").is_some(),
         "should have 'is_current' field"
     );
-    assert!(
-        first.get("is_remote").is_some(),
-        "should have 'is_remote' field"
-    );
+    assert!(first.get("remote").is_some(), "should have 'remote' field");
     // Internal fields should NOT be exposed
     assert!(
         first.get("is_default").is_none(),
@@ -2649,4 +2646,82 @@ fn test_e2e_fetch_discovers_new_remote_branch() {
     );
 
     cleanup_server(&env.tmux_socket);
+}
+
+#[test]
+fn test_e2e_error_toast_shows_dismiss_hint() {
+    let env = TestEnv::new("err-hint");
+    let search_dir = env.search_dir();
+
+    let repo = search_dir.join("err-hint-repo");
+    fs::create_dir_all(&repo).unwrap();
+    init_test_repo(&repo);
+    run_git(&repo, &["branch", "feat/no-wt"]);
+
+    env.write_config(&search_dir);
+    env.launch_kiosk();
+
+    // Enter repo, trigger error
+    env.send_special("Tab");
+    wait_ms(300);
+    env.send("feat/no-wt");
+    wait_ms(200);
+    env.send_special("C-x");
+
+    let screen = env.capture();
+    assert!(
+        screen.contains("esc: close"),
+        "Error toast should show dismiss hint: {screen}"
+    );
+}
+
+#[test]
+fn test_e2e_error_toast_blocks_input_and_esc_dismisses() {
+    let env = TestEnv::new("err-block");
+    let search_dir = env.search_dir();
+
+    let repo = search_dir.join("err-block-repo");
+    fs::create_dir_all(&repo).unwrap();
+    init_test_repo(&repo);
+    run_git(&repo, &["branch", "feat/no-wt"]);
+
+    env.write_config(&search_dir);
+    env.launch_kiosk();
+
+    // Enter repo, trigger error
+    env.send_special("Tab");
+    wait_ms(300);
+    env.send("feat/no-wt");
+    wait_ms(200);
+    env.send_special("C-x");
+
+    let screen = env.capture();
+    assert!(
+        screen.contains("No worktree"),
+        "Error should be visible: {screen}"
+    );
+
+    // Type while error is visible — should be blocked (search input unchanged)
+    env.send("zzz");
+    let screen = env.capture();
+    assert!(
+        screen.contains("No worktree"),
+        "Error toast should still be visible after typing: {screen}"
+    );
+    assert!(
+        !screen.contains("zzz"),
+        "Typing should be blocked by error toast: {screen}"
+    );
+
+    // Esc dismisses the error
+    env.send_special("Escape");
+    let screen = env.capture();
+    assert!(
+        !screen.contains("No worktree"),
+        "Error should be dismissed after Esc: {screen}"
+    );
+    assert!(
+        screen.contains("select branch"),
+        "Should still be in branch select after dismissing error: {screen}"
+    );
 }

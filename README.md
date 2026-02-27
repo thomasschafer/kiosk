@@ -277,6 +277,11 @@ Defaults are shown below.
 
 Agent detection configuration.
 
+#### `enabled`
+
+Whether agent status detection is enabled (default: true).
+Set to `false` to completely disable agent polling and status display.
+
 #### `poll_interval_ms`
 
 Interval in milliseconds between agent status polls (default: 2000).

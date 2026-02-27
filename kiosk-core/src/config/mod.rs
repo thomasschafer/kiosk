@@ -80,11 +80,15 @@ pub struct Config {
 ///
 /// ```toml
 /// [agent]
+/// enabled = true
 /// poll_interval_ms = 2000
 /// ```
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(deny_unknown_fields, default)]
 pub struct AgentConfig {
+    /// Whether agent status detection is enabled (default: true).
+    /// Set to `false` to completely disable agent polling and status display.
+    pub enabled: bool,
     /// Interval in milliseconds between agent status polls (default: 2000).
     pub poll_interval_ms: u64,
 }
@@ -92,6 +96,7 @@ pub struct AgentConfig {
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
+            enabled: true,
             poll_interval_ms: 2000,
         }
     }
@@ -724,6 +729,76 @@ unknown_field = true
 "#,
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_agent_config_enabled_defaults_to_true() {
+        let config = load_config_from_str(r#"search_dirs = ["~/Dev"]"#).unwrap();
+        assert!(config.agent.enabled);
+    }
+
+    #[test]
+    fn test_agent_config_enabled_false() {
+        let config = load_config_from_str(
+            r#"
+search_dirs = ["~/Dev"]
+
+[agent]
+enabled = false
+"#,
+        )
+        .unwrap();
+        assert!(!config.agent.enabled);
+        // poll_interval_ms should still default
+        assert_eq!(config.agent.poll_interval_ms, 2000);
+    }
+
+    #[test]
+    fn test_agent_config_enabled_true_explicit() {
+        let config = load_config_from_str(
+            r#"
+search_dirs = ["~/Dev"]
+
+[agent]
+enabled = true
+poll_interval_ms = 3000
+"#,
+        )
+        .unwrap();
+        assert!(config.agent.enabled);
+        assert_eq!(config.agent.poll_interval_ms, 3000);
+    }
+
+    #[test]
+    fn test_agent_config_only_poll_interval() {
+        // Setting only poll_interval_ms should keep enabled as default (true)
+        let config = load_config_from_str(
+            r#"
+search_dirs = ["~/Dev"]
+
+[agent]
+poll_interval_ms = 500
+"#,
+        )
+        .unwrap();
+        assert!(config.agent.enabled);
+        assert_eq!(config.agent.poll_interval_ms, 500);
+    }
+
+    #[test]
+    fn test_agent_config_only_enabled() {
+        // Setting only enabled should keep poll_interval_ms as default
+        let config = load_config_from_str(
+            r#"
+search_dirs = ["~/Dev"]
+
+[agent]
+enabled = false
+"#,
+        )
+        .unwrap();
+        assert!(!config.agent.enabled);
+        assert_eq!(config.agent.poll_interval_ms, 2000);
     }
 
     #[test]

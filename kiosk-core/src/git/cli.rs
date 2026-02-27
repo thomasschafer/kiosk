@@ -801,12 +801,12 @@ impl CliGitProvider {
             return None;
         }
 
-        let git_dir = worktrees_dir.parent()?;
-        if git_dir.file_name()? != GIT_DIR_ENTRY {
+        let metadata_git_dir = worktrees_dir.parent()?;
+        if metadata_git_dir.file_name()? != GIT_DIR_ENTRY {
             return None;
         }
 
-        Some(git_dir.parent()?.to_path_buf())
+        Some(metadata_git_dir.parent()?.to_path_buf())
     }
 
     /// Walk a directory tree up to `depth`, calling `on_repo` for each git repo found.

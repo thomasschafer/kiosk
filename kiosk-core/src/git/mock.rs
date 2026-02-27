@@ -21,7 +21,7 @@ pub struct MockGitProvider {
     pub prune_worktrees_result: Mutex<Option<Result<()>>>,
     pub prune_worktrees_calls: Mutex<Vec<PathBuf>>,
     pub remotes: Vec<String>,
-    pub fetch_remote_results: Mutex<HashMap<String, Result<()>>>,
+    pub fetch_remote_results: Mutex<HashMap<(PathBuf, String), Result<()>>>,
     pub fetch_remote_calls: Mutex<Vec<(PathBuf, String)>>,
     pub default_branch: Option<String>,
     pub current_repo_path: Option<PathBuf>,
@@ -109,6 +109,10 @@ impl GitProvider for MockGitProvider {
             .unwrap_or(Ok(()))
     }
 
+    fn list_remote_branches_for_remote(&self, _repo_path: &Path, _remote: &str) -> Vec<String> {
+        self.remote_branches.clone()
+    }
+
     fn list_remotes(&self, _repo_path: &Path) -> Vec<String> {
         self.remotes.clone()
     }
@@ -121,7 +125,7 @@ impl GitProvider for MockGitProvider {
         self.fetch_remote_results
             .lock()
             .unwrap()
-            .remove(remote)
+            .remove(&(repo_path.to_path_buf(), remote.to_string()))
             .unwrap_or(Ok(()))
     }
 

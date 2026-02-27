@@ -15,6 +15,9 @@ use super::EventSender;
 /// Maximum number of concurrent `git worktree list` enrichment calls.
 const ENRICHMENT_POOL_SIZE: usize = 8;
 
+/// Maximum number of concurrent per-remote `git fetch` calls.
+const FETCH_POOL_SIZE: usize = 4;
+
 pub(super) fn spawn_repo_discovery<T: TmuxProvider + ?Sized + 'static>(
     git: &Arc<dyn GitProvider>,
     tmux: &Arc<T>,
@@ -277,24 +280,39 @@ pub(super) fn spawn_git_fetch(
         let remaining = Arc::new(std::sync::atomic::AtomicUsize::new(remotes.len()));
         let local_names = Arc::new(local_names);
 
+        let pool = ThreadPoolBuilder::new()
+            .num_threads(FETCH_POOL_SIZE)
+            .build()
+            .expect("failed to build fetch thread pool");
+
         for remote in remotes {
             let git = Arc::clone(&git);
             let sender = sender.clone();
             let repo_path = repo_path.clone();
             let remaining = Arc::clone(&remaining);
             let local_names = Arc::clone(&local_names);
-            thread::spawn(move || {
+            pool.spawn(move || {
                 if sender.cancel.load(Ordering::Relaxed) {
-                    remaining.fetch_sub(1, Ordering::AcqRel);
+                    let old = remaining.fetch_sub(1, Ordering::AcqRel);
+                    sender.send(AppEvent::GitFetchCompleted {
+                        branches: vec![],
+                        repo_path,
+                        is_final: old == 1,
+                    });
                     return;
                 }
                 let branches = match git.fetch_remote(&repo_path, &remote) {
                     Ok(()) => {
                         if sender.cancel.load(Ordering::Relaxed) {
-                            remaining.fetch_sub(1, Ordering::AcqRel);
+                            let old = remaining.fetch_sub(1, Ordering::AcqRel);
+                            sender.send(AppEvent::GitFetchCompleted {
+                                branches: vec![],
+                                repo_path,
+                                is_final: old == 1,
+                            });
                             return;
                         }
-                        let remote_names = git.list_remote_branches(&repo_path);
+                        let remote_names = git.list_remote_branches_for_remote(&repo_path, &remote);
                         BranchEntry::build_remote(&remote_names, &local_names)
                     }
                     Err(e) => {

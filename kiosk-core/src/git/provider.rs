@@ -16,6 +16,8 @@ pub trait GitProvider: Send + Sync {
     fn discover_repos(&self, dirs: &[(PathBuf, u16)]) -> Vec<Repo>;
     fn list_branches(&self, repo_path: &Path) -> Vec<String>;
     fn list_remote_branches(&self, repo_path: &Path) -> Vec<String>;
+    /// List remote branches for a specific remote only.
+    fn list_remote_branches_for_remote(&self, repo_path: &Path, remote: &str) -> Vec<String>;
     fn list_worktrees(&self, repo_path: &Path) -> Vec<Worktree>;
     fn add_worktree(&self, repo_path: &Path, branch: &str, worktree_path: &Path) -> Result<()>;
     fn create_branch_and_worktree(

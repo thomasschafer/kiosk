@@ -12,7 +12,7 @@ use ratatui::{
     widgets::Padding,
 };
 
-fn build_error_dialog<'a>(error: &'a str, dismiss_key: &str, theme: &Theme) -> Dialog<'a> {
+fn build_error_dialog<'a>(error: &'a str, dismiss_key: &'a str, theme: &Theme) -> Dialog<'a> {
     let text = Line::from(vec![
         Span::styled(
             "Error: ",
@@ -25,7 +25,7 @@ fn build_error_dialog<'a>(error: &'a str, dismiss_key: &str, theme: &Theme) -> D
 
     let hint = Line::from(vec![
         Span::styled(
-            dismiss_key.to_string(),
+            dismiss_key,
             Style::default().fg(theme.hint).add_modifier(Modifier::BOLD),
         ),
         Span::raw(": close"),

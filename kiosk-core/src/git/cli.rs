@@ -77,6 +77,35 @@ impl GitProvider for CliGitProvider {
             .collect()
     }
 
+    fn list_remote_branches_for_remote(&self, repo_path: &Path, remote: &str) -> Vec<String> {
+        let pattern = format!("{remote}/*");
+        let output = Command::new("git")
+            .args([
+                "branch",
+                "-r",
+                "--format=%(refname:short)",
+                "--list",
+                &pattern,
+            ])
+            .current_dir(repo_path)
+            .output();
+
+        let Ok(output) = output else {
+            return Vec::new();
+        };
+
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| {
+                let line = line.trim();
+                if line.contains("->") {
+                    return None;
+                }
+                line.split_once('/').map(|(_, branch)| branch.to_string())
+            })
+            .collect()
+    }
+
     fn list_worktrees(&self, repo_path: &Path) -> Vec<Worktree> {
         let output = Command::new("git")
             .args(["worktree", "list", "--porcelain"])
@@ -210,6 +239,16 @@ impl GitProvider for CliGitProvider {
         else {
             return Vec::new();
         };
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            log::warn!(
+                "git remote failed for {}: {}",
+                repo_path.display(),
+                stderr.trim()
+            );
+            return Vec::new();
+        }
 
         String::from_utf8_lossy(&output.stdout)
             .lines()

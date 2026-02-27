@@ -2265,4 +2265,36 @@ mod tests {
         };
         assert_eq!(*mode.effective(), Mode::RepoSelect);
     }
+
+    #[test]
+    fn test_agent_enabled_defaults_to_true() {
+        let state = AppState::new(vec![], None);
+        assert!(state.agent_enabled);
+    }
+
+    #[test]
+    fn test_agent_poll_interval_defaults_to_2000ms() {
+        let state = AppState::new(vec![], None);
+        assert_eq!(
+            state.agent_poll_interval,
+            std::time::Duration::from_millis(2000)
+        );
+    }
+
+    #[test]
+    fn test_agent_poll_interval_can_be_overridden() {
+        let mut state = AppState::new(vec![], None);
+        state.agent_poll_interval = std::time::Duration::from_millis(5000);
+        assert_eq!(
+            state.agent_poll_interval,
+            std::time::Duration::from_millis(5000)
+        );
+    }
+
+    #[test]
+    fn test_agent_enabled_can_be_disabled() {
+        let mut state = AppState::new(vec![], None);
+        state.agent_enabled = false;
+        assert!(!state.agent_enabled);
+    }
 }

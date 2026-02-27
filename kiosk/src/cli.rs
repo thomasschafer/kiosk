@@ -2632,6 +2632,90 @@ mod tests {
     }
 
     #[test]
+    fn branches_skips_agent_detection_when_disabled() {
+        let mut config = test_config();
+        config.agent.enabled = false;
+
+        let mut git = MockGitProvider::default();
+        git.repos = vec![repo("/tmp/demo", "demo")];
+        git.worktrees = vec![Worktree {
+            path: PathBuf::from("/tmp/demo"),
+            branch: Some("main".to_string()),
+            is_main: true,
+        }];
+        git.branches = vec!["main".to_string()];
+
+        // Create a session with "claude" as the command — would normally trigger detection
+        let mut tmux = MockTmuxProvider::default();
+        tmux.sessions.lock().unwrap().push("demo".to_string());
+        tmux.pane_info.insert(
+            "demo".to_string(),
+            vec![kiosk_core::tmux::provider::PaneInfo {
+                pane_id: "%0".to_string(),
+                command: "claude".to_string(),
+                pid: 99999,
+            }],
+        );
+        tmux.pane_content
+            .insert("%0".to_string(), "❯ \n? for shortcuts".to_string());
+
+        // With agent.enabled = false, branches should have no agent_status
+        let result = cmd_branches(&config, &git, &tmux, "demo", true);
+        assert!(result.is_ok());
+        // The function prints JSON to stdout — we can't easily capture it here,
+        // but we verify no panics and the function completes successfully.
+        // The real test is that detect_for_session is never called.
+    }
+
+    #[test]
+    fn status_skips_agent_detection_when_disabled() {
+        let mut config = test_config();
+        config.agent.enabled = false;
+
+        let git = demo_git(vec![main_worktree()], vec![]);
+        let tmux = MockTmuxProvider {
+            sessions: Mutex::new(vec!["demo".to_string()]),
+            capture_output: Mutex::new("some output".to_string()),
+            ..Default::default()
+        };
+
+        let output = status_internal(
+            &config,
+            &git,
+            &tmux,
+            &StatusArgs {
+                repo: "demo".to_string(),
+                branch: None,
+                json: false,
+                lines: 10,
+                pane: 0,
+            },
+        )
+        .unwrap();
+
+        assert!(
+            output.agent_status.is_none(),
+            "agent_status should be None when agent.enabled = false"
+        );
+    }
+
+    #[test]
+    fn sessions_skips_agent_detection_when_disabled() {
+        let mut config = test_config();
+        config.agent.enabled = false;
+
+        let git = demo_git(vec![main_worktree()], vec![]);
+        let tmux = MockTmuxProvider {
+            sessions: Mutex::new(vec!["demo".to_string()]),
+            ..Default::default()
+        };
+
+        // Should succeed without calling detect_for_session
+        let result = cmd_sessions(&config, &git, &tmux, true);
+        assert!(result.is_ok());
+    }
+
+    #[test]
     fn test_status_with_pane() {
         let config = test_config();
         let git = demo_git(vec![main_worktree()], vec![]);

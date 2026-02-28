@@ -23,6 +23,8 @@ pub struct MockTmuxProvider {
     pub pane_info: HashMap<String, Vec<PaneInfo>>,
     /// Pane content keyed by `pane_id` (e.g. `%0`)
     pub pane_content: HashMap<String, String>,
+    /// Session activity timestamps keyed by session name
+    pub session_activity_ts: HashMap<String, u64>,
 }
 
 impl TmuxProvider for MockTmuxProvider {
@@ -145,8 +147,12 @@ impl TmuxProvider for MockTmuxProvider {
         Ok("zsh".to_string())
     }
 
-    fn session_activity(&self, _session: &str) -> anyhow::Result<u64> {
-        Ok(1_234_567_890)
+    fn session_activity(&self, session: &str) -> anyhow::Result<u64> {
+        Ok(self
+            .session_activity_ts
+            .get(session)
+            .copied()
+            .unwrap_or(1_234_567_890))
     }
 
     fn pane_count(&self, _session: &str) -> anyhow::Result<usize> {

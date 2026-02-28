@@ -101,7 +101,20 @@ pub fn detect_for_session(
         if let Some(kind) = kind
             && let Some(content) = tmux.capture_pane_content(&pane.pane_id, 30)
         {
-            let state = detect::detect_state(&content, kind);
+            let mut state = detect::detect_state(&content, kind);
+
+            // When content-based detection returns Unknown (no recognisable
+            // pattern), use the tmux session_activity timestamp as a
+            // supplementary signal. If the session has had activity within
+            // the last few seconds, the agent is likely processing.
+            //
+            // Inspired by agent-os's spike detection which uses tmux's
+            // session_activity timestamp as an independent signal source
+            // (<https://github.com/saadnvd1/agent-os>).
+            if state == AgentState::Unknown {
+                state = infer_state_from_activity(tmux, session_name, kind);
+            }
+
             let status = AgentStatus { kind, state };
             if best
                 .as_ref()
@@ -126,6 +139,44 @@ const AGENT_HOST_COMMANDS: &[&str] = &[
 fn may_host_agent(command: &str) -> bool {
     let cmd_lower = command.to_lowercase();
     AGENT_HOST_COMMANDS.iter().any(|s| cmd_lower == *s)
+}
+
+/// How recently (in seconds) the session must have had activity for us to
+/// infer Running from the timestamp alone. Keeps it tight to avoid false
+/// positives on sessions where a human just scrolled or resized.
+const ACTIVITY_RECENCY_SECS: u64 = 3;
+
+/// When content-based detection returns Unknown, use the tmux
+/// `session_activity` timestamp to infer whether the agent is likely
+/// processing. If the session had activity within the last few seconds,
+/// we upgrade Unknown → Running for agents known to have a "dark" period
+/// during API calls (Claude Code, Codex) where no content indicators appear.
+///
+/// For agents that default to Idle on Unknown (Cursor, Gemini), we don't
+/// override — those agents use `detect_generic_state` which never returns
+/// Unknown.
+///
+/// Inspired by agent-os's temporal activity tracking
+/// (<https://github.com/saadnvd1/agent-os>).
+fn infer_state_from_activity(
+    tmux: &(impl crate::tmux::TmuxProvider + ?Sized),
+    session_name: &str,
+    _kind: AgentKind,
+) -> AgentState {
+    let Ok(activity_ts) = tmux.session_activity(session_name) else {
+        return AgentState::Unknown;
+    };
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    if now.saturating_sub(activity_ts) <= ACTIVITY_RECENCY_SECS {
+        AgentState::Running
+    } else {
+        AgentState::Unknown
+    }
 }
 
 /// Maximum depth when recursively walking child processes, to prevent
@@ -556,7 +607,7 @@ mod tests {
 
     #[test]
     fn detect_opencode_running() {
-        let tmux = mock_with_agent(
+        let _tmux = mock_with_agent(
             "oc-session",
             "node",
             "⬝■■■■■■⬝  esc interrupt  ctrl+t variants  tab agents  ctrl+p commands",
@@ -595,5 +646,106 @@ mod tests {
     fn may_host_agent_includes_node() {
         assert!(super::may_host_agent("node"));
         assert!(super::may_host_agent("Node"));
+    }
+    #[test]
+    fn unknown_upgrades_to_running_with_recent_activity() {
+        // When content detection returns Unknown (no recognisable pattern)
+        // but the session has recent activity, infer Running.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let mut tmux = MockTmuxProvider::default();
+        let session = "active-session";
+        tmux.pane_info.insert(
+            session.to_string(),
+            vec![PaneInfo {
+                pane_id: "%0".to_string(),
+                command: "claude".to_string(),
+                pid: 99999,
+            }],
+        );
+        // Content that would normally return Unknown (no patterns match)
+        tmux.pane_content.insert(
+            "%0".to_string(),
+            "Some random output with no indicators".to_string(),
+        );
+        // Activity timestamp is NOW (within recency window)
+        tmux.session_activity_ts.insert(session.to_string(), now);
+
+        let status = detect_for_session(&tmux, session).unwrap();
+        assert_eq!(status.kind, AgentKind::ClaudeCode);
+        assert_eq!(
+            status.state,
+            AgentState::Running,
+            "Unknown + recent activity should infer Running"
+        );
+    }
+
+    #[test]
+    fn unknown_stays_unknown_with_stale_activity() {
+        // When content detection returns Unknown and the session has NO
+        // recent activity, keep it as Unknown.
+        let stale_ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            - 60; // 60 seconds ago
+
+        let mut tmux = MockTmuxProvider::default();
+        let session = "stale-session";
+        tmux.pane_info.insert(
+            session.to_string(),
+            vec![PaneInfo {
+                pane_id: "%0".to_string(),
+                command: "claude".to_string(),
+                pid: 99999,
+            }],
+        );
+        tmux.pane_content.insert(
+            "%0".to_string(),
+            "Some random output with no indicators".to_string(),
+        );
+        tmux.session_activity_ts
+            .insert(session.to_string(), stale_ts);
+
+        let status = detect_for_session(&tmux, session).unwrap();
+        assert_eq!(
+            status.state,
+            AgentState::Unknown,
+            "Unknown + stale activity should stay Unknown"
+        );
+    }
+
+    #[test]
+    fn activity_does_not_override_idle() {
+        // When content detection returns Idle, recent activity should NOT
+        // override it (the idle footer is a stronger signal).
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let mut tmux = MockTmuxProvider::default();
+        let session = "idle-session";
+        tmux.pane_info.insert(
+            session.to_string(),
+            vec![PaneInfo {
+                pane_id: "%0".to_string(),
+                command: "claude".to_string(),
+                pid: 99999,
+            }],
+        );
+        tmux.pane_content
+            .insert("%0".to_string(), "❯ \n? for shortcuts".to_string());
+        tmux.session_activity_ts.insert(session.to_string(), now);
+
+        let status = detect_for_session(&tmux, session).unwrap();
+        assert_eq!(
+            status.state,
+            AgentState::Idle,
+            "Idle state should not be overridden by recent activity"
+        );
     }
 }

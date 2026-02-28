@@ -698,8 +698,11 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
                     })
                     .collect();
 
+                // Always cancel the previous poller before deciding whether
+                // to spawn a new one — avoids leaking stale pollers when
+                // navigating to repos with no sessions or agent disabled.
+                state.cancel_agent_poller();
                 if !session_names.is_empty() && state.agent_enabled {
-                    state.cancel_agent_poller();
                     let cancel = Arc::new(AtomicBool::new(false));
                     spawn_agent_status_poller(
                         tmux,

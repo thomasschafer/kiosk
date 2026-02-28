@@ -253,10 +253,19 @@ const OPENCODE_PATTERNS: AgentPatterns = AgentPatterns {
     // The `esc interrupt` text appears in the footer alongside the block
     // spinner `⬝■` during active work.
     running: &["esc interrupt"],
-    // OpenCode shows a "Permission Required" dialog with "Allow (a)",
-    // "Allow for session (s)", "Deny (d)" buttons for bash commands,
-    // file edits, writes, and fetch operations.
-    waiting: &["permission required", "allow (a)", "deny (d)"],
+    // OpenCode shows a permission dialog for bash commands, file edits,
+    // writes, and fetch operations. Two dialog styles exist:
+    //   Old style: "Permission Required" + "Allow (a)" / "Deny (d)"
+    //   New style: "△ Permission required" + "Allow once" / "Allow always" / "Reject"
+    //              with footer "ctrl+f fullscreen  ⇆ select  enter confirm"
+    waiting: &[
+        "permission required",
+        "allow (a)",
+        "deny (d)",
+        "allow once",
+        "allow always",
+        "enter confirm",
+    ],
     // OpenCode's idle footer shows `ctrl+p commands` when at the input prompt.
     idle_tail: &["ctrl+p commands", "ctrl+t variants", "tab agents"],
 };
@@ -1089,6 +1098,36 @@ mod tests {
         // OpenCode's permission dialog can appear alongside the idle footer
         // (ctrl+p commands) in the same tmux capture. Waiting should win.
         let content = "Permission Required\n\nTool: bash\nAllow (a)  Deny (d)\n  ctrl+p commands";
+        assert_eq!(
+            detect_state(content, AgentKind::OpenCode),
+            AgentState::Waiting
+        );
+    }
+
+    #[test]
+    fn opencode_waiting_new_style_dialog() {
+        // Newer OpenCode versions show a different permission dialog with
+        // "Allow once" / "Allow always" / "Reject" buttons.
+        let content = "  ┃\n  ┃  △ Permission required\n  ┃    # Deletes the specified temporary file\n  ┃\n  ┃  $ rm -f \"/tmp/test.txt\"\n  ┃\n  ┃\n  ┃   Allow once   Allow always   Reject          ctrl+f fullscreen  ⇆ select  enter confirm\n  ┃";
+        assert_eq!(
+            detect_state(content, AgentKind::OpenCode),
+            AgentState::Waiting
+        );
+    }
+
+    #[test]
+    fn opencode_waiting_allow_once_button() {
+        let content = "some output\nAllow once  Allow always  Reject";
+        assert_eq!(
+            detect_state(content, AgentKind::OpenCode),
+            AgentState::Waiting
+        );
+    }
+
+    #[test]
+    fn opencode_waiting_new_style_beats_idle_footer() {
+        // New-style permission dialog alongside the idle footer.
+        let content = "△ Permission required\n$ rm test.txt\nAllow once  Allow always  Reject\n  ctrl+p commands";
         assert_eq!(
             detect_state(content, AgentKind::OpenCode),
             AgentState::Waiting

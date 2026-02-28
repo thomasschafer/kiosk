@@ -1,4 +1,4 @@
-use super::provider::{PaneInfo, TmuxProvider};
+use super::provider::{PaneInfo, SessionPaneData, TmuxProvider};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::Path;
@@ -28,6 +28,26 @@ pub struct MockTmuxProvider {
 }
 
 impl TmuxProvider for MockTmuxProvider {
+    fn list_all_panes_with_activity(&self) -> HashMap<String, SessionPaneData> {
+        // Build from existing mock data: pane_info + session_activity_ts
+        let mut result = HashMap::new();
+        for (session, panes) in &self.pane_info {
+            let activity = self
+                .session_activity_ts
+                .get(session)
+                .copied()
+                .unwrap_or(1_234_567_890);
+            result.insert(
+                session.clone(),
+                SessionPaneData {
+                    panes: panes.clone(),
+                    session_activity: activity,
+                },
+            );
+        }
+        result
+    }
+
     fn list_sessions_with_activity(&self) -> Vec<(String, u64)> {
         if self.sessions_with_activity.is_empty() {
             self.sessions

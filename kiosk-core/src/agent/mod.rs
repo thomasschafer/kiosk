@@ -81,14 +81,57 @@ pub fn detect_for_session(
     session_name: &str,
 ) -> Option<AgentStatus> {
     let panes = tmux.list_panes_detailed(session_name);
+    let activity = tmux.session_activity(session_name).unwrap_or(0);
 
+    let data = crate::tmux::provider::SessionPaneData {
+        panes,
+        session_activity: activity,
+    };
+
+    detect_from_pane_data(tmux, &data)
+}
+
+/// Detect agent status for multiple sessions using pre-fetched pane data.
+///
+/// This is the batched counterpart to [`detect_for_session`]. Instead of
+/// calling tmux per-session, the caller passes pre-fetched
+/// [`SessionPaneData`] from a single `list_all_panes_with_activity()` call.
+/// Only `capture_pane_content` still requires per-pane tmux calls.
+///
+/// Returns results for every requested session (in the same order), with
+/// `None` for sessions not found in `all_pane_data` or without agents.
+pub fn detect_for_sessions_batched(
+    tmux: &(impl crate::tmux::TmuxProvider + ?Sized),
+    session_names: &[String],
+    all_pane_data: &std::collections::HashMap<
+        String,
+        crate::tmux::provider::SessionPaneData,
+        impl std::hash::BuildHasher,
+    >,
+) -> Vec<(String, Option<AgentStatus>)> {
+    session_names
+        .iter()
+        .map(|session_name| {
+            let status = all_pane_data
+                .get(session_name)
+                .and_then(|data| detect_from_pane_data(tmux, data));
+            (session_name.clone(), status)
+        })
+        .collect()
+}
+
+/// Core detection logic operating on pre-fetched [`SessionPaneData`].
+///
+/// Shared between [`detect_for_session`] (single-session path) and
+/// [`detect_for_sessions_batched`] (batch path).
+fn detect_from_pane_data(
+    tmux: &(impl crate::tmux::TmuxProvider + ?Sized),
+    data: &crate::tmux::provider::SessionPaneData,
+) -> Option<AgentStatus> {
     let mut best: Option<AgentStatus> = None;
 
-    for pane in panes {
+    for pane in &data.panes {
         let kind = detect::detect_agent_kind(&pane.command, None).or_else(|| {
-            // Only walk the process tree for shell commands where an agent
-            // might be running as a child. Skipping editors, TUI apps, etc.
-            // avoids unnecessary /proc reads and pgrep calls every poll cycle.
             if may_host_agent(&pane.command) {
                 get_child_process_args(pane.pid)
                     .as_deref()
@@ -104,19 +147,10 @@ pub fn detect_for_session(
             let mut state = detect::detect_state(&content, kind);
 
             // When content-based detection returns Unknown (no recognisable
-            // pattern), use the tmux session_activity timestamp as a
-            // supplementary signal. If the session has had activity within
-            // the last few seconds, the agent is likely processing.
-            //
-            // Only check when the pane has actual content — empty content
-            // means the agent hasn't rendered anything yet (e.g. just
-            // launched), not that it's in a "dark" API call period.
-            //
-            // Inspired by agent-os's spike detection which uses tmux's
-            // session_activity timestamp as an independent signal source
-            // (<https://github.com/saadnvd1/agent-os>).
+            // pattern), use the pre-fetched session_activity timestamp as a
+            // supplementary signal — no extra tmux call needed.
             if state == AgentState::Unknown && !content.trim().is_empty() {
-                state = infer_state_from_activity(tmux, session_name);
+                state = infer_state_from_activity_ts(data.session_activity);
             }
 
             let status = AgentStatus { kind, state };
@@ -130,6 +164,23 @@ pub fn detect_for_session(
     }
 
     best
+}
+
+/// Infer Running from a pre-fetched activity timestamp.
+///
+/// Counterpart to [`infer_state_from_activity`] but takes the timestamp
+/// directly instead of calling tmux.
+fn infer_state_from_activity_ts(activity_ts: u64) -> AgentState {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    if now.saturating_sub(activity_ts) <= ACTIVITY_RECENCY_SECS {
+        AgentState::Running
+    } else {
+        AgentState::Unknown
+    }
 }
 
 /// Commands that may host an agent as a child process. We walk the process
@@ -149,38 +200,6 @@ fn may_host_agent(command: &str) -> bool {
 /// infer Running from the timestamp alone. Keeps it tight to avoid false
 /// positives on sessions where a human just scrolled or resized.
 const ACTIVITY_RECENCY_SECS: u64 = 3;
-
-/// When content-based detection returns Unknown, use the tmux
-/// `session_activity` timestamp to infer whether the agent is likely
-/// processing. If the session had activity within the last few seconds,
-/// we upgrade Unknown → Running for agents known to have a "dark" period
-/// during API calls (Claude Code, Codex) where no content indicators appear.
-///
-/// For agents that default to Idle on Unknown (Cursor, Gemini), we don't
-/// override — those agents use `detect_generic_state` which never returns
-/// Unknown.
-///
-/// Inspired by agent-os's temporal activity tracking
-/// (<https://github.com/saadnvd1/agent-os>).
-fn infer_state_from_activity(
-    tmux: &(impl crate::tmux::TmuxProvider + ?Sized),
-    session_name: &str,
-) -> AgentState {
-    let Ok(activity_ts) = tmux.session_activity(session_name) else {
-        return AgentState::Unknown;
-    };
-
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-
-    if now.saturating_sub(activity_ts) <= ACTIVITY_RECENCY_SECS {
-        AgentState::Running
-    } else {
-        AgentState::Unknown
-    }
-}
 
 /// Maximum depth when recursively walking child processes, to prevent
 /// infinite loops in case of unexpected process tree cycles.
@@ -279,7 +298,7 @@ fn get_child_args_pgrep(pid: u32, args: &mut String, depth: usize) {
 mod tests {
     use super::*;
     use crate::tmux::mock::MockTmuxProvider;
-    use crate::tmux::provider::PaneInfo;
+    use crate::tmux::provider::{PaneInfo, TmuxProvider};
 
     fn mock_with_agent(session: &str, command: &str, pane_content: &str) -> MockTmuxProvider {
         let mut tmux = MockTmuxProvider::default();
@@ -750,5 +769,230 @@ mod tests {
             AgentState::Idle,
             "Idle state should not be overridden by recent activity"
         );
+    }
+    // -- Batched detection ---------------------------------------------------
+
+    #[test]
+    fn batched_matches_single_session_results() {
+        // Verify that batch detection produces the same results as
+        // calling detect_for_session individually.
+        let mut tmux = MockTmuxProvider::default();
+        let sessions = ["claude-session", "codex-session", "empty-session"];
+
+        tmux.pane_info.insert(
+            "claude-session".to_string(),
+            vec![PaneInfo {
+                pane_id: "%0".to_string(),
+                command: "claude".to_string(),
+                pid: 10001,
+            }],
+        );
+        tmux.pane_content
+            .insert("%0".to_string(), "⠋ Reading file".to_string());
+
+        tmux.pane_info.insert(
+            "codex-session".to_string(),
+            vec![PaneInfo {
+                pane_id: "%1".to_string(),
+                command: "codex".to_string(),
+                pid: 10002,
+            }],
+        );
+        tmux.pane_content
+            .insert("%1".to_string(), "? for shortcuts".to_string());
+
+        // empty-session has no pane_info → not in all_pane_data
+
+        let session_names: Vec<String> = sessions.iter().map(ToString::to_string).collect();
+
+        // Individual detection
+        let individual: Vec<Option<AgentStatus>> = session_names
+            .iter()
+            .map(|s| detect_for_session(&tmux, s))
+            .collect();
+
+        // Batched detection
+        let all_pane_data = tmux.list_all_panes_with_activity();
+        let batched = super::detect_for_sessions_batched(&tmux, &session_names, &all_pane_data);
+
+        // Results should match
+        for (i, session) in session_names.iter().enumerate() {
+            let batch_status = batched.iter().find(|(s, _)| s == session).map(|(_, s)| s);
+            assert_eq!(
+                batch_status,
+                Some(&individual[i]),
+                "Mismatch for session {session}"
+            );
+        }
+    }
+
+    #[test]
+    fn batched_returns_none_for_unknown_sessions() {
+        let tmux = MockTmuxProvider::default();
+        let session_names = vec!["nonexistent".to_string()];
+        let all_pane_data = tmux.list_all_panes_with_activity();
+
+        let results = super::detect_for_sessions_batched(&tmux, &session_names, &all_pane_data);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, "nonexistent");
+        assert!(results[0].1.is_none());
+    }
+
+    #[test]
+    fn batched_preserves_session_order() {
+        let mut tmux = MockTmuxProvider::default();
+        for name in &["z-session", "a-session", "m-session"] {
+            tmux.pane_info.insert(
+                name.to_string(),
+                vec![PaneInfo {
+                    pane_id: format!("%{}", name.chars().next().unwrap()),
+                    command: "claude".to_string(),
+                    pid: 10000,
+                }],
+            );
+            tmux.pane_content.insert(
+                format!("%{}", name.chars().next().unwrap()),
+                "❯ \n? for shortcuts".to_string(),
+            );
+        }
+
+        let session_names: Vec<String> = ["z-session", "a-session", "m-session"]
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        let all_pane_data = tmux.list_all_panes_with_activity();
+        let results = super::detect_for_sessions_batched(&tmux, &session_names, &all_pane_data);
+
+        assert_eq!(results[0].0, "z-session");
+        assert_eq!(results[1].0, "a-session");
+        assert_eq!(results[2].0, "m-session");
+    }
+
+    #[test]
+    fn batched_activity_inference_uses_prefetched_timestamp() {
+        // Verify that batched detection uses the pre-fetched session_activity
+        // timestamp (from list_all_panes_with_activity) instead of making an
+        // extra tmux call.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let mut tmux = MockTmuxProvider::default();
+        let session = "active-session";
+        tmux.pane_info.insert(
+            session.to_string(),
+            vec![PaneInfo {
+                pane_id: "%0".to_string(),
+                command: "claude".to_string(),
+                pid: 99999,
+            }],
+        );
+        // Content with no recognisable patterns → Unknown
+        tmux.pane_content.insert(
+            "%0".to_string(),
+            "Some output with no indicators".to_string(),
+        );
+        // Recent activity
+        tmux.session_activity_ts.insert(session.to_string(), now);
+
+        let session_names = vec![session.to_string()];
+        let all_pane_data = tmux.list_all_panes_with_activity();
+        let results = super::detect_for_sessions_batched(&tmux, &session_names, &all_pane_data);
+
+        assert_eq!(
+            results[0].1.unwrap().state,
+            AgentState::Running,
+            "Should infer Running from pre-fetched recent activity"
+        );
+    }
+
+    #[test]
+    fn batched_empty_sessions_list() {
+        let tmux = MockTmuxProvider::default();
+        let all_pane_data = tmux.list_all_panes_with_activity();
+        let results = super::detect_for_sessions_batched(&tmux, &[], &all_pane_data);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn batched_mixed_agents_and_shells() {
+        // Realistic scenario: some sessions have agents, some are plain shells
+        let mut tmux = MockTmuxProvider::default();
+
+        // Session with an agent
+        tmux.pane_info.insert(
+            "dev-kiosk".to_string(),
+            vec![PaneInfo {
+                pane_id: "%0".to_string(),
+                command: "claude".to_string(),
+                pid: 10001,
+            }],
+        );
+        tmux.pane_content
+            .insert("%0".to_string(), "❯ \n? for shortcuts".to_string());
+
+        // Session with just a shell (no agent)
+        tmux.pane_info.insert(
+            "dev-other".to_string(),
+            vec![PaneInfo {
+                pane_id: "%1".to_string(),
+                command: "zsh".to_string(),
+                pid: 10002,
+            }],
+        );
+        tmux.pane_content
+            .insert("%1".to_string(), "$ ls -la".to_string());
+
+        let session_names = vec!["dev-kiosk".to_string(), "dev-other".to_string()];
+        let all_pane_data = tmux.list_all_panes_with_activity();
+        let results = super::detect_for_sessions_batched(&tmux, &session_names, &all_pane_data);
+
+        assert!(results[0].1.is_some(), "Should detect agent in dev-kiosk");
+        assert!(
+            results[1].1.is_none(),
+            "Should not detect agent in dev-other"
+        );
+    }
+
+    #[test]
+    fn batched_multi_pane_priority() {
+        // Session with multiple panes: Waiting should win over Running
+        let mut tmux = MockTmuxProvider::default();
+        tmux.pane_info.insert(
+            "multi".to_string(),
+            vec![
+                PaneInfo {
+                    pane_id: "%0".to_string(),
+                    command: "claude".to_string(),
+                    pid: 10001,
+                },
+                PaneInfo {
+                    pane_id: "%1".to_string(),
+                    command: "claude".to_string(),
+                    pid: 10002,
+                },
+            ],
+        );
+        tmux.pane_content
+            .insert("%0".to_string(), "⠋ Reading file".to_string());
+        tmux.pane_content
+            .insert("%1".to_string(), "Allow write?\n  Yes, allow".to_string());
+
+        let session_names = vec!["multi".to_string()];
+        let all_pane_data = tmux.list_all_panes_with_activity();
+        let results = super::detect_for_sessions_batched(&tmux, &session_names, &all_pane_data);
+
+        assert_eq!(results[0].1.unwrap().state, AgentState::Waiting);
+    }
+
+    #[test]
+    fn detect_from_pane_data_empty_panes() {
+        let tmux = MockTmuxProvider::default();
+        let data = crate::tmux::provider::SessionPaneData {
+            panes: vec![],
+            session_activity: 0,
+        };
+        assert!(super::detect_from_pane_data(&tmux, &data).is_none());
     }
 }

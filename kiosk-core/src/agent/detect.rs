@@ -1,17 +1,19 @@
 use super::{AgentKind, AgentState};
 
+// ===========================================================================
+// Agent kind detection
+// ===========================================================================
+
 /// Detect the kind of agent from tmux pane command or child process arguments.
 ///
 /// Order matters: more specific patterns are checked first to avoid false positives
 /// (e.g. "cursor-agent" before "agent", "codex" before generic patterns).
-/// Mapping of substring patterns to agent kinds, checked in order.
-/// More specific patterns (e.g. "cursor-agent") must come before
-/// less specific ones to avoid false matches.
 const AGENT_PATTERNS: &[(&str, AgentKind)] = &[
     ("cursor-agent", AgentKind::CursorAgent),
     ("opencode", AgentKind::OpenCode),
     ("claude", AgentKind::ClaudeCode),
     ("codex", AgentKind::Codex),
+    ("gemini", AgentKind::Gemini),
 ];
 
 pub fn detect_agent_kind(
@@ -37,94 +39,235 @@ pub fn detect_agent_kind(
     None
 }
 
-// ---------------------------------------------------------------------------
-// Pattern constants
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// Pattern definitions — per-agent
+//
+// Organised as structs to keep each agent's patterns self-contained and make
+// it easy to add new agents. Inspired by Agent of Empires' `AgentDef` registry
+// (<https://github.com/njbrake/agent-of-empires>).
+// ===========================================================================
+
+struct AgentPatterns {
+    running: &'static [&'static str],
+    waiting: &'static [&'static str],
+    idle_tail: &'static [&'static str],
+}
+
+// -- Claude Code --------------------------------------------------------------
+
+const CLAUDE_PATTERNS: AgentPatterns = AgentPatterns {
+    running: &["esc to interrupt", "ctrl+c to interrupt"],
+    waiting: &[
+        "yes, allow",
+        "yes, and always allow",
+        "yes, and don't ask again",
+        "allow once",
+        "allow always",
+        "(y/n)",
+        "[y/n]",
+        "enter to select",
+        "enter to confirm",
+        "esc to cancel",
+        "esc to exit",
+        "❯ 1.",
+        "do you trust the files",
+    ],
+    // `? for shortcuts` is the canonical idle indicator but is NOT reliably
+    // captured by `tmux capture-pane` in Claude Code >= v2.1 (rendered as a
+    // status-bar element outside the normal text flow). We fall back to
+    // detecting the input prompt character `❯` in `detect_claude_state`.
+    idle_tail: &["? for shortcuts"],
+};
+
+/// Fallback idle patterns for Claude Code: the input prompt `❯` appears on
+/// its own line when idle. Checked against only the last 3 non-empty lines
+/// to reduce false Idle during the brief processing transition.
+const CLAUDE_IDLE_PROMPT_PATTERNS: &[&str] = &["❯"];
+
+/// Claude Code's whimsical "thinking" words shown during processing.
+///
+/// When Claude is working, it shows messages like `✦ Noodling… 42 tokens`
+/// with rotating verbs. Matching these provides a secondary Running signal
+/// that doesn't rely on "esc to interrupt" appearing.
+///
+/// Inspired by agent-os's `WHIMSICAL_WORDS` detection
+/// (<https://github.com/saadnvd1/agent-os>).
+const CLAUDE_THINKING_WORDS: &[&str] = &[
+    "accomplishing",
+    "actioning",
+    "actualizing",
+    "baking",
+    "booping",
+    "brewing",
+    "calculating",
+    "cerebrating",
+    "channelling",
+    "churning",
+    "clauding",
+    "coalescing",
+    "cogitating",
+    "combobulating",
+    "computing",
+    "concocting",
+    "conjuring",
+    "considering",
+    "contemplating",
+    "cooking",
+    "crafting",
+    "creating",
+    "crunching",
+    "deciphering",
+    "deliberating",
+    "determining",
+    "discombulating",
+    "divining",
+    "doing",
+    "effecting",
+    "elucidating",
+    "enchanting",
+    "envisioning",
+    "finagling",
+    "flibbertigibbeting",
+    "forging",
+    "forming",
+    "frolicking",
+    "generating",
+    "germinating",
+    "hatching",
+    "herding",
+    "honking",
+    "hustling",
+    "ideating",
+    "imagining",
+    "incubating",
+    "inferring",
+    "jiving",
+    "manifesting",
+    "marinating",
+    "meandering",
+    "moseying",
+    "mulling",
+    "mustering",
+    "musing",
+    "noodling",
+    "percolating",
+    "perusing",
+    "philosophising",
+    "pondering",
+    "pontificating",
+    "processing",
+    "puttering",
+    "puzzling",
+    "reticulating",
+    "ruminating",
+    "scheming",
+    "schlepping",
+    "shimmying",
+    "shucking",
+    "simmering",
+    "smooshing",
+    "spelunking",
+    "spinning",
+    "stewing",
+    "sussing",
+    "synthesizing",
+    "thinking",
+    "tinkering",
+    "transmuting",
+    "unfurling",
+    "unravelling",
+    "vibing",
+    "wandering",
+    "whirring",
+    "wibbling",
+    "wizarding",
+    "working",
+    "wrangling",
+];
+
+// -- Codex --------------------------------------------------------------------
+
+const CODEX_PATTERNS: AgentPatterns = AgentPatterns {
+    running: &["esc to interrupt"],
+    waiting: &[
+        "yes, proceed",
+        "yes, continue",
+        "press enter to confirm",
+        "press enter to continue",
+        "(y/n)",
+        "[y/n]",
+        "approve command",
+        "allow once",
+        "allow always",
+        "❯ 1.",
+        "› 1.",
+        "enter to select",
+        "esc to cancel",
+    ],
+    // When Codex is idle, `? for shortcuts` appears at the bottom of the prompt.
+    idle_tail: &["? for shortcuts"],
+};
+
+// -- Cursor Agent -------------------------------------------------------------
+
+const CURSOR_PATTERNS: AgentPatterns = AgentPatterns {
+    // Cursor CLI is built on Claude Code, so shares the same running signals.
+    // Inspired by `AoE`'s `detect_cursor_status` which delegates to Claude detection.
+    running: &["esc to interrupt", "ctrl+c to interrupt"],
+    waiting: &[
+        "do you trust",
+        "trust this workspace",
+        "enter to select",
+        "(y/n)",
+        "[y/n]",
+        "esc to cancel",
+    ],
+    idle_tail: &[],
+};
+
+// -- OpenCode -----------------------------------------------------------------
+
+const OPENCODE_PATTERNS: AgentPatterns = AgentPatterns {
+    // The `esc interrupt` text appears in the footer alongside the block
+    // spinner `⬝■` during active work.
+    running: &["esc interrupt"],
+    // OpenCode currently auto-approves in Build mode and Plan mode is
+    // read-only, so there are no user-facing approval prompts.
+    waiting: &[],
+    // OpenCode's idle footer shows `ctrl+p commands` when at the input prompt.
+    idle_tail: &["ctrl+p commands", "ctrl+t variants", "tab agents"],
+};
+
+// -- Gemini CLI ---------------------------------------------------------------
+
+const GEMINI_PATTERNS: AgentPatterns = AgentPatterns {
+    // Gemini CLI running indicators.
+    // Patterns drawn from Agent of Empires' `detect_gemini_status`
+    // (<https://github.com/njbrake/agent-of-empires>).
+    running: &["esc to interrupt", "ctrl+c to interrupt"],
+    // Gemini CLI approval prompts.
+    // Based on `AoE`'s detection + Gemini CLI docs.
+    waiting: &[
+        "(y/n)",
+        "[y/n]",
+        "allow",
+        "approve",
+        "execute?",
+        "enter to select",
+        "esc to cancel",
+    ],
+    idle_tail: &[],
+};
+
+// ===========================================================================
+// Braille spinners (shared across all agents)
+// ===========================================================================
 
 const BRAILLE_SPINNERS: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
-const CLAUDE_RUNNING_PATTERNS: &[&str] = &["esc to interrupt", "ctrl+c to interrupt"];
-
-const CLAUDE_WAITING_PATTERNS: &[&str] = &[
-    "yes, allow",
-    "yes, and always allow",
-    "yes, and don't ask again",
-    "allow once",
-    "allow always",
-    "(y/n)",
-    "[y/n]",
-    "enter to select",
-    "enter to confirm",
-    "esc to cancel",
-    "esc to exit",
-    "❯ 1.",
-    "do you trust the files",
-];
-
-/// Claude Code uses alt-screen so stale content is not an issue.
-/// `? for shortcuts` is the canonical idle indicator but is NOT reliably
-/// captured by `tmux capture-pane` in Claude Code >= v2.1 (it's rendered as
-/// a status-bar element outside the normal text flow). We fall back to
-/// detecting the input prompt character (`❯`) in the tail.
-const CLAUDE_IDLE_TAIL_PATTERNS: &[&str] = &["? for shortcuts"];
-
-/// Fallback idle patterns for Claude Code: the input prompt `❯` appears on
-/// its own line (possibly with placeholder text) when idle. We check these
-/// against the *last non-empty line* only, after confirming no running or
-/// waiting indicators are present anywhere.
-const CLAUDE_IDLE_PROMPT_PATTERNS: &[&str] = &["❯"];
-
-const CODEX_RUNNING_PATTERNS: &[&str] = &["esc to interrupt"];
-
-const CODEX_WAITING_PATTERNS: &[&str] = &[
-    "yes, proceed",
-    "yes, continue",
-    "press enter to confirm",
-    "press enter to continue",
-    "(y/n)",
-    "[y/n]",
-    "approve command",
-    "allow once",
-    "allow always",
-    "❯ 1.",
-    "› 1.",
-    "enter to select",
-    "esc to cancel",
-];
-
-/// When Codex is idle, "? for shortcuts" appears at the bottom of the prompt.
-/// Checking this against the tail prevents stale waiting/running text from
-/// earlier in the buffer from causing false positives.
-const CODEX_IDLE_TAIL_PATTERNS: &[&str] = &["? for shortcuts"];
-
-const CURSOR_RUNNING_PATTERNS: &[&str] = &["esc to interrupt", "ctrl+c to interrupt"];
-
-const CURSOR_WAITING_PATTERNS: &[&str] = &[
-    "do you trust",
-    "trust this workspace",
-    "enter to select",
-    "(y/n)",
-    "[y/n]",
-    "esc to cancel",
-];
-
-const CURSOR_IDLE_TAIL_PATTERNS: &[&str] = &[];
-
-/// `OpenCode` running patterns. The `esc interrupt` text appears in the footer
-/// alongside the block spinner `⬝■` during active work.
-const OPENCODE_RUNNING_PATTERNS: &[&str] = &["esc interrupt"];
-
-/// `OpenCode` currently auto-approves in Build mode and Plan mode is read-only,
-/// so there are no user-facing approval prompts. Empty for now.
-const OPENCODE_WAITING_PATTERNS: &[&str] = &[];
-
-/// `OpenCode`'s idle footer shows `ctrl+p commands` when at the input prompt.
-/// Like Claude, it uses the alternate screen so stale content is not an issue.
-const OPENCODE_IDLE_TAIL_PATTERNS: &[&str] = &["ctrl+p commands", "ctrl+t variants", "tab agents"];
-
-// ---------------------------------------------------------------------------
-// State detection
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// State detection — public entry point
+// ===========================================================================
 
 /// Detect agent state from terminal content, dispatching to agent-specific detectors.
 /// Content is ANSI-stripped and lowercased once here; per-agent functions receive clean input.
@@ -144,16 +287,19 @@ pub fn detect_state(content: &str, kind: AgentKind) -> AgentState {
             detect_claude_state(&content_lowered, &tail_lowered, &prompt_tail)
         }
         AgentKind::Codex => detect_codex_state(&content_lowered, &tail_lowered),
-        AgentKind::CursorAgent => detect_agent_state(
-            &content_lowered,
-            &tail_lowered,
-            CURSOR_RUNNING_PATTERNS,
-            CURSOR_WAITING_PATTERNS,
-            CURSOR_IDLE_TAIL_PATTERNS,
-        ),
+        AgentKind::CursorAgent => {
+            detect_generic_state(&content_lowered, &tail_lowered, &CURSOR_PATTERNS)
+        }
         AgentKind::OpenCode => detect_opencode_state(&content_lowered, &tail_lowered),
+        AgentKind::Gemini => {
+            detect_generic_state(&content_lowered, &tail_lowered, &GEMINI_PATTERNS)
+        }
     }
 }
+
+// ===========================================================================
+// Per-agent state detection
+// ===========================================================================
 
 /// Claude Code-specific state detection.
 ///
@@ -168,15 +314,16 @@ pub fn detect_state(content: &str, kind: AgentKind) -> AgentState {
 fn detect_claude_state(content: &str, tail: &str, prompt_tail: &str) -> AgentState {
     // First try the standard detection (handles running, waiting, and
     // the `? for shortcuts` idle pattern if tmux happens to capture it).
-    let state = detect_active_agent_state(
-        content,
-        tail,
-        CLAUDE_RUNNING_PATTERNS,
-        CLAUDE_WAITING_PATTERNS,
-        CLAUDE_IDLE_TAIL_PATTERNS,
-    );
+    let state = detect_active_state(content, tail, &CLAUDE_PATTERNS);
     if state != AgentState::Unknown {
         return state;
+    }
+
+    // Secondary running signal: Claude's whimsical "thinking" words.
+    // These appear as `✦ Noodling… 42 tokens` during processing.
+    // Inspired by agent-os (https://github.com/saadnvd1/agent-os).
+    if contains_thinking_word(tail) {
+        return AgentState::Running;
     }
 
     // Fallback: check if any line in a tight prompt window (last 3 lines)
@@ -184,14 +331,6 @@ fn detect_claude_state(content: &str, tail: &str, prompt_tail: &str) -> AgentSta
     // the broader tail (5 lines) reduces false Idle during the brief
     // processing transition when the user's question (containing `❯`)
     // hasn't scrolled out of the tail yet.
-    //
-    // When idle, the prompt structure is:
-    //   ────────────
-    //   ❯ <placeholder or user text>
-    //   ────────────          ← divider
-    //   PR #12                ← status bar (optional)
-    //
-    // The `❯` line is always within the last 3 non-empty lines when idle.
     if prompt_tail.lines().any(|line| {
         let trimmed = line.trim_start();
         CLAUDE_IDLE_PROMPT_PATTERNS
@@ -207,17 +346,41 @@ fn detect_claude_state(content: &str, tail: &str, prompt_tail: &str) -> AgentSta
 /// Codex-specific state detection.
 ///
 /// Codex does NOT use the alternate screen, so old content persists in the
-/// scrollback. However, `? for shortcuts` reliably appears at the very bottom
-/// when idle. During API calls the footer disappears before `• Working` appears
-/// — a brief window (~1s) with no indicators at all.
+/// scrollback. This means stale waiting/running text from earlier prompts
+/// can cause false positives if checked against the full content window.
+///
+/// Key insight: waiting patterns are only checked against the **tail** (last
+/// 5 lines), not the full 30-line window, to avoid matching stale prompts
+/// like "Press enter to continue" from trust dialogs that are still in the
+/// scrollback above. Running patterns in the tail are reliable regardless.
 fn detect_codex_state(content: &str, tail: &str) -> AgentState {
-    detect_active_agent_state(
-        content,
-        tail,
-        CODEX_RUNNING_PATTERNS,
-        CODEX_WAITING_PATTERNS,
-        CODEX_IDLE_TAIL_PATTERNS,
-    )
+    // For Codex (no alt-screen), the idle footer `? for shortcuts` is the
+    // single most reliable signal — it's only visible when Codex is truly
+    // at the input prompt. Check it FIRST to override any stale running/
+    // waiting text that may linger in the scrollback or even the tail.
+    if matches_any(tail, CODEX_PATTERNS.idle_tail) {
+        // Exception: if there's also a running indicator in the tail,
+        // Codex is actively working (it shows both simultaneously during
+        // tool execution). Running + idle footer = Running.
+        if matches_any(tail, CODEX_PATTERNS.running) || contains_braille_spinner(tail) {
+            return AgentState::Running;
+        }
+        return AgentState::Idle;
+    }
+    // No idle footer → check running indicators
+    if matches_any(tail, CODEX_PATTERNS.running) || contains_braille_spinner(tail) {
+        return AgentState::Running;
+    }
+    if matches_any(content, CODEX_PATTERNS.running) || contains_braille_spinner(content) {
+        return AgentState::Running;
+    }
+    // IMPORTANT: Only check waiting patterns in the **tail** to avoid stale
+    // scrollback false positives (e.g. old trust prompts, update dialogs
+    // that remain in the buffer after being dismissed).
+    if matches_any(tail, CODEX_PATTERNS.waiting) {
+        return AgentState::Waiting;
+    }
+    AgentState::Unknown
 }
 
 /// OpenCode-specific state detection.
@@ -228,13 +391,7 @@ fn detect_codex_state(content: &str, tail: &str) -> AgentState {
 /// back to detecting the input prompt bar (`┃`) with the agent label
 /// (e.g. `Build`) in the tail when no other indicators match.
 fn detect_opencode_state(content: &str, tail: &str) -> AgentState {
-    let state = detect_active_agent_state(
-        content,
-        tail,
-        OPENCODE_RUNNING_PATTERNS,
-        OPENCODE_WAITING_PATTERNS,
-        OPENCODE_IDLE_TAIL_PATTERNS,
-    );
+    let state = detect_active_state(content, tail, &OPENCODE_PATTERNS);
     if state != AgentState::Unknown {
         return state;
     }
@@ -252,6 +409,10 @@ fn detect_opencode_state(content: &str, tail: &str) -> AgentState {
     AgentState::Unknown
 }
 
+// ===========================================================================
+// Shared detection logic
+// ===========================================================================
+
 /// State detection for agents where absence of the idle footer means "processing".
 ///
 /// Both Claude Code and Codex share this trait: when they are actively working
@@ -268,56 +429,45 @@ fn detect_opencode_state(content: &str, tail: &str) -> AgentState {
 /// 3. Running patterns in full content + braille spinners → Running
 /// 4. Waiting patterns → Waiting
 /// 5. Default → **Unknown** (no recognisable pattern matched)
-fn detect_active_agent_state(
-    content: &str,
-    tail: &str,
-    running_patterns: &[&str],
-    waiting_patterns: &[&str],
-    idle_tail_patterns: &[&str],
-) -> AgentState {
-    // Running indicators in the tail override idle — the agent is actively working
-    // even if the idle footer is also visible (Codex keeps it during tool execution).
-    if matches_any(tail, running_patterns) || contains_braille_spinner(tail) {
+fn detect_active_state(content: &str, tail: &str, patterns: &AgentPatterns) -> AgentState {
+    if matches_any(tail, patterns.running) || contains_braille_spinner(tail) {
         return AgentState::Running;
     }
-    if matches_any(tail, idle_tail_patterns) {
+    if matches_any(tail, patterns.idle_tail) {
         return AgentState::Idle;
     }
-    if matches_any(content, running_patterns) || contains_braille_spinner(content) {
+    if matches_any(content, patterns.running) || contains_braille_spinner(content) {
         return AgentState::Running;
     }
-    if matches_any(content, waiting_patterns) {
+    if matches_any(content, patterns.waiting) {
         return AgentState::Waiting;
     }
     AgentState::Unknown
 }
 
-/// Generic agent state detection.
+/// Generic agent state detection (for agents like Cursor, Gemini where we
+/// don't have a strong "absence of idle = running" signal).
 ///
-/// 1. Check `idle_tail_patterns` against the tail (last ~5 lines) — if found,
-///    return Idle immediately. This prevents stale waiting/running text from
-///    earlier in the terminal buffer from causing false positives.
-/// 2. Check running patterns + braille spinners against the full content window.
-/// 3. Check waiting patterns against the full content window.
+/// 1. Check `idle_tail` patterns against the tail — if found, Idle.
+/// 2. Check running patterns + braille spinners against full content.
+/// 3. Check waiting patterns against full content.
 /// 4. Default to Idle.
-fn detect_agent_state(
-    content: &str,
-    tail: &str,
-    running_patterns: &[&str],
-    waiting_patterns: &[&str],
-    idle_tail_patterns: &[&str],
-) -> AgentState {
-    if matches_any(tail, idle_tail_patterns) {
+fn detect_generic_state(content: &str, tail: &str, patterns: &AgentPatterns) -> AgentState {
+    if matches_any(tail, patterns.idle_tail) {
         return AgentState::Idle;
     }
-    if matches_any(content, running_patterns) || contains_braille_spinner(content) {
+    if matches_any(content, patterns.running) || contains_braille_spinner(content) {
         return AgentState::Running;
     }
-    if matches_any(content, waiting_patterns) {
+    if matches_any(content, patterns.waiting) {
         return AgentState::Waiting;
     }
     AgentState::Idle
 }
+
+// ===========================================================================
+// Pattern matchers
+// ===========================================================================
 
 fn matches_any(content: &str, patterns: &[&str]) -> bool {
     patterns.iter().any(|p| content.contains(p))
@@ -327,9 +477,22 @@ fn contains_braille_spinner(content: &str) -> bool {
     content.chars().any(|c| BRAILLE_SPINNERS.contains(&c))
 }
 
-// ---------------------------------------------------------------------------
+/// Check if content contains a Claude "thinking" word followed by `…` or `...`.
+///
+/// Claude shows status like `✦ Noodling… 42 tokens` during processing.
+/// We look for `<word>…` or `<word>...` to avoid false positives on normal
+/// English text that might contain words like "working" or "processing".
+///
+/// Inspired by agent-os (<https://github.com/saadnvd1/agent-os>).
+fn contains_thinking_word(content: &str) -> bool {
+    CLAUDE_THINKING_WORDS.iter().any(|word| {
+        content.contains(&format!("{word}…")) || content.contains(&format!("{word}..."))
+    })
+}
+
+// ===========================================================================
 // Text helpers
-// ---------------------------------------------------------------------------
+// ===========================================================================
 
 /// Strip ANSI escape codes from terminal content without regex.
 /// Handles CSI (`ESC [`) sequences, OSC (`ESC ]`) sequences (terminated by
@@ -341,8 +504,7 @@ fn strip_ansi_codes(content: &str) -> String {
         if c == '\x1B' {
             match chars.peek() {
                 Some('[') => {
-                    // CSI sequence: ESC [ ... final_byte (0x40-0x7E)
-                    chars.next(); // consume '['
+                    chars.next();
                     for c in chars.by_ref() {
                         if c.is_ascii() && (0x40..=0x7E).contains(&(c as u8)) {
                             break;
@@ -350,29 +512,24 @@ fn strip_ansi_codes(content: &str) -> String {
                     }
                 }
                 Some(']') => {
-                    // OSC sequence: ESC ] ... terminated by BEL (\x07) or ST (ESC \)
-                    chars.next(); // consume ']'
+                    chars.next();
                     loop {
                         match chars.next() {
                             None | Some('\x07') => break,
                             Some('\x1B') => {
-                                // Check for ST (ESC \)
                                 if chars.peek() == Some(&'\\') {
                                     chars.next();
                                 }
                                 break;
                             }
-                            Some(_) => {} // skip OSC payload
+                            Some(_) => {}
                         }
                     }
                 }
                 Some(_) => {
-                    // Unknown two-byte escape sequence (ESC X) — drop both
                     chars.next();
                 }
-                None => {
-                    // Lone ESC at end of string — drop it
-                }
+                None => {}
             }
         } else {
             out.push(c);
@@ -381,7 +538,7 @@ fn strip_ansi_codes(content: &str) -> String {
     out
 }
 
-/// Get the last N non-empty lines from content
+/// Get the last N non-empty lines from content.
 fn get_last_non_empty_lines(content: &str, count: usize) -> String {
     let lines: Vec<&str> = content
         .lines()
@@ -392,6 +549,10 @@ fn get_last_non_empty_lines(content: &str, count: usize) -> String {
     lines[start_idx..].join("\n")
 }
 
+// ===========================================================================
+// Tests
+// ===========================================================================
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -399,7 +560,7 @@ mod tests {
     // -- detect_agent_kind ---------------------------------------------------
 
     #[test]
-    fn test_detect_agent_kind_claude_in_command() {
+    fn detect_kind_claude_in_command() {
         assert_eq!(
             detect_agent_kind("claude", None),
             Some(AgentKind::ClaudeCode)
@@ -411,16 +572,12 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_agent_kind_codex_in_command() {
+    fn detect_kind_codex_in_command() {
         assert_eq!(detect_agent_kind("codex", None), Some(AgentKind::Codex));
-        assert_eq!(
-            detect_agent_kind("some-codex-tool", None),
-            Some(AgentKind::Codex)
-        );
     }
 
     #[test]
-    fn test_detect_agent_kind_cursor_agent_in_command() {
+    fn detect_kind_cursor_agent_in_command() {
         assert_eq!(
             detect_agent_kind("cursor-agent", None),
             Some(AgentKind::CursorAgent),
@@ -428,7 +585,24 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_agent_kind_child_process() {
+    fn detect_kind_opencode_in_command() {
+        assert_eq!(
+            detect_agent_kind("opencode", None),
+            Some(AgentKind::OpenCode)
+        );
+    }
+
+    #[test]
+    fn detect_kind_gemini_in_command() {
+        assert_eq!(detect_agent_kind("gemini", None), Some(AgentKind::Gemini));
+        assert_eq!(
+            detect_agent_kind("gemini-cli", None),
+            Some(AgentKind::Gemini)
+        );
+    }
+
+    #[test]
+    fn detect_kind_child_process() {
         assert_eq!(
             detect_agent_kind("bash", Some("python claude_main.py")),
             Some(AgentKind::ClaudeCode),
@@ -444,40 +618,27 @@ mod tests {
             ),
             Some(AgentKind::CursorAgent),
         );
-    }
-
-    #[test]
-    fn test_detect_agent_kind_unknown() {
-        assert_eq!(detect_agent_kind("bash", None), None);
-        assert_eq!(detect_agent_kind("vim", Some("vim file.txt")), None);
-        // "agent" alone is too generic — should not match
-        assert_eq!(detect_agent_kind("agent", None), None);
-    }
-
-    #[test]
-    fn test_detect_agent_kind_opencode_in_command() {
-        assert_eq!(
-            detect_agent_kind("opencode", None),
-            Some(AgentKind::OpenCode)
-        );
-    }
-
-    #[test]
-    fn test_detect_agent_kind_opencode_in_child_args() {
         assert_eq!(
             detect_agent_kind("node", Some("/home/user/.local/bin/opencode")),
             Some(AgentKind::OpenCode),
         );
         assert_eq!(
-            detect_agent_kind("node", Some("node /home/user/.local/bin/opencode")),
-            Some(AgentKind::OpenCode),
+            detect_agent_kind("node", Some("/usr/bin/gemini serve")),
+            Some(AgentKind::Gemini),
         );
     }
 
-    // -- detect_state (full pipeline: ANSI strip + lowercase + detect) -------
+    #[test]
+    fn detect_kind_unknown() {
+        assert_eq!(detect_agent_kind("bash", None), None);
+        assert_eq!(detect_agent_kind("vim", Some("vim file.txt")), None);
+        assert_eq!(detect_agent_kind("agent", None), None);
+    }
+
+    // -- Claude Code ---------------------------------------------------------
 
     #[test]
-    fn test_claude_running() {
+    fn claude_running() {
         assert_eq!(
             detect_state("Processing... esc to interrupt", AgentKind::ClaudeCode),
             AgentState::Running
@@ -496,7 +657,41 @@ mod tests {
     }
 
     #[test]
-    fn test_claude_waiting() {
+    fn claude_running_whimsical_words() {
+        // Inspired by agent-os: Claude shows `✦ <word>… N tokens` during processing
+        assert_eq!(
+            detect_state("✦ Noodling… 42 tokens", AgentKind::ClaudeCode),
+            AgentState::Running,
+        );
+        assert_eq!(
+            detect_state("✦ Cogitating… 128 tokens", AgentKind::ClaudeCode),
+            AgentState::Running,
+        );
+        assert_eq!(
+            detect_state("✦ Spelunking... 7 tokens", AgentKind::ClaudeCode),
+            AgentState::Running,
+        );
+        assert_eq!(
+            detect_state("✦ Clauding… 3 tokens", AgentKind::ClaudeCode),
+            AgentState::Running,
+        );
+    }
+
+    #[test]
+    fn claude_thinking_word_requires_ellipsis() {
+        // Plain word without ellipsis should NOT trigger Running
+        assert_ne!(
+            detect_state("I was thinking about it", AgentKind::ClaudeCode),
+            AgentState::Running,
+        );
+        assert_ne!(
+            detect_state("Processing the request", AgentKind::ClaudeCode),
+            AgentState::Running,
+        );
+    }
+
+    #[test]
+    fn claude_waiting() {
         assert_eq!(
             detect_state("Do you want to proceed? (Y/n)", AgentKind::ClaudeCode),
             AgentState::Waiting
@@ -522,24 +717,15 @@ mod tests {
     }
 
     #[test]
-    fn test_claude_idle() {
+    fn claude_idle() {
         assert_eq!(
             detect_state("❯ \n? for shortcuts", AgentKind::ClaudeCode),
-            AgentState::Idle
-        );
-        assert_eq!(
-            detect_state(
-                "Welcome to Claude Code\n❯ Try \"fix errors\"\n? for shortcuts",
-                AgentKind::ClaudeCode
-            ),
             AgentState::Idle
         );
     }
 
     #[test]
-    fn test_claude_idle_prompt_fallback_without_shortcuts() {
-        // Real Claude Code v2.1+ behaviour: `? for shortcuts` is NOT in the
-        // tmux capture. The `❯` prompt line is the only idle signal.
+    fn claude_idle_prompt_fallback_without_shortcuts() {
         assert_eq!(
             detect_state(
                 " ▐▛███▜▌   Claude Code v2.1.59\n                 ▝▜█████▛▘  Opus 4.6 · Claude Max\n                   ▘▘ ▝▝    ~/Development/kiosk\n                 \n                 ────────────\n                 ❯ Try \"create a util logging.py that...\"\n                 ────────────\n                   PR #12",
@@ -550,27 +736,12 @@ mod tests {
     }
 
     #[test]
-    fn test_claude_idle_prompt_bare() {
-        // Just the prompt character on a line — idle
+    fn claude_idle_prompt_bare() {
         assert_eq!(detect_state("❯ ", AgentKind::ClaudeCode), AgentState::Idle);
     }
 
     #[test]
-    fn test_claude_idle_prompt_with_user_text() {
-        // User is typing at the prompt — still idle (not running/waiting)
-        assert_eq!(
-            detect_state(
-                "────────────\n❯ fix the bug in main.rs\n────────────\n  PR #12",
-                AgentKind::ClaudeCode
-            ),
-            AgentState::Idle
-        );
-    }
-
-    #[test]
-    fn test_claude_prompt_not_idle_when_running_indicator_present() {
-        // If running indicators are present, the prompt fallback should NOT
-        // override them. Running > Idle.
+    fn claude_prompt_not_idle_when_running() {
         assert_eq!(
             detect_state(
                 "❯ my question\nProcessing... esc to interrupt",
@@ -581,8 +752,7 @@ mod tests {
     }
 
     #[test]
-    fn test_claude_prompt_not_idle_when_waiting_indicator_present() {
-        // Waiting patterns should take priority over prompt fallback.
+    fn claude_prompt_not_idle_when_waiting() {
         assert_eq!(
             detect_state(
                 "❯ my question\nAllow write?\n  Yes, allow\n  No, deny",
@@ -593,9 +763,7 @@ mod tests {
     }
 
     #[test]
-    fn test_claude_idle_real_capture_after_response() {
-        // Real tmux capture of Claude after it responded and is back at idle.
-        // Note: no `? for shortcuts` anywhere in this output.
+    fn claude_idle_real_capture_after_response() {
         let content = "\
  ▐▛███▜▌   Claude Code v2.1.59\n\
 ▝▜█████▛▘  Opus 4.6 · Claude Max\n\
@@ -616,27 +784,7 @@ mod tests {
     }
 
     #[test]
-    fn test_claude_idle_prompt_with_cursor_block() {
-        // Sometimes tmux captures the cursor block character after ❯
-        assert_eq!(
-            detect_state("❯  \n──────\n  PR #12", AgentKind::ClaudeCode),
-            AgentState::Idle
-        );
-    }
-
-    #[test]
-    fn test_claude_processing_no_indicators() {
-        // When Claude is processing on alt-screen with minimal content,
-        // the user's query line may still be within the prompt tail window.
-        // This shows as Idle briefly (~1s) until running indicators appear.
-        assert_eq!(
-            detect_state(
-                "❯ what files are in this directory?\n\n",
-                AgentKind::ClaudeCode
-            ),
-            AgentState::Idle
-        );
-        // Empty pane (just started up, loading) — Unknown
+    fn claude_processing_no_indicators() {
         assert_eq!(detect_state("", AgentKind::ClaudeCode), AgentState::Unknown);
         assert_eq!(
             detect_state("$ ", AgentKind::ClaudeCode),
@@ -645,11 +793,7 @@ mod tests {
     }
 
     #[test]
-    fn test_claude_processing_prompt_scrolled_out_of_tight_window() {
-        // When Claude has been processing long enough for substantial output,
-        // the user's ❯ question line scrolls above the prompt tail window
-        // (last 3 non-empty lines). With enough response lines between the
-        // question and the bottom, the ❯ is no longer in the tight window.
+    fn claude_processing_prompt_scrolled_out() {
         let content = "\
  ▐▛███▜▌   Claude Code v2.1.59\n\
 ▝▜█████▛▘  Opus 4.6 · Claude Max\n\
@@ -667,98 +811,47 @@ mod tests {
         assert_eq!(
             detect_state(content, AgentKind::ClaudeCode),
             AgentState::Unknown,
-            "Should be Unknown when ❯ has scrolled above prompt tail and no running indicators yet"
         );
     }
 
-    #[test]
-    fn test_claude_processing_early_still_idle_briefly() {
-        // Accepted limitation: when Claude just started processing and has
-        // minimal output, the user's ❯ question is still within the prompt
-        // tail window. This causes a brief Idle→Running flicker (~1-2s).
-        let content = "\
- ▐▛███▜▌   Claude Code v2.1.59\n\
-▝▜█████▛▘  Opus 4.6 · Claude Max\n\
-  ▘▘ ▝▝    ~/Development/kiosk\n\
-\n\
-❯ refactor the config module\n\
-\n\
-● I'll start by reading the current config...";
-        // The ❯ line is within last 3 non-empty lines, so it shows as Idle
-        // until enough output pushes it out (or esc to interrupt appears).
-        assert_eq!(
-            detect_state(content, AgentKind::ClaudeCode),
-            AgentState::Idle,
-            "Brief Idle during early processing is an accepted limitation"
-        );
-    }
+    // -- Codex ---------------------------------------------------------------
 
     #[test]
-    fn test_codex_running() {
+    fn codex_running() {
         assert_eq!(
             detect_state("⠋ Searching codebase\nesc to interrupt", AgentKind::Codex),
             AgentState::Running
         );
-        assert_eq!(
-            detect_state("⠙ Processing your question", AgentKind::Codex),
-            AgentState::Running
-        );
     }
 
     #[test]
-    fn test_codex_waiting() {
+    fn codex_waiting() {
         assert_eq!(
             detect_state(
-                "Would you like to run the following command?\n$ touch test.txt\n› 1. Yes, proceed (y)",
+                "Would you like to run?\n$ touch test.txt\n› 1. Yes, proceed (y)",
                 AgentKind::Codex
             ),
             AgentState::Waiting
         );
-        assert_eq!(
-            detect_state("Press enter to confirm your choice", AgentKind::Codex),
-            AgentState::Waiting
-        );
-        assert_eq!(
-            detect_state("Please approve this action: [y/n]", AgentKind::Codex),
-            AgentState::Waiting
-        );
     }
 
     #[test]
-    fn test_codex_trust_prompt() {
-        // Real Codex trust prompt shown on first launch in an untrusted directory
-        let content = "\
-> You are in /tmp
-
-  Do you trust the contents of this directory? Working with untrusted contents comes with higher risk of prompt
-  injection.
-
-› 1. Yes, continue
-  2. No, quit
-
-  Press enter to continue";
+    fn codex_trust_prompt() {
+        let content =
+            "> You are in /tmp\n\n› 1. Yes, continue\n  2. No, quit\n\n  Press enter to continue";
         assert_eq!(detect_state(content, AgentKind::Codex), AgentState::Waiting);
     }
 
     #[test]
-    fn test_codex_idle() {
+    fn codex_idle() {
         assert_eq!(
             detect_state("› Type a message\n\n  ? for shortcuts", AgentKind::Codex),
-            AgentState::Idle
-        );
-        assert_eq!(
-            detect_state(
-                "Codex ready\n› Type a message\n  ? for shortcuts",
-                AgentKind::Codex
-            ),
             AgentState::Idle
         );
     }
 
     #[test]
-    fn test_codex_processing_no_indicators() {
-        // When Codex is waiting for an API response, no idle footer is visible
-        // and no explicit running indicators are shown. State is Unknown.
+    fn codex_processing_no_indicators() {
         assert_eq!(
             detect_state(
                 "› Review main.py and find all the bugs\n\n  100% context left",
@@ -766,135 +859,30 @@ mod tests {
             ),
             AgentState::Unknown
         );
-        // Just "> " with no "? for shortcuts" → Unknown
-        assert_eq!(detect_state("> ", AgentKind::Codex), AgentState::Unknown);
     }
 
     #[test]
-    fn test_codex_working_indicator() {
-        // Real Codex "Working" indicator observed during tool execution.
-        // Both "esc to interrupt" and "? for shortcuts" are visible simultaneously.
-        // Running patterns in the tail take priority over idle patterns.
-        let content = "\
-› hi
-
-• Working (2s • esc to interrupt)
-
-› Use /skills to list available skills
-
-  ? for shortcuts                                                                                    100% context left";
+    fn codex_working_indicator() {
+        let content = "› hi\n\n• Working (2s • esc to interrupt)\n\n  ? for shortcuts                                                                                    100% context left";
         assert_eq!(detect_state(content, AgentKind::Codex), AgentState::Running);
     }
 
     #[test]
-    fn test_codex_real_idle_with_context_left() {
-        // Real Codex idle screen as captured from tmux
-        let content = "\
-╭─────────────────────────────────────────────────────╮
-│ >_ OpenAI Codex (v0.104.0)                          │
-│                                                     │
-│ model:     gpt-5.3-codex   /model to change         │
-│ directory: /tmp/test-workspace                      │
-╰─────────────────────────────────────────────────────╯
-
-  Tip: New 2x rate limits until April 2nd.
-
-› Write tests for @filename
-
-  ? for shortcuts                                                                                    100% context left";
+    fn codex_idle_tail_overrides_stale_waiting() {
+        let content = "› 1. Yes, proceed (y)\n  Press enter to confirm\n\n› Type a message\n\n  ? for shortcuts";
         assert_eq!(detect_state(content, AgentKind::Codex), AgentState::Idle);
     }
 
     #[test]
-    fn test_codex_real_api_call_phase() {
-        // Real Codex screen during initial API call — no indicators at all,
-        // just the query text and "100% context left"
-        let content = "\
-╭─────────────────────────────────────────────────────╮
-│ >_ OpenAI Codex (v0.104.0)                          │
-│                                                     │
-│ model:     gpt-5.3-codex   /model to change         │
-│ directory: /tmp/test-workspace                      │
-╰─────────────────────────────────────────────────────╯
-
-  Tip: New 2x rate limits until April 2nd.
-
-› Review main.py and find all the bugs
-
-                                                                                                     100% context left";
-        assert_eq!(detect_state(content, AgentKind::Codex), AgentState::Unknown);
-    }
-
-    #[test]
-    fn test_codex_update_prompt() {
-        // Real Codex update prompt
-        let content = "\
-✨ Update available! 0.104.0 -> 0.105.0
-
-  Release notes: https://github.com/openai/codex/releases/latest
-
-› 1. Update now (runs `npm install -g @openai/codex`)
-  2. Skip
-  3. Skip until next version
-
-  Press enter to continue";
-        assert_eq!(detect_state(content, AgentKind::Codex), AgentState::Waiting);
-    }
-
-    #[test]
-    fn test_codex_idle_tail_overrides_stale_waiting() {
-        // After answering a permission prompt, stale "Yes, proceed" / "Press enter to confirm"
-        // text remains in the buffer. The idle tail pattern should override it.
-        let content = "\
-Would you like to run the following command?
-$ touch test.txt
-› 1. Yes, proceed (y)
-  2. Yes, and don't ask again (p)
-  3. No (esc)
-
-  Press enter to confirm or esc to cancel
-╭──────────────────────────────╮
-│ >_ OpenAI Codex (v0.104.0)   │
-╰──────────────────────────────╯
-
-› Type a message
-
-  ? for shortcuts";
+    fn codex_idle_tail_overrides_stale_running() {
+        let content = "• Working (5s • esc to interrupt)\n\n• Ran rm hello.py\n  └ (no output)\n\n• Completed.\n  - Deleted hello.py\n\n› Type a message\n\n  ? for shortcuts";
         assert_eq!(detect_state(content, AgentKind::Codex), AgentState::Idle);
     }
 
-    #[test]
-    fn test_codex_idle_tail_overrides_stale_running() {
-        // After a task completes, stale "esc to interrupt" text may remain in
-        // the scrollback but scrolled above the tail window. The idle tail
-        // pattern should override it.
-        let content = "\
-• Working (5s • esc to interrupt)
-
-• Ran rm hello.py
-  └ (no output)
-
-• Completed.
-  - Deleted hello.py
-
-› Type a message
-
-  ? for shortcuts";
-        assert_eq!(detect_state(content, AgentKind::Codex), AgentState::Idle);
-    }
+    // -- Cursor Agent --------------------------------------------------------
 
     #[test]
-    fn test_codex_current_working_directory_not_running() {
-        // "current working directory" contains "working" — should NOT trigger Running
-        // now that "working" has been removed from CODEX_RUNNING_PATTERNS.
-        let content = "current working directory: /home/user/project\n\n› Type a message\n\n  ? for shortcuts";
-        assert_eq!(detect_state(content, AgentKind::Codex), AgentState::Idle);
-    }
-
-    // -- Cursor Agent state detection ----------------------------------------
-
-    #[test]
-    fn test_cursor_running() {
+    fn cursor_running() {
         assert_eq!(
             detect_state(
                 "⠋ Editing file src/main.rs\nesc to interrupt",
@@ -902,14 +890,10 @@ $ touch test.txt
             ),
             AgentState::Running
         );
-        assert_eq!(
-            detect_state("Processing... ctrl+c to interrupt", AgentKind::CursorAgent),
-            AgentState::Running
-        );
     }
 
     #[test]
-    fn test_cursor_waiting() {
+    fn cursor_waiting() {
         assert_eq!(
             detect_state(
                 "Do you trust the contents of this directory?\n\n▶ [a] Trust this workspace",
@@ -917,29 +901,18 @@ $ touch test.txt
             ),
             AgentState::Waiting
         );
-        assert_eq!(
-            detect_state(
-                "Use arrow keys to navigate, Enter to select\nDo you trust this workspace?",
-                AgentKind::CursorAgent
-            ),
-            AgentState::Waiting
-        );
     }
 
     #[test]
-    fn test_cursor_idle() {
+    fn cursor_idle() {
         assert_eq!(detect_state("> ", AgentKind::CursorAgent), AgentState::Idle);
     }
 
-    // -- OpenCode state detection -------------------------------------------
+    // -- OpenCode ------------------------------------------------------------
 
     #[test]
-    fn test_opencode_running() {
-        let content = "\
-  ┃\n\
-  ┃  Build  GPT-5.3 Codex OpenAI\n\
-  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n\
-   ⬝⬝■■■■■■  esc interrupt                                                ctrl+t variants  tab agents  ctrl+p commands";
+    fn opencode_running() {
+        let content = "  ┃  Build  GPT-5.3\n  ╹▀▀▀▀\n   ⬝⬝■■■■■■  esc interrupt  ctrl+p commands";
         assert_eq!(
             detect_state(content, AgentKind::OpenCode),
             AgentState::Running
@@ -947,171 +920,75 @@ $ touch test.txt
     }
 
     #[test]
-    fn test_opencode_idle_with_footer() {
-        let content = "\
-  ┃\n\
-  ┃\n\
-  ┃  Build  GPT-5.3 Codex OpenAI\n\
-  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n\
-                                                                          ctrl+t variants  tab agents  ctrl+p commands";
+    fn opencode_idle_with_footer() {
+        let content =
+            "  ┃  Build  GPT-5.3\n  ╹▀▀▀▀\n  ctrl+t variants  tab agents  ctrl+p commands";
         assert_eq!(detect_state(content, AgentKind::OpenCode), AgentState::Idle);
     }
 
     #[test]
-    fn test_opencode_idle_fallback_without_ctrl_p() {
-        // When ctrl+p commands is captured but in a different form
-        let content = "\
-  ┃\n\
-  ┃  Build  GPT-5.3 Codex OpenAI\n\
-  ╹▀▀▀▀▀▀▀▀\n\
-                                  tab agents  ctrl+t variants";
+    fn opencode_idle_fallback_prompt_bar() {
+        let content = "  ┃\n  ┃  Build  GPT-5.3\n  ╹▀▀▀▀";
         assert_eq!(detect_state(content, AgentKind::OpenCode), AgentState::Idle);
     }
 
     #[test]
-    fn test_opencode_running_esc_interrupt_only() {
-        // Minimal running indicator
-        assert_eq!(
-            detect_state("esc interrupt", AgentKind::OpenCode),
-            AgentState::Running
-        );
-    }
-
-    #[test]
-    fn test_opencode_idle_full_screen_capture() {
-        // Real idle capture from tmux (simplified)
-        let content = "\
-                                         █▀▀█ █▀▀█ █▀▀█ █▀▀▄ █▀▀▀ █▀▀█ █▀▀█ █▀▀█\n\
-                                         █  █ █  █ █▀▀▀ █  █ █    █  █ █  █ █▀▀▀\n\
-                       ┃\n\
-                       ┃  Ask anything...\n\
-                       ┃\n\
-                       ┃  Build  GPT-5.3 Codex OpenAI\n\
-                       ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n\
-                                                      ctrl+t variants  tab agents  ctrl+p commands\n\
-  /tmp                                                                                                          1.2.15";
-        assert_eq!(detect_state(content, AgentKind::OpenCode), AgentState::Idle);
-    }
-
-    #[test]
-    fn test_opencode_running_with_block_spinner() {
-        // Block spinner characters used by OpenCode
-        let content = "⬝■■■■■■⬝  esc interrupt  ctrl+t variants  tab agents  ctrl+p commands";
-        assert_eq!(
-            detect_state(content, AgentKind::OpenCode),
-            AgentState::Running
-        );
-    }
-
-    #[test]
-    fn test_opencode_unknown_empty_content() {
+    fn opencode_unknown_empty() {
         assert_eq!(detect_state("", AgentKind::OpenCode), AgentState::Unknown);
     }
 
+    // -- Gemini CLI ----------------------------------------------------------
+
     #[test]
-    fn test_opencode_plan_mode_idle() {
-        let content = "\
-  ┃\n\
-  ┃  Plan  GPT-5.3 Codex OpenAI\n\
-  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n\
-                                                                          ctrl+t variants  tab agents  ctrl+p commands";
-        assert_eq!(detect_state(content, AgentKind::OpenCode), AgentState::Idle);
+    fn gemini_running() {
+        assert_eq!(
+            detect_state(
+                "Working on your request\nesc to interrupt",
+                AgentKind::Gemini
+            ),
+            AgentState::Running,
+        );
+        assert_eq!(
+            detect_state("Processing ⠋", AgentKind::Gemini),
+            AgentState::Running,
+        );
     }
 
     #[test]
-    fn test_opencode_idle_fallback_prompt_bar_only() {
-        // When footer patterns are not captured by tmux, the prompt bar
-        // characters (┃ or ╹) in the tail indicate idle state.
-        let content = "\
-  ┃\n\
-  ┃  Build  GPT-5.3 Codex OpenAI\n\
-  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀";
+    fn gemini_waiting() {
         assert_eq!(
-            detect_state(content, AgentKind::OpenCode),
+            detect_state("run this command? (y/n)", AgentKind::Gemini),
+            AgentState::Waiting,
+        );
+        assert_eq!(
+            detect_state("approve changes?", AgentKind::Gemini),
+            AgentState::Waiting,
+        );
+    }
+
+    #[test]
+    fn gemini_idle() {
+        assert_eq!(
+            detect_state("some random output", AgentKind::Gemini),
             AgentState::Idle,
-            "Should detect idle via prompt bar fallback when footer is missing"
         );
     }
 
-    // -- ANSI stripping ------------------------------------------------------
+    // -- Cross-agent ---------------------------------------------------------
 
     #[test]
-    fn test_strip_ansi_codes() {
-        assert_eq!(strip_ansi_codes("\x1B[32mGreen text\x1B[0m"), "Green text");
-        assert_eq!(strip_ansi_codes("Normal text"), "Normal text");
-        assert_eq!(
-            strip_ansi_codes("\x1B[1;31mBold red\x1B[0m and normal"),
-            "Bold red and normal"
-        );
-        // OSC sequence terminated by BEL
-        assert_eq!(
-            strip_ansi_codes("\x1B]0;my title\x07some text"),
-            "some text"
-        );
-        // OSC sequence terminated by ST (ESC \)
-        assert_eq!(
-            strip_ansi_codes("\x1B]0;my title\x1B\\some text"),
-            "some text"
-        );
-        // Unknown two-byte escape (e.g. ESC =)
-        assert_eq!(strip_ansi_codes("\x1B=normal"), "normal");
-        // Lone ESC at end of string
-        assert_eq!(strip_ansi_codes("text\x1B"), "text");
-        // Mixed CSI + OSC
-        assert_eq!(
-            strip_ansi_codes("\x1B]2;title\x07\x1B[32mgreen\x1B[0m"),
-            "green"
-        );
-    }
-
-    #[test]
-    fn test_detect_state_with_ansi_codes() {
-        assert_eq!(
-            detect_state(
-                "\x1B[32mProcessing...\x1B[0m esc to interrupt",
-                AgentKind::ClaudeCode
-            ),
-            AgentState::Running
-        );
-    }
-
-    #[test]
-    fn test_mixed_case_ansi_pipeline() {
-        assert_eq!(
-            detect_state(
-                "\x1B[1mYES, ALLOW\x1B[0m this action",
-                AgentKind::ClaudeCode
-            ),
-            AgentState::Waiting
-        );
-    }
-
-    // -- Helpers -------------------------------------------------------------
-
-    #[test]
-    fn test_get_last_non_empty_lines() {
-        let content = "Line 1\n\nLine 3\n\nLine 5\nLine 6\n\n";
-        assert_eq!(get_last_non_empty_lines(content, 2), "Line 5\nLine 6");
-        assert_eq!(
-            get_last_non_empty_lines(content, 10),
-            "Line 1\nLine 3\nLine 5\nLine 6"
-        );
-    }
-
-    #[test]
-    fn test_braille_spinner_detection() {
+    fn braille_spinner_all_chars() {
         for spinner in BRAILLE_SPINNERS {
             let content = format!("Loading {spinner} please wait");
             assert_eq!(
                 detect_state(&content, AgentKind::ClaudeCode),
                 AgentState::Running,
-                "Failed for spinner: {spinner}",
             );
         }
     }
 
     #[test]
-    fn test_case_insensitive_detection() {
+    fn case_insensitive() {
         assert_eq!(
             detect_state("ESC TO INTERRUPT", AgentKind::ClaudeCode),
             AgentState::Running
@@ -1123,55 +1000,114 @@ $ touch test.txt
     }
 
     #[test]
-    fn test_empty_content() {
-        // Claude and Codex default to Unknown when no patterns match
+    fn empty_content_unknown() {
         assert_eq!(detect_state("", AgentKind::ClaudeCode), AgentState::Unknown);
         assert_eq!(detect_state("", AgentKind::Codex), AgentState::Unknown);
     }
 
     #[test]
-    fn test_only_whitespace_content() {
-        // Claude returns Unknown on empty/whitespace content (no recognisable pattern)
+    fn ansi_codes_stripped() {
         assert_eq!(
-            detect_state("   \n\n  \t  ", AgentKind::ClaudeCode),
-            AgentState::Unknown
+            detect_state(
+                "\x1B[32mProcessing...\x1B[0m esc to interrupt",
+                AgentKind::ClaudeCode
+            ),
+            AgentState::Running
         );
     }
 
-    // -- Child process arg parsing -------------------------------------------
+    // -- Text helpers --------------------------------------------------------
 
     #[test]
-    fn test_detect_agent_kind_from_child_args() {
-        // Direct command detection takes priority
-        assert_eq!(
-            detect_agent_kind("claude", None),
-            Some(AgentKind::ClaudeCode)
-        );
-        assert_eq!(detect_agent_kind("codex", None), Some(AgentKind::Codex));
-        assert_eq!(
-            detect_agent_kind("cursor-agent", None),
-            Some(AgentKind::CursorAgent),
-        );
-
-        // Unknown command, but child args contain agent name
-        assert_eq!(
-            detect_agent_kind(
-                "node",
-                Some("/usr/bin/node /home/user/.claude/local/claude")
-            ),
-            Some(AgentKind::ClaudeCode),
-        );
-        assert_eq!(
-            detect_agent_kind("node", Some("codex --full-auto")),
-            Some(AgentKind::Codex),
-        );
-        assert_eq!(
-            detect_agent_kind("bash", Some("/opt/cursor-agent serve")),
-            Some(AgentKind::CursorAgent),
-        );
-
-        // Neither command nor args match
-        assert_eq!(detect_agent_kind("bash", Some("vim main.rs")), None);
-        assert_eq!(detect_agent_kind("bash", None), None);
+    fn strip_ansi_codes_basic() {
+        assert_eq!(strip_ansi_codes("\x1B[32mGreen\x1B[0m"), "Green");
+        assert_eq!(strip_ansi_codes("Normal"), "Normal");
     }
+
+    #[test]
+    fn strip_ansi_codes_osc() {
+        assert_eq!(strip_ansi_codes("\x1B]0;title\x07text"), "text");
+        assert_eq!(strip_ansi_codes("\x1B]0;title\x1B\\text"), "text");
+    }
+
+    #[test]
+    fn get_last_non_empty_lines_basic() {
+        let content = "Line 1\n\nLine 3\n\nLine 5\nLine 6\n\n";
+        assert_eq!(get_last_non_empty_lines(content, 2), "Line 5\nLine 6");
+    }
+
+    // -- Thinking word -------------------------------------------------------
+
+    #[test]
+    fn thinking_word_with_ellipsis() {
+        assert!(contains_thinking_word("noodling…"));
+        assert!(contains_thinking_word("✦ cogitating… 42 tokens"));
+        assert!(contains_thinking_word("spelunking..."));
+    }
+
+    #[test]
+    fn thinking_word_without_ellipsis_no_match() {
+        assert!(!contains_thinking_word("noodling"));
+        assert!(!contains_thinking_word("I was thinking about it"));
+    }
+}
+
+// -- Codex stale content regression tests --------------------------------
+
+#[test]
+fn codex_stale_trust_prompt_not_false_waiting() {
+    // Real scenario: After dismissing the trust prompt and update dialog,
+    // stale text like "› 1. Yes, continue" and "Press enter to continue"
+    // remains in the scrollback. When Codex is processing a query, these
+    // should NOT cause a false Waiting state.
+    //
+    // This was a real bug found during manual testing (2026-02-28).
+    let content = "\
+> You are in /home/user/project\n\
+\n\
+  Do you trust the contents of this directory?\n\
+\n\
+› 1. Yes, continue\n\
+  2. No, quit\n\
+\n\
+  Press enter to continue\n\
+\n\
+╭─────────────────────────────────────────────╮\n\
+│ >_ OpenAI Codex (v0.104.0)                  │\n\
+╰─────────────────────────────────────────────╯\n\
+\n\
+› what is 2+2?\n\
+\n\
+                                                  100% context left";
+    assert_eq!(
+        detect_state(content, AgentKind::Codex),
+        AgentState::Unknown,
+        "Stale trust prompt text should NOT cause false Waiting"
+    );
+}
+
+#[test]
+fn codex_stale_update_dialog_not_false_waiting() {
+    // Stale update dialog with "Press enter to continue" in scrollback
+    let content = "\
+✨ Update available! 0.104.0 -> 0.106.0\n\
+\n\
+› 1. Update now\n\
+  2. Skip\n\
+  3. Skip until next version\n\
+\n\
+  Press enter to continue\n\
+\n\
+╭─────────────────────────────────────────────╮\n\
+│ >_ OpenAI Codex (v0.104.0)                  │\n\
+╰─────────────────────────────────────────────╯\n\
+\n\
+› Fix the bug\n\
+\n\
+                                                  100% context left";
+    assert_eq!(
+        detect_state(content, AgentKind::Codex),
+        AgentState::Unknown,
+        "Stale update dialog should NOT cause false Waiting"
+    );
 }

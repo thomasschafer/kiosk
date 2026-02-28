@@ -154,11 +154,13 @@ fn has_binary(name: &str) -> bool {
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy)]
+#[allow(dead_code)]
 enum AgentKind {
     Claude,
     Codex,
     CursorAgent,
     OpenCode,
+    Gemini,
 }
 
 #[derive(Clone, Copy)]
@@ -185,7 +187,10 @@ fn fake_agent_output(agent: AgentKind, state: FakeState) -> &'static str {
             "Allow write to src/main.rs?\\n  Yes, allow\\n  No, deny"
         }
         (AgentKind::Claude, FakeState::Idle) => "❯ \\n? for shortcuts",
-        (AgentKind::CursorAgent, FakeState::Idle) => "> ",
+        (AgentKind::CursorAgent | AgentKind::Gemini, FakeState::Idle) => "> ",
+
+        (AgentKind::Gemini, FakeState::Running) => "⠋ Generating code\\nesc to interrupt",
+        (AgentKind::Gemini, FakeState::Waiting) => "approve changes? (y/n)",
 
         (AgentKind::Codex, FakeState::Running) => "⠋ Searching codebase\\nesc to interrupt",
         (AgentKind::Codex, FakeState::Waiting) => {
@@ -314,6 +319,13 @@ impl AgentTestEnvDefault {
                 );
                 "agent"
             }
+            AgentKind::Gemini => {
+                assert!(
+                    has_binary("gemini"),
+                    "gemini not on PATH — set KIOSK_E2E_REAL_AGENTS=0 or install gemini cli"
+                );
+                "gemini"
+            }
             AgentKind::OpenCode => {
                 assert!(
                     has_binary("opencode"),
@@ -377,6 +389,7 @@ impl AgentTestEnvDefault {
             AgentKind::Codex => "codex",
             AgentKind::CursorAgent => "cursor-agent",
             AgentKind::OpenCode => "opencode",
+            AgentKind::Gemini => "gemini",
         };
 
         let output_text = fake_agent_output(agent, state);
@@ -425,9 +438,10 @@ impl AgentTestEnvDefault {
             (AgentKind::Codex | AgentKind::Claude, FakeState::Idle) => Some("? for shortcuts"),
             (AgentKind::CursorAgent, FakeState::Waiting) => Some("trust this workspace"),
             (AgentKind::OpenCode, FakeState::Waiting | FakeState::Idle) => Some("ctrl+p commands"),
-            // CursorAgent idle output is just "> " — too minimal for
+            (AgentKind::Gemini, FakeState::Waiting) => Some("(y/n)"),
+            // CursorAgent/Gemini idle output is just "> " — too minimal for
             // reliable content polling (tmux strips trailing whitespace).
-            (AgentKind::CursorAgent, FakeState::Idle) => None,
+            (AgentKind::CursorAgent | AgentKind::Gemini, FakeState::Idle) => None,
         };
         if let Some(marker) = marker {
             assert!(

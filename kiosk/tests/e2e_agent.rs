@@ -1023,6 +1023,210 @@ fn test_e2e_agent_tui_shows_indicator() {
 }
 
 // ---------------------------------------------------------------------------
+// Gemini CLI tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_e2e_agent_branches_json_gemini_running() {
+    if use_real_agents() {
+        return;
+    }
+
+    let env = AgentTestEnvDefault::new("br-gemini-run");
+    env.launch_agent(AgentKind::Gemini, FakeState::Running);
+
+    let json = env.run_cli_json(&["branches", &env.repo_name, "--json"]);
+    let branches = json.as_array().unwrap();
+    let main_branch = branches.iter().find(|b| b["name"] == "main").unwrap();
+
+    let agent = &main_branch["agent_status"];
+    assert!(!agent.is_null(), "should detect gemini: {main_branch}");
+    assert_eq!(agent["kind"], "Gemini");
+    assert_eq!(agent["state"], "Running");
+}
+
+#[test]
+fn test_e2e_agent_branches_json_gemini_waiting() {
+    if use_real_agents() {
+        return;
+    }
+
+    let env = AgentTestEnvDefault::new("br-gemini-wait");
+    env.launch_agent(AgentKind::Gemini, FakeState::Waiting);
+
+    let json = env.run_cli_json(&["branches", &env.repo_name, "--json"]);
+    let branches = json.as_array().unwrap();
+    let main_branch = branches.iter().find(|b| b["name"] == "main").unwrap();
+
+    assert_eq!(main_branch["agent_status"]["kind"], "Gemini");
+    assert_eq!(main_branch["agent_status"]["state"], "Waiting");
+}
+
+#[test]
+fn test_e2e_agent_branches_json_gemini_idle() {
+    if use_real_agents() {
+        return;
+    }
+
+    let env = AgentTestEnvDefault::new("br-gemini-idle");
+    env.launch_agent(AgentKind::Gemini, FakeState::Idle);
+
+    let json = env.run_cli_json(&["branches", &env.repo_name, "--json"]);
+    let branches = json.as_array().unwrap();
+    let main_branch = branches.iter().find(|b| b["name"] == "main").unwrap();
+
+    assert_eq!(main_branch["agent_status"]["kind"], "Gemini");
+    assert_eq!(main_branch["agent_status"]["state"], "Idle");
+}
+
+#[test]
+fn test_e2e_agent_status_json_gemini() {
+    if use_real_agents() {
+        return;
+    }
+
+    let env = AgentTestEnvDefault::new("st-gemini");
+    env.launch_agent(AgentKind::Gemini, FakeState::Waiting);
+
+    let json = env.run_cli_json(&["status", &env.repo_name, "main", "--json"]);
+    let agent = &json["agent_status"];
+    assert!(
+        !agent.is_null(),
+        "status should include agent_status: {json}"
+    );
+    assert_eq!(agent["kind"], "Gemini");
+    assert_eq!(agent["state"], "Waiting");
+}
+
+#[test]
+fn test_e2e_agent_sessions_json_gemini() {
+    if use_real_agents() {
+        return;
+    }
+
+    let env = AgentTestEnvDefault::new("sess-gemini");
+    env.launch_agent(AgentKind::Gemini, FakeState::Running);
+
+    let json = env.run_cli_json(&["sessions", "--json"]);
+    let sessions = json.as_array().expect("sessions should be an array");
+    let our_session = sessions
+        .iter()
+        .find(|s| s["session"] == env.kiosk_session)
+        .expect("should find our session");
+
+    let agent = &our_session["agent_status"];
+    assert!(
+        !agent.is_null(),
+        "session should have agent_status: {our_session}"
+    );
+    assert_eq!(agent["kind"], "Gemini");
+    assert_eq!(agent["state"], "Running");
+}
+
+// ---------------------------------------------------------------------------
+// Multi-pane priority test
+// ---------------------------------------------------------------------------
+
+/// When multiple agents run in the same session (split panes), kiosk should
+/// report the highest-priority state: Waiting > Running > Idle.
+#[test]
+fn test_e2e_agent_multi_pane_highest_priority_wins() {
+    if use_real_agents() {
+        return;
+    }
+
+    let env = AgentTestEnvDefault::new("multi-pane");
+
+    // Write two fake agent scripts: one idle, one waiting
+    let idle_output = fake_agent_output(AgentKind::ClaudeCode, FakeState::Idle);
+    let waiting_output = fake_agent_output(AgentKind::Codex, FakeState::Waiting);
+
+    let idle_script = write_fake_agent_script(env.tmp.path(), "claude", idle_output);
+    let waiting_script = write_fake_agent_script(env.tmp.path(), "codex", waiting_output);
+
+    // Create session with idle agent in pane 0
+    let status = env
+        .tmux_cmd()
+        .args([
+            "new-session",
+            "-d",
+            "-s",
+            &env.kiosk_session,
+            "-c",
+            &env.repo_dir.to_string_lossy(),
+            "-x",
+            "120",
+            "-y",
+            "30",
+        ])
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    env.tmux_cmd()
+        .args([
+            "send-keys",
+            "-t",
+            &env.kiosk_session,
+            &idle_script.to_string_lossy(),
+            "Enter",
+        ])
+        .status()
+        .unwrap();
+    assert!(
+        wait_for_pane_content(
+            &env.kiosk_session,
+            "? for shortcuts",
+            10_000,
+            &env.tmux_socket
+        ),
+        "Timed out waiting for idle claude output"
+    );
+
+    // Split and launch waiting agent in pane 1
+    env.tmux_cmd()
+        .args([
+            "split-window",
+            "-h",
+            "-t",
+            &env.kiosk_session,
+            "-c",
+            &env.repo_dir.to_string_lossy(),
+        ])
+        .status()
+        .unwrap();
+    wait_ms(500);
+
+    // Target the new pane (pane 1)
+    let pane_target = format!("{}:.1", env.kiosk_session);
+    env.tmux_cmd()
+        .args([
+            "send-keys",
+            "-t",
+            &pane_target,
+            &waiting_script.to_string_lossy(),
+            "Enter",
+        ])
+        .status()
+        .unwrap();
+
+    // Wait for the waiting output in pane 1
+    wait_ms(3000);
+
+    let json = env.run_cli_json(&["branches", &env.repo_name, "--json"]);
+    let branches = json.as_array().unwrap();
+    let main_branch = branches.iter().find(|b| b["name"] == "main").unwrap();
+
+    let agent = &main_branch["agent_status"];
+    assert!(!agent.is_null(), "should detect an agent: {main_branch}");
+    // Waiting (Codex) should win over Idle (Claude)
+    assert_eq!(
+        agent["state"], "Waiting",
+        "Waiting should have higher priority than Idle: {agent}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // OpenCode tests
 // ---------------------------------------------------------------------------
 

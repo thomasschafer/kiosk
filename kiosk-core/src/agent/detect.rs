@@ -12,6 +12,8 @@ use super::{AgentKind, AgentState};
 /// (e.g. "cursor-agent" before "agent", "codex" before generic patterns).
 const AGENT_PATTERNS: &[(&str, AgentKind)] = &[
     ("cursor-agent", AgentKind::CursorAgent),
+    ("@cursor/agent", AgentKind::CursorAgent),
+    ("cursor/agent", AgentKind::CursorAgent),
     ("opencode", AgentKind::OpenCode),
     ("claude", AgentKind::ClaudeCode),
     ("codex", AgentKind::Codex),
@@ -23,6 +25,13 @@ pub fn detect_agent_kind(
     child_process_args: Option<&str>,
 ) -> Option<AgentKind> {
     let cmd_lower = pane_command.to_lowercase();
+
+    // Cursor Agent is often launched as `agent` or `cursor` in newer
+    // releases, while older installs used `cursor-agent`.
+    if matches!(cmd_lower.as_str(), "agent" | "cursor") {
+        return Some(AgentKind::CursorAgent);
+    }
+
     for &(pattern, kind) in AGENT_PATTERNS {
         if cmd_lower.contains(pattern) {
             return Some(kind);
@@ -607,6 +616,14 @@ mod tests {
             detect_agent_kind("cursor-agent", None),
             Some(AgentKind::CursorAgent),
         );
+        assert_eq!(
+            detect_agent_kind("agent", None),
+            Some(AgentKind::CursorAgent),
+        );
+        assert_eq!(
+            detect_agent_kind("cursor", None),
+            Some(AgentKind::CursorAgent),
+        );
     }
 
     #[test]
@@ -644,6 +661,13 @@ mod tests {
             Some(AgentKind::CursorAgent),
         );
         assert_eq!(
+            detect_agent_kind(
+                "node",
+                Some("/home/user/.local/share/npm/node_modules/@cursor/agent/dist/index.js")
+            ),
+            Some(AgentKind::CursorAgent),
+        );
+        assert_eq!(
             detect_agent_kind("node", Some("/home/user/.local/bin/opencode")),
             Some(AgentKind::OpenCode),
         );
@@ -657,7 +681,7 @@ mod tests {
     fn detect_kind_unknown() {
         assert_eq!(detect_agent_kind("bash", None), None);
         assert_eq!(detect_agent_kind("vim", Some("vim file.txt")), None);
-        assert_eq!(detect_agent_kind("agent", None), None);
+        assert_eq!(detect_agent_kind("python", Some("agent")), None);
     }
 
     // -- Claude Code ---------------------------------------------------------

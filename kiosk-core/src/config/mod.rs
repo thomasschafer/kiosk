@@ -91,6 +91,9 @@ pub struct AgentConfig {
     pub enabled: bool,
     /// Interval in milliseconds between agent status polls (default: 2000).
     pub poll_interval_ms: u64,
+    /// Label text for each agent state shown in the branch picker.
+    #[serde(default)]
+    pub labels: AgentLabelsConfig,
 }
 
 impl Default for AgentConfig {
@@ -98,7 +101,48 @@ impl Default for AgentConfig {
         Self {
             enabled: true,
             poll_interval_ms: 2000,
+            labels: AgentLabelsConfig::default(),
         }
+    }
+}
+
+/// Label text for each agent state shown in the branch picker.
+///
+/// ```toml
+/// [agent.labels]
+/// running = "RUN"
+/// waiting = "WAIT"
+/// idle = "IDLE"
+/// unknown = "??"
+/// ```
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(deny_unknown_fields, default)]
+pub struct AgentLabelsConfig {
+    pub running: String,
+    pub waiting: String,
+    pub idle: String,
+    pub unknown: String,
+}
+
+impl Default for AgentLabelsConfig {
+    fn default() -> Self {
+        Self {
+            running: "RUN".to_string(),
+            waiting: "WAIT".to_string(),
+            idle: "IDLE".to_string(),
+            unknown: "??".to_string(),
+        }
+    }
+}
+
+impl AgentLabelsConfig {
+    /// Maximum char count across all labels (for fixed-width column padding).
+    pub fn max_label_width(&self) -> usize {
+        [&self.running, &self.waiting, &self.idle, &self.unknown]
+            .iter()
+            .map(|s| s.chars().count())
+            .max()
+            .unwrap_or(0)
     }
 }
 
@@ -876,5 +920,84 @@ poll_interval_ms = 100
             result.unwrap_err().kind(),
             std::io::ErrorKind::AlreadyExists
         );
+    }
+
+    #[test]
+    fn test_agent_labels_defaults() {
+        let labels = AgentLabelsConfig::default();
+        assert_eq!(labels.running, "RUN");
+        assert_eq!(labels.waiting, "WAIT");
+        assert_eq!(labels.idle, "IDLE");
+        assert_eq!(labels.unknown, "??");
+    }
+
+    #[test]
+    fn test_agent_labels_custom() {
+        let config = load_config_from_str(
+            r#"
+search_dirs = ["~/Dev"]
+
+[agent.labels]
+running = "ACTIVE"
+waiting = "PEND"
+idle = "OFF"
+unknown = "N/A"
+"#,
+        )
+        .unwrap();
+        assert_eq!(config.agent.labels.running, "ACTIVE");
+        assert_eq!(config.agent.labels.waiting, "PEND");
+        assert_eq!(config.agent.labels.idle, "OFF");
+        assert_eq!(config.agent.labels.unknown, "N/A");
+    }
+
+    #[test]
+    fn test_agent_labels_partial_override() {
+        let config = load_config_from_str(
+            r#"
+search_dirs = ["~/Dev"]
+
+[agent.labels]
+running = "GO"
+"#,
+        )
+        .unwrap();
+        assert_eq!(config.agent.labels.running, "GO");
+        assert_eq!(config.agent.labels.waiting, "WAIT");
+        assert_eq!(config.agent.labels.idle, "IDLE");
+        assert_eq!(config.agent.labels.unknown, "??");
+    }
+
+    #[test]
+    fn test_agent_labels_rejects_unknown_fields() {
+        let result = load_config_from_str(
+            r#"
+search_dirs = ["~/Dev"]
+
+[agent.labels]
+running = "RUN"
+bogus = "BAD"
+"#,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_agent_labels_max_width() {
+        let labels = AgentLabelsConfig {
+            running: "RUN".to_string(),
+            waiting: "WAIT".to_string(),
+            idle: "IDLE".to_string(),
+            unknown: "??".to_string(),
+        };
+        assert_eq!(labels.max_label_width(), 4);
+
+        let labels = AgentLabelsConfig {
+            running: "RUNNING".to_string(),
+            waiting: "W".to_string(),
+            idle: "I".to_string(),
+            unknown: "?".to_string(),
+        };
+        assert_eq!(labels.max_label_width(), 7);
     }
 }

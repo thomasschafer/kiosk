@@ -475,6 +475,7 @@ fn run_tui(
     state.pending_worktree_deletes = load_pending_worktree_deletes();
     state.agent_enabled = config.agent.enabled;
     state.agent_poll_interval = std::time::Duration::from_millis(config.agent.poll_interval_ms);
+    state.agent_labels = config.agent.labels.clone();
 
     let theme = Theme::from_config(&config.theme);
 

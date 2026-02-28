@@ -10,6 +10,37 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState},
 };
 
+fn agent_label_prefix(state: &AppState) -> Option<AgentLabelCtx<'_>> {
+    let has_agents = state
+        .branch_list
+        .filtered
+        .iter()
+        .any(|(idx, _)| state.branches[*idx].agent_status.is_some());
+    if !has_agents {
+        return None;
+    }
+    let label_width = state.agent_labels.max_label_width();
+    // +2 for the surrounding brackets
+    let col_width = label_width + 2;
+    Some(AgentLabelCtx {
+        labels: &state.agent_labels,
+        label_width,
+        col_width,
+    })
+}
+
+struct AgentLabelCtx<'a> {
+    labels: &'a kiosk_core::config::AgentLabelsConfig,
+    label_width: usize,
+    col_width: usize,
+}
+
+impl AgentLabelCtx<'_> {
+    fn blank_padding(&self) -> String {
+        " ".repeat(self.col_width)
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, _keys: &KeysConfig) {
     let repo_name = state
@@ -34,6 +65,8 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, _keys: &
         state.branch_list.input.cursor,
     );
 
+    let label_ctx = agent_label_prefix(state);
+
     // Branch list
     let mut items: Vec<ListItem> = state
         .branch_list
@@ -41,10 +74,29 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, _keys: &
         .iter()
         .map(|(idx, _)| {
             let branch = &state.branches[*idx];
+            let mut spans: Vec<Span<'_>> = Vec::new();
+
+            // Agent label prefix column
+            if let Some(ref ctx) = label_ctx {
+                if let Some(ref agent_status) = branch.agent_status {
+                    let (label, color) = match agent_status.state {
+                        AgentState::Running => (&ctx.labels.running, theme.accent),
+                        AgentState::Waiting => (&ctx.labels.waiting, theme.warning),
+                        AgentState::Idle => (&ctx.labels.idle, theme.muted),
+                        AgentState::Unknown => (&ctx.labels.unknown, theme.hint),
+                    };
+                    spans.push(Span::styled(
+                        format!("[{label:<width$}]", width = ctx.label_width),
+                        Style::default().fg(color),
+                    ));
+                } else {
+                    spans.push(Span::raw(ctx.blank_padding()));
+                }
+                spans.push(Span::raw(" "));
+            }
 
             if let Some(remote) = &branch.remote {
-                // Remote branches rendered with muted style
-                let mut spans = vec![Span::styled(&branch.name, Style::default().fg(theme.muted))];
+                spans.push(Span::styled(&branch.name, Style::default().fg(theme.muted)));
                 spans.push(Span::styled(
                     format!(" ({remote})"),
                     Style::default()
@@ -54,7 +106,7 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, _keys: &
                 return ListItem::new(Line::from(spans));
             }
 
-            let mut spans = vec![Span::raw(&branch.name)];
+            spans.push(Span::raw(&branch.name));
             let is_deleting = selected_repo_path
                 .as_ref()
                 .is_some_and(|repo_path| state.is_branch_pending_delete(repo_path, &branch.name));
@@ -75,19 +127,6 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, _keys: &
                     Style::default().fg(theme.warning),
                 ));
             }
-            // Add agent status indicator if present (skip Unknown — no confirmed detection yet)
-            if let Some(ref agent_status) = branch.agent_status
-                && agent_status.state != AgentState::Unknown
-            {
-                let (icon, color) = match agent_status.state {
-                    AgentState::Running => ("●", theme.accent),
-                    AgentState::Waiting => ("●", theme.warning),
-                    AgentState::Idle => ("●", theme.muted),
-                    AgentState::Unknown => unreachable!(),
-                };
-                spans.push(Span::raw(" "));
-                spans.push(Span::styled(icon, Style::default().fg(color)));
-            }
 
             if branch.is_current {
                 spans.push(Span::styled(" *", Style::default().fg(theme.accent)));
@@ -99,21 +138,37 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, _keys: &
 
     // If search doesn't match anything, show "create new branch" option
     if state.loading_branches && state.branch_list.filtered.is_empty() {
-        items.push(ListItem::new(Line::from(vec![Span::styled(
+        let mut spans: Vec<Span<'_>> = Vec::new();
+        if let Some(ref ctx) = label_ctx {
+            spans.push(Span::raw(ctx.blank_padding()));
+            spans.push(Span::raw(" "));
+        }
+        spans.push(Span::styled(
             "Loading branches...",
             Style::default().fg(theme.muted),
-        )])));
+        ));
+        items.push(ListItem::new(Line::from(spans)));
     } else if state.branch_list.filtered.is_empty() && !state.branch_list.input.text.is_empty() {
-        items.push(ListItem::new(Line::from(vec![
-            Span::styled("+ Create branch ", Style::default().fg(theme.success)),
-            Span::styled(
-                format!("\"{}\"", state.branch_list.input.text),
-                Style::default()
-                    .fg(theme.success)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" (Enter to pick base)", Style::default().fg(theme.muted)),
-        ])));
+        let mut spans: Vec<Span<'_>> = Vec::new();
+        if let Some(ref ctx) = label_ctx {
+            spans.push(Span::raw(ctx.blank_padding()));
+            spans.push(Span::raw(" "));
+        }
+        spans.push(Span::styled(
+            "+ Create branch ",
+            Style::default().fg(theme.success),
+        ));
+        spans.push(Span::styled(
+            format!("\"{}\"", state.branch_list.input.text),
+            Style::default()
+                .fg(theme.success)
+                .add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(
+            " (Enter to pick base)",
+            Style::default().fg(theme.muted),
+        ));
+        items.push(ListItem::new(Line::from(spans)));
     }
 
     let count = state.branch_list.filtered.len();

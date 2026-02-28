@@ -1,6 +1,9 @@
 use crate::{
     agent::AgentStatus,
-    config::keys::{Command, FlattenedKeybindingRow},
+    config::{
+        AgentLabelsConfig,
+        keys::{Command, FlattenedKeybindingRow},
+    },
     constants::{WORKTREE_DIR_DEDUP_MAX_ATTEMPTS, WORKTREE_DIR_NAME, WORKTREE_NAME_SEPARATOR},
     git::Repo,
     pending_delete::PendingWorktreeDelete,
@@ -774,6 +777,8 @@ pub struct AppState {
     pub agent_enabled: bool,
     /// Agent poll interval (configurable via `[agent] poll_interval_ms`).
     pub agent_poll_interval: std::time::Duration,
+    /// Label text for each agent state shown in the branch picker.
+    pub agent_labels: AgentLabelsConfig,
     /// Main repo root path from CWD (for repo ordering)
     pub current_repo_path: Option<PathBuf>,
     /// CWD resolved to repo/worktree root (for branch current detection)
@@ -806,6 +811,7 @@ impl AppState {
             agent_poller_cancel: None,
             agent_enabled: true,
             agent_poll_interval: std::time::Duration::from_millis(2000),
+            agent_labels: AgentLabelsConfig::default(),
             current_repo_path: None,
             cwd_worktree_path: None,
             seen_repo_paths: HashSet::new(),
@@ -2296,5 +2302,21 @@ mod tests {
         let mut state = AppState::new(vec![], None);
         state.agent_enabled = false;
         assert!(!state.agent_enabled);
+    }
+
+    #[test]
+    fn test_agent_labels_stored_in_state() {
+        let mut state = AppState::new(vec![], None);
+        assert_eq!(state.agent_labels.running, "RUN");
+        assert_eq!(state.agent_labels.waiting, "WAIT");
+
+        state.agent_labels = AgentLabelsConfig {
+            running: "GO".to_string(),
+            waiting: "PEND".to_string(),
+            idle: "OFF".to_string(),
+            unknown: "N/A".to_string(),
+        };
+        assert_eq!(state.agent_labels.running, "GO");
+        assert_eq!(state.agent_labels.waiting, "PEND");
     }
 }

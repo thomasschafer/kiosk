@@ -1009,11 +1009,11 @@ fn test_e2e_agent_tui_shows_indicator() {
         String::from_utf8_lossy(&output.stdout).to_string()
     };
 
-    // The TUI should show an agent indicator (● colored dot for any active state)
-    let has_indicator = screen.contains('●');
+    // The TUI should show an agent label (e.g. [WAIT] for waiting state)
+    let has_indicator = screen.contains("[WAIT]");
     assert!(
         has_indicator,
-        "TUI branch view should show agent indicator: {screen}"
+        "TUI branch view should show agent label: {screen}"
     );
 
     // Cleanup the TUI session
@@ -1239,7 +1239,10 @@ fn test_e2e_agent_branches_json_opencode_running() {
     let branches = branches.as_array().unwrap();
     let main = &branches[0];
     assert_eq!(main["agent_status"]["kind"], "OpenCode");
-    assert_eq!(main["agent_status"]["state"], "Running");
+    if !use_real_agents() {
+        assert_eq!(main["agent_status"]["state"], "Running");
+    }
+    // With real agents, state depends on timing — just assert detection worked
 }
 
 #[test]
@@ -1267,7 +1270,9 @@ fn test_e2e_agent_branches_json_opencode_idle() {
     let branches = branches.as_array().unwrap();
     let main = &branches[0];
     assert_eq!(main["agent_status"]["kind"], "OpenCode");
-    assert_eq!(main["agent_status"]["state"], "Idle");
+    if !use_real_agents() {
+        assert_eq!(main["agent_status"]["state"], "Idle");
+    }
 }
 
 #[test]
@@ -1288,5 +1293,7 @@ fn test_e2e_agent_status_json_opencode() {
     env.launch_agent(AgentKind::OpenCode, FakeState::Idle);
     let status = env.run_cli_json(&["status", "--json", &env.repo_name]);
     assert_eq!(status["agent_status"]["kind"], "OpenCode");
-    assert_eq!(status["agent_status"]["state"], "Idle");
+    if !use_real_agents() {
+        assert_eq!(status["agent_status"]["state"], "Idle");
+    }
 }

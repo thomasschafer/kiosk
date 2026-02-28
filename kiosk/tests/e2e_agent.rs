@@ -210,8 +210,8 @@ fn fake_agent_output(agent: AgentKind, state: FakeState) -> &'static str {
             "⬝■■■■■■⬝  esc interrupt  ctrl+t variants  tab agents  ctrl+p commands"
         }
         (AgentKind::OpenCode, FakeState::Waiting) => {
-            // OpenCode doesn't have approval prompts; treat as idle.
-            "  ┃  Build  GPT-5.3 Codex OpenAI\n                 ╹▀▀▀▀▀▀\n                   ctrl+t variants  tab agents  ctrl+p commands"
+            // OpenCode shows a permission dialog for destructive operations.
+            "Permission Required\\n\\nTool: bash\\nPath: /tmp/test\\n\\n Allow (a)   Allow for session (s)   Deny (d)"
         }
         (AgentKind::OpenCode, FakeState::Idle) => {
             "  ┃\n                 ┃  Build  GPT-5.3 Codex OpenAI\n                 ╹▀▀▀▀▀▀\n                   ctrl+t variants  tab agents  ctrl+p commands"
@@ -431,7 +431,8 @@ impl AgentTestEnvDefault {
             (AgentKind::Codex, FakeState::Waiting) => Some("yes, proceed"),
             (AgentKind::Codex | AgentKind::ClaudeCode, FakeState::Idle) => Some("? for shortcuts"),
             (AgentKind::CursorAgent, FakeState::Waiting) => Some("trust this workspace"),
-            (AgentKind::OpenCode, FakeState::Waiting | FakeState::Idle) => Some("ctrl+p commands"),
+            (AgentKind::OpenCode, FakeState::Waiting) => Some("Permission Required"),
+            (AgentKind::OpenCode, FakeState::Idle) => Some("ctrl+p commands"),
             (AgentKind::Gemini, FakeState::Waiting) => Some("(y/n)"),
             // CursorAgent/Gemini idle output is just "> " — too minimal for
             // reliable content polling (tmux strips trailing whitespace).
@@ -1239,6 +1240,23 @@ fn test_e2e_agent_branches_json_opencode_running() {
     let main = &branches[0];
     assert_eq!(main["agent_status"]["kind"], "OpenCode");
     assert_eq!(main["agent_status"]["state"], "Running");
+}
+
+#[test]
+fn test_e2e_agent_branches_json_opencode_waiting() {
+    if use_real_agents() {
+        return;
+    }
+
+    let env = AgentTestEnvDefault::new("opencode-wait");
+    env.launch_agent(AgentKind::OpenCode, FakeState::Waiting);
+
+    let json = env.run_cli_json(&["branches", &env.repo_name, "--json"]);
+    let branches = json.as_array().unwrap();
+    let main_branch = branches.iter().find(|b| b["name"] == "main").unwrap();
+
+    assert_eq!(main_branch["agent_status"]["kind"], "OpenCode");
+    assert_eq!(main_branch["agent_status"]["state"], "Waiting");
 }
 
 #[test]

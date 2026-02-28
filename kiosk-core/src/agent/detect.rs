@@ -244,9 +244,10 @@ const OPENCODE_PATTERNS: AgentPatterns = AgentPatterns {
     // The `esc interrupt` text appears in the footer alongside the block
     // spinner `⬝■` during active work.
     running: &["esc interrupt"],
-    // OpenCode currently auto-approves in Build mode and Plan mode is
-    // read-only, so there are no user-facing approval prompts.
-    waiting: &[],
+    // OpenCode shows a "Permission Required" dialog with "Allow (a)",
+    // "Allow for session (s)", "Deny (d)" buttons for bash commands,
+    // file edits, writes, and fetch operations.
+    waiting: &["permission required", "allow (a)", "deny (d)"],
     // OpenCode's idle footer shows `ctrl+p commands` when at the input prompt.
     idle_tail: &["ctrl+p commands", "ctrl+t variants", "tab agents"],
 };
@@ -446,14 +447,17 @@ fn detect_active_state(content: &str, tail: &str, patterns: &AgentPatterns) -> A
     if matches_any(tail, patterns.running) || contains_braille_spinner(tail) {
         return AgentState::Running;
     }
+    // Check waiting before idle_tail: permission/approval dialogs (e.g.
+    // OpenCode's "Permission Required") can appear alongside the idle footer
+    // in the same tmux capture, and waiting needs human attention urgently.
+    if matches_any(content, patterns.waiting) {
+        return AgentState::Waiting;
+    }
     if matches_any(tail, patterns.idle_tail) {
         return AgentState::Idle;
     }
     if matches_any(content, patterns.running) || contains_braille_spinner(content) {
         return AgentState::Running;
-    }
-    if matches_any(content, patterns.waiting) {
-        return AgentState::Waiting;
     }
     AgentState::Unknown
 }
@@ -1026,6 +1030,45 @@ mod tests {
     fn opencode_idle_fallback_prompt_bar() {
         let content = "  ┃\n  ┃  Build  GPT-5.3\n  ╹▀▀▀▀";
         assert_eq!(detect_state(content, AgentKind::OpenCode), AgentState::Idle);
+    }
+
+    #[test]
+    fn opencode_waiting_permission_required() {
+        let content = "Permission Required\n\nTool: bash\nPath: /tmp\n\nCommand\n\n```bash\nrm test.txt\n```\n\n Allow (a)   Allow for session (s)   Deny (d)";
+        assert_eq!(
+            detect_state(content, AgentKind::OpenCode),
+            AgentState::Waiting
+        );
+    }
+
+    #[test]
+    fn opencode_waiting_allow_button() {
+        let content = "some output\nAllow (a)  Deny (d)  ctrl+p commands";
+        assert_eq!(
+            detect_state(content, AgentKind::OpenCode),
+            AgentState::Waiting
+        );
+    }
+
+    #[test]
+    fn opencode_permission_in_prose_not_waiting() {
+        // The word "permission" in normal output shouldn't trigger Waiting —
+        // only the exact dialog text "Permission Required" should.
+        let content = "You need permission to access this file\n  ctrl+p commands";
+        // This contains "Permission Required"? No — just "permission".
+        // Should be Idle (footer present), not Waiting.
+        assert_eq!(detect_state(content, AgentKind::OpenCode), AgentState::Idle);
+    }
+
+    #[test]
+    fn opencode_waiting_beats_idle_footer() {
+        // OpenCode's permission dialog can appear alongside the idle footer
+        // (ctrl+p commands) in the same tmux capture. Waiting should win.
+        let content = "Permission Required\n\nTool: bash\nAllow (a)  Deny (d)\n  ctrl+p commands";
+        assert_eq!(
+            detect_state(content, AgentKind::OpenCode),
+            AgentState::Waiting
+        );
     }
 
     #[test]

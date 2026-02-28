@@ -1,9 +1,17 @@
-use kiosk_core::{event::AppEvent, git::GitProvider, state::BranchEntry};
+use kiosk_core::{
+    agent::{self, AgentStatus},
+    event::AppEvent,
+    git::GitProvider,
+    state::BranchEntry,
+};
 use rayon::ThreadPoolBuilder;
 use std::{
     collections::HashMap,
     path::PathBuf,
-    sync::{Arc, atomic::Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     thread,
 };
 
@@ -267,7 +275,6 @@ pub(super) fn spawn_git_fetch(
     git: &Arc<dyn GitProvider>,
     sender: &EventSender,
     repo_path: PathBuf,
-    local_names: Vec<String>,
 ) {
     let git = Arc::clone(git);
     let sender = sender.clone();
@@ -286,7 +293,7 @@ pub(super) fn spawn_git_fetch(
         }
 
         let remaining = Arc::new(std::sync::atomic::AtomicUsize::new(remotes.len()));
-        let local_names = Arc::new(local_names);
+        let local_names = Arc::new(git.list_branches(&repo_path));
 
         let pool = match ThreadPoolBuilder::new()
             .num_threads(FETCH_POOL_SIZE)
@@ -372,4 +379,76 @@ pub(super) fn spawn_tracking_worktree_creation(
             Err(e) => sender.send(AppEvent::GitError(format!("{e}"))),
         }
     });
+}
+
+/// Spawns a background thread that periodically detects agent states for
+/// sessions relevant to the current branch view. Only polls sessions that
+/// correspond to branches with active tmux sessions, avoiding unnecessary
+/// work for unrelated sessions.
+///
+/// Uses adaptive polling: when any agent is Running or Waiting, polls at
+/// `base_interval`. When all agents are Idle/Unknown, backs off to
+/// `3 × base_interval` to save resources.
+pub(super) fn spawn_agent_status_poller<T: TmuxProvider + ?Sized + 'static>(
+    tmux: &Arc<T>,
+    sender: &EventSender,
+    cancel: Arc<AtomicBool>,
+    base_interval: std::time::Duration,
+    session_names: Vec<String>,
+) {
+    let tmux = Arc::clone(tmux);
+    let sender = sender.clone();
+    let idle_interval = base_interval.saturating_mul(3);
+    thread::spawn(move || {
+        let is_cancelled =
+            || cancel.load(Ordering::Relaxed) || sender.cancel.load(Ordering::Relaxed);
+        let mut current_interval;
+        loop {
+            if is_cancelled() {
+                return;
+            }
+
+            let states = detect_agent_statuses(&*tmux, &session_names);
+
+            // Adapt interval: use fast polling when any agent is active,
+            // slow polling when all are idle/unknown.
+            let any_active = states.iter().any(|(_, status)| {
+                status.as_ref().is_some_and(|s| {
+                    matches!(
+                        s.state,
+                        agent::AgentState::Running | agent::AgentState::Waiting
+                    )
+                })
+            });
+            current_interval = if any_active {
+                base_interval
+            } else {
+                idle_interval
+            };
+
+            sender.send(AppEvent::AgentStatesUpdated { states });
+
+            // Sleep in small increments so we can check cancel promptly
+            let mut remaining = current_interval;
+            while !remaining.is_zero() {
+                if is_cancelled() {
+                    return;
+                }
+                let sleep = remaining.min(std::time::Duration::from_millis(200));
+                thread::sleep(sleep);
+                remaining = remaining.saturating_sub(sleep);
+            }
+        }
+    });
+}
+
+fn detect_agent_statuses<T: TmuxProvider + ?Sized>(
+    tmux: &T,
+    sessions: &[String],
+) -> Vec<(String, Option<AgentStatus>)> {
+    // Batch: fetch all pane info + session activity in a single tmux call,
+    // then detect agents using the pre-fetched data. Only capture_pane_content
+    // still requires per-pane calls.
+    let all_pane_data = tmux.list_all_panes_with_activity();
+    agent::detect_for_sessions_batched(tmux, sessions, &all_pane_data)
 }

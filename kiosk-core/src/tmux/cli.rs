@@ -1,8 +1,20 @@
-use super::provider::TmuxProvider;
+use super::provider::{PaneInfo, SessionPaneData, TmuxProvider};
 use anyhow::{Context, Result, bail};
+use std::collections::HashMap;
 use std::{path::Path, process::Command};
 
 pub struct CliTmuxProvider;
+
+/// Create a tmux `Command` with optional custom socket from `KIOSK_TMUX_SOCKET` env.
+fn tmux_command() -> Command {
+    let mut cmd = Command::new("tmux");
+    if let Ok(socket) = std::env::var("KIOSK_TMUX_SOCKET")
+        && !socket.is_empty()
+    {
+        cmd.args(["-L", &socket]);
+    }
+    cmd
+}
 
 fn create_session_commands(
     name: &str,
@@ -33,8 +45,63 @@ fn create_session_commands(
 }
 
 impl TmuxProvider for CliTmuxProvider {
+    fn list_all_panes_with_activity(&self) -> HashMap<String, SessionPaneData> {
+        // Single tmux call: list ALL panes across ALL sessions with session
+        // metadata. Format includes session_name and session_activity so we
+        // get both pane info and activity timestamps in one subprocess.
+        let output = tmux_command()
+            .args([
+                "list-panes",
+                "-a",
+                "-F",
+                "#{session_name}\t#{pane_id}|#{pane_pid}|#{pane_current_command}\t#{session_activity}",
+            ])
+            .output();
+
+        let Ok(output) = output else {
+            return HashMap::new();
+        };
+
+        if !output.status.success() {
+            return HashMap::new();
+        }
+
+        let mut result: HashMap<String, SessionPaneData> = HashMap::new();
+
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            // Format: session_name\tpane_id|pane_pid|pane_command\tsession_activity
+            let parts: Vec<&str> = line.splitn(3, '\t').collect();
+            if parts.len() != 3 {
+                continue;
+            }
+            let session_name = parts[0];
+            let pane_part = parts[1];
+            let activity_str = parts[2];
+
+            let Some(pane) = parse_pane_line(pane_part) else {
+                continue;
+            };
+            let activity = activity_str.parse::<u64>().unwrap_or(0);
+
+            let entry = result
+                .entry(session_name.to_string())
+                .or_insert_with(|| SessionPaneData {
+                    panes: Vec::new(),
+                    session_activity: activity,
+                });
+            entry.panes.push(pane);
+            // Activity is the same for all panes in a session, but update
+            // in case of slight races (always take the latest).
+            if activity > entry.session_activity {
+                entry.session_activity = activity;
+            }
+        }
+
+        result
+    }
+
     fn list_sessions_with_activity(&self) -> Vec<(String, u64)> {
-        let output = Command::new("tmux")
+        let output = tmux_command()
             .args(["list-sessions", "-F", "#{session_name}:#{session_activity}"])
             .output();
 
@@ -53,7 +120,7 @@ impl TmuxProvider for CliTmuxProvider {
     }
 
     fn session_exists(&self, name: &str) -> bool {
-        Command::new("tmux")
+        tmux_command()
             .args(["has-session", "-t", &format!("={name}")])
             .output()
             .is_ok_and(|o| o.status.success())
@@ -63,7 +130,7 @@ impl TmuxProvider for CliTmuxProvider {
         let dir_str = dir.to_string_lossy();
 
         for args in create_session_commands(name, &dir_str, split_command) {
-            let output = Command::new("tmux")
+            let output = tmux_command()
                 .args(&args)
                 .output()
                 .with_context(|| format!("failed to execute tmux {}", args.join(" ")))?;
@@ -78,7 +145,7 @@ impl TmuxProvider for CliTmuxProvider {
 
     fn capture_pane(&self, session: &str, lines: usize) -> Result<String> {
         let target = format!("={session}:0.0");
-        let output = Command::new("tmux")
+        let output = tmux_command()
             .args([
                 "capture-pane",
                 "-t",
@@ -102,7 +169,7 @@ impl TmuxProvider for CliTmuxProvider {
         let target = format!("={session}:0.0");
         // Use -l (literal) so tmux doesn't interpret words like "Enter" or "Escape"
         // as special key names, then send Enter separately to submit.
-        let literal = Command::new("tmux")
+        let literal = tmux_command()
             .args(["send-keys", "-t", &target, "-l", keys])
             .output()
             .with_context(|| format!("failed to execute tmux send-keys for session {session}"))?;
@@ -110,7 +177,7 @@ impl TmuxProvider for CliTmuxProvider {
             let stderr = String::from_utf8_lossy(&literal.stderr);
             bail!("tmux send-keys failed: {}", stderr.trim());
         }
-        let enter = Command::new("tmux")
+        let enter = tmux_command()
             .args(["send-keys", "-t", &target, "Enter"])
             .output()
             .with_context(|| {
@@ -128,7 +195,7 @@ impl TmuxProvider for CliTmuxProvider {
         let mut args = vec!["send-keys", "-t", &target];
         args.extend(keys);
 
-        let output = Command::new("tmux").args(&args).output().with_context(|| {
+        let output = tmux_command().args(&args).output().with_context(|| {
             format!("failed to execute tmux send-keys for session {session} pane {pane}")
         })?;
         if !output.status.success() {
@@ -140,7 +207,7 @@ impl TmuxProvider for CliTmuxProvider {
 
     fn send_text_raw(&self, session: &str, pane: &str, text: &str) -> Result<()> {
         let target = format!("={session}:0.{pane}");
-        let output = Command::new("tmux")
+        let output = tmux_command()
             .args(["send-keys", "-t", &target, "-l", text])
             .output()
             .with_context(|| {
@@ -155,7 +222,7 @@ impl TmuxProvider for CliTmuxProvider {
 
     fn capture_pane_with_pane(&self, session: &str, pane: &str, lines: usize) -> Result<String> {
         let target = format!("={session}:0.{pane}");
-        let output = Command::new("tmux")
+        let output = tmux_command()
             .args([
                 "capture-pane",
                 "-t",
@@ -177,7 +244,7 @@ impl TmuxProvider for CliTmuxProvider {
 
     fn pane_current_command(&self, session: &str, pane: &str) -> Result<String> {
         let target = format!("={session}:0.{pane}");
-        let output = Command::new("tmux")
+        let output = tmux_command()
             .args([
                 "display-message",
                 "-t",
@@ -197,7 +264,7 @@ impl TmuxProvider for CliTmuxProvider {
     }
 
     fn session_activity(&self, session: &str) -> Result<u64> {
-        let output = Command::new("tmux")
+        let output = tmux_command()
             .args([
                 "display-message",
                 "-t",
@@ -221,7 +288,7 @@ impl TmuxProvider for CliTmuxProvider {
     }
 
     fn pane_count(&self, session: &str) -> Result<usize> {
-        let output = Command::new("tmux")
+        let output = tmux_command()
             .args([
                 "list-panes",
                 "-t",
@@ -244,7 +311,7 @@ impl TmuxProvider for CliTmuxProvider {
         let target = format!("={session}:0.0");
         let escaped_path = log_path.to_string_lossy().replace('\'', "'\\''");
         let command = format!("cat >> '{escaped_path}'");
-        let output = Command::new("tmux")
+        let output = tmux_command()
             .args(["pipe-pane", "-t", &target, "-o", &command])
             .output()
             .with_context(|| format!("failed to execute tmux pipe-pane for session {session}"))?;
@@ -256,7 +323,7 @@ impl TmuxProvider for CliTmuxProvider {
     }
 
     fn list_clients(&self, session: &str) -> Vec<String> {
-        let output = Command::new("tmux")
+        let output = tmux_command()
             .args([
                 "list-clients",
                 "-t",
@@ -279,18 +346,18 @@ impl TmuxProvider for CliTmuxProvider {
 
     fn switch_to_session(&self, name: &str) {
         if self.is_inside_tmux() {
-            let _ = Command::new("tmux")
+            let _ = tmux_command()
                 .args(["switch-client", "-t", &format!("={name}")])
                 .status();
         } else {
-            let _ = Command::new("tmux")
+            let _ = tmux_command()
                 .args(["attach-session", "-t", &format!("={name}")])
                 .status();
         }
     }
 
     fn kill_session(&self, name: &str) {
-        let _ = Command::new("tmux")
+        let _ = tmux_command()
             .args(["kill-session", "-t", &format!("={name}")])
             .status();
     }
@@ -298,11 +365,78 @@ impl TmuxProvider for CliTmuxProvider {
     fn is_inside_tmux(&self) -> bool {
         std::env::var("TMUX").is_ok()
     }
+
+    fn list_panes_detailed(&self, session: &str) -> Vec<PaneInfo> {
+        let output = tmux_command()
+            .args([
+                "list-panes",
+                "-s",
+                "-t",
+                &format!("={session}"),
+                "-F",
+                "#{pane_id}|#{pane_pid}|#{pane_current_command}",
+            ])
+            .output();
+
+        let Ok(output) = output else {
+            return Vec::new();
+        };
+
+        if !output.status.success() {
+            return Vec::new();
+        }
+
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(parse_pane_line)
+            .collect()
+    }
+
+    fn capture_pane_content(&self, pane_id: &str, lines: u32) -> Option<String> {
+        let output = tmux_command()
+            .args([
+                "capture-pane",
+                "-t",
+                pane_id,
+                "-p",
+                "-S",
+                &format!("-{lines}"),
+            ])
+            .output()
+            .ok()?;
+
+        if output.status.success() {
+            Some(String::from_utf8_lossy(&output.stdout).to_string())
+        } else {
+            None
+        }
+    }
+}
+
+/// Parse a single line of tmux list-panes output in the format:
+/// `{pane_id}|{pane_pid}|{pane_current_command}`
+///
+/// pid is placed before command so that `splitn(3, '|')` absorbs any `|`
+/// characters in the command name into the last field.
+fn parse_pane_line(line: &str) -> Option<PaneInfo> {
+    let parts: Vec<&str> = line.splitn(3, '|').collect();
+    if parts.len() == 3 {
+        let pane_id = parts[0].to_string();
+        let pid = parts[1].parse().ok()?;
+        let command = parts[2].to_string();
+        Some(PaneInfo {
+            pane_id,
+            command,
+            pid,
+        })
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::create_session_commands;
+    use super::{create_session_commands, parse_pane_line};
 
     #[test]
     fn test_create_session_commands_with_split_command_uses_split_window_command_arg() {
@@ -337,5 +471,50 @@ mod tests {
     fn test_create_session_commands_without_split_command() {
         let commands = create_session_commands("demo", "/tmp/demo", None);
         assert_eq!(commands.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_pane_line_basic() {
+        let info = parse_pane_line("%0|12345|bash").unwrap();
+        assert_eq!(info.pane_id, "%0");
+        assert_eq!(info.command, "bash");
+        assert_eq!(info.pid, 12345);
+    }
+
+    #[test]
+    fn test_parse_pane_line_complex_command() {
+        let info = parse_pane_line("%5|99999|claude-code").unwrap();
+        assert_eq!(info.pane_id, "%5");
+        assert_eq!(info.command, "claude-code");
+        assert_eq!(info.pid, 99999);
+    }
+
+    #[test]
+    fn test_parse_pane_line_command_with_pipe() {
+        // Command containing | should be absorbed into the last field
+        let info = parse_pane_line("%2|42|some|weird|cmd").unwrap();
+        assert_eq!(info.pane_id, "%2");
+        assert_eq!(info.pid, 42);
+        assert_eq!(info.command, "some|weird|cmd");
+    }
+
+    #[test]
+    fn test_parse_pane_line_invalid_pid() {
+        assert!(parse_pane_line("%0|notapid|bash").is_none());
+    }
+
+    #[test]
+    fn test_parse_pane_line_too_few_fields() {
+        assert!(parse_pane_line("%0|bash").is_none());
+        assert!(parse_pane_line("").is_none());
+    }
+    #[test]
+    fn test_parse_pane_line_empty() {
+        assert!(parse_pane_line("").is_none());
+    }
+
+    #[test]
+    fn test_parse_pane_line_single_field() {
+        assert!(parse_pane_line("%0").is_none());
     }
 }

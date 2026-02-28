@@ -64,40 +64,96 @@ mod tests {
     use super::*;
     use crate::theme::Theme;
     use kiosk_core::config::ThemeConfig;
-
-    fn test_theme() -> Theme {
-        Theme::from_config(&ThemeConfig::default())
-    }
+    use kiosk_core::state::AppState;
+    use ratatui::{Terminal, backend::TestBackend};
 
     fn test_keys() -> KeysConfig {
         KeysConfig::default()
     }
 
-    #[test]
-    fn test_error_toast_size_short_message() {
+    fn test_theme() -> Theme {
+        Theme::from_config(&ThemeConfig::default())
+    }
+
+    fn render_error_toast(error: &str, width: u16, height: u16) -> String {
         let theme = test_theme();
-        let keys = test_keys();
-        let (w, h) = error_toast_size("Something failed", &keys, &theme, 100);
-        assert_eq!(w, 80);
-        assert_eq!(h, 3 + 4); // 3 lines (error + blank + hint) + 4 chrome
+        let mut state = AppState::new(vec![], None);
+        state.error = Some(error.to_string());
+
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                draw(f, f.area(), &state, &KeysConfig::default(), &theme);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer().clone();
+        let mut output = String::new();
+        for y in 0..buffer.area.height {
+            for x in 0..buffer.area.width {
+                output.push(buffer[(x, y)].symbol().chars().next().unwrap_or(' '));
+            }
+            output.push('\n');
+        }
+        output
     }
 
     #[test]
-    fn test_error_toast_size_long_message() {
-        let theme = test_theme();
-        let keys = test_keys();
-        let long_msg = "a]".repeat(100);
-        let (w, h) = error_toast_size(&long_msg, &keys, &theme, 100);
-        assert_eq!(w, 80);
-        assert!(h > 5);
+    fn test_error_toast_renders_short_message() {
+        let output = render_error_toast("Something failed", 100, 20);
+        assert!(output.contains("Error:"), "should contain 'Error:' label");
+        assert!(
+            output.contains("Something failed"),
+            "should contain the error message"
+        );
+        assert!(output.contains("Error"), "should contain border title");
     }
 
     #[test]
-    fn test_error_toast_size_narrow_terminal() {
+    fn test_error_toast_renders_long_message() {
+        let long_msg = "a".repeat(200);
+        let output = render_error_toast(&long_msg, 100, 30);
+        assert!(output.contains("Error:"), "should contain 'Error:' label");
+        // Long message should be word-wrapped, so multiple lines contain 'a's
+        let content_lines: Vec<&str> = output.lines().filter(|l| l.contains("aaa")).collect();
+        assert!(
+            content_lines.len() > 1,
+            "long message should wrap across multiple lines"
+        );
+    }
+
+    #[test]
+    fn test_error_toast_renders_in_narrow_terminal() {
+        let output = render_error_toast("fail", 20, 15);
+        assert!(output.contains("Error:"), "should contain 'Error:' label");
+        assert!(output.contains("fail"), "should contain the error message");
+    }
+
+    #[test]
+    fn test_no_error_renders_nothing() {
         let theme = test_theme();
         let keys = test_keys();
-        let (w, h) = error_toast_size("fail", &keys, &theme, 20);
-        assert_eq!(w, 16);
-        assert!(h >= 5);
+        let state = AppState::new(vec![], None); // no error set
+
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                draw(f, f.area(), &state, &keys, &theme);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer().clone();
+        let mut output = String::new();
+        for y in 0..buffer.area.height {
+            for x in 0..buffer.area.width {
+                output.push(buffer[(x, y)].symbol().chars().next().unwrap_or(' '));
+            }
+        }
+        assert!(
+            !output.contains("Error"),
+            "should not render anything when no error"
+        );
     }
 }

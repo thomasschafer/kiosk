@@ -1,4 +1,5 @@
 use crate::theme::Theme;
+use kiosk_core::agent::AgentState;
 use kiosk_core::config::KeysConfig;
 use kiosk_core::state::AppState;
 use ratatui::{
@@ -74,6 +75,20 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, _keys: &
                     Style::default().fg(theme.warning),
                 ));
             }
+            // Add agent status indicator if present (skip Unknown — no confirmed detection yet)
+            if let Some(ref agent_status) = branch.agent_status
+                && agent_status.state != AgentState::Unknown
+            {
+                let (icon, color) = match agent_status.state {
+                    AgentState::Running => ("●", theme.accent),
+                    AgentState::Waiting => ("●", theme.warning),
+                    AgentState::Idle => ("●", theme.muted),
+                    AgentState::Unknown => unreachable!(),
+                };
+                spans.push(Span::raw(" "));
+                spans.push(Span::styled(icon, Style::default().fg(color)));
+            }
+
             if branch.is_current {
                 spans.push(Span::styled(" *", Style::default().fg(theme.accent)));
             }

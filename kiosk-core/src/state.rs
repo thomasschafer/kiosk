@@ -1,4 +1,5 @@
 use crate::{
+    agent::AgentStatus,
     config::keys::{Command, FlattenedKeybindingRow},
     constants::{WORKTREE_DIR_DEDUP_MAX_ATTEMPTS, WORKTREE_DIR_NAME, WORKTREE_NAME_SEPARATOR},
     git::Repo,
@@ -8,6 +9,10 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -369,6 +374,8 @@ pub struct BranchEntry {
     pub remote: Option<String>,
     /// Last activity timestamp for the session (if any)
     pub session_activity_ts: Option<u64>,
+    /// Status of any AI agent running in the session
+    pub agent_status: Option<AgentStatus>,
 }
 
 impl BranchEntry {
@@ -468,6 +475,7 @@ impl BranchEntry {
                     is_default,
                     remote: None,
                     session_activity_ts,
+                    agent_status: None,
                 }
             })
             .collect()
@@ -493,6 +501,7 @@ impl BranchEntry {
                 is_default: false,
                 remote: Some(remote.to_string()),
                 session_activity_ts: None,
+                agent_status: None,
             })
             .collect()
     }
@@ -735,6 +744,7 @@ pub struct HelpOverlayState {
 
 /// Central application state. Components read from this, actions modify it.
 #[derive(Debug, Clone)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct AppState {
     pub repos: Vec<Repo>,
     pub repo_list: SearchableList,
@@ -756,6 +766,14 @@ pub struct AppState {
     active_list_page_rows: usize,
     pub pending_worktree_deletes: Vec<PendingWorktreeDelete>,
     pub session_activity: HashMap<String, u64>,
+    /// Cancel token for the active agent status poller thread.
+    /// Setting this flag stops the current poller; clearing it (via `cancel_agent_poller`)
+    /// prepares for a new one.
+    pub agent_poller_cancel: Option<Arc<AtomicBool>>,
+    /// Whether agent status detection is enabled (configurable via `[agent] enabled`).
+    pub agent_enabled: bool,
+    /// Agent poll interval (configurable via `[agent] poll_interval_ms`).
+    pub agent_poll_interval: std::time::Duration,
     /// Main repo root path from CWD (for repo ordering)
     pub current_repo_path: Option<PathBuf>,
     /// CWD resolved to repo/worktree root (for branch current detection)
@@ -785,6 +803,9 @@ impl AppState {
             active_list_page_rows: 10,
             pending_worktree_deletes: Vec::new(),
             session_activity: HashMap::new(),
+            agent_poller_cancel: None,
+            agent_enabled: true,
+            agent_poll_interval: std::time::Duration::from_millis(2000),
             current_repo_path: None,
             cwd_worktree_path: None,
             seen_repo_paths: HashSet::new(),
@@ -825,6 +846,13 @@ impl AppState {
         Self {
             setup: Some(SetupState::new()),
             ..Self::base(Mode::Setup(SetupStep::Welcome))
+        }
+    }
+
+    /// Signal the current agent poller thread to stop and clear the cancel token.
+    pub fn cancel_agent_poller(&mut self) {
+        if let Some(token) = self.agent_poller_cancel.take() {
+            token.store(true, Ordering::Relaxed);
         }
     }
 
@@ -1937,6 +1965,7 @@ mod tests {
                 is_default: false,
                 remote: Some("origin".to_string()),
                 session_activity_ts: None,
+                agent_status: None,
             },
             BranchEntry {
                 name: "zzz-local".to_string(),
@@ -1946,6 +1975,7 @@ mod tests {
                 is_default: false,
                 remote: None,
                 session_activity_ts: None,
+                agent_status: None,
             },
             BranchEntry {
                 name: "mmm-local".to_string(),
@@ -1955,6 +1985,7 @@ mod tests {
                 is_default: false,
                 remote: None,
                 session_activity_ts: None,
+                agent_status: None,
             },
         ];
 
@@ -2143,6 +2174,7 @@ mod tests {
             is_default: false,
             remote: None,
             session_activity_ts: Some(12345),
+            agent_status: None,
         };
 
         let json = serde_json::to_string(&entry).unwrap();
@@ -2232,5 +2264,37 @@ mod tests {
             }),
         };
         assert_eq!(*mode.effective(), Mode::RepoSelect);
+    }
+
+    #[test]
+    fn test_agent_enabled_defaults_to_true() {
+        let state = AppState::new(vec![], None);
+        assert!(state.agent_enabled);
+    }
+
+    #[test]
+    fn test_agent_poll_interval_defaults_to_2000ms() {
+        let state = AppState::new(vec![], None);
+        assert_eq!(
+            state.agent_poll_interval,
+            std::time::Duration::from_millis(2000)
+        );
+    }
+
+    #[test]
+    fn test_agent_poll_interval_can_be_overridden() {
+        let mut state = AppState::new(vec![], None);
+        state.agent_poll_interval = std::time::Duration::from_millis(5000);
+        assert_eq!(
+            state.agent_poll_interval,
+            std::time::Duration::from_millis(5000)
+        );
+    }
+
+    #[test]
+    fn test_agent_enabled_can_be_disabled() {
+        let mut state = AppState::new(vec![], None);
+        state.agent_enabled = false;
+        assert!(!state.agent_enabled);
     }
 }

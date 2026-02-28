@@ -2464,11 +2464,13 @@ fn test_e2e_setup_wizard_typing_shows_all_matching_completions() {
     env.send_special("Enter");
     wait_for_screen(&env, 2000, |s| s.contains("Add directory"));
 
-    // Type path with prefix "De" — completions update as you type
+    // Type path with prefix "De" — completions update as you type.
+    // The full path string is long, so give tmux + TUI time to process all
+    // keystrokes before checking completions.
     env.send(&format!("{}/De", parent.display()));
 
     // Both Desktop and Development match "De" and should be visible
-    let screen = wait_for_screen(&env, 2000, |s| {
+    let screen = wait_for_screen(&env, 5000, |s| {
         s.contains("Desktop") && s.contains("Development")
     });
     assert!(

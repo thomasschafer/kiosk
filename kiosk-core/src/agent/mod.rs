@@ -8,6 +8,7 @@ pub enum AgentKind {
     Codex,
     CursorAgent,
     OpenCode,
+    Gemini,
 }
 
 impl fmt::Display for AgentKind {
@@ -17,6 +18,7 @@ impl fmt::Display for AgentKind {
             AgentKind::Codex => write!(f, "Codex"),
             AgentKind::CursorAgent => write!(f, "Cursor"),
             AgentKind::OpenCode => write!(f, "OpenCode"),
+            AgentKind::Gemini => write!(f, "Gemini"),
         }
     }
 }
@@ -243,7 +245,7 @@ mod tests {
 
     #[test]
     fn detect_claude_code_running() {
-        let _tmux = mock_with_agent("my-session", "claude", "⠋ Reading file src/main.rs");
+        let tmux = mock_with_agent("my-session", "claude", "⠋ Reading file src/main.rs");
         let status = detect_for_session(&tmux, "my-session").unwrap();
         assert_eq!(status.kind, AgentKind::ClaudeCode);
         assert_eq!(status.state, AgentState::Running);
@@ -251,7 +253,7 @@ mod tests {
 
     #[test]
     fn detect_claude_code_waiting() {
-        let _tmux = mock_with_agent(
+        let tmux = mock_with_agent(
             "my-session",
             "claude",
             "Allow write to src/main.rs?\n  Yes, allow\n  No, deny",
@@ -263,7 +265,7 @@ mod tests {
 
     #[test]
     fn detect_claude_code_idle() {
-        let _tmux = mock_with_agent("my-session", "claude", "❯ \n? for shortcuts");
+        let tmux = mock_with_agent("my-session", "claude", "❯ \n? for shortcuts");
         let status = detect_for_session(&tmux, "my-session").unwrap();
         assert_eq!(status.kind, AgentKind::ClaudeCode);
         assert_eq!(status.state, AgentState::Idle);
@@ -271,7 +273,7 @@ mod tests {
 
     #[test]
     fn detect_codex_running() {
-        let _tmux = mock_with_agent(
+        let tmux = mock_with_agent(
             "codex-session",
             "codex",
             "⠋ Searching codebase\nesc to interrupt",
@@ -283,7 +285,7 @@ mod tests {
 
     #[test]
     fn detect_codex_waiting() {
-        let _tmux = mock_with_agent(
+        let tmux = mock_with_agent(
             "codex-session",
             "codex",
             "Would you like to run the following command?\n$ touch test.txt\n› 1. Yes, proceed (y)\n  2. Yes, and don't ask again (p)\n  3. No (esc)\n\n  Press enter to confirm or esc to cancel",
@@ -314,7 +316,7 @@ mod tests {
 
     #[test]
     fn no_agent_in_regular_shell() {
-        let _tmux = mock_with_agent("shell-session", "bash", "$ ls -la\ntotal 42");
+        let tmux = mock_with_agent("shell-session", "bash", "$ ls -la\ntotal 42");
         assert!(detect_for_session(&tmux, "shell-session").is_none());
     }
 
@@ -355,7 +357,7 @@ mod tests {
 
     #[test]
     fn agent_with_ansi_codes_in_output() {
-        let _tmux = mock_with_agent("ansi-session", "claude", "\x1B[32m⠹ Running tool\x1B[0m");
+        let tmux = mock_with_agent("ansi-session", "claude", "\x1B[32m⠹ Running tool\x1B[0m");
         let status = detect_for_session(&tmux, "ansi-session").unwrap();
         assert_eq!(status.state, AgentState::Running);
     }
@@ -539,7 +541,7 @@ mod tests {
         // should be skipped entirely — no agent should be detected even if
         // a child process would match. We test this indirectly: "hx" with
         // no agent content should return None.
-        let _tmux = mock_with_agent("editor-session", "hx", "normal mode");
+        let tmux = mock_with_agent("editor-session", "hx", "normal mode");
         assert!(detect_for_session(&tmux, "editor-session").is_none());
     }
 
@@ -548,13 +550,13 @@ mod tests {
         // When pane command is a shell like "bash", detection should still
         // fall through to child process checking. Since we can't mock /proc,
         // verify that a shell with no agent content and no children returns None.
-        let _tmux = mock_with_agent("shell-session", "bash", "$ ls -la");
+        let tmux = mock_with_agent("shell-session", "bash", "$ ls -la");
         assert!(detect_for_session(&tmux, "shell-session").is_none());
     }
 
     #[test]
     fn detect_opencode_running() {
-        let _tmux = mock_with_agent(
+        let tmux = mock_with_agent(
             "oc-session",
             "node",
             "⬝■■■■■■⬝  esc interrupt  ctrl+t variants  tab agents  ctrl+p commands",
@@ -579,7 +581,7 @@ mod tests {
 
     #[test]
     fn detect_opencode_via_command_name() {
-        let _tmux = mock_with_agent(
+        let tmux = mock_with_agent(
             "oc-session",
             "opencode",
             "  ctrl+t variants  tab agents  ctrl+p commands",

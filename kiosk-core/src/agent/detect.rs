@@ -239,6 +239,12 @@ const CURSOR_PATTERNS: AgentPatterns = AgentPatterns {
     waiting: &[
         "do you trust",
         "trust this workspace",
+        "waiting for approval",
+        "run this command?",
+        "not in allowlist:",
+        "run (once)",
+        "run everything",
+        "skip (esc or n)",
         "enter to select",
         "(y/n)",
         "[y/n]",
@@ -1032,6 +1038,28 @@ mod tests {
                 "Do you trust the contents of this directory?\n\n▶ [a] Trust this workspace",
                 AgentKind::CursorAgent
             ),
+            AgentState::Waiting
+        );
+    }
+
+    #[test]
+    fn cursor_waiting_command_approval_prompt() {
+        let content = "\
+  $ sleep 10 Waiting for approval...
+
+ ┌───────────────────────────────────────────────────────────────────────────────────────────────┐
+ │ $  sleep 10 in .                                                                              │
+ └───────────────────────────────────────────────────────────────────────────────────────────────┘
+ ┌───────────────────────────────────────────────────────────────────────────────────────────────┐
+ │ Run this command?                                                                             │
+ │ Not in allowlist: sleep 10                                                                    │
+ │  → Run (once) (y)                                                                             │
+ │    Add Shell(sleep) to allowlist? (tab)                                                       │
+ │    Run Everything (shift+tab)                                                                 │
+ │    Skip (esc or n)                                                                            │
+ └───────────────────────────────────────────────────────────────────────────────────────────────┘";
+        assert_eq!(
+            detect_state(content, AgentKind::CursorAgent),
             AgentState::Waiting
         );
     }

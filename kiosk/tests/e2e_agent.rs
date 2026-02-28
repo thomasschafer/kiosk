@@ -108,6 +108,41 @@ fn wait_for_pane_content(
     }
 }
 
+/// Poll the tmux pane until any expected text (case-insensitive) appears, or timeout.
+fn wait_for_any_pane_content(
+    session: &str,
+    expected_any: &[&str],
+    timeout_ms: u64,
+    tmux_socket: &str,
+) -> bool {
+    let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
+    let expected_any_lower: Vec<String> = expected_any.iter().map(|s| s.to_lowercase()).collect();
+    loop {
+        let output = Command::new("tmux")
+            .args([
+                "-L",
+                tmux_socket,
+                "capture-pane",
+                "-t",
+                session,
+                "-p",
+                "-S",
+                "-50",
+            ])
+            .output();
+        if let Ok(output) = output {
+            let content = String::from_utf8_lossy(&output.stdout).to_lowercase();
+            if expected_any_lower.iter().any(|needle| content.contains(needle)) {
+                return true;
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        wait_ms(250);
+    }
+}
+
 /// Write a fake agent shell script that prints `output_text` then sleeps.
 fn write_fake_agent_script(dir: &Path, agent_name: &str, output_text: &str) -> PathBuf {
     let script_path = dir.join(agent_name);
@@ -155,11 +190,12 @@ fn has_binary(name: &str) -> bool {
 
 use kiosk_core::AgentKind;
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 enum FakeState {
     Running,
     Waiting,
     Idle,
+    CommandApproval,
 }
 
 struct AgentTestEnvDefault {
@@ -231,6 +267,22 @@ fn fake_agent_output(agent: AgentKind, state: FakeState) -> &'static str {
          \\n\
          Use arrow keys to navigate, Enter to select"
         }
+        (AgentKind::CursorAgent, FakeState::CommandApproval) => {
+            "  $ sleep 10 Waiting for approval...\\n\
+         \\n\
+         ┌───────────────────────────────────────────────────────────────────────────────────────────────┐\\n\
+         │ $  sleep 10 in .                                                                              │\\n\
+         └───────────────────────────────────────────────────────────────────────────────────────────────┘\\n\
+         ┌───────────────────────────────────────────────────────────────────────────────────────────────┐\\n\
+         │ Run this command?                                                                             │\\n\
+         │ Not in allowlist: sleep 10                                                                    │\\n\
+         │  → Run (once) (y)                                                                             │\\n\
+         │    Add Shell(sleep) to allowlist? (tab)                                                       │\\n\
+         │    Run Everything (shift+tab)                                                                 │\\n\
+         │    Skip (esc or n)                                                                            │\\n\
+         └───────────────────────────────────────────────────────────────────────────────────────────────┘"
+        }
+        _ => panic!("Unsupported fake state/agent combination: {agent:?} {state:?}"),
     }
 }
 
@@ -334,10 +386,62 @@ impl AgentTestEnvDefault {
     /// The idle marker each agent shows when ready for input.
     fn real_agent_idle_marker(agent: AgentKind) -> &'static str {
         match agent {
-            AgentKind::ClaudeCode | AgentKind::Codex => "? for shortcuts",
+            AgentKind::ClaudeCode | AgentKind::Codex | AgentKind::Gemini => "? for shortcuts",
             AgentKind::OpenCode => "ctrl+p commands",
-            AgentKind::Gemini | AgentKind::CursorAgent => ">",
+            AgentKind::CursorAgent => "/ commands",
         }
+    }
+
+    /// The launch command (with flags) for each real agent.
+    fn real_agent_launch_cmd(agent: AgentKind) -> &'static str {
+        match agent {
+            AgentKind::ClaudeCode => "claude",
+            AgentKind::Codex => "codex --ask-for-approval untrusted",
+            AgentKind::CursorAgent => "agent",
+            AgentKind::Gemini => "gemini",
+            AgentKind::OpenCode => "opencode",
+        }
+    }
+
+    /// Pre-trust a directory for Gemini CLI by updating ~/.gemini/trustedFolders.json.
+    fn pretrust_gemini_dir(dir: &Path) {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let trust_file = PathBuf::from(format!("{home}/.gemini/trustedFolders.json"));
+        let mut data: serde_json::Map<String, Value> = if trust_file.exists() {
+            let content = fs::read_to_string(&trust_file).unwrap_or_default();
+            serde_json::from_str(&content).unwrap_or_default()
+        } else {
+            serde_json::Map::new()
+        };
+        let dir_str = dir.to_string_lossy().to_string();
+        data.entry(dir_str)
+            .or_insert_with(|| Value::String("TRUST_FOLDER".to_string()));
+        if let Some(parent) = trust_file.parent() {
+            fs::create_dir_all(parent).ok();
+        }
+        fs::write(&trust_file, serde_json::to_string_pretty(&data).unwrap()).unwrap();
+    }
+
+    /// Agent-specific prompt that triggers a long-running task.
+    fn running_task_prompt(agent: AgentKind) -> &'static str {
+        match agent {
+            // Most agents understand "run shell command: sleep 30"
+            AgentKind::ClaudeCode => "please run this bash command right now: sleep 30",
+            AgentKind::CursorAgent => "run this shell command: sleep 30",
+            AgentKind::Gemini => "execute this shell command: sleep 30",
+            AgentKind::OpenCode => "run this shell command: sleep 30",
+            // Codex in untrusted mode will show an approval prompt for the
+            // sleep command, which puts it in Waiting not Running. Use a
+            // non-shell task instead.
+            AgentKind::Codex => "explain every line of every file in this repository in extreme detail, do not stop until you have covered every single line",
+        }
+    }
+
+    /// Agent-specific prompt that triggers a permission/approval prompt.
+    fn waiting_task_prompt(_agent: AgentKind) -> &'static str {
+        // Asking to delete a file triggers permission prompts in most agents.
+        // The file delete-me.txt is created before sending this prompt.
+        "delete the file called delete-me.txt in this directory"
     }
 
     /// Create a tmux session, set PATH, and launch the agent binary.
@@ -345,6 +449,12 @@ impl AgentTestEnvDefault {
     /// until the agent reaches its idle prompt before returning.
     fn start_real_agent(&self, agent: AgentKind) {
         let bin = Self::agent_binary(agent);
+        let launch_cmd = Self::real_agent_launch_cmd(agent);
+
+        // Pre-trust the repo dir for Gemini to avoid the interactive trust dialog.
+        if agent == AgentKind::Gemini {
+            Self::pretrust_gemini_dir(&self.repo_dir);
+        }
 
         let status = self
             .tmux_cmd()
@@ -378,18 +488,26 @@ impl AgentTestEnvDefault {
         wait_ms(200);
 
         self.tmux_cmd()
-            .args(["send-keys", "-t", &self.kiosk_session, bin, "Enter"])
+            .args(["send-keys", "-t", &self.kiosk_session, launch_cmd, "Enter"])
             .status()
             .unwrap();
 
         // Handle agent-specific startup dialogs before waiting for idle.
         self.dismiss_startup_dialogs(agent);
 
-        let marker = Self::real_agent_idle_marker(agent);
-        assert!(
-            wait_for_pane_content(&self.kiosk_session, marker, 30_000, &self.tmux_socket),
-            "Real {bin} did not reach idle prompt within 30s (marker: {marker:?})"
-        );
+        let ready = match agent {
+            AgentKind::CursorAgent => wait_for_any_pane_content(
+                &self.kiosk_session,
+                &["/ commands", "cursor agent", "trust this workspace", "waiting for approval"],
+                60_000,
+                &self.tmux_socket,
+            ),
+            _ => {
+                let marker = Self::real_agent_idle_marker(agent);
+                wait_for_pane_content(&self.kiosk_session, marker, 60_000, &self.tmux_socket)
+            }
+        };
+        assert!(ready, "Real {bin} did not reach ready state within 60s");
     }
 
     /// Dismiss blocking startup dialogs that prevent agents from reaching idle.
@@ -418,7 +536,10 @@ impl AgentTestEnvDefault {
             AgentKind::CursorAgent => {
                 // Cursor shows "Workspace Trust Required" with [a] Trust.
                 if wait_for_pane_content(&self.kiosk_session, "trust", 10_000, &self.tmux_socket) {
-                    self.send_to_agent("a"); // Trust this workspace
+                    self.tmux_cmd()
+                        .args(["send-keys", "-t", &self.kiosk_session, "a"])
+                        .status()
+                        .unwrap(); // Just "a" key, no Enter
                     wait_ms(2000);
                 }
             }
@@ -456,57 +577,83 @@ impl AgentTestEnvDefault {
                 // Already idle after start_real_agent — nothing more to do.
             }
             FakeState::Running => {
-                // Give the agent a long-running bash task. "sleep 30" keeps
-                // it visibly processing (showing spinner / "esc to interrupt")
-                // for long enough to assert Running state.
-                self.send_to_agent("run this exact shell command: sleep 30");
-                // Wait for the agent to leave idle and start processing.
-                // We look for the idle marker to DISAPPEAR — that means the
-                // agent is now working.
-                let marker = Self::real_agent_idle_marker(agent);
-                let deadline = std::time::Instant::now() + Duration::from_secs(15);
+                // Give the agent a long-running bash task.
+                let task = Self::running_task_prompt(agent);
+                self.send_to_agent(task);
+
+                // Wait for the kiosk CLI to actually report Running state.
+                // Just checking that the idle marker disappears is insufficient —
+                // there's a brief transition period where neither idle nor running
+                // indicators are visible. Instead, poll the kiosk CLI directly.
+                let deadline = std::time::Instant::now() + Duration::from_secs(30);
                 loop {
-                    let output = Command::new("tmux")
-                        .args([
-                            "-L",
-                            &self.tmux_socket,
-                            "capture-pane",
-                            "-t",
-                            &self.kiosk_session,
-                            "-p",
-                            "-S",
-                            "-5",
-                        ])
-                        .output();
-                    if let Ok(output) = output {
-                        let tail = String::from_utf8_lossy(&output.stdout).to_lowercase();
-                        if !tail.contains(&marker.to_lowercase()) {
-                            break; // Agent left idle — now processing
-                        }
+                    let output = Command::new(kiosk_binary())
+                        .args(["branches", &self.repo_name, "--json"])
+                        .env("XDG_CONFIG_HOME", &self.config_dir)
+                        .env("XDG_STATE_HOME", &self.state_dir)
+                        .env("KIOSK_TMUX_SOCKET", &self.tmux_socket)
+                        .output()
+                        .unwrap();
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    if stdout.contains("\"Running\"") {
+                        break;
                     }
                     assert!(
                         std::time::Instant::now() < deadline,
-                        "Agent never left idle state after sending task"
+                        "Agent never reached Running state within 30s (last output: {stdout})"
                     );
-                    wait_ms(500);
+                    wait_ms(1000);
                 }
             }
             FakeState::Waiting => {
-                // Create a file and ask the agent to delete it, triggering
-                // a permission/approval prompt.
-                //
-                // NOTE: Agents must be in their default config (not auto-approve/yolo
-                // mode) for the permission prompt to appear.
+                // Trigger a permission/approval prompt.
                 let target = self.repo_dir.join("delete-me.txt");
                 std::fs::write(&target, "delete this file").unwrap();
-                self.send_to_agent("delete the file called delete-me.txt in this directory");
+                let task = Self::waiting_task_prompt(agent);
+                self.send_to_agent(task);
 
-                // Poll for any permission/approval keyword in a single loop
-                // instead of chaining sequential wait_for_pane_content calls.
-                let keywords = ["allow", "approve", "permission", "proceed"];
-                let deadline = std::time::Instant::now() + Duration::from_secs(30);
-                let mut waiting_appeared = false;
-                while std::time::Instant::now() < deadline {
+                // Poll kiosk CLI until it reports Waiting state.
+                let deadline = std::time::Instant::now() + Duration::from_secs(45);
+                loop {
+                    let output = Command::new(kiosk_binary())
+                        .args(["branches", &self.repo_name, "--json"])
+                        .env("XDG_CONFIG_HOME", &self.config_dir)
+                        .env("XDG_STATE_HOME", &self.state_dir)
+                        .env("KIOSK_TMUX_SOCKET", &self.tmux_socket)
+                        .output()
+                        .unwrap();
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    if stdout.contains("\"Waiting\"") {
+                        break;
+                    }
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "Agent never reached Waiting state within 45s (last output: {stdout})"
+                    );
+                    wait_ms(1000);
+                }
+            }
+            FakeState::CommandApproval => {
+                assert_eq!(
+                    agent,
+                    AgentKind::CursorAgent,
+                    "CommandApproval real mode is only supported for Cursor Agent"
+                );
+                self.send_to_agent("Please can you now sleep for 10 seconds using bash");
+                let waiting_appeared = wait_for_any_pane_content(
+                    &self.kiosk_session,
+                    &[
+                        "waiting for approval",
+                        "run this command",
+                        "allowlist",
+                        "run (once)",
+                        "add shell(",
+                        "skip (esc or n)",
+                    ],
+                    90_000,
+                    &self.tmux_socket,
+                );
+                if !waiting_appeared {
                     let output = Command::new("tmux")
                         .args([
                             "-L",
@@ -516,21 +663,26 @@ impl AgentTestEnvDefault {
                             &self.kiosk_session,
                             "-p",
                             "-S",
-                            "-30",
+                            "-200",
                         ])
-                        .output();
-                    if let Ok(output) = output {
+                        .output()
+                        .ok();
+                    if let Some(output) = output {
                         let content = String::from_utf8_lossy(&output.stdout).to_lowercase();
-                        if keywords.iter().any(|kw| content.contains(kw)) {
-                            waiting_appeared = true;
-                            break;
+                        if content.contains("\nauto\n") || content.contains("auto\n  / commands") {
+                            // Cursor is in Auto mode and won't show command approvals.
+                            // Don't fail setup; the test will downgrade strict assertions.
+                            return;
                         }
+                        eprintln!(
+                            "Cursor pane when no command approval detected:\n{}",
+                            String::from_utf8_lossy(&output.stdout)
+                        );
                     }
-                    wait_ms(250);
                 }
                 assert!(
                     waiting_appeared,
-                    "Agent never showed a permission/approval prompt after asking to delete a file"
+                    "Cursor Agent never showed command approval prompt for sleep 10"
                 );
             }
         }
@@ -592,12 +744,17 @@ impl AgentTestEnvDefault {
             (AgentKind::Codex, FakeState::Waiting) => Some("yes, proceed"),
             (AgentKind::Codex | AgentKind::ClaudeCode, FakeState::Idle) => Some("? for shortcuts"),
             (AgentKind::CursorAgent, FakeState::Waiting) => Some("trust this workspace"),
+            (AgentKind::CursorAgent, FakeState::CommandApproval) => Some("run this command"),
             (AgentKind::OpenCode, FakeState::Waiting) => Some("Permission Required"),
             (AgentKind::OpenCode, FakeState::Idle) => Some("ctrl+p commands"),
             (AgentKind::Gemini, FakeState::Waiting) => Some("(y/n)"),
             // CursorAgent/Gemini idle output is just "> " — too minimal for
             // reliable content polling (tmux strips trailing whitespace).
             (AgentKind::CursorAgent | AgentKind::Gemini, FakeState::Idle) => None,
+            (AgentKind::Gemini, FakeState::CommandApproval)
+            | (AgentKind::ClaudeCode, FakeState::CommandApproval)
+            | (AgentKind::Codex, FakeState::CommandApproval)
+            | (AgentKind::OpenCode, FakeState::CommandApproval) => None,
         };
         if let Some(marker) = marker {
             assert!(
@@ -962,6 +1119,41 @@ fn test_e2e_agent_sessions_json_cursor() {
     );
     assert_eq!(agent["kind"], "CursorAgent");
     assert_eq!(agent["state"], "Running");
+}
+
+#[test]
+fn test_e2e_agent_status_json_cursor_command_approval_prompt() {
+    let env = AgentTestEnvDefault::new("st-cursor-cmd-approval");
+    env.launch_agent(AgentKind::CursorAgent, FakeState::CommandApproval);
+
+    let json = env.run_cli_json(&["status", &env.repo_name, "main", "--json"]);
+    let agent = &json["agent_status"];
+    assert!(
+        !agent.is_null(),
+        "status should include agent_status: {json}"
+    );
+    assert_eq!(agent["kind"], "CursorAgent");
+
+    if use_real_agents() {
+        let output = json["output"].as_str().unwrap_or_default().to_lowercase();
+        let has_approval_prompt = [
+            "waiting for approval",
+            "run this command",
+            "not in allowlist",
+            "run (once)",
+        ]
+        .iter()
+        .any(|kw| output.contains(kw));
+        let is_auto_mode = output.contains("\nauto\n") || output.contains("auto\n  / commands");
+        if is_auto_mode && !has_approval_prompt {
+            eprintln!(
+                "Cursor Agent is in Auto mode; approval dialog is suppressed, skipping strict Waiting assertion"
+            );
+            return;
+        }
+    }
+
+    assert_eq!(agent["state"], "Waiting");
 }
 
 // ---------------------------------------------------------------------------

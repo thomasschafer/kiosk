@@ -284,14 +284,15 @@ impl AgentTestEnvDefault {
     /// This is what kiosk CLI will find when it runs `tmux list-sessions`.
     fn launch_agent(&self, agent: AgentKind, state: FakeState) {
         if use_real_agents() {
-            self.launch_real_agent(agent);
+            self.launch_real_agent(agent, state);
         } else {
             self.launch_fake_agent(agent, state);
         }
     }
 
-    fn launch_real_agent(&self, agent: AgentKind) {
-        let bin = match agent {
+    /// Returns the binary name for a given agent kind, asserting it's installed.
+    fn agent_binary(agent: AgentKind) -> &'static str {
+        match agent {
             AgentKind::ClaudeCode => {
                 assert!(
                     has_binary("claude"),
@@ -327,9 +328,24 @@ impl AgentTestEnvDefault {
                 );
                 "opencode"
             }
-        };
+        }
+    }
 
-        // Create tmux session named as kiosk expects, starting in repo dir
+    /// The idle marker each agent shows when ready for input.
+    fn real_agent_idle_marker(agent: AgentKind) -> &'static str {
+        match agent {
+            AgentKind::ClaudeCode | AgentKind::Codex => "? for shortcuts",
+            AgentKind::OpenCode => "ctrl+p commands",
+            AgentKind::Gemini | AgentKind::CursorAgent => ">",
+        }
+    }
+
+    /// Create a tmux session, set PATH, and launch the agent binary.
+    /// Handles startup dialogs (update prompts, trust dialogs) and waits
+    /// until the agent reaches its idle prompt before returning.
+    fn start_real_agent(&self, agent: AgentKind) {
+        let bin = Self::agent_binary(agent);
+
         let status = self
             .tmux_cmd()
             .args([
@@ -348,7 +364,6 @@ impl AgentTestEnvDefault {
             .unwrap();
         assert!(status.success(), "Failed to create tmux session");
 
-        // Ensure agent binaries are on PATH inside the tmux session
         let path = agent_path();
         self.tmux_cmd()
             .args([
@@ -362,17 +377,163 @@ impl AgentTestEnvDefault {
             .unwrap();
         wait_ms(200);
 
-        // Launch agent interactively in the temp repo dir.
-        // This is safe: the repo is a temp dir with only a README.md.
-        // The agent will reach its idle prompt without making any changes.
         self.tmux_cmd()
             .args(["send-keys", "-t", &self.kiosk_session, bin, "Enter"])
             .status()
             .unwrap();
 
-        // Real agents need time to start up and reach idle prompt
-        // Claude Code takes ~12s, Codex ~5s
-        wait_ms(15000);
+        // Handle agent-specific startup dialogs before waiting for idle.
+        self.dismiss_startup_dialogs(agent);
+
+        let marker = Self::real_agent_idle_marker(agent);
+        assert!(
+            wait_for_pane_content(&self.kiosk_session, marker, 30_000, &self.tmux_socket),
+            "Real {bin} did not reach idle prompt within 30s (marker: {marker:?})"
+        );
+    }
+
+    /// Dismiss blocking startup dialogs that prevent agents from reaching idle.
+    ///
+    /// Real agents show various first-run or per-directory prompts:
+    /// - **Codex**: version update dialog ("Update now" / "Skip")
+    /// - **Cursor**: workspace trust dialog ("[a] Trust this workspace")
+    /// - **Gemini**: folder trust dialog ("Trust folder")
+    fn dismiss_startup_dialogs(&self, agent: AgentKind) {
+        match agent {
+            AgentKind::Codex => {
+                // Codex shows "Update available! X -> Y" with options.
+                // Wait for it to appear, then press "2" to skip, then Enter.
+                // If no update dialog, this is harmless (just sends keys to
+                // the idle prompt which ignores them).
+                if wait_for_pane_content(
+                    &self.kiosk_session,
+                    "update available",
+                    10_000,
+                    &self.tmux_socket,
+                ) {
+                    self.send_to_agent("2"); // "Skip"
+                    wait_ms(1000);
+                }
+            }
+            AgentKind::CursorAgent => {
+                // Cursor shows "Workspace Trust Required" with [a] Trust.
+                if wait_for_pane_content(&self.kiosk_session, "trust", 10_000, &self.tmux_socket) {
+                    self.send_to_agent("a"); // Trust this workspace
+                    wait_ms(2000);
+                }
+            }
+            AgentKind::Gemini => {
+                // Gemini shows "Do you trust the files in this folder?"
+                // with option 1 = Trust folder. Press Enter to select default.
+                if wait_for_pane_content(&self.kiosk_session, "trust", 10_000, &self.tmux_socket) {
+                    self.tmux_cmd()
+                        .args(["send-keys", "-t", &self.kiosk_session, "Enter"])
+                        .status()
+                        .unwrap();
+                    wait_ms(2000);
+                }
+            }
+            AgentKind::ClaudeCode | AgentKind::OpenCode => {
+                // These agents go straight to idle — no startup dialogs.
+            }
+        }
+    }
+
+    /// Send a message into the running agent's tmux pane to give it work.
+    fn send_to_agent(&self, text: &str) {
+        self.tmux_cmd()
+            .args(["send-keys", "-t", &self.kiosk_session, text, "Enter"])
+            .status()
+            .unwrap();
+    }
+
+    fn launch_real_agent(&self, agent: AgentKind, state: FakeState) {
+        // Step 1: Start the agent and wait for it to reach idle.
+        self.start_real_agent(agent);
+
+        match state {
+            FakeState::Idle => {
+                // Already idle after start_real_agent — nothing more to do.
+            }
+            FakeState::Running => {
+                // Give the agent a long-running bash task. "sleep 30" keeps
+                // it visibly processing (showing spinner / "esc to interrupt")
+                // for long enough to assert Running state.
+                self.send_to_agent("run this exact shell command: sleep 30");
+                // Wait for the agent to leave idle and start processing.
+                // We look for the idle marker to DISAPPEAR — that means the
+                // agent is now working.
+                let marker = Self::real_agent_idle_marker(agent);
+                let deadline = std::time::Instant::now() + Duration::from_secs(15);
+                loop {
+                    let output = Command::new("tmux")
+                        .args([
+                            "-L",
+                            &self.tmux_socket,
+                            "capture-pane",
+                            "-t",
+                            &self.kiosk_session,
+                            "-p",
+                            "-S",
+                            "-5",
+                        ])
+                        .output();
+                    if let Ok(output) = output {
+                        let tail = String::from_utf8_lossy(&output.stdout).to_lowercase();
+                        if !tail.contains(&marker.to_lowercase()) {
+                            break; // Agent left idle — now processing
+                        }
+                    }
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "Agent never left idle state after sending task"
+                    );
+                    wait_ms(500);
+                }
+            }
+            FakeState::Waiting => {
+                // Create a file and ask the agent to delete it, triggering
+                // a permission/approval prompt.
+                //
+                // NOTE: Agents must be in their default config (not auto-approve/yolo
+                // mode) for the permission prompt to appear.
+                let target = self.repo_dir.join("delete-me.txt");
+                std::fs::write(&target, "delete this file").unwrap();
+                self.send_to_agent("delete the file called delete-me.txt in this directory");
+
+                // Poll for any permission/approval keyword in a single loop
+                // instead of chaining sequential wait_for_pane_content calls.
+                let keywords = ["allow", "approve", "permission", "proceed"];
+                let deadline = std::time::Instant::now() + Duration::from_secs(30);
+                let mut waiting_appeared = false;
+                while std::time::Instant::now() < deadline {
+                    let output = Command::new("tmux")
+                        .args([
+                            "-L",
+                            &self.tmux_socket,
+                            "capture-pane",
+                            "-t",
+                            &self.kiosk_session,
+                            "-p",
+                            "-S",
+                            "-30",
+                        ])
+                        .output();
+                    if let Ok(output) = output {
+                        let content = String::from_utf8_lossy(&output.stdout).to_lowercase();
+                        if keywords.iter().any(|kw| content.contains(kw)) {
+                            waiting_appeared = true;
+                            break;
+                        }
+                    }
+                    wait_ms(250);
+                }
+                assert!(
+                    waiting_appeared,
+                    "Agent never showed a permission/approval prompt after asking to delete a file"
+                );
+            }
+        }
     }
 
     fn launch_fake_agent(&self, agent: AgentKind, state: FakeState) {
@@ -505,19 +666,11 @@ fn test_e2e_agent_branches_json_claude_running() {
     );
     assert_eq!(agent["kind"], "ClaudeCode");
 
-    if !use_real_agents() {
-        assert_eq!(agent["state"], "Running");
-    }
-    // With real agents, state depends on timing — just assert detection worked
+    assert_eq!(agent["state"], "Running");
 }
 
 #[test]
 fn test_e2e_agent_branches_json_claude_waiting() {
-    if use_real_agents() {
-        // Can't reliably produce Waiting state with real agent
-        return;
-    }
-
     let env = AgentTestEnvDefault::new("br-claude-wait");
     env.launch_agent(AgentKind::ClaudeCode, FakeState::Waiting);
 
@@ -531,10 +684,6 @@ fn test_e2e_agent_branches_json_claude_waiting() {
 
 #[test]
 fn test_e2e_agent_branches_json_claude_idle() {
-    if use_real_agents() {
-        return;
-    }
-
     let env = AgentTestEnvDefault::new("br-claude-idle");
     env.launch_agent(AgentKind::ClaudeCode, FakeState::Idle);
 
@@ -559,9 +708,7 @@ fn test_e2e_agent_branches_json_codex_running() {
     assert!(!agent.is_null(), "should detect codex: {main_branch}");
     assert_eq!(agent["kind"], "Codex");
 
-    if !use_real_agents() {
-        assert_eq!(agent["state"], "Running");
-    }
+    assert_eq!(agent["state"], "Running");
 }
 
 #[test]
@@ -596,10 +743,6 @@ fn test_e2e_agent_branches_json_no_agent() {
 
 #[test]
 fn test_e2e_agent_branches_table_shows_agent_column() {
-    if use_real_agents() {
-        return;
-    }
-
     let env = AgentTestEnvDefault::new("br-table-col");
     env.launch_agent(AgentKind::ClaudeCode, FakeState::Waiting);
 
@@ -649,9 +792,7 @@ fn test_e2e_agent_status_json_includes_agent() {
     );
     assert_eq!(agent["kind"], "ClaudeCode");
 
-    if !use_real_agents() {
-        assert_eq!(agent["state"], "Running");
-    }
+    assert_eq!(agent["state"], "Running");
 }
 
 #[test]
@@ -705,9 +846,7 @@ fn test_e2e_agent_sessions_json_includes_agent() {
     );
     assert_eq!(agent["kind"], "ClaudeCode");
 
-    if !use_real_agents() {
-        assert_eq!(agent["state"], "Waiting");
-    }
+    assert_eq!(agent["state"], "Waiting");
 }
 
 #[test]
@@ -747,10 +886,6 @@ fn test_e2e_agent_sessions_json_no_agent() {
 
 #[test]
 fn test_e2e_agent_branches_json_cursor_running() {
-    if use_real_agents() {
-        return;
-    }
-
     let env = AgentTestEnvDefault::new("br-cursor-run");
     env.launch_agent(AgentKind::CursorAgent, FakeState::Running);
 
@@ -769,10 +904,6 @@ fn test_e2e_agent_branches_json_cursor_running() {
 
 #[test]
 fn test_e2e_agent_branches_json_cursor_waiting() {
-    if use_real_agents() {
-        return;
-    }
-
     let env = AgentTestEnvDefault::new("br-cursor-wait");
     env.launch_agent(AgentKind::CursorAgent, FakeState::Waiting);
 
@@ -786,10 +917,6 @@ fn test_e2e_agent_branches_json_cursor_waiting() {
 
 #[test]
 fn test_e2e_agent_branches_json_cursor_idle() {
-    if use_real_agents() {
-        return;
-    }
-
     let env = AgentTestEnvDefault::new("br-cursor-idle");
     env.launch_agent(AgentKind::CursorAgent, FakeState::Idle);
 
@@ -803,10 +930,6 @@ fn test_e2e_agent_branches_json_cursor_idle() {
 
 #[test]
 fn test_e2e_agent_status_json_cursor() {
-    if use_real_agents() {
-        return;
-    }
-
     let env = AgentTestEnvDefault::new("st-cursor");
     env.launch_agent(AgentKind::CursorAgent, FakeState::Waiting);
 
@@ -822,10 +945,6 @@ fn test_e2e_agent_status_json_cursor() {
 
 #[test]
 fn test_e2e_agent_sessions_json_cursor() {
-    if use_real_agents() {
-        return;
-    }
-
     let env = AgentTestEnvDefault::new("sess-cursor");
     env.launch_agent(AgentKind::CursorAgent, FakeState::Running);
 
@@ -922,10 +1041,6 @@ fn test_e2e_agent_codex_stale_content_waiting_then_idle() {
 
 #[test]
 fn test_e2e_agent_tui_shows_indicator() {
-    if use_real_agents() {
-        return;
-    }
-
     let env = AgentTestEnvDefault::new("tui-ind");
 
     // First, launch a fake agent in the kiosk session
@@ -1029,10 +1144,6 @@ fn test_e2e_agent_tui_shows_indicator() {
 
 #[test]
 fn test_e2e_agent_branches_json_gemini_running() {
-    if use_real_agents() {
-        return;
-    }
-
     let env = AgentTestEnvDefault::new("br-gemini-run");
     env.launch_agent(AgentKind::Gemini, FakeState::Running);
 
@@ -1048,10 +1159,6 @@ fn test_e2e_agent_branches_json_gemini_running() {
 
 #[test]
 fn test_e2e_agent_branches_json_gemini_waiting() {
-    if use_real_agents() {
-        return;
-    }
-
     let env = AgentTestEnvDefault::new("br-gemini-wait");
     env.launch_agent(AgentKind::Gemini, FakeState::Waiting);
 
@@ -1065,10 +1172,6 @@ fn test_e2e_agent_branches_json_gemini_waiting() {
 
 #[test]
 fn test_e2e_agent_branches_json_gemini_idle() {
-    if use_real_agents() {
-        return;
-    }
-
     let env = AgentTestEnvDefault::new("br-gemini-idle");
     env.launch_agent(AgentKind::Gemini, FakeState::Idle);
 
@@ -1082,10 +1185,6 @@ fn test_e2e_agent_branches_json_gemini_idle() {
 
 #[test]
 fn test_e2e_agent_status_json_gemini() {
-    if use_real_agents() {
-        return;
-    }
-
     let env = AgentTestEnvDefault::new("st-gemini");
     env.launch_agent(AgentKind::Gemini, FakeState::Waiting);
 
@@ -1101,10 +1200,6 @@ fn test_e2e_agent_status_json_gemini() {
 
 #[test]
 fn test_e2e_agent_sessions_json_gemini() {
-    if use_real_agents() {
-        return;
-    }
-
     let env = AgentTestEnvDefault::new("sess-gemini");
     env.launch_agent(AgentKind::Gemini, FakeState::Running);
 
@@ -1239,18 +1334,11 @@ fn test_e2e_agent_branches_json_opencode_running() {
     let branches = branches.as_array().unwrap();
     let main = &branches[0];
     assert_eq!(main["agent_status"]["kind"], "OpenCode");
-    if !use_real_agents() {
-        assert_eq!(main["agent_status"]["state"], "Running");
-    }
-    // With real agents, state depends on timing — just assert detection worked
+    assert_eq!(main["agent_status"]["state"], "Running");
 }
 
 #[test]
 fn test_e2e_agent_branches_json_opencode_waiting() {
-    if use_real_agents() {
-        return;
-    }
-
     let env = AgentTestEnvDefault::new("opencode-wait");
     env.launch_agent(AgentKind::OpenCode, FakeState::Waiting);
 
@@ -1270,9 +1358,7 @@ fn test_e2e_agent_branches_json_opencode_idle() {
     let branches = branches.as_array().unwrap();
     let main = &branches[0];
     assert_eq!(main["agent_status"]["kind"], "OpenCode");
-    if !use_real_agents() {
-        assert_eq!(main["agent_status"]["state"], "Idle");
-    }
+    assert_eq!(main["agent_status"]["state"], "Idle");
 }
 
 #[test]
@@ -1293,7 +1379,5 @@ fn test_e2e_agent_status_json_opencode() {
     env.launch_agent(AgentKind::OpenCode, FakeState::Idle);
     let status = env.run_cli_json(&["status", "--json", &env.repo_name]);
     assert_eq!(status["agent_status"]["kind"], "OpenCode");
-    if !use_real_agents() {
-        assert_eq!(status["agent_status"]["state"], "Idle");
-    }
+    assert_eq!(status["agent_status"]["state"], "Idle");
 }

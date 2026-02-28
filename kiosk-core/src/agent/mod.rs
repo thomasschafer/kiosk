@@ -108,11 +108,15 @@ pub fn detect_for_session(
             // supplementary signal. If the session has had activity within
             // the last few seconds, the agent is likely processing.
             //
+            // Only check when the pane has actual content — empty content
+            // means the agent hasn't rendered anything yet (e.g. just
+            // launched), not that it's in a "dark" API call period.
+            //
             // Inspired by agent-os's spike detection which uses tmux's
             // session_activity timestamp as an independent signal source
             // (<https://github.com/saadnvd1/agent-os>).
-            if state == AgentState::Unknown {
-                state = infer_state_from_activity(tmux, session_name, kind);
+            if state == AgentState::Unknown && !content.trim().is_empty() {
+                state = infer_state_from_activity(tmux, session_name);
             }
 
             let status = AgentStatus { kind, state };
@@ -161,7 +165,6 @@ const ACTIVITY_RECENCY_SECS: u64 = 3;
 fn infer_state_from_activity(
     tmux: &(impl crate::tmux::TmuxProvider + ?Sized),
     session_name: &str,
-    _kind: AgentKind,
 ) -> AgentState {
     let Ok(activity_ts) = tmux.session_activity(session_name) else {
         return AgentState::Unknown;

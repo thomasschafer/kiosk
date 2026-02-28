@@ -11,7 +11,7 @@ kiosk-core = { workspace = true }
 syn = { version = "2", features = ["full", "parsing"] }
 quote = "1"
 serde = { version = "1", features = ["derive"] }
-toml = "0.8"
+toml = "1.0"
 
 [lints]
 workspace = true

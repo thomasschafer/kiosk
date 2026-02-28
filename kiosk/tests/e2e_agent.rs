@@ -153,15 +153,7 @@ fn has_binary(name: &str) -> bool {
 // Agent test environment
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Copy)]
-#[allow(dead_code)]
-enum AgentKind {
-    Claude,
-    Codex,
-    CursorAgent,
-    OpenCode,
-    Gemini,
-}
+use kiosk_core::AgentKind;
 
 #[derive(Clone, Copy)]
 enum FakeState {
@@ -182,11 +174,13 @@ struct AgentTestEnvDefault {
 
 fn fake_agent_output(agent: AgentKind, state: FakeState) -> &'static str {
     match (agent, state) {
-        (AgentKind::Claude, FakeState::Running) => "⠋ Reading file src/main.rs\\nesc to interrupt",
-        (AgentKind::Claude, FakeState::Waiting) => {
+        (AgentKind::ClaudeCode, FakeState::Running) => {
+            "⠋ Reading file src/main.rs\\nesc to interrupt"
+        }
+        (AgentKind::ClaudeCode, FakeState::Waiting) => {
             "Allow write to src/main.rs?\\n  Yes, allow\\n  No, deny"
         }
-        (AgentKind::Claude, FakeState::Idle) => "❯ \\n? for shortcuts",
+        (AgentKind::ClaudeCode, FakeState::Idle) => "❯ \\n? for shortcuts",
         (AgentKind::CursorAgent | AgentKind::Gemini, FakeState::Idle) => "> ",
 
         (AgentKind::Gemini, FakeState::Running) => "⠋ Generating code\\nesc to interrupt",
@@ -298,7 +292,7 @@ impl AgentTestEnvDefault {
 
     fn launch_real_agent(&self, agent: AgentKind) {
         let bin = match agent {
-            AgentKind::Claude => {
+            AgentKind::ClaudeCode => {
                 assert!(
                     has_binary("claude"),
                     "claude not on PATH — set KIOSK_E2E_REAL_AGENTS=0 or install claude"
@@ -385,7 +379,7 @@ impl AgentTestEnvDefault {
         // Script filename must contain the agent name so kiosk detects the agent
         // by inspecting child process args via /proc/PID/cmdline or pgrep/ps.
         let agent_name = match agent {
-            AgentKind::Claude => "claude",
+            AgentKind::ClaudeCode => "claude",
             AgentKind::Codex => "codex",
             AgentKind::CursorAgent => "cursor-agent",
             AgentKind::OpenCode => "opencode",
@@ -433,9 +427,9 @@ impl AgentTestEnvDefault {
         let marker = match (agent, state) {
             (AgentKind::OpenCode, FakeState::Running) => Some("esc interrupt"),
             (_, FakeState::Running) => Some("esc to interrupt"),
-            (AgentKind::Claude, FakeState::Waiting) => Some("yes, allow"),
+            (AgentKind::ClaudeCode, FakeState::Waiting) => Some("yes, allow"),
             (AgentKind::Codex, FakeState::Waiting) => Some("yes, proceed"),
-            (AgentKind::Codex | AgentKind::Claude, FakeState::Idle) => Some("? for shortcuts"),
+            (AgentKind::Codex | AgentKind::ClaudeCode, FakeState::Idle) => Some("? for shortcuts"),
             (AgentKind::CursorAgent, FakeState::Waiting) => Some("trust this workspace"),
             (AgentKind::OpenCode, FakeState::Waiting | FakeState::Idle) => Some("ctrl+p commands"),
             (AgentKind::Gemini, FakeState::Waiting) => Some("(y/n)"),
@@ -492,7 +486,7 @@ impl Drop for AgentTestEnvDefault {
 #[test]
 fn test_e2e_agent_branches_json_claude_running() {
     let env = AgentTestEnvDefault::new("br-claude-run");
-    env.launch_agent(AgentKind::Claude, FakeState::Running);
+    env.launch_agent(AgentKind::ClaudeCode, FakeState::Running);
 
     let json = env.run_cli_json(&["branches", &env.repo_name, "--json"]);
     let branches = json.as_array().expect("branches should be an array");
@@ -524,7 +518,7 @@ fn test_e2e_agent_branches_json_claude_waiting() {
     }
 
     let env = AgentTestEnvDefault::new("br-claude-wait");
-    env.launch_agent(AgentKind::Claude, FakeState::Waiting);
+    env.launch_agent(AgentKind::ClaudeCode, FakeState::Waiting);
 
     let json = env.run_cli_json(&["branches", &env.repo_name, "--json"]);
     let branches = json.as_array().unwrap();
@@ -541,7 +535,7 @@ fn test_e2e_agent_branches_json_claude_idle() {
     }
 
     let env = AgentTestEnvDefault::new("br-claude-idle");
-    env.launch_agent(AgentKind::Claude, FakeState::Idle);
+    env.launch_agent(AgentKind::ClaudeCode, FakeState::Idle);
 
     let json = env.run_cli_json(&["branches", &env.repo_name, "--json"]);
     let branches = json.as_array().unwrap();
@@ -606,7 +600,7 @@ fn test_e2e_agent_branches_table_shows_agent_column() {
     }
 
     let env = AgentTestEnvDefault::new("br-table-col");
-    env.launch_agent(AgentKind::Claude, FakeState::Waiting);
+    env.launch_agent(AgentKind::ClaudeCode, FakeState::Waiting);
 
     let output = env.run_cli(&["branches", &env.repo_name]);
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -643,7 +637,7 @@ fn test_e2e_agent_branches_table_no_agent_column() {
 #[test]
 fn test_e2e_agent_status_json_includes_agent() {
     let env = AgentTestEnvDefault::new("st-claude");
-    env.launch_agent(AgentKind::Claude, FakeState::Running);
+    env.launch_agent(AgentKind::ClaudeCode, FakeState::Running);
 
     let json = env.run_cli_json(&["status", &env.repo_name, "main", "--json"]);
 
@@ -693,7 +687,7 @@ fn test_e2e_agent_status_json_no_agent() {
 #[test]
 fn test_e2e_agent_sessions_json_includes_agent() {
     let env = AgentTestEnvDefault::new("sess-claude");
-    env.launch_agent(AgentKind::Claude, FakeState::Waiting);
+    env.launch_agent(AgentKind::ClaudeCode, FakeState::Waiting);
 
     let json = env.run_cli_json(&["sessions", "--json"]);
     let sessions = json.as_array().expect("sessions should be an array");
@@ -934,7 +928,7 @@ fn test_e2e_agent_tui_shows_indicator() {
     let env = AgentTestEnvDefault::new("tui-ind");
 
     // First, launch a fake agent in the kiosk session
-    env.launch_agent(AgentKind::Claude, FakeState::Waiting);
+    env.launch_agent(AgentKind::ClaudeCode, FakeState::Waiting);
 
     // Now launch kiosk TUI in a SEPARATE tmux session to observe it
     let tui_session = format!("{}-tui", env.kiosk_session);

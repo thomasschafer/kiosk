@@ -446,11 +446,9 @@ fn detect_agent_statuses<T: TmuxProvider + ?Sized>(
     tmux: &T,
     sessions: &[String],
 ) -> Vec<(String, Option<AgentStatus>)> {
-    sessions
-        .iter()
-        .map(|session_name| {
-            let status = agent::detect_for_session(tmux, session_name);
-            (session_name.clone(), status)
-        })
-        .collect()
+    // Batch: fetch all pane info + session activity in a single tmux call,
+    // then detect agents using the pre-fetched data. Only capture_pane_content
+    // still requires per-pane calls.
+    let all_pane_data = tmux.list_all_panes_with_activity();
+    agent::detect_for_sessions_batched(tmux, sessions, &all_pane_data)
 }

@@ -7,7 +7,23 @@ pub struct PaneInfo {
     pub pid: u32,
 }
 
+/// Pre-fetched pane info and session metadata for a single session.
+/// Returned by [`TmuxProvider::list_all_panes_with_activity`] to enable
+/// batched agent detection without per-session tmux subprocess calls.
+#[derive(Debug, Clone)]
+pub struct SessionPaneData {
+    pub panes: Vec<PaneInfo>,
+    pub session_activity: u64,
+}
+
 pub trait TmuxProvider: Send + Sync {
+    /// List all panes across all sessions in a single call, along with each
+    /// session's last activity timestamp.
+    ///
+    /// This batches what would otherwise be N `list_panes_detailed` + N
+    /// `session_activity` calls into a single tmux invocation, significantly
+    /// reducing subprocess overhead during agent status polling.
+    fn list_all_panes_with_activity(&self) -> std::collections::HashMap<String, SessionPaneData>;
     /// List sessions with their last activity timestamp (`session_name`, `unix_timestamp`)
     fn list_sessions_with_activity(&self) -> Vec<(String, u64)>;
     /// List session names only, discarding activity timestamps.

@@ -1,5 +1,6 @@
-use super::provider::{PaneInfo, TmuxProvider};
+use super::provider::{PaneInfo, SessionPaneData, TmuxProvider};
 use anyhow::{Context, Result, bail};
+use std::collections::HashMap;
 use std::{path::Path, process::Command};
 
 pub struct CliTmuxProvider;
@@ -44,6 +45,61 @@ fn create_session_commands(
 }
 
 impl TmuxProvider for CliTmuxProvider {
+    fn list_all_panes_with_activity(&self) -> HashMap<String, SessionPaneData> {
+        // Single tmux call: list ALL panes across ALL sessions with session
+        // metadata. Format includes session_name and session_activity so we
+        // get both pane info and activity timestamps in one subprocess.
+        let output = tmux_command()
+            .args([
+                "list-panes",
+                "-a",
+                "-F",
+                "#{session_name}\t#{pane_id}|#{pane_pid}|#{pane_current_command}\t#{session_activity}",
+            ])
+            .output();
+
+        let Ok(output) = output else {
+            return HashMap::new();
+        };
+
+        if !output.status.success() {
+            return HashMap::new();
+        }
+
+        let mut result: HashMap<String, SessionPaneData> = HashMap::new();
+
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            // Format: session_name\tpane_id|pane_pid|pane_command\tsession_activity
+            let parts: Vec<&str> = line.splitn(3, '\t').collect();
+            if parts.len() != 3 {
+                continue;
+            }
+            let session_name = parts[0];
+            let pane_part = parts[1];
+            let activity_str = parts[2];
+
+            let Some(pane) = parse_pane_line(pane_part) else {
+                continue;
+            };
+            let activity = activity_str.parse::<u64>().unwrap_or(0);
+
+            let entry = result
+                .entry(session_name.to_string())
+                .or_insert_with(|| SessionPaneData {
+                    panes: Vec::new(),
+                    session_activity: activity,
+                });
+            entry.panes.push(pane);
+            // Activity is the same for all panes in a session, but update
+            // in case of slight races (always take the latest).
+            if activity > entry.session_activity {
+                entry.session_activity = activity;
+            }
+        }
+
+        result
+    }
+
     fn list_sessions_with_activity(&self) -> Vec<(String, u64)> {
         let output = tmux_command()
             .args(["list-sessions", "-F", "#{session_name}:#{session_activity}"])
@@ -451,5 +507,14 @@ mod tests {
     fn test_parse_pane_line_too_few_fields() {
         assert!(parse_pane_line("%0|bash").is_none());
         assert!(parse_pane_line("").is_none());
+    }
+    #[test]
+    fn test_parse_pane_line_empty() {
+        assert!(parse_pane_line("").is_none());
+    }
+
+    #[test]
+    fn test_parse_pane_line_single_field() {
+        assert!(parse_pane_line("%0").is_none());
     }
 }

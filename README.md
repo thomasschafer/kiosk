@@ -1,6 +1,8 @@
 # kiosk
 
-Kiosk is a Git-aware tmux session manager. Search for the repo you want, and optionally select a branch or create a new one. If a session already exists, you jump straight in - if it doesn't, a new session is created, with a new worktree if needed.
+Kiosk is a Git-aware tmux session manager, which shows the status of your AI agents (waiting for permissions, idle or running).
+
+Search for the repo you want, and optionally select a branch or create a new one. If a session already exists, you jump straight in - if it doesn't, a new session is created, with a new worktree if needed.
 
 ![kiosk preview](media/preview.png)
 

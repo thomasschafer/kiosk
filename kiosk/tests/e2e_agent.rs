@@ -392,11 +392,24 @@ impl AgentTestEnvDefault {
     }
 
     /// The idle marker each agent shows when ready for input.
-    fn real_agent_idle_marker(agent: AgentKind) -> &'static str {
+    /// Markers that indicate a real agent has finished launching and is ready
+    /// for input. Multiple markers handle the difference between first-launch
+    /// screens (which may show a welcome prompt) and post-conversation idle.
+    fn real_agent_idle_markers(agent: AgentKind) -> &'static [&'static str] {
         match agent {
-            AgentKind::ClaudeCode | AgentKind::Codex | AgentKind::Gemini => "? for shortcuts",
-            AgentKind::OpenCode => "ctrl+p commands",
-            AgentKind::CursorAgent => "/ commands",
+            // Claude: first launch shows "❯" prompt, post-conversation shows "? for shortcuts"
+            AgentKind::ClaudeCode => &["? for shortcuts", "❯"],
+            // Codex: shows "? for shortcuts" when idle
+            AgentKind::Codex => &["? for shortcuts"],
+            // Gemini: shows "? for shortcuts" or input prompt
+            AgentKind::Gemini => &["? for shortcuts", "type your message"],
+            AgentKind::OpenCode => &["ctrl+p commands"],
+            AgentKind::CursorAgent => &[
+                "/ commands",
+                "cursor agent",
+                "trust this workspace",
+                "waiting for approval",
+            ],
         }
     }
 
@@ -507,22 +520,9 @@ impl AgentTestEnvDefault {
         // Handle agent-specific startup dialogs before waiting for idle.
         self.dismiss_startup_dialogs(agent);
 
-        let ready = if agent == AgentKind::CursorAgent {
-            wait_for_any_pane_content(
-                &self.kiosk_session,
-                &[
-                    "/ commands",
-                    "cursor agent",
-                    "trust this workspace",
-                    "waiting for approval",
-                ],
-                90_000,
-                &self.tmux_socket,
-            )
-        } else {
-            let marker = Self::real_agent_idle_marker(agent);
-            wait_for_pane_content(&self.kiosk_session, marker, 90_000, &self.tmux_socket)
-        };
+        let markers = Self::real_agent_idle_markers(agent);
+        let ready =
+            wait_for_any_pane_content(&self.kiosk_session, markers, 90_000, &self.tmux_socket);
         assert!(ready, "Real {bin} did not reach ready state within 90s");
     }
 

@@ -192,8 +192,9 @@ const AGENT_HOST_COMMANDS: &[&str] = &[
 ];
 
 fn may_host_agent(command: &str) -> bool {
-    let cmd_lower = command.to_lowercase();
-    AGENT_HOST_COMMANDS.iter().any(|s| cmd_lower == *s)
+    AGENT_HOST_COMMANDS
+        .iter()
+        .any(|s| command.eq_ignore_ascii_case(s))
 }
 
 /// How recently (in seconds) the session must have had activity for us to

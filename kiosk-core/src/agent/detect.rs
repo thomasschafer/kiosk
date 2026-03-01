@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::sync::LazyLock;
 
 use super::{AgentKind, AgentState};
@@ -576,10 +577,10 @@ fn contains_thinking_word(content: &str) -> bool {
 ///
 /// Returns the input unchanged (no allocation) when no escape codes are
 /// present — a common case for content already processed by tmux.
-fn strip_ansi_codes(content: &str) -> String {
-    // Fast path: skip allocation when no escape codes present
+fn strip_ansi_codes(content: &str) -> Cow<'_, str> {
+    // Fast path: no allocation when no escape codes present
     if !content.contains('\x1B') {
-        return content.to_string();
+        return Cow::Borrowed(content);
     }
 
     let mut out = String::with_capacity(content.len());
@@ -619,7 +620,7 @@ fn strip_ansi_codes(content: &str) -> String {
             out.push(c);
         }
     }
-    out
+    Cow::Owned(out)
 }
 
 /// Join the last `count` elements from `lines` into a single `\n`-separated

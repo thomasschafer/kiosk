@@ -51,6 +51,27 @@ pub fn detect_agent_kind(
     None
 }
 
+/// Fallback kind detection from captured pane content.
+///
+/// Used when process-based detection is inconclusive for host commands
+/// (`zsh`, `node`, etc.). Keep patterns narrow to avoid false positives.
+pub fn detect_agent_kind_from_content(content: &str) -> Option<AgentKind> {
+    let clean = strip_ansi_codes(content);
+    let lower = clean.to_lowercase();
+
+    // Codex-specific UI markers seen in real captures.
+    // Examples:
+    // - `>_ OpenAI Codex (v0.105.0)`
+    // - `gpt-5.3-codex high · 100% left · ~/path`
+    if lower.contains("openai codex")
+        || (lower.contains("codex") && lower.contains(" left") && clean.contains('·'))
+    {
+        return Some(AgentKind::Codex);
+    }
+
+    None
+}
+
 // ===========================================================================
 // Pattern definitions — per-agent
 //
@@ -403,8 +424,9 @@ fn detect_claude_state(content: &str, tail: &str, prompt_tail: &str) -> AgentSta
 /// Key insight: waiting patterns are only checked against the **tail** (last
 /// 5 lines), not the full 30-line window, to avoid matching stale prompts
 /// like "Press enter to continue" from trust dialogs that are still in the
-/// scrollback above. Running patterns in the tail are reliable regardless.
-fn detect_codex_state(content: &str, tail: &str) -> AgentState {
+/// scrollback above. Running patterns are also tail-only for the same reason:
+/// stale "esc to interrupt" lines can linger in Codex transcript history.
+fn detect_codex_state(_content: &str, tail: &str) -> AgentState {
     // For Codex (no alt-screen), the idle footer `? for shortcuts` is the
     // single most reliable signal — it's only visible when Codex is truly
     // at the input prompt. Check it FIRST to override any stale running/
@@ -422,14 +444,17 @@ fn detect_codex_state(content: &str, tail: &str) -> AgentState {
     if matches_any(tail, CODEX_PATTERNS.running) || contains_braille_spinner(tail) {
         return AgentState::Running;
     }
-    if matches_any(content, CODEX_PATTERNS.running) || contains_braille_spinner(content) {
-        return AgentState::Running;
-    }
     // IMPORTANT: Only check waiting patterns in the **tail** to avoid stale
     // scrollback false positives (e.g. old trust prompts, update dialogs
     // that remain in the buffer after being dismissed).
     if matches_any(tail, CODEX_PATTERNS.waiting) {
         return AgentState::Waiting;
+    }
+    // Fallback for newer Codex prompt/footer renders where `? for shortcuts`
+    // is not visible in tmux capture. Require both a non-menu prompt line
+    // and the model/footer status line to avoid false idle from stale text.
+    if looks_like_codex_idle_prompt(tail) {
+        return AgentState::Idle;
     }
     AgentState::Unknown
 }
@@ -564,6 +589,30 @@ fn is_idle_claude_prompt(trimmed: &str) -> bool {
         return true;
     }
     false
+}
+
+fn looks_like_codex_idle_prompt(tail: &str) -> bool {
+    let has_prompt = tail.lines().any(|line| {
+        let trimmed = line.trim_start();
+        // Exclude numbered menu entries like `› 1. Yes, continue`
+        trimmed.starts_with("› ")
+            && !trimmed.starts_with("› 1.")
+            && !trimmed.starts_with("› 2.")
+            && !trimmed.starts_with("› 3.")
+            && !trimmed.starts_with("› 4.")
+            && !trimmed.starts_with("› 5.")
+    });
+
+    // Newer Codex footer style, e.g.
+    // `gpt-5.3-codex high · 100% left · ~/Development/kiosk`
+    // Keep this narrow so simple `100% context left` does not imply idle.
+    let lower = tail.to_lowercase();
+    let has_footer = lower.contains("codex")
+        && lower.contains(" left")
+        && tail.contains('·')
+        && !lower.contains("context left");
+
+    has_prompt && has_footer
 }
 
 fn matches_any(content: &str, patterns: &[&str]) -> bool {
@@ -753,6 +802,20 @@ mod tests {
         assert_eq!(detect_agent_kind("bash", None), None);
         assert_eq!(detect_agent_kind("vim", Some("vim file.txt")), None);
         assert_eq!(detect_agent_kind("python", Some("agent")), None);
+    }
+
+    #[test]
+    fn detect_kind_from_content_codex() {
+        let content = "╭──────────────────────────────────────────────────╮\n\
+                       │ >_ OpenAI Codex (v0.105.0)                       │\n\
+                       ╰──────────────────────────────────────────────────╯\n\
+                       \n\
+                       › Write tests for @filename\n\
+                         gpt-5.3-codex high · 100% left · ~/Development/kiosk";
+        assert_eq!(
+            detect_agent_kind_from_content(content),
+            Some(AgentKind::Codex)
+        );
     }
 
     // -- Claude Code ---------------------------------------------------------
@@ -1025,6 +1088,21 @@ mod tests {
     }
 
     #[test]
+    fn codex_idle_prompt_footer_fallback() {
+        let content = "■ Conversation interrupted - tell the model what to do differently.\n\
+            › Write tests for @filename\n\
+              gpt-5.3-codex high · 100% left · ~/Development/kiosk";
+        assert_eq!(detect_state(content, AgentKind::Codex), AgentState::Idle);
+    }
+
+    #[test]
+    fn codex_prompt_with_context_left_stays_unknown() {
+        let content = "› Review main.py and find all the bugs\n\
+              100% context left";
+        assert_eq!(detect_state(content, AgentKind::Codex), AgentState::Unknown);
+    }
+
+    #[test]
     fn codex_working_indicator() {
         // Both "esc to interrupt" and "? for shortcuts" visible — Running wins
         let content = "› hi\n\n\
@@ -1048,6 +1126,20 @@ mod tests {
             • Ran rm hello.py\n  └ (no output)\n\n\
             • Completed.\n  - Deleted hello.py\n\n\
             › Type a message\n\n  ? for shortcuts";
+        assert_eq!(detect_state(content, AgentKind::Codex), AgentState::Idle);
+    }
+
+    #[test]
+    fn codex_stale_running_not_false_running_without_idle_tail() {
+        // A stale running marker outside the tail should not force Running.
+        // With a prompt + modern Codex footer, this should settle to Idle.
+        let content = "• Working (8s • esc to interrupt)\n\n\
+            • Completed task\n\
+            • Updated summary\n\
+            • Saved results\n\
+            • Ready for next step\n\
+            › Type a message\n\
+              gpt-5.3-codex high · 100% left";
         assert_eq!(detect_state(content, AgentKind::Codex), AgentState::Idle);
     }
 

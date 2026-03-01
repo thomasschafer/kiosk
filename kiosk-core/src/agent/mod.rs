@@ -26,8 +26,8 @@ impl fmt::Display for AgentKind {
 /// Represents the current state of an AI coding agent.
 ///
 /// Variants are ordered by attention priority (highest first): a Waiting agent
-/// needs user action most urgently, an Idle agent may need a nudge, and a
-/// Running agent is already doing work.
+/// needs user action most urgently; a Running agent is actively working and
+/// should be surfaced over Idle; an Idle agent may need a nudge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentState {
     /// Agent is actively working (spinner, processing)
@@ -45,8 +45,8 @@ impl AgentState {
     fn attention_priority(self) -> u8 {
         match self {
             AgentState::Waiting => 3,
-            AgentState::Idle => 2,
-            AgentState::Running => 1,
+            AgentState::Running => 2,
+            AgentState::Idle => 1,
             AgentState::Unknown => 0,
         }
     }
@@ -84,7 +84,7 @@ pub mod detect;
 /// Detect agent status for a tmux session by inspecting its panes.
 /// Returns `None` if no agent is found in any pane. When multiple agents are
 /// present, returns the one with the highest attention priority (Waiting >
-/// Idle > Running) so the user sees the status that most needs their action.
+/// Running > Idle) so the user sees the status that most needs their action.
 pub fn detect_for_session(
     tmux: &(impl crate::tmux::TmuxProvider + ?Sized),
     session_name: &str,
@@ -140,7 +140,7 @@ fn detect_from_pane_data(
     let mut best: Option<DetectionResult> = None;
 
     for pane in &data.panes {
-        let kind = detect::detect_agent_kind(&pane.command, None).or_else(|| {
+        let mut kind = detect::detect_agent_kind(&pane.command, None).or_else(|| {
             if may_host_agent(&pane.command) {
                 get_child_process_args(pane.pid)
                     .as_deref()
@@ -149,16 +149,34 @@ fn detect_from_pane_data(
                 None
             }
         });
+        let mut captured_content: Option<String> = None;
+
+        // Fallback for host commands where process tree lookup may miss:
+        // infer kind from agent-specific UI markers in captured content.
+        if kind.is_none() && may_host_agent(&pane.command) {
+            captured_content = tmux.capture_pane_content(&pane.pane_id, 30);
+            kind = captured_content
+                .as_deref()
+                .and_then(detect::detect_agent_kind_from_content);
+        }
 
         if let Some(kind) = kind
-            && let Some(content) = tmux.capture_pane_content(&pane.pane_id, 30)
+            && let Some(content) =
+                captured_content.or_else(|| tmux.capture_pane_content(&pane.pane_id, 30))
         {
             let mut state = detect::detect_state(&content, kind);
 
             // When content-based detection returns Unknown (no recognisable
             // pattern), use the pre-fetched session_activity timestamp as a
             // supplementary signal — no extra tmux call needed.
-            if state == AgentState::Unknown && !content.trim().is_empty() {
+            //
+            // Skip this for Codex: Codex sessions often include non-agent pane
+            // activity (editor/shell), and session-level activity can cause
+            // false Running while Codex itself is idle.
+            if state == AgentState::Unknown
+                && kind != AgentKind::Codex
+                && !content.trim().is_empty()
+            {
                 state = infer_state_from_activity_ts(data.session_activity);
             }
 
@@ -528,7 +546,7 @@ mod tests {
     }
 
     #[test]
-    fn multi_agent_idle_beats_running() {
+    fn multi_agent_running_beats_idle() {
         let tmux = mock_multi_agent(
             "multi",
             &[
@@ -537,7 +555,7 @@ mod tests {
             ],
         );
         let status = detect_for_session(&tmux, "multi").unwrap().status;
-        assert_eq!(status.state, AgentState::Idle);
+        assert_eq!(status.state, AgentState::Running);
     }
 
     #[test]
@@ -599,11 +617,13 @@ mod tests {
 
     #[test]
     fn attention_priority_ordering() {
-        // Waiting > Idle > Running > Unknown
-        assert!(AgentState::Waiting.attention_priority() > AgentState::Idle.attention_priority());
-        assert!(AgentState::Idle.attention_priority() > AgentState::Running.attention_priority());
+        // Waiting > Running > Idle > Unknown
         assert!(
-            AgentState::Running.attention_priority() > AgentState::Unknown.attention_priority()
+            AgentState::Waiting.attention_priority() > AgentState::Running.attention_priority()
+        );
+        assert!(AgentState::Running.attention_priority() > AgentState::Idle.attention_priority());
+        assert!(
+            AgentState::Idle.attention_priority() > AgentState::Unknown.attention_priority()
         );
     }
 
@@ -682,6 +702,69 @@ mod tests {
         assert!(super::may_host_agent("node"));
         assert!(super::may_host_agent("Node"));
     }
+
+    #[test]
+    fn detect_codex_kind_from_content_when_process_lookup_misses() {
+        let mut tmux = MockTmuxProvider::default();
+        let session = "content-fallback";
+        tmux.pane_info.insert(
+            session.to_string(),
+            vec![PaneInfo {
+                pane_id: "%0".to_string(),
+                command: "node".to_string(),
+                pid: 99999, // No child args in tests
+            }],
+        );
+        tmux.pane_content.insert(
+            "%0".to_string(),
+            "› Write tests for @filename\n\
+              gpt-5.3-codex high · 100% left · ~/Development/kiosk"
+                .to_string(),
+        );
+
+        let status = detect_for_session(&tmux, session).unwrap().status;
+        assert_eq!(status.kind, AgentKind::Codex);
+        assert_eq!(status.state, AgentState::Idle);
+    }
+
+    #[test]
+    fn content_fallback_running_beats_idle_across_panes() {
+        let mut tmux = MockTmuxProvider::default();
+        let session = "content-fallback-priority";
+        tmux.pane_info.insert(
+            session.to_string(),
+            vec![
+                PaneInfo {
+                    pane_id: "%0".to_string(),
+                    command: "node".to_string(),
+                    pid: 90001,
+                },
+                PaneInfo {
+                    pane_id: "%1".to_string(),
+                    command: "node".to_string(),
+                    pid: 90002,
+                },
+            ],
+        );
+        tmux.pane_content.insert(
+            "%0".to_string(),
+            "› Write tests for @filename\n\
+              gpt-5.3-codex high · 100% left · ~/Development/kiosk"
+                .to_string(),
+        );
+        tmux.pane_content.insert(
+            "%1".to_string(),
+            "› Please can you sleep in bash for 60s\n\
+              • Implementing periodic commentary during sleep (46s • esc to interrupt) · 1 background terminal r…\n\
+              › Improve documentation in @filename\n\
+              gpt-5.3-codex high · 100% left · ~/Development/dotfiles"
+                .to_string(),
+        );
+
+        let status = detect_for_session(&tmux, session).unwrap().status;
+        assert_eq!(status.kind, AgentKind::Codex);
+        assert_eq!(status.state, AgentState::Running);
+    }
     #[test]
     fn unknown_upgrades_to_running_with_recent_activity() {
         // When content detection returns Unknown (no recognisable pattern)
@@ -750,6 +833,40 @@ mod tests {
             status.state,
             AgentState::Unknown,
             "Unknown + stale activity should stay Unknown"
+        );
+    }
+
+    #[test]
+    fn codex_unknown_not_upgraded_by_recent_session_activity() {
+        // Codex unknown should remain Unknown even with recent session-level
+        // activity, to avoid false Running caused by non-agent panes.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let mut tmux = MockTmuxProvider::default();
+        let session = "codex-unknown-active";
+        tmux.pane_info.insert(
+            session.to_string(),
+            vec![PaneInfo {
+                pane_id: "%0".to_string(),
+                command: "codex".to_string(),
+                pid: 99999,
+            }],
+        );
+        tmux.pane_content.insert(
+            "%0".to_string(),
+            "› Review main.py and find all the bugs\n  100% context left".to_string(),
+        );
+        tmux.session_activity_ts.insert(session.to_string(), now);
+
+        let status = detect_for_session(&tmux, session).unwrap().status;
+        assert_eq!(status.kind, AgentKind::Codex);
+        assert_eq!(
+            status.state,
+            AgentState::Unknown,
+            "Codex unknown should not be upgraded by session activity"
         );
     }
 
@@ -920,6 +1037,41 @@ mod tests {
             results[0].1.as_ref().unwrap().status.state,
             AgentState::Running,
             "Should infer Running from pre-fetched recent activity"
+        );
+    }
+
+    #[test]
+    fn batched_codex_unknown_not_upgraded_by_prefetched_activity() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let mut tmux = MockTmuxProvider::default();
+        let session = "codex-unknown-active";
+        tmux.pane_info.insert(
+            session.to_string(),
+            vec![PaneInfo {
+                pane_id: "%0".to_string(),
+                command: "codex".to_string(),
+                pid: 99999,
+            }],
+        );
+        tmux.pane_content.insert(
+            "%0".to_string(),
+            "› Review main.py and find all the bugs\n  100% context left".to_string(),
+        );
+        tmux.session_activity_ts.insert(session.to_string(), now);
+
+        let session_names = vec![session.to_string()];
+        let all_pane_data = tmux.list_all_panes_with_activity();
+        let results = super::detect_for_sessions_batched(&tmux, &session_names, &all_pane_data);
+
+        assert_eq!(results[0].1.as_ref().unwrap().status.kind, AgentKind::Codex);
+        assert_eq!(
+            results[0].1.as_ref().unwrap().status.state,
+            AgentState::Unknown,
+            "Batched detection should keep Codex Unknown despite recent activity"
         );
     }
 

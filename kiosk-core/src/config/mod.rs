@@ -110,10 +110,10 @@ impl Default for AgentConfig {
 ///
 /// ```toml
 /// [agent.labels]
-/// running = "RUN"
-/// waiting = "WAIT"
+/// running = "RUNNING"
+/// waiting = "WAITING"
 /// idle = "IDLE"
-/// unknown = "??"
+/// unknown = "UNKNOWN"
 /// ```
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(deny_unknown_fields, default)]
@@ -127,10 +127,10 @@ pub struct AgentLabelsConfig {
 impl Default for AgentLabelsConfig {
     fn default() -> Self {
         Self {
-            running: "RUN".to_string(),
-            waiting: "WAIT".to_string(),
+            running: "RUNNING".to_string(),
+            waiting: "WAITING".to_string(),
             idle: "IDLE".to_string(),
-            unknown: "??".to_string(),
+            unknown: "UNKNOWN".to_string(),
         }
     }
 }
@@ -925,10 +925,10 @@ poll_interval_ms = 100
     #[test]
     fn test_agent_labels_defaults() {
         let labels = AgentLabelsConfig::default();
-        assert_eq!(labels.running, "RUN");
-        assert_eq!(labels.waiting, "WAIT");
+        assert_eq!(labels.running, "RUNNING");
+        assert_eq!(labels.waiting, "WAITING");
         assert_eq!(labels.idle, "IDLE");
-        assert_eq!(labels.unknown, "??");
+        assert_eq!(labels.unknown, "UNKNOWN");
     }
 
     #[test]
@@ -963,9 +963,9 @@ running = "GO"
         )
         .unwrap();
         assert_eq!(config.agent.labels.running, "GO");
-        assert_eq!(config.agent.labels.waiting, "WAIT");
+        assert_eq!(config.agent.labels.waiting, "WAITING");
         assert_eq!(config.agent.labels.idle, "IDLE");
-        assert_eq!(config.agent.labels.unknown, "??");
+        assert_eq!(config.agent.labels.unknown, "UNKNOWN");
     }
 
     #[test]
@@ -984,13 +984,9 @@ bogus = "BAD"
 
     #[test]
     fn test_agent_labels_max_width() {
-        let labels = AgentLabelsConfig {
-            running: "RUN".to_string(),
-            waiting: "WAIT".to_string(),
-            idle: "IDLE".to_string(),
-            unknown: "??".to_string(),
-        };
-        assert_eq!(labels.max_label_width(), 4);
+        let labels = AgentLabelsConfig::default();
+        // "RUNNING" and "WAITING" and "UNKNOWN" are all 7 chars; "IDLE" is 4
+        assert_eq!(labels.max_label_width(), 7);
 
         let labels = AgentLabelsConfig {
             running: "RUNNING".to_string(),

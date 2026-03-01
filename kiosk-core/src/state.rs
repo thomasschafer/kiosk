@@ -2307,8 +2307,8 @@ mod tests {
     #[test]
     fn test_agent_labels_stored_in_state() {
         let mut state = AppState::new(vec![], None);
-        assert_eq!(state.agent_labels.running, "RUN");
-        assert_eq!(state.agent_labels.waiting, "WAIT");
+        assert_eq!(state.agent_labels.running, "RUNNING");
+        assert_eq!(state.agent_labels.waiting, "WAITING");
 
         state.agent_labels = AgentLabelsConfig {
             running: "GO".to_string(),

@@ -1013,8 +1013,8 @@ fn test_e2e_agent_branches_table_shows_agent_column() {
         "Table should have agent column header: {stdout}"
     );
     assert!(
-        stdout.contains("WAIT"),
-        "Table should show WAIT label: {stdout}"
+        stdout.contains("WAITING"),
+        "Table should show WAITING label: {stdout}"
     );
 }
 
@@ -1458,8 +1458,8 @@ fn test_e2e_agent_tui_shows_indicator() {
         String::from_utf8_lossy(&output.stdout).to_string()
     };
 
-    // The TUI should show an agent label (e.g. [WAIT] for waiting state)
-    let has_indicator = screen.contains("[WAIT]");
+    // The TUI should show an agent label (e.g. [WAITING] for waiting state)
+    let has_indicator = screen.contains("[WAITING]");
     assert!(
         has_indicator,
         "TUI branch view should show agent label: {screen}"

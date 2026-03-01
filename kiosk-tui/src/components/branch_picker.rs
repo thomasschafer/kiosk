@@ -324,20 +324,23 @@ mod tests {
             Span::raw("long-branch"),
             Span::styled(" (session)", Style::default().fg(Color::Green)),
         ];
-        let right = vec![Span::styled("[RUN]", Style::default().fg(Color::Red))];
-        // total left=21, right=5, row_width=18, available_for_left=12
-        let result = right_align_suffix(&left, &right, 18);
-        assert_eq!(total_width(&result), 18);
+        let right = vec![Span::styled("[RUNNING]", Style::default().fg(Color::Red))];
+        // total left=21, right=9, row_width=22, available_for_left=12
+        let result = right_align_suffix(&left, &right, 22);
+        assert_eq!(total_width(&result), 22);
         let text = concat_text(&result);
-        assert!(text.ends_with(" [RUN]"), "got: {text}");
+        assert!(text.ends_with(" [RUNNING]"), "got: {text}");
         assert!(text.contains('\u{2026}'), "got: {text}");
     }
 
     #[test]
     fn right_align_row_too_narrow() {
         let left = vec![Span::raw("main")];
-        let right = vec![Span::styled("[WAIT]", Style::default().fg(Color::Yellow))];
-        // row_width=5, 1+right_width=7 > 5 => label dropped, left truncated to 5
+        let right = vec![Span::styled(
+            "[WAITING]",
+            Style::default().fg(Color::Yellow),
+        )];
+        // row_width=5, 1+right_width=10 > 5 => label dropped, left truncated to 5
         let result = right_align_suffix(&left, &right, 5);
         assert_eq!(concat_text(&result), "main");
         assert_eq!(total_width(&result), 4);

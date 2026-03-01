@@ -2564,12 +2564,12 @@ mod tests {
             "Should have agent column header: {rendered}"
         );
         assert!(
-            rendered.contains("WAIT"),
+            rendered.contains("WAITING"),
             "Should show Waiting label: {rendered}"
         );
         assert!(
-            rendered.contains("RUN"),
-            "Should show Running label: {rendered}"
+            rendered.contains("RUNNING"),
+            "Should show RUNNING label: {rendered}"
         );
     }
 

@@ -1,7 +1,7 @@
 use crate::{
     agent::AgentStatus,
     config::{
-        AgentLabelsConfig,
+        AgentConfig, AgentLabelsConfig,
         keys::{Command, FlattenedKeybindingRow},
     },
     constants::{WORKTREE_DIR_DEDUP_MAX_ATTEMPTS, WORKTREE_DIR_NAME, WORKTREE_NAME_SEPARATOR},
@@ -526,10 +526,25 @@ impl BranchEntry {
                 ))
                 // Branches with sessions (even without activity timestamps) before those without
                 .then(b.has_session.cmp(&a.has_session))
+                // Agent needing attention sorts first (Waiting > Running > Idle/Unknown > None)
+                .then(agent_sort_priority(b.agent_status).cmp(&agent_sort_priority(a.agent_status)))
                 // Branches with worktrees before those without
                 .then(b.worktree_path.is_some().cmp(&a.worktree_path.is_some()))
                 .then(a.name.cmp(&b.name))
         });
+    }
+}
+
+/// Sort priority for agent status: higher = sorts first.
+/// Waiting (needs user input) is most urgent, then Running, then the rest.
+fn agent_sort_priority(status: Option<crate::agent::AgentStatus>) -> u8 {
+    match status {
+        Some(s) => match s.state {
+            crate::AgentState::Waiting => 3,
+            crate::AgentState::Running => 2,
+            crate::AgentState::Idle | crate::AgentState::Unknown => 1,
+        },
+        None => 0,
     }
 }
 
@@ -810,7 +825,9 @@ impl AppState {
             session_activity: HashMap::new(),
             agent_poller_cancel: None,
             agent_enabled: true,
-            agent_poll_interval: std::time::Duration::from_millis(2000),
+            agent_poll_interval: std::time::Duration::from_millis(
+                AgentConfig::default().poll_interval_ms,
+            ),
             agent_labels: AgentLabelsConfig::default(),
             current_repo_path: None,
             cwd_worktree_path: None,
@@ -1961,6 +1978,60 @@ mod tests {
     }
 
     #[test]
+    fn test_branch_sort_agent_waiting_before_running() {
+        use crate::agent::{AgentKind, AgentState, AgentStatus};
+
+        let mut entries = vec![
+            BranchEntry {
+                name: "feat-running".to_string(),
+                worktree_path: Some(PathBuf::from("/tmp/r")),
+                has_session: true,
+                is_current: false,
+                is_default: false,
+                remote: None,
+                session_activity_ts: Some(100),
+                agent_status: Some(AgentStatus {
+                    kind: AgentKind::ClaudeCode,
+                    state: AgentState::Running,
+                }),
+            },
+            BranchEntry {
+                name: "feat-waiting".to_string(),
+                worktree_path: Some(PathBuf::from("/tmp/w")),
+                has_session: true,
+                is_current: false,
+                is_default: false,
+                remote: None,
+                session_activity_ts: Some(100),
+                agent_status: Some(AgentStatus {
+                    kind: AgentKind::Codex,
+                    state: AgentState::Waiting,
+                }),
+            },
+            BranchEntry {
+                name: "feat-idle".to_string(),
+                worktree_path: Some(PathBuf::from("/tmp/i")),
+                has_session: true,
+                is_current: false,
+                is_default: false,
+                remote: None,
+                session_activity_ts: Some(100),
+                agent_status: Some(AgentStatus {
+                    kind: AgentKind::ClaudeCode,
+                    state: AgentState::Idle,
+                }),
+            },
+        ];
+        BranchEntry::sort_entries(&mut entries);
+        assert_eq!(entries[0].name, "feat-waiting", "Waiting should sort first");
+        assert_eq!(
+            entries[1].name, "feat-running",
+            "Running should sort second"
+        );
+        assert_eq!(entries[2].name, "feat-idle", "Idle should sort last");
+    }
+
+    #[test]
     fn test_branch_sort_remote_always_last() {
         let mut entries = vec![
             BranchEntry {
@@ -2279,11 +2350,11 @@ mod tests {
     }
 
     #[test]
-    fn test_agent_poll_interval_defaults_to_2000ms() {
+    fn test_agent_poll_interval_defaults_to_config_default() {
         let state = AppState::new(vec![], None);
         assert_eq!(
             state.agent_poll_interval,
-            std::time::Duration::from_millis(2000)
+            std::time::Duration::from_millis(500)
         );
     }
 

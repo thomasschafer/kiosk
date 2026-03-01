@@ -546,7 +546,7 @@ fn detect_active_state(content: &str, tail: &str, patterns: &AgentPatterns) -> A
 /// 1. Check `idle_tail` patterns against the tail — if found, Idle.
 /// 2. Check running patterns + braille spinners against full content.
 /// 3. Check waiting patterns against full content.
-/// 4. Default to Idle.
+/// 4. Default to Unknown (no positive signal → honest uncertainty).
 fn detect_generic_state(content: &str, tail: &str, patterns: &AgentPatterns) -> AgentState {
     if matches_any(tail, patterns.idle_tail) {
         return AgentState::Idle;

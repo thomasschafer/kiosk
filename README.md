@@ -286,4 +286,24 @@ Set to `false` to completely disable agent polling and status display.
 
 Interval in milliseconds between agent status polls (default: 2000).
 
+### `[agent.labels]` section
+
+Label text for each agent state shown in the branch picker.
+
+#### `running`
+
+
+
+#### `waiting`
+
+
+
+#### `idle`
+
+
+
+#### `unknown`
+
+
+
 <!-- CONFIG END -->

@@ -232,7 +232,7 @@ mod tests {
     use ratatui::text::Span;
 
     fn total_width(spans: &[Span]) -> usize {
-        spans.iter().map(|s| s.width()).sum()
+        spans.iter().map(ratatui::prelude::Span::width).sum()
     }
 
     fn concat_text(spans: &[Span]) -> String {

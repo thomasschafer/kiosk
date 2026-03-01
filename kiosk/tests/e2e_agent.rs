@@ -132,7 +132,10 @@ fn wait_for_any_pane_content(
             .output();
         if let Ok(output) = output {
             let content = String::from_utf8_lossy(&output.stdout).to_lowercase();
-            if expected_any_lower.iter().any(|needle| content.contains(needle)) {
+            if expected_any_lower
+                .iter()
+                .any(|needle| content.contains(needle))
+            {
                 return true;
             }
         }
@@ -217,7 +220,12 @@ fn fake_agent_output(agent: AgentKind, state: FakeState) -> &'static str {
             "Allow write to src/main.rs?\\n  Yes, allow\\n  No, deny"
         }
         (AgentKind::ClaudeCode, FakeState::Idle) => "❯ \\n? for shortcuts",
-        (AgentKind::CursorAgent | AgentKind::Gemini, FakeState::Idle) => "> ",
+        (AgentKind::CursorAgent, FakeState::Idle) => {
+            "  Cursor Agent v2026.02.27\n             /tmp/test · master\n             \n             ┌──────────────────────────────────────────────┐\n             │ → Plan, search, build anything                │\n             └──────────────────────────────────────────────┘\n             \n               Auto\n               / commands · @ files · ! shell"
+        }
+        (AgentKind::Gemini, FakeState::Idle) => {
+            "? for shortcuts\n             ────────────────────────\n             shift+tab to accept edits\n             ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n             >   Type your message"
+        }
 
         (AgentKind::Gemini, FakeState::Running) => "⠋ Generating code\\nesc to interrupt",
         (AgentKind::Gemini, FakeState::Waiting) => "approve changes? (y/n)",
@@ -423,17 +431,21 @@ impl AgentTestEnvDefault {
     }
 
     /// Agent-specific prompt that triggers a long-running task.
+    ///
+    /// We use `sleep 30` (or similar) to keep the agent visibly processing
+    /// for long enough to assert Running state. Avoid prompts that generate
+    /// lots of output (e.g. "explain every line") — those burn real API
+    /// tokens on every test run. A bash sleep is free.
     fn running_task_prompt(agent: AgentKind) -> &'static str {
         match agent {
-            // Most agents understand "run shell command: sleep 30"
-            AgentKind::ClaudeCode => "please run this bash command right now: sleep 30",
-            AgentKind::CursorAgent => "run this shell command: sleep 30",
-            AgentKind::Gemini => "execute this shell command: sleep 30",
-            AgentKind::OpenCode => "run this shell command: sleep 30",
-            // Codex in untrusted mode will show an approval prompt for the
-            // sleep command, which puts it in Waiting not Running. Use a
-            // non-shell task instead.
-            AgentKind::Codex => "explain every line of every file in this repository in extreme detail, do not stop until you have covered every single line",
+            AgentKind::ClaudeCode => "run: sleep 30",
+            AgentKind::Gemini => "run: sleep 30",
+            AgentKind::OpenCode => "run: sleep 30",
+            // Codex (untrusted mode) and Cursor prompt for approval on shell
+            // commands, which puts them in Waiting state (not Running).
+            // That's fine — the approval prompt is what we want to test.
+            AgentKind::Codex => "run: sleep 30",
+            AgentKind::CursorAgent => "run: sleep 30",
         }
     }
 
@@ -495,19 +507,23 @@ impl AgentTestEnvDefault {
         // Handle agent-specific startup dialogs before waiting for idle.
         self.dismiss_startup_dialogs(agent);
 
-        let ready = match agent {
-            AgentKind::CursorAgent => wait_for_any_pane_content(
+        let ready = if agent == AgentKind::CursorAgent {
+            wait_for_any_pane_content(
                 &self.kiosk_session,
-                &["/ commands", "cursor agent", "trust this workspace", "waiting for approval"],
-                60_000,
+                &[
+                    "/ commands",
+                    "cursor agent",
+                    "trust this workspace",
+                    "waiting for approval",
+                ],
+                90_000,
                 &self.tmux_socket,
-            ),
-            _ => {
-                let marker = Self::real_agent_idle_marker(agent);
-                wait_for_pane_content(&self.kiosk_session, marker, 60_000, &self.tmux_socket)
-            }
+            )
+        } else {
+            let marker = Self::real_agent_idle_marker(agent);
+            wait_for_pane_content(&self.kiosk_session, marker, 90_000, &self.tmux_socket)
         };
-        assert!(ready, "Real {bin} did not reach ready state within 60s");
+        assert!(ready, "Real {bin} did not reach ready state within 90s");
     }
 
     /// Dismiss blocking startup dialogs that prevent agents from reaching idle.
@@ -561,9 +577,18 @@ impl AgentTestEnvDefault {
     }
 
     /// Send a message into the running agent's tmux pane to give it work.
+    ///
+    /// Text and Enter are sent as separate tmux send-keys calls with a brief
+    /// delay between them. Some TUI agents (notably Claude Code) drop the
+    /// Enter when it arrives in the same send-keys invocation as the text.
     fn send_to_agent(&self, text: &str) {
         self.tmux_cmd()
-            .args(["send-keys", "-t", &self.kiosk_session, text, "Enter"])
+            .args(["send-keys", "-t", &self.kiosk_session, text])
+            .status()
+            .unwrap();
+        wait_ms(300);
+        self.tmux_cmd()
+            .args(["send-keys", "-t", &self.kiosk_session, "Enter"])
             .status()
             .unwrap();
     }
@@ -613,7 +638,7 @@ impl AgentTestEnvDefault {
                 self.send_to_agent(task);
 
                 // Poll kiosk CLI until it reports Waiting state.
-                let deadline = std::time::Instant::now() + Duration::from_secs(45);
+                let deadline = std::time::Instant::now() + Duration::from_secs(60);
                 loop {
                     let output = Command::new(kiosk_binary())
                         .args(["branches", &self.repo_name, "--json"])
@@ -628,7 +653,7 @@ impl AgentTestEnvDefault {
                     }
                     assert!(
                         std::time::Instant::now() < deadline,
-                        "Agent never reached Waiting state within 45s (last output: {stdout})"
+                        "Agent never reached Waiting state within 60s (last output: {stdout})"
                     );
                     wait_ms(1000);
                 }
@@ -750,11 +775,12 @@ impl AgentTestEnvDefault {
             (AgentKind::Gemini, FakeState::Waiting) => Some("(y/n)"),
             // CursorAgent/Gemini idle output is just "> " — too minimal for
             // reliable content polling (tmux strips trailing whitespace).
-            (AgentKind::CursorAgent | AgentKind::Gemini, FakeState::Idle) => None,
-            (AgentKind::Gemini, FakeState::CommandApproval)
-            | (AgentKind::ClaudeCode, FakeState::CommandApproval)
-            | (AgentKind::Codex, FakeState::CommandApproval)
-            | (AgentKind::OpenCode, FakeState::CommandApproval) => None,
+            (AgentKind::CursorAgent, FakeState::Idle) => Some("/ commands"),
+            (AgentKind::Gemini, FakeState::Idle) => Some("? for shortcuts"),
+            (
+                AgentKind::Gemini | AgentKind::ClaudeCode | AgentKind::Codex | AgentKind::OpenCode,
+                FakeState::CommandApproval,
+            ) => None,
         };
         if let Some(marker) = marker {
             assert!(
@@ -792,6 +818,32 @@ impl AgentTestEnvDefault {
 
 impl Drop for AgentTestEnvDefault {
     fn drop(&mut self) {
+        // Kill all processes in the tmux session (agents, shells) before
+        // killing the tmux server. This prevents zombie agent processes
+        // from accumulating across tests and consuming resources.
+        if let Ok(output) = Command::new("tmux")
+            .args([
+                "-L",
+                &self.tmux_socket,
+                "list-panes",
+                "-s",
+                "-F",
+                "#{pane_pid}",
+            ])
+            .output()
+        {
+            let pids = String::from_utf8_lossy(&output.stdout);
+            for pid in pids.lines() {
+                let pid = pid.trim();
+                if !pid.is_empty() {
+                    // Kill the process group to catch child processes
+                    let _ = Command::new("kill")
+                        .args(["--", &format!("-{pid}")])
+                        .output();
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(200));
         let _ = Command::new("tmux")
             .args(["-L", &self.tmux_socket, "kill-server"])
             .output();

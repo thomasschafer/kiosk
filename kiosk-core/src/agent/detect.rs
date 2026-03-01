@@ -235,7 +235,7 @@ const CODEX_PATTERNS: AgentPatterns = AgentPatterns {
 const CURSOR_PATTERNS: AgentPatterns = AgentPatterns {
     // Cursor CLI is built on Claude Code, so shares the same running signals.
     // Inspired by AoE's `detect_cursor_status` which delegates to Claude detection.
-    running: &["esc to interrupt", "ctrl+c to interrupt"],
+    running: &["esc to interrupt", "ctrl+c to interrupt", "ctrl+c to stop"],
     waiting: &[
         "do you trust",
         "trust this workspace",
@@ -249,8 +249,14 @@ const CURSOR_PATTERNS: AgentPatterns = AgentPatterns {
         "(y/n)",
         "[y/n]",
         "esc to cancel",
+        // Cursor shows file operation approval dialogs
+        "delete this file?",
+        "delete (y)",
+        "keep (n)",
+        "overwrite (y)",
+        "create this file?",
     ],
-    idle_tail: &[],
+    idle_tail: &["/ commands"],
 };
 
 // -- OpenCode -----------------------------------------------------------------
@@ -293,8 +299,13 @@ const GEMINI_PATTERNS: AgentPatterns = AgentPatterns {
         "execute?",
         "enter to select",
         "esc to cancel",
+        // Gemini shows an "Action Required" dialog with allow/deny options
+        "action required",
+        "allow once",
+        "allow for this session",
+        "allow execution",
     ],
-    idle_tail: &[],
+    idle_tail: &["? for shortcuts"],
 };
 
 // ===========================================================================
@@ -334,7 +345,7 @@ pub fn detect_state(content: &str, kind: AgentKind) -> AgentState {
             detect_claude_state(&last_30, &last_5, &last_3)
         }
         AgentKind::Codex => detect_codex_state(&last_30, &last_5),
-        AgentKind::CursorAgent => detect_generic_state(&last_30, &last_5, &CURSOR_PATTERNS),
+        AgentKind::CursorAgent => detect_cursor_state(&last_30, &last_5),
         AgentKind::OpenCode => detect_opencode_state(&last_30, &last_5),
         AgentKind::Gemini => detect_generic_state(&last_30, &last_5, &GEMINI_PATTERNS),
     }
@@ -426,6 +437,23 @@ fn detect_codex_state(content: &str, tail: &str) -> AgentState {
     AgentState::Unknown
 }
 
+/// Cursor Agent-specific state detection.
+///
+/// Cursor shows `/ commands` in the footer during BOTH idle and running
+/// states, so we must check running indicators BEFORE idle patterns.
+/// Uses `detect_active_state` which has the correct priority order.
+fn detect_cursor_state(content: &str, tail: &str) -> AgentState {
+    let state = detect_active_state(content, tail, &CURSOR_PATTERNS);
+    if state != AgentState::Unknown {
+        return state;
+    }
+    // Fallback: if footer shows "/ commands" without running indicators,
+    // the agent is idle at the prompt.
+    if tail.contains("/ commands") {
+        return AgentState::Idle;
+    }
+    AgentState::Unknown
+}
 /// OpenCode-specific state detection.
 ///
 /// `OpenCode` uses the alternate screen (TUI app). It shows `esc interrupt`

@@ -433,6 +433,46 @@ mod tests {
     }
 
     #[test]
+    fn stale_claude_shell_transcript_not_detected() {
+        let tmux = mock_with_agent(
+            "shell-session",
+            "zsh",
+            "⠋ Reading file src/main.rs\nesc to interrupt\n❯ \n? for shortcuts",
+        );
+        assert!(detect_for_session(&tmux, "shell-session").is_none());
+    }
+
+    #[test]
+    fn stale_cursor_shell_transcript_not_detected() {
+        let tmux = mock_with_agent(
+            "shell-session",
+            "zsh",
+            "/ commands\nDo you trust the contents of this directory?\nEnter to select",
+        );
+        assert!(detect_for_session(&tmux, "shell-session").is_none());
+    }
+
+    #[test]
+    fn stale_opencode_shell_transcript_not_detected() {
+        let tmux = mock_with_agent(
+            "shell-session",
+            "zsh",
+            "⬝■■■■■■⬝  esc interrupt  ctrl+t variants  tab agents  ctrl+p commands",
+        );
+        assert!(detect_for_session(&tmux, "shell-session").is_none());
+    }
+
+    #[test]
+    fn stale_gemini_shell_transcript_not_detected() {
+        let tmux = mock_with_agent(
+            "shell-session",
+            "zsh",
+            "Action required\nallow execution\n? for shortcuts",
+        );
+        assert!(detect_for_session(&tmux, "shell-session").is_none());
+    }
+
+    #[test]
     fn no_panes_returns_none() {
         let tmux = MockTmuxProvider::default();
         assert!(detect_for_session(&tmux, "nonexistent").is_none());

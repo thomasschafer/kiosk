@@ -622,9 +622,7 @@ mod tests {
             AgentState::Waiting.attention_priority() > AgentState::Running.attention_priority()
         );
         assert!(AgentState::Running.attention_priority() > AgentState::Idle.attention_priority());
-        assert!(
-            AgentState::Idle.attention_priority() > AgentState::Unknown.attention_priority()
-        );
+        assert!(AgentState::Idle.attention_priority() > AgentState::Unknown.attention_priority());
     }
 
     #[test]

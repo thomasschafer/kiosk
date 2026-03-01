@@ -108,7 +108,6 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, _keys: &
 
     // Row width available for content (list area minus borders minus highlight symbol "▸ ")
     let row_width = (chunks[1].width as usize).saturating_sub(4);
-    let max_label_width = state.agent_labels.max_label_width();
 
     // Branch list
     let mut items: Vec<ListItem> = state
@@ -162,10 +161,7 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, _keys: &
                     AgentState::Idle => (&state.agent_labels.idle, theme.muted),
                     AgentState::Unknown => (&state.agent_labels.unknown, theme.hint),
                 };
-                let right = vec![Span::styled(
-                    format!("[{label:<max_label_width$}]"),
-                    Style::default().fg(color),
-                )];
+                let right = vec![Span::styled(label.clone(), Style::default().fg(color))];
                 ListItem::new(Line::from(right_align_suffix(
                     &left_spans,
                     &right,
@@ -296,53 +292,129 @@ mod tests {
     }
 
     // --- right_align_suffix ---
+    //
+    // Labels are rendered verbatim from config (including any brackets),
+    // so these tests use "[RUNNING]" for defaults and plain "RUNNING"
+    // or short strings for custom configs.
 
     #[test]
-    fn right_align_pads_when_fits() {
+    fn right_align_wide_terminal() {
         let left = vec![Span::raw("main")];
-        let right = vec![Span::styled("[WAIT]", Style::default().fg(Color::Yellow))];
-        let result = right_align_suffix(&left, &right, 20);
-        assert_eq!(total_width(&result), 20);
-        assert_eq!(concat_text(&result), "main          [WAIT]");
-    }
-
-    #[test]
-    fn right_align_truncates_long_branch() {
-        let left = vec![Span::raw("very-long-branch-name")];
-        let right = vec![Span::styled("[WAIT]", Style::default().fg(Color::Yellow))];
-        // row_width=20, right=6, separator=1, available_for_left=13
-        let result = right_align_suffix(&left, &right, 20);
-        assert_eq!(total_width(&result), 20);
-        let text = concat_text(&result);
-        assert!(text.ends_with(" [WAIT]"), "got: {text}");
-        assert!(text.contains('\u{2026}'), "got: {text}");
-    }
-
-    #[test]
-    fn right_align_truncates_into_suffix() {
-        let left = vec![
-            Span::raw("long-branch"),
-            Span::styled(" (session)", Style::default().fg(Color::Green)),
-        ];
         let right = vec![Span::styled("[RUNNING]", Style::default().fg(Color::Red))];
-        // total left=21, right=9, row_width=22, available_for_left=12
-        let result = right_align_suffix(&left, &right, 22);
-        assert_eq!(total_width(&result), 22);
+        let result = right_align_suffix(&left, &right, 40);
+        assert_eq!(total_width(&result), 40);
         let text = concat_text(&result);
-        assert!(text.ends_with(" [RUNNING]"), "got: {text}");
-        assert!(text.contains('\u{2026}'), "got: {text}");
+        assert!(text.starts_with("main"), "got: {text}");
+        assert!(text.ends_with("[RUNNING]"), "got: {text}");
     }
 
     #[test]
-    fn right_align_row_too_narrow() {
+    fn right_align_exact_fit() {
+        // "main" (4) + " " (1) + "[WAITING]" (9) = 14
         let left = vec![Span::raw("main")];
         let right = vec![Span::styled(
             "[WAITING]",
             Style::default().fg(Color::Yellow),
         )];
-        // row_width=5, 1+right_width=10 > 5 => label dropped, left truncated to 5
-        let result = right_align_suffix(&left, &right, 5);
+        let result = right_align_suffix(&left, &right, 14);
+        assert_eq!(total_width(&result), 14);
+        assert_eq!(concat_text(&result), "main [WAITING]");
+    }
+
+    #[test]
+    fn right_align_branch_truncated() {
+        let left = vec![Span::raw("very-long-branch-name")];
+        let right = vec![Span::styled(
+            "[WAITING]",
+            Style::default().fg(Color::Yellow),
+        )];
+        let result = right_align_suffix(&left, &right, 25);
+        assert_eq!(total_width(&result), 25);
+        let text = concat_text(&result);
+        assert!(text.ends_with(" [WAITING]"), "label missing: {text}");
+        assert!(text.contains('\u{2026}'), "no ellipsis: {text}");
+    }
+
+    #[test]
+    fn right_align_multi_span_truncated() {
+        let left = vec![
+            Span::raw("long-branch"),
+            Span::styled(" (session)", Style::default().fg(Color::Green)),
+        ];
+        let right = vec![Span::styled("[RUNNING]", Style::default().fg(Color::Red))];
+        let result = right_align_suffix(&left, &right, 22);
+        assert_eq!(total_width(&result), 22);
+        let text = concat_text(&result);
+        assert!(text.ends_with(" [RUNNING]"), "label missing: {text}");
+        assert!(text.contains('\u{2026}'), "no ellipsis: {text}");
+    }
+
+    #[test]
+    fn right_align_label_dropped_when_too_narrow() {
+        let left = vec![Span::raw("main")];
+        let right = vec![Span::styled(
+            "[WAITING]",
+            Style::default().fg(Color::Yellow),
+        )];
+        // need 1 + 9 = 10; row=9 < 10, label dropped
+        let result = right_align_suffix(&left, &right, 9);
         assert_eq!(concat_text(&result), "main");
-        assert_eq!(total_width(&result), 4);
+    }
+
+    #[test]
+    fn right_align_label_just_fits() {
+        let left = vec![Span::raw("m")];
+        let right = vec![Span::styled("[RUNNING]", Style::default().fg(Color::Red))];
+        // "m" (1) + " " (1) + "[RUNNING]" (9) = 11
+        let result = right_align_suffix(&left, &right, 11);
+        assert_eq!(concat_text(&result), "m [RUNNING]");
+    }
+
+    #[test]
+    fn right_align_label_boundary_drop() {
+        // row = right_width (9) < 1 + 9 = 10, so label dropped
+        let left = vec![Span::raw("main")];
+        let right = vec![Span::styled("[UNKNOWN]", Style::default().fg(Color::Gray))];
+        let result = right_align_suffix(&left, &right, 9);
+        assert!(!concat_text(&result).contains("[UNKNOWN]"));
+    }
+
+    #[test]
+    fn right_align_label_boundary_keep() {
+        // row = 10, 10 < 10 is false, label kept
+        let left = vec![Span::raw("main")];
+        let right = vec![Span::styled("[UNKNOWN]", Style::default().fg(Color::Gray))];
+        let result = right_align_suffix(&left, &right, 10);
+        assert!(concat_text(&result).contains("[UNKNOWN]"));
+    }
+
+    #[test]
+    fn right_align_very_narrow() {
+        let left = vec![Span::raw("main")];
+        let right = vec![Span::styled("[IDLE]", Style::default().fg(Color::DarkGray))];
+        let result = right_align_suffix(&left, &right, 3);
+        let text = concat_text(&result);
+        assert!(!text.contains("[IDLE]"));
+        assert_eq!(total_width(&result), 3);
+    }
+
+    // --- Custom label configs (no brackets, short strings) ---
+
+    #[test]
+    fn right_align_custom_no_brackets() {
+        // User configured labels without brackets: running = "RUNNING"
+        let left = vec![Span::raw("main")];
+        let right = vec![Span::styled("RUNNING", Style::default().fg(Color::Red))];
+        let result = right_align_suffix(&left, &right, 20);
+        assert_eq!(concat_text(&result), "main         RUNNING");
+    }
+
+    #[test]
+    fn right_align_custom_short_label() {
+        // User configured short labels: waiting = "W"
+        let left = vec![Span::raw("main")];
+        let right = vec![Span::styled("W", Style::default().fg(Color::Yellow))];
+        let result = right_align_suffix(&left, &right, 8);
+        assert_eq!(concat_text(&result), "main   W");
     }
 }

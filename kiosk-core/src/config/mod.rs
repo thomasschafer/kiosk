@@ -89,7 +89,7 @@ pub struct AgentConfig {
     /// Whether agent status detection is enabled (default: true).
     /// Set to `false` to completely disable agent polling and status display.
     pub enabled: bool,
-    /// Interval in milliseconds between agent status polls (default: 2000).
+    /// Interval in milliseconds between agent status polls (default: 500).
     pub poll_interval_ms: u64,
     /// Label text for each agent state shown in the branch picker.
     #[serde(default)]
@@ -100,7 +100,7 @@ impl Default for AgentConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            poll_interval_ms: 2000,
+            poll_interval_ms: 500,
             labels: AgentLabelsConfig::default(),
         }
     }
@@ -110,10 +110,10 @@ impl Default for AgentConfig {
 ///
 /// ```toml
 /// [agent.labels]
-/// running = "RUNNING"
-/// waiting = "WAITING"
-/// idle = "IDLE"
-/// unknown = "UNKNOWN"
+/// running = "[RUNNING]"
+/// waiting = "[WAITING]"
+/// idle = "[IDLE]"
+/// unknown = "[UNKNOWN]"
 /// ```
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(deny_unknown_fields, default)]
@@ -127,10 +127,10 @@ pub struct AgentLabelsConfig {
 impl Default for AgentLabelsConfig {
     fn default() -> Self {
         Self {
-            running: "RUNNING".to_string(),
-            waiting: "WAITING".to_string(),
-            idle: "IDLE".to_string(),
-            unknown: "UNKNOWN".to_string(),
+            running: "[RUNNING]".to_string(),
+            waiting: "[WAITING]".to_string(),
+            idle: "[IDLE]".to_string(),
+            unknown: "[UNKNOWN]".to_string(),
         }
     }
 }
@@ -759,7 +759,7 @@ unknown = "bad"
     #[test]
     fn test_agent_config_defaults() {
         let config = load_config_from_str(r#"search_dirs = ["~/Dev"]"#).unwrap();
-        assert_eq!(config.agent.poll_interval_ms, 2000);
+        assert_eq!(config.agent.poll_interval_ms, 500);
     }
 
     #[test]
@@ -809,7 +809,7 @@ enabled = false
         .unwrap();
         assert!(!config.agent.enabled);
         // poll_interval_ms should still default
-        assert_eq!(config.agent.poll_interval_ms, 2000);
+        assert_eq!(config.agent.poll_interval_ms, 500);
     }
 
     #[test]
@@ -857,7 +857,7 @@ enabled = false
         )
         .unwrap();
         assert!(!config.agent.enabled);
-        assert_eq!(config.agent.poll_interval_ms, 2000);
+        assert_eq!(config.agent.poll_interval_ms, 500);
     }
 
     #[test]
@@ -925,10 +925,10 @@ poll_interval_ms = 100
     #[test]
     fn test_agent_labels_defaults() {
         let labels = AgentLabelsConfig::default();
-        assert_eq!(labels.running, "RUNNING");
-        assert_eq!(labels.waiting, "WAITING");
-        assert_eq!(labels.idle, "IDLE");
-        assert_eq!(labels.unknown, "UNKNOWN");
+        assert_eq!(labels.running, "[RUNNING]");
+        assert_eq!(labels.waiting, "[WAITING]");
+        assert_eq!(labels.idle, "[IDLE]");
+        assert_eq!(labels.unknown, "[UNKNOWN]");
     }
 
     #[test]
@@ -963,9 +963,30 @@ running = "GO"
         )
         .unwrap();
         assert_eq!(config.agent.labels.running, "GO");
-        assert_eq!(config.agent.labels.waiting, "WAITING");
+        assert_eq!(config.agent.labels.waiting, "[WAITING]");
+        assert_eq!(config.agent.labels.idle, "[IDLE]");
+        assert_eq!(config.agent.labels.unknown, "[UNKNOWN]");
+    }
+
+    #[test]
+    fn test_agent_labels_full_custom_no_brackets() {
+        let config = load_config_from_str(
+            r#"
+search_dirs = ["~/Dev"]
+
+[agent.labels]
+running = "RUN"
+waiting = "WAIT"
+idle = "IDLE"
+unknown = "??"
+"#,
+        )
+        .unwrap();
+        assert_eq!(config.agent.labels.running, "RUN");
+        assert_eq!(config.agent.labels.waiting, "WAIT");
         assert_eq!(config.agent.labels.idle, "IDLE");
-        assert_eq!(config.agent.labels.unknown, "UNKNOWN");
+        assert_eq!(config.agent.labels.unknown, "??");
+        assert_eq!(config.agent.labels.max_label_width(), 4);
     }
 
     #[test]
@@ -985,8 +1006,8 @@ bogus = "BAD"
     #[test]
     fn test_agent_labels_max_width() {
         let labels = AgentLabelsConfig::default();
-        // "RUNNING" and "WAITING" and "UNKNOWN" are all 7 chars; "IDLE" is 4
-        assert_eq!(labels.max_label_width(), 7);
+        // "[RUNNING]", "[WAITING]", "[UNKNOWN]" are 9 chars; "[IDLE]" is 6
+        assert_eq!(labels.max_label_width(), 9);
 
         let labels = AgentLabelsConfig {
             running: "RUNNING".to_string(),

@@ -2564,12 +2564,80 @@ mod tests {
             "Should have agent column header: {rendered}"
         );
         assert!(
-            rendered.contains("WAITING"),
-            "Should show Waiting label: {rendered}"
+            rendered.contains("[WAITING]"),
+            "Should show [WAITING] label: {rendered}"
         );
         assert!(
-            rendered.contains("RUNNING"),
-            "Should show RUNNING label: {rendered}"
+            rendered.contains("[RUNNING]"),
+            "Should show [RUNNING] label: {rendered}"
+        );
+    }
+
+    #[test]
+    fn format_branch_table_custom_labels_no_brackets() {
+        use kiosk_core::agent::{AgentKind, AgentState, AgentStatus};
+        use kiosk_core::config::AgentLabelsConfig;
+
+        let rows = vec![BranchEntry {
+            name: "main".to_string(),
+            worktree_path: Some(PathBuf::from("/tmp/repo")),
+            has_session: true,
+            is_current: true,
+            is_default: false,
+            remote: None,
+            session_activity_ts: None,
+            agent_status: Some(AgentStatus {
+                kind: AgentKind::ClaudeCode,
+                state: AgentState::Running,
+            }),
+        }];
+        let labels = AgentLabelsConfig {
+            running: "RUN".to_string(),
+            waiting: "WAIT".to_string(),
+            idle: "IDLE".to_string(),
+            unknown: "??".to_string(),
+        };
+        let rendered = format_branch_table(&rows, &labels);
+        assert!(
+            rendered.contains("RUN"),
+            "Should show custom label without brackets: {rendered}"
+        );
+        // Brackets should NOT appear since the custom label doesn't include them
+        assert!(
+            !rendered.contains("[RUN]"),
+            "Should NOT wrap custom label in brackets: {rendered}"
+        );
+    }
+
+    #[test]
+    fn format_session_table_custom_labels() {
+        use kiosk_core::agent::{AgentKind, AgentState, AgentStatus};
+        use kiosk_core::config::AgentLabelsConfig;
+
+        let rows = vec![SessionOutput {
+            session: "repo--feat".to_string(),
+            repo: "repo".to_string(),
+            branch: Some("feat/test".to_string()),
+            path: PathBuf::from("/tmp/repo-feat"),
+            attached: false,
+            last_activity: 0,
+            pane_count: 1,
+            current_command: "zsh".to_string(),
+            agent_status: Some(AgentStatus {
+                kind: AgentKind::Codex,
+                state: AgentState::Waiting,
+            }),
+        }];
+        let labels = AgentLabelsConfig {
+            running: "R".to_string(),
+            waiting: "W".to_string(),
+            idle: "I".to_string(),
+            unknown: "?".to_string(),
+        };
+        let rendered = format_session_table(&rows, &labels);
+        assert!(
+            rendered.contains("  W  "),
+            "Should show custom single-char label: {rendered}"
         );
     }
 
@@ -2879,8 +2947,8 @@ mod tests {
             "Should have agent column: {rendered}"
         );
         assert!(
-            rendered.contains("IDLE"),
-            "Should show Idle label: {rendered}"
+            rendered.contains("[IDLE]"),
+            "Should show [IDLE] label: {rendered}"
         );
     }
 

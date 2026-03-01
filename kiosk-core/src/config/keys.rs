@@ -105,7 +105,7 @@ define_commands! {
     },
     OpenBranch {
         config_name: "open_branch",
-        hint: "open",
+        hint: "open/create branch",
         description: "Open branch in tmux",
     },
     GoBack {

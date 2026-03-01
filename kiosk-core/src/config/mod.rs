@@ -48,7 +48,7 @@ pub enum SearchDirEntry {
     Rich { path: String, depth: Option<u16> },
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     /// Directories to scan for git repositories. Each directory can be scanned to a specified depth, with a default of 1 (i.e. just the top level).
@@ -86,10 +86,10 @@ pub struct Config {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(deny_unknown_fields, default)]
 pub struct AgentConfig {
-    /// Whether agent status detection is enabled (default: true).
+    /// Whether agent status detection is enabled.
     /// Set to `false` to completely disable agent polling and status display.
     pub enabled: bool,
-    /// Interval in milliseconds between agent status polls (default: 500).
+    /// Interval in milliseconds between agent status polls.
     pub poll_interval_ms: u64,
     /// Label text for each agent state shown in the branch picker.
     #[serde(default)]

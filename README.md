@@ -193,7 +193,7 @@ split_command = "hx"
 
 Color theme configuration.
 
-Colors can be a named color (`black`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `white`, `gray`, `dark_gray`) or a hex value (`#rrggbb`). Alternative spellings are also accepted: `grey` for `gray`, `darkgray` for `dark_gray`, `dark_grey` for `dark_gray`, `darkgrey` for `dark_gray`.
+Colors can be a named color (`black`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `white`, `gray`, `dark_gray`) or a hex value (`#rrggbb`).
 
 Defaults:
 
@@ -281,12 +281,16 @@ Agent detection configuration.
 
 #### `enabled`
 
-Whether agent status detection is enabled (default: true).
+Whether agent status detection is enabled.
 Set to `false` to completely disable agent polling and status display.
+
+Default: `true`
 
 #### `poll_interval_ms`
 
-Interval in milliseconds between agent status polls (default: 500).
+Interval in milliseconds between agent status polls.
+
+Default: `500`
 
 ### `[agent.labels]` section
 
@@ -294,18 +298,18 @@ Label text for each agent state shown in the branch picker.
 
 #### `running`
 
-
+Default: `"[RUNNING]"`
 
 #### `waiting`
 
-
+Default: `"[WAITING]"`
 
 #### `idle`
 
-
+Default: `"[IDLE]"`
 
 #### `unknown`
 
-
+Default: `"[UNKNOWN]"`
 
 <!-- CONFIG END -->

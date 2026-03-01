@@ -140,6 +140,7 @@ fn detect_from_pane_data(
     let mut best: Option<DetectionResult> = None;
 
     for pane in &data.panes {
+        let mut kind_from_content_fallback = false;
         let mut kind = detect::detect_agent_kind(&pane.command, None).or_else(|| {
             if may_host_agent(&pane.command) {
                 get_child_process_args(pane.pid)
@@ -158,6 +159,7 @@ fn detect_from_pane_data(
             kind = captured_content
                 .as_deref()
                 .and_then(detect::detect_agent_kind_from_content);
+            kind_from_content_fallback = kind.is_some();
         }
 
         if let Some(kind) = kind
@@ -178,6 +180,12 @@ fn detect_from_pane_data(
                 && !content.trim().is_empty()
             {
                 state = infer_state_from_activity_ts(data.session_activity);
+            }
+            // If kind was inferred only from pane content and state is still
+            // Unknown, treat it as no agent. This avoids sticky stale badges
+            // from historical transcript text in shell panes.
+            if state == AgentState::Unknown && kind_from_content_fallback {
+                continue;
             }
 
             let status = AgentStatus { kind, state };
@@ -726,6 +734,32 @@ mod tests {
     }
 
     #[test]
+    fn content_fallback_unknown_is_ignored() {
+        let mut tmux = MockTmuxProvider::default();
+        let session = "content-fallback-unknown";
+        tmux.pane_info.insert(
+            session.to_string(),
+            vec![PaneInfo {
+                pane_id: "%0".to_string(),
+                command: "zsh".to_string(),
+                pid: 99999, // No child args in tests
+            }],
+        );
+        tmux.pane_content.insert(
+            "%0".to_string(),
+            "╭────────────────────────────────╮\n\
+             │ >_ OpenAI Codex (v0.106.0) │\n\
+             ╰────────────────────────────────╯"
+                .to_string(),
+        );
+
+        assert!(
+            detect_for_session(&tmux, session).is_none(),
+            "Content-only fallback with Unknown state should not report an agent"
+        );
+    }
+
+    #[test]
     fn content_fallback_running_beats_idle_across_panes() {
         let mut tmux = MockTmuxProvider::default();
         let session = "content-fallback-priority";
@@ -1071,6 +1105,34 @@ mod tests {
             AgentState::Unknown,
             "Batched detection should keep Codex Unknown despite recent activity"
         );
+    }
+
+    #[test]
+    fn batched_content_fallback_unknown_is_ignored() {
+        let mut tmux = MockTmuxProvider::default();
+        let session = "content-fallback-unknown";
+        tmux.pane_info.insert(
+            session.to_string(),
+            vec![PaneInfo {
+                pane_id: "%0".to_string(),
+                command: "zsh".to_string(),
+                pid: 99999,
+            }],
+        );
+        tmux.pane_content.insert(
+            "%0".to_string(),
+            "╭────────────────────────────────╮\n\
+             │ >_ OpenAI Codex (v0.106.0) │\n\
+             ╰────────────────────────────────╯"
+                .to_string(),
+        );
+
+        let session_names = vec![session.to_string()];
+        let all_pane_data = tmux.list_all_panes_with_activity();
+        let results = super::detect_for_sessions_batched(&tmux, &session_names, &all_pane_data);
+
+        assert_eq!(results.len(), 1);
+        assert!(results[0].1.is_none());
     }
 
     #[test]

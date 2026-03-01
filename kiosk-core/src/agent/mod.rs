@@ -251,8 +251,8 @@ fn get_child_args_procfs(pid: u32, args: &mut String, depth: usize) -> bool {
         return false; // /proc not available
     };
     for child_pid_str in children.split_whitespace() {
-        if let Ok(cmdline) = std::fs::read_to_string(format!("/proc/{child_pid_str}/cmdline")) {
-            let readable = cmdline.replace('\0', " ");
+        if let Ok(raw) = std::fs::read(format!("/proc/{child_pid_str}/cmdline")) {
+            let readable = String::from_utf8_lossy(&raw).replace('\0', " ");
             args.push_str(&readable);
             args.push('\n');
         }

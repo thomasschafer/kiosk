@@ -252,7 +252,6 @@ impl TmuxProvider for CliTmuxProvider {
                 "-t",
                 &target,
                 "-p",
-                "-J",
                 "#{pane_current_command}",
             ])
             .output()
@@ -273,7 +272,6 @@ impl TmuxProvider for CliTmuxProvider {
                 "-t",
                 &format!("={session}"),
                 "-p",
-                "-J",
                 "#{session_activity}",
             ])
             .output()

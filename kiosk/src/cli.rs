@@ -333,7 +333,7 @@ pub fn cmd_branches(
     if json {
         print_json(&output)?;
     } else {
-        print!("{}", format_branch_table(&entries));
+        print!("{}", format_branch_table(&entries, &config.agent.labels));
     }
 
     Ok(())
@@ -733,7 +733,7 @@ pub fn cmd_sessions(
     if json {
         print_json(&output)?;
     } else {
-        print!("{}", format_session_table(&output));
+        print!("{}", format_session_table(&output, &config.agent.labels));
     }
 
     Ok(())
@@ -1032,7 +1032,10 @@ fn format_table_with_optional_agent(
     out
 }
 
-fn format_branch_table(entries: &[BranchEntry]) -> String {
+fn format_branch_table(
+    entries: &[BranchEntry],
+    labels: &kiosk_core::config::AgentLabelsConfig,
+) -> String {
     let has_agents = entries.iter().any(|e| e.agent_status.is_some());
     let rows: Vec<Vec<String>> = entries
         .iter()
@@ -1059,7 +1062,7 @@ fn format_branch_table(entries: &[BranchEntry]) -> String {
         .iter()
         .map(|e| {
             e.agent_status
-                .map_or_else(|| "-".to_string(), |s| s.state.to_string())
+                .map_or_else(|| "-".to_string(), |s| agent_state_label(s.state, labels))
         })
         .collect();
     format_table_with_optional_agent(
@@ -1070,7 +1073,22 @@ fn format_branch_table(entries: &[BranchEntry]) -> String {
     )
 }
 
-fn format_session_table(rows: &[SessionOutput]) -> String {
+fn agent_state_label(
+    state: kiosk_core::AgentState,
+    labels: &kiosk_core::config::AgentLabelsConfig,
+) -> String {
+    match state {
+        kiosk_core::AgentState::Running => labels.running.clone(),
+        kiosk_core::AgentState::Waiting => labels.waiting.clone(),
+        kiosk_core::AgentState::Idle => labels.idle.clone(),
+        kiosk_core::AgentState::Unknown => labels.unknown.clone(),
+    }
+}
+
+fn format_session_table(
+    rows: &[SessionOutput],
+    labels: &kiosk_core::config::AgentLabelsConfig,
+) -> String {
     let has_agents = rows.iter().any(|r| r.agent_status.is_some());
     let table_rows: Vec<Vec<String>> = rows
         .iter()
@@ -1089,7 +1107,7 @@ fn format_session_table(rows: &[SessionOutput]) -> String {
         .iter()
         .map(|r| {
             r.agent_status
-                .map_or_else(|| "-".to_string(), |s| s.state.to_string())
+                .map_or_else(|| "-".to_string(), |s| agent_state_label(s.state, labels))
         })
         .collect();
     format_table_with_optional_agent(
@@ -1255,41 +1273,54 @@ fn wait_for_idle(
             return Err(CliError::user("wait timeout"));
         }
 
-        match tmux.pane_current_command(session_name, &pane_str) {
-            Ok(command) => {
-                // Shell detected → agent exited
-                if KNOWN_SHELLS.iter().any(|&shell| command == shell) {
-                    return Ok(WaitOutput {
-                        idle: true,
-                        timed_out: false,
-                        pane_command: command,
-                        exit_code: None,
-                    });
+        // When agent detection is enabled, check agent state first.
+        // This avoids false-early returns from the shell check on pane 0
+        // when the agent is actually running in a different pane.
+        if agent_enabled {
+            if let Some(detection) = kiosk_core::agent::detect_for_session(tmux, session_name) {
+                match detection.status.state {
+                    kiosk_core::AgentState::Idle | kiosk_core::AgentState::Waiting => {
+                        let pane_cmd = tmux
+                            .pane_current_command(session_name, &pane_str)
+                            .unwrap_or_default();
+                        return Ok(WaitOutput {
+                            idle: true,
+                            timed_out: false,
+                            pane_command: pane_cmd,
+                            exit_code: None,
+                        });
+                    }
+                    // Running or Unknown — keep waiting
+                    _ => {}
                 }
-
-                // Agent detection: check if the agent is no longer running
-                if agent_enabled
-                    && let Some(detection) =
-                        kiosk_core::agent::detect_for_session(tmux, session_name)
-                {
-                    match detection.status.state {
-                        kiosk_core::AgentState::Idle | kiosk_core::AgentState::Waiting => {
-                            return Ok(WaitOutput {
-                                idle: true,
-                                timed_out: false,
-                                pane_command: command,
-                                exit_code: None,
-                            });
-                        }
-                        // Running or Unknown — keep waiting
-                        _ => {}
+            } else if let Ok(command) = tmux.pane_current_command(session_name, &pane_str)
+                && KNOWN_SHELLS.iter().any(|&shell| command == shell)
+            {
+                // No agent detected and pane shows a shell → agent exited
+                return Ok(WaitOutput {
+                    idle: true,
+                    timed_out: false,
+                    pane_command: command,
+                    exit_code: None,
+                });
+            }
+        } else {
+            match tmux.pane_current_command(session_name, &pane_str) {
+                Ok(command) => {
+                    if KNOWN_SHELLS.iter().any(|&shell| command == shell) {
+                        return Ok(WaitOutput {
+                            idle: true,
+                            timed_out: false,
+                            pane_command: command,
+                            exit_code: None,
+                        });
                     }
                 }
-            }
-            Err(e) => {
-                return Err(CliError::system(format!(
-                    "failed to get pane current command: {e}"
-                )));
+                Err(e) => {
+                    return Err(CliError::system(format!(
+                        "failed to get pane current command: {e}"
+                    )));
+                }
             }
         }
 
@@ -1776,7 +1807,8 @@ mod tests {
                 agent_status: None,
             },
         ];
-        let rendered = format_branch_table(&rows);
+        let rendered =
+            format_branch_table(&rows, &kiosk_core::config::AgentLabelsConfig::default());
         assert_eq!(
             rendered,
             "branch     stat  worktree\n\
@@ -1811,7 +1843,8 @@ mod tests {
                 agent_status: None,
             },
         ];
-        let rendered = format_session_table(&rows);
+        let rendered =
+            format_session_table(&rows, &kiosk_core::config::AgentLabelsConfig::default());
         assert_eq!(
             rendered,
             "session     repo  branch      path            attached\n\
@@ -2523,19 +2556,20 @@ mod tests {
                 agent_status: None,
             },
         ];
-        let rendered = format_branch_table(&rows);
+        let rendered =
+            format_branch_table(&rows, &kiosk_core::config::AgentLabelsConfig::default());
         // Agent column should appear since some entries have agent_status
         assert!(
             rendered.contains("agent"),
             "Should have agent column header: {rendered}"
         );
         assert!(
-            rendered.contains("Waiting"),
-            "Should show Waiting state: {rendered}"
+            rendered.contains("WAIT"),
+            "Should show Waiting label: {rendered}"
         );
         assert!(
-            rendered.contains("Running"),
-            "Should show Running state: {rendered}"
+            rendered.contains("RUN"),
+            "Should show Running label: {rendered}"
         );
     }
 
@@ -2799,7 +2833,8 @@ mod tests {
             session_activity_ts: None,
             agent_status: None,
         }];
-        let rendered = format_branch_table(&rows);
+        let rendered =
+            format_branch_table(&rows, &kiosk_core::config::AgentLabelsConfig::default());
         assert!(
             !rendered.contains("agent"),
             "Should NOT have agent column when no agents: {rendered}"
@@ -2837,14 +2872,15 @@ mod tests {
                 agent_status: None,
             },
         ];
-        let rendered = format_session_table(&rows);
+        let rendered =
+            format_session_table(&rows, &kiosk_core::config::AgentLabelsConfig::default());
         assert!(
             rendered.contains("agent"),
             "Should have agent column: {rendered}"
         );
         assert!(
-            rendered.contains("Idle"),
-            "Should show Idle state: {rendered}"
+            rendered.contains("IDLE"),
+            "Should show Idle label: {rendered}"
         );
     }
 

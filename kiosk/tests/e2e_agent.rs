@@ -1013,8 +1013,8 @@ fn test_e2e_agent_branches_table_shows_agent_column() {
         "Table should have agent column header: {stdout}"
     );
     assert!(
-        stdout.contains("Waiting"),
-        "Table should show Waiting state: {stdout}"
+        stdout.contains("WAIT"),
+        "Table should show WAIT label: {stdout}"
     );
 }
 

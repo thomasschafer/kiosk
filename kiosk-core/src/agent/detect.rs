@@ -452,6 +452,10 @@ fn detect_cursor_state(content: &str, tail: &str) -> AgentState {
     if tail.contains("/ commands") {
         return AgentState::Idle;
     }
+    // Fallback: bare prompt "> " at the end of output means idle.
+    if tail.lines().any(|line| line.trim() == ">") {
+        return AgentState::Idle;
+    }
     AgentState::Unknown
 }
 /// OpenCode-specific state detection.

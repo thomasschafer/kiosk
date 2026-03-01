@@ -658,7 +658,7 @@ impl Mode {
             ],
             Mode::BranchSelect => &[
                 Command::GoBack,
-                Command::NewBranch,
+                Command::OpenBranch,
                 Command::DeleteWorktree,
                 Command::ShowHelp,
                 Command::Quit,

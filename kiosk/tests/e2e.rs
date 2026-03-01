@@ -1324,7 +1324,7 @@ fn test_e2e_dynamic_hints() {
     env.send_special("Tab");
     let screen = env.capture();
     assert!(
-        screen.contains("C-o: new branch") && screen.contains("C-x: delete worktree"),
+        screen.contains("enter: open/create branch") && screen.contains("C-x: delete worktree"),
         "Branch hints should show dynamic bindings: {screen}"
     );
 }

@@ -451,4 +451,7 @@ fn detect_agent_statuses<T: TmuxProvider + ?Sized>(
     // still requires per-pane calls.
     let all_pane_data = tmux.list_all_panes_with_activity();
     agent::detect_for_sessions_batched(tmux, sessions, &all_pane_data)
+        .into_iter()
+        .map(|(name, result)| (name, result.map(|r| r.status)))
+        .collect()
 }

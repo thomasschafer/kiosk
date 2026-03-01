@@ -70,6 +70,15 @@ pub struct AgentStatus {
     pub state: AgentState,
 }
 
+/// Result of agent detection, pairing the status with the pane where
+/// the agent was found. This allows callers (e.g. `kiosk status`) to
+/// display content from the correct pane.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DetectionResult {
+    pub status: AgentStatus,
+    pub pane_id: String,
+}
+
 pub mod detect;
 
 /// Detect agent status for a tmux session by inspecting its panes.
@@ -79,7 +88,7 @@ pub mod detect;
 pub fn detect_for_session(
     tmux: &(impl crate::tmux::TmuxProvider + ?Sized),
     session_name: &str,
-) -> Option<AgentStatus> {
+) -> Option<DetectionResult> {
     let panes = tmux.list_panes_detailed(session_name);
     let activity = tmux.session_activity(session_name).unwrap_or(0);
 
@@ -108,7 +117,7 @@ pub fn detect_for_sessions_batched(
         crate::tmux::provider::SessionPaneData,
         impl std::hash::BuildHasher,
     >,
-) -> Vec<(String, Option<AgentStatus>)> {
+) -> Vec<(String, Option<DetectionResult>)> {
     session_names
         .iter()
         .map(|session_name| {
@@ -127,8 +136,8 @@ pub fn detect_for_sessions_batched(
 fn detect_from_pane_data(
     tmux: &(impl crate::tmux::TmuxProvider + ?Sized),
     data: &crate::tmux::provider::SessionPaneData,
-) -> Option<AgentStatus> {
-    let mut best: Option<AgentStatus> = None;
+) -> Option<DetectionResult> {
+    let mut best: Option<DetectionResult> = None;
 
     for pane in &data.panes {
         let kind = detect::detect_agent_kind(&pane.command, None).or_else(|| {
@@ -154,11 +163,14 @@ fn detect_from_pane_data(
             }
 
             let status = AgentStatus { kind, state };
-            if best
-                .as_ref()
-                .is_none_or(|b| status.state.attention_priority() > b.state.attention_priority())
-            {
-                best = Some(status);
+            let result = DetectionResult {
+                status,
+                pane_id: pane.pane_id.clone(),
+            };
+            if best.as_ref().is_none_or(|b| {
+                status.state.attention_priority() > b.status.state.attention_priority()
+            }) {
+                best = Some(result);
             }
         }
     }
@@ -320,7 +332,7 @@ mod tests {
     #[test]
     fn detect_claude_code_running() {
         let tmux = mock_with_agent("my-session", "claude", "⠋ Reading file src/main.rs");
-        let status = detect_for_session(&tmux, "my-session").unwrap();
+        let status = detect_for_session(&tmux, "my-session").unwrap().status;
         assert_eq!(status.kind, AgentKind::ClaudeCode);
         assert_eq!(status.state, AgentState::Running);
     }
@@ -332,7 +344,7 @@ mod tests {
             "claude",
             "Allow write to src/main.rs?\n  Yes, allow\n  No, deny",
         );
-        let status = detect_for_session(&tmux, "my-session").unwrap();
+        let status = detect_for_session(&tmux, "my-session").unwrap().status;
         assert_eq!(status.kind, AgentKind::ClaudeCode);
         assert_eq!(status.state, AgentState::Waiting);
     }
@@ -340,7 +352,7 @@ mod tests {
     #[test]
     fn detect_claude_code_idle() {
         let tmux = mock_with_agent("my-session", "claude", "❯ \n? for shortcuts");
-        let status = detect_for_session(&tmux, "my-session").unwrap();
+        let status = detect_for_session(&tmux, "my-session").unwrap().status;
         assert_eq!(status.kind, AgentKind::ClaudeCode);
         assert_eq!(status.state, AgentState::Idle);
     }
@@ -352,7 +364,7 @@ mod tests {
             "codex",
             "⠋ Searching codebase\nesc to interrupt",
         );
-        let status = detect_for_session(&tmux, "codex-session").unwrap();
+        let status = detect_for_session(&tmux, "codex-session").unwrap().status;
         assert_eq!(status.kind, AgentKind::Codex);
         assert_eq!(status.state, AgentState::Running);
     }
@@ -364,7 +376,7 @@ mod tests {
             "codex",
             "Would you like to run the following command?\n$ touch test.txt\n› 1. Yes, proceed (y)\n  2. Yes, and don't ask again (p)\n  3. No (esc)\n\n  Press enter to confirm or esc to cancel",
         );
-        let status = detect_for_session(&tmux, "codex-session").unwrap();
+        let status = detect_for_session(&tmux, "codex-session").unwrap().status;
         assert_eq!(status.kind, AgentKind::Codex);
         assert_eq!(status.state, AgentState::Waiting);
     }
@@ -424,7 +436,7 @@ mod tests {
         tmux.pane_content
             .insert("%1".to_string(), "Esc to interrupt".to_string());
 
-        let status = detect_for_session(&tmux, session).unwrap();
+        let status = detect_for_session(&tmux, session).unwrap().status;
         assert_eq!(status.kind, AgentKind::ClaudeCode);
         assert_eq!(status.state, AgentState::Running);
     }
@@ -432,7 +444,7 @@ mod tests {
     #[test]
     fn agent_with_ansi_codes_in_output() {
         let tmux = mock_with_agent("ansi-session", "claude", "\x1B[32m⠹ Running tool\x1B[0m");
-        let status = detect_for_session(&tmux, "ansi-session").unwrap();
+        let status = detect_for_session(&tmux, "ansi-session").unwrap().status;
         assert_eq!(status.state, AgentState::Running);
     }
 
@@ -449,7 +461,7 @@ mod tests {
             }],
         );
         tmux.pane_content.insert("%0".to_string(), String::new());
-        let status = detect_for_session(&tmux, "empty-content").unwrap();
+        let status = detect_for_session(&tmux, "empty-content").unwrap().status;
         assert_eq!(status.kind, AgentKind::ClaudeCode);
         assert_eq!(status.state, AgentState::Unknown);
     }
@@ -498,7 +510,7 @@ mod tests {
                 ("claude", "Allow write?\n  Yes, allow\n  No, deny"),
             ],
         );
-        let status = detect_for_session(&tmux, "multi").unwrap();
+        let status = detect_for_session(&tmux, "multi").unwrap().status;
         assert_eq!(status.state, AgentState::Waiting);
     }
 
@@ -511,7 +523,7 @@ mod tests {
                 ("claude", "Allow write?\n  Yes, allow\n  No, deny"),
             ],
         );
-        let status = detect_for_session(&tmux, "multi").unwrap();
+        let status = detect_for_session(&tmux, "multi").unwrap().status;
         assert_eq!(status.state, AgentState::Waiting);
     }
 
@@ -524,7 +536,7 @@ mod tests {
                 ("claude", "❯ \n? for shortcuts"),
             ],
         );
-        let status = detect_for_session(&tmux, "multi").unwrap();
+        let status = detect_for_session(&tmux, "multi").unwrap().status;
         assert_eq!(status.state, AgentState::Idle);
     }
 
@@ -552,7 +564,7 @@ mod tests {
         tmux.pane_content
             .insert("%11".to_string(), "Allow write?\n  Yes, allow".to_string());
 
-        let status = detect_for_session(&tmux, session).unwrap();
+        let status = detect_for_session(&tmux, session).unwrap().status;
         assert_eq!(status.state, AgentState::Waiting);
     }
 
@@ -605,7 +617,7 @@ mod tests {
                 ("claude", "⠋ Reading file src/main.rs"), // Running
             ],
         );
-        let status = detect_for_session(&tmux, "multi").unwrap();
+        let status = detect_for_session(&tmux, "multi").unwrap().status;
         assert_eq!(status.state, AgentState::Running);
     }
 
@@ -660,7 +672,7 @@ mod tests {
             "opencode",
             "  ctrl+t variants  tab agents  ctrl+p commands",
         );
-        let status = detect_for_session(&tmux, "oc-session").unwrap();
+        let status = detect_for_session(&tmux, "oc-session").unwrap().status;
         assert_eq!(status.kind, AgentKind::OpenCode);
         assert_eq!(status.state, AgentState::Idle);
     }
@@ -697,7 +709,7 @@ mod tests {
         // Activity timestamp is NOW (within recency window)
         tmux.session_activity_ts.insert(session.to_string(), now);
 
-        let status = detect_for_session(&tmux, session).unwrap();
+        let status = detect_for_session(&tmux, session).unwrap().status;
         assert_eq!(status.kind, AgentKind::ClaudeCode);
         assert_eq!(
             status.state,
@@ -733,7 +745,7 @@ mod tests {
         tmux.session_activity_ts
             .insert(session.to_string(), stale_ts);
 
-        let status = detect_for_session(&tmux, session).unwrap();
+        let status = detect_for_session(&tmux, session).unwrap().status;
         assert_eq!(
             status.state,
             AgentState::Unknown,
@@ -764,7 +776,7 @@ mod tests {
             .insert("%0".to_string(), "❯ \n? for shortcuts".to_string());
         tmux.session_activity_ts.insert(session.to_string(), now);
 
-        let status = detect_for_session(&tmux, session).unwrap();
+        let status = detect_for_session(&tmux, session).unwrap().status;
         assert_eq!(
             status.state,
             AgentState::Idle,
@@ -809,7 +821,7 @@ mod tests {
         // Individual detection
         let individual: Vec<Option<AgentStatus>> = session_names
             .iter()
-            .map(|s| detect_for_session(&tmux, s))
+            .map(|s| detect_for_session(&tmux, s).map(|r| r.status))
             .collect();
 
         // Batched detection
@@ -818,10 +830,13 @@ mod tests {
 
         // Results should match
         for (i, session) in session_names.iter().enumerate() {
-            let batch_status = batched.iter().find(|(s, _)| s == session).map(|(_, s)| s);
+            let batch_status = batched
+                .iter()
+                .find(|(s, _)| s == session)
+                .map(|(_, r)| r.as_ref().map(|d| d.status));
             assert_eq!(
                 batch_status,
-                Some(&individual[i]),
+                Some(individual[i]),
                 "Mismatch for session {session}"
             );
         }
@@ -902,7 +917,7 @@ mod tests {
         let results = super::detect_for_sessions_batched(&tmux, &session_names, &all_pane_data);
 
         assert_eq!(
-            results[0].1.unwrap().state,
+            results[0].1.as_ref().unwrap().status.state,
             AgentState::Running,
             "Should infer Running from pre-fetched recent activity"
         );
@@ -984,7 +999,10 @@ mod tests {
         let all_pane_data = tmux.list_all_panes_with_activity();
         let results = super::detect_for_sessions_batched(&tmux, &session_names, &all_pane_data);
 
-        assert_eq!(results[0].1.unwrap().state, AgentState::Waiting);
+        assert_eq!(
+            results[0].1.as_ref().unwrap().status.state,
+            AgentState::Waiting
+        );
     }
 
     #[test]

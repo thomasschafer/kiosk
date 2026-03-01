@@ -322,7 +322,8 @@ pub fn cmd_branches(
                 && let Some(ref wt_path) = entry.worktree_path
             {
                 let session_name = repo.tmux_session_name(wt_path);
-                entry.agent_status = kiosk_core::agent::detect_for_session(tmux, &session_name);
+                entry.agent_status =
+                    kiosk_core::agent::detect_for_session(tmux, &session_name).map(|r| r.status);
             }
         }
     }
@@ -464,6 +465,7 @@ fn open_internal(
             &resolved.session_name,
             args.wait_pane,
             args.wait_timeout,
+            config.agent.enabled,
         ))
     } else {
         None
@@ -637,7 +639,7 @@ fn status_internal(
     let session_name = repo.tmux_session_name(&worktree_path);
     let session_exists = tmux.session_exists(&session_name);
 
-    let (output, clients, source) = if session_exists {
+    let (mut output, clients, source) = if session_exists {
         let captured = tmux
             .capture_pane_with_pane(&session_name, &args.pane.to_string(), lines)
             .map_err(CliError::from)?;
@@ -656,11 +658,23 @@ fn status_internal(
         (tail_lines(&log, lines), Vec::new(), StatusSource::Log)
     };
 
-    let agent_status = if session_exists && config.agent.enabled {
+    let detection = if session_exists && config.agent.enabled {
         kiosk_core::agent::detect_for_session(tmux, &session_name)
     } else {
         None
     };
+    let agent_status = detection.as_ref().map(|d| d.status);
+
+    // When an agent is detected and the user didn't explicitly choose a
+    // pane, re-capture from the agent's pane so the output shows the
+    // agent's content rather than pane 0 (which might be a shell).
+    if let Some(ref det) = detection
+        && args.pane == 0
+        && let Some(agent_content) =
+            tmux.capture_pane_content(&det.pane_id, u32::try_from(lines).unwrap_or(u32::MAX))
+    {
+        output = agent_content;
+    }
 
     Ok(StatusOutput {
         session: session_name,
@@ -695,7 +709,7 @@ pub fn cmd_sessions(
                 .pane_current_command(&session, "0")
                 .unwrap_or_else(|_| "unknown".to_string());
             let agent_status = if config.agent.enabled {
-                kiosk_core::agent::detect_for_session(tmux, &session)
+                kiosk_core::agent::detect_for_session(tmux, &session).map(|r| r.status)
             } else {
                 None
             };
@@ -1218,13 +1232,19 @@ const KNOWN_SHELLS: &[&str] = &[
     "bash", "zsh", "fish", "sh", "dash", "ash", "ksh", "tcsh", "csh", "nu", "nushell", "pwsh",
 ];
 
-/// Core wait loop: blocks until the pane's foreground process is a shell, or timeout.
+/// Core wait loop: blocks until the pane's foreground process is a shell
+/// (agent exited) **or** an agent is detected in a non-Running state
+/// (Idle or Waiting — both mean the agent needs user attention or is done).
+///
+/// When agent detection finds Idle or Waiting, returns immediately so
+/// callers can react (e.g. send the next prompt, approve a permission).
 /// Returns `Ok(WaitOutput)` on idle, `Err` on timeout or failure.
 fn wait_for_idle(
     tmux: &dyn TmuxProvider,
     session_name: &str,
     pane: usize,
     timeout_secs: u64,
+    agent_enabled: bool,
 ) -> CliResult<WaitOutput> {
     let pane_str = pane.to_string();
     let start_time = std::time::Instant::now();
@@ -1237,6 +1257,7 @@ fn wait_for_idle(
 
         match tmux.pane_current_command(session_name, &pane_str) {
             Ok(command) => {
+                // Shell detected → agent exited
                 if KNOWN_SHELLS.iter().any(|&shell| command == shell) {
                     return Ok(WaitOutput {
                         idle: true,
@@ -1244,6 +1265,25 @@ fn wait_for_idle(
                         pane_command: command,
                         exit_code: None,
                     });
+                }
+
+                // Agent detection: check if the agent is no longer running
+                if agent_enabled
+                    && let Some(detection) =
+                        kiosk_core::agent::detect_for_session(tmux, session_name)
+                {
+                    match detection.status.state {
+                        kiosk_core::AgentState::Idle | kiosk_core::AgentState::Waiting => {
+                            return Ok(WaitOutput {
+                                idle: true,
+                                timed_out: false,
+                                pane_command: command,
+                                exit_code: None,
+                            });
+                        }
+                        // Running or Unknown — keep waiting
+                        _ => {}
+                    }
                 }
             }
             Err(e) => {
@@ -1279,7 +1319,13 @@ pub fn cmd_wait(
         )));
     }
 
-    match wait_for_idle(tmux, &session_name, args.pane, args.timeout) {
+    match wait_for_idle(
+        tmux,
+        &session_name,
+        args.pane,
+        args.timeout,
+        config.agent.enabled,
+    ) {
         Ok(output) => {
             if args.json {
                 print_json(&output)?;

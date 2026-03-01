@@ -91,11 +91,6 @@ const CLAUDE_PATTERNS: AgentPatterns = AgentPatterns {
     idle_tail: &["? for shortcuts"],
 };
 
-/// Fallback idle patterns for Claude Code: the input prompt `❯` appears on
-/// its own line when idle. Checked against only the last 3 non-empty lines
-/// to reduce false Idle during the brief processing transition.
-const CLAUDE_IDLE_PROMPT_PATTERNS: &[&str] = &["❯"];
-
 /// Claude Code's whimsical "thinking" words shown during processing.
 ///
 /// When Claude is working, it shows messages like `✦ Noodling… 42 tokens`
@@ -382,15 +377,16 @@ fn detect_claude_state(content: &str, tail: &str, prompt_tail: &str) -> AgentSta
     }
 
     // Fallback: check if any line in a tight prompt window (last 3 lines)
-    // starts with the input prompt character `❯`. Using 3 lines instead of
-    // the broader tail (5 lines) reduces false Idle during the brief
-    // processing transition when the user's question (containing `❯`)
-    // hasn't scrolled out of the tail yet.
+    // starts with `❯`. Using 3 lines instead of the broader tail reduces
+    // false Idle during transitions.
+    //
+    // CRITICAL: the bare presence of `❯` is NOT enough — during API calls
+    // the user's query `❯ <question text>` remains visible and would
+    // false-match. Only return Idle when the prompt line looks genuinely
+    // idle: bare (`❯` / `❯ `), or showing Claude's suggestion (`Try "…"`).
     if prompt_tail.lines().any(|line| {
         let trimmed = line.trim_start();
-        CLAUDE_IDLE_PROMPT_PATTERNS
-            .iter()
-            .any(|p| trimmed.starts_with(p))
+        is_idle_claude_prompt(trimmed)
     }) {
         return AgentState::Idle;
     }
@@ -536,12 +532,39 @@ fn detect_generic_state(content: &str, tail: &str, patterns: &AgentPatterns) -> 
     if matches_any(content, patterns.waiting) {
         return AgentState::Waiting;
     }
-    AgentState::Idle
+    AgentState::Unknown
 }
 
 // ===========================================================================
 // Pattern matchers
 // ===========================================================================
+
+/// Check if a trimmed, lowercased line looks like Claude Code's idle prompt.
+///
+/// Returns `true` for:
+/// - Bare prompt: `❯` or `❯ ` (just the chevron, possibly with trailing space)
+/// - Suggestion: `❯ try "…"` (Claude's placeholder suggestion text)
+///
+/// Returns `false` for lines that contain a user's query after `❯`, e.g.
+/// `❯ what is 2+2?` — this appears during API calls when Claude is actually
+/// processing, not idle.
+fn is_idle_claude_prompt(trimmed: &str) -> bool {
+    // Must start with the prompt character
+    let Some(after) = trimmed.strip_prefix('❯') else {
+        return false;
+    };
+    let after = after.trim();
+    // Bare prompt (nothing after ❯)
+    if after.is_empty() {
+        return true;
+    }
+    // Claude's suggestion text: `Try "refactor cli.rs"` etc.
+    // Lowercased input, so check for lowercase "try".
+    if after.starts_with("try \"") || after.starts_with("try \u{201c}") {
+        return true;
+    }
+    false
+}
 
 fn matches_any(content: &str, patterns: &[&str]) -> bool {
     patterns.iter().any(|p| content.contains(p))
@@ -917,6 +940,43 @@ mod tests {
         );
     }
 
+    /// During API calls, Claude shows `❯ <user query>` with no running
+    /// indicators. This should NOT be detected as Idle — the user's query
+    /// text distinguishes it from the bare idle prompt `❯ `.
+    ///
+    /// Regression test for false Idle observed during manual testing.
+    #[test]
+    fn claude_api_call_not_false_idle() {
+        let content = "\
+ ▐▛███▜▌   Claude Code v2.1.63\n\
+▝▜█████▛▘  Opus 4.6 · Claude Max\n\
+  ▘▘ ▝▝    ~/Development/kiosk\n\
+\n\
+────────────────────────────────────────\n\
+❯ what is 2+2? reply with just the number\n\
+────────────────────────────────────────\n\
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · PR #12";
+        assert_eq!(
+            detect_state(content, AgentKind::ClaudeCode),
+            AgentState::Unknown,
+            "User query after ❯ should not be detected as Idle"
+        );
+    }
+
+    #[test]
+    fn claude_idle_suggestion_try() {
+        // Claude's suggestion text starts with "Try" — this IS idle.
+        let content = "\
+────────────────────────────────────────\n\
+❯ Try \"refactor cli.rs\"\n\
+────────────────────────────────────────\n\
+  ⏵⏵ bypass permissions on";
+        assert_eq!(
+            detect_state(content, AgentKind::ClaudeCode),
+            AgentState::Idle,
+        );
+    }
+
     // -- Codex ---------------------------------------------------------------
 
     #[test]
@@ -1230,9 +1290,19 @@ mod tests {
     }
 
     #[test]
-    fn gemini_idle() {
+    fn gemini_unknown_no_patterns() {
+        // Unrecognised content should be Unknown, not Idle — avoids false
+        // Idle during API calls when no indicators are visible.
         assert_eq!(
             detect_state("some random output", AgentKind::Gemini),
+            AgentState::Unknown,
+        );
+    }
+
+    #[test]
+    fn gemini_idle_with_shortcuts() {
+        assert_eq!(
+            detect_state("ready\n? for shortcuts", AgentKind::Gemini),
             AgentState::Idle,
         );
     }
@@ -1240,13 +1310,14 @@ mod tests {
     #[test]
     fn gemini_approve_in_prose_not_waiting() {
         // "approve" in normal prose should NOT trigger Waiting — we require
-        // "approve?" with a trailing question mark.
+        // "approve?" with a trailing question mark. Without idle_tail
+        // patterns, this returns Unknown (not Waiting).
         assert_eq!(
             detect_state(
                 "I approve of this approach and will proceed",
                 AgentKind::Gemini
             ),
-            AgentState::Idle,
+            AgentState::Unknown,
         );
     }
 

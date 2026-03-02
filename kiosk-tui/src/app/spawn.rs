@@ -455,3 +455,46 @@ fn detect_agent_statuses<T: TmuxProvider + ?Sized>(
         .map(|(name, result)| (name, result.map(|r| r.status)))
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::detect_agent_statuses;
+    use kiosk_core::{
+        agent::{AgentKind, AgentState},
+        tmux::{mock::MockTmuxProvider, provider::PaneInfo},
+    };
+
+    #[allow(clippy::similar_names)]
+    #[test]
+    fn poller_detects_wrapper_command_via_pane_title_for_claude_waiting() {
+        let mut tmux = MockTmuxProvider::default();
+        let session = "kiosk--feat-agent-status".to_string();
+
+        tmux.pane_info.insert(
+            session.clone(),
+            vec![PaneInfo {
+                pane_id: "%149".to_string(),
+                command: "2.1.63".to_string(),
+                pid: 82078,
+            }],
+        );
+        tmux.pane_titles
+            .insert("%149".to_string(), "✳ Claude Code".to_string());
+
+        let history = (1..=120)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let content = format!("{history}\nBash command\nDo you want to proceed?\n❯ 1. Yes\n2. No");
+        tmux.pane_content.insert("%149".to_string(), content);
+
+        let states = detect_agent_statuses(&tmux, std::slice::from_ref(&session));
+        assert_eq!(states.len(), 1);
+        assert_eq!(states[0].0, session);
+        let status = states[0]
+            .1
+            .expect("wrapper command should resolve to Claude via pane title");
+        assert_eq!(status.kind, AgentKind::ClaudeCode);
+        assert_eq!(status.state, AgentState::Waiting);
+    }
+}

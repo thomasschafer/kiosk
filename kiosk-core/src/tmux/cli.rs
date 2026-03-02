@@ -48,13 +48,14 @@ impl TmuxProvider for CliTmuxProvider {
     fn list_all_panes_with_activity(&self) -> HashMap<String, SessionPaneData> {
         // Single tmux call: list ALL panes across ALL sessions with session
         // metadata. Format includes session_name and session_activity so we
-        // get both pane info and activity timestamps in one subprocess.
+        // get both pane info, pane titles, and activity timestamps in one
+        // subprocess.
         let output = tmux_command()
             .args([
                 "list-panes",
                 "-a",
                 "-F",
-                "#{session_name}\t#{pane_id}|#{pane_pid}|#{pane_current_command}\t#{session_activity}",
+                "#{session_name}\t#{pane_id}\t#{pane_pid}\t#{pane_current_command}\t#{pane_title}\t#{session_activity}",
             ])
             .output();
 
@@ -69,26 +70,37 @@ impl TmuxProvider for CliTmuxProvider {
         let mut result: HashMap<String, SessionPaneData> = HashMap::new();
 
         for line in String::from_utf8_lossy(&output.stdout).lines() {
-            // Format: session_name\tpane_id|pane_pid|pane_command\tsession_activity
-            let parts: Vec<&str> = line.splitn(3, '\t').collect();
-            if parts.len() != 3 {
+            // Format:
+            // session_name\tpane_id\tpane_pid\tpane_command\tpane_title\tsession_activity
+            let parts: Vec<&str> = line.splitn(6, '\t').collect();
+            if parts.len() != 6 {
                 continue;
             }
             let session_name = parts[0];
-            let pane_part = parts[1];
-            let activity_str = parts[2];
-
-            let Some(pane) = parse_pane_line(pane_part) else {
+            let pane_id = parts[1];
+            let Ok(pid) = parts[2].parse::<u32>() else {
                 continue;
             };
+            let pane_command = parts[3];
+            let pane_title = parts[4];
+            let pane = PaneInfo {
+                pane_id: pane_id.to_string(),
+                command: pane_command.to_string(),
+                pid,
+            };
+            let activity_str = parts[5];
             let activity = activity_str.parse::<u64>().unwrap_or(0);
 
             let entry = result
                 .entry(session_name.to_string())
                 .or_insert_with(|| SessionPaneData {
                     panes: Vec::new(),
+                    pane_titles: HashMap::new(),
                     session_activity: activity,
                 });
+            entry
+                .pane_titles
+                .insert(pane_id.to_string(), pane_title.to_string());
             entry.panes.push(pane);
             // Activity is the same for all panes in a session, but update
             // in case of slight races (always take the latest).

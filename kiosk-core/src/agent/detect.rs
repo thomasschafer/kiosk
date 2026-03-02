@@ -51,11 +51,52 @@ pub fn detect_agent_kind(
     None
 }
 
+/// Detect the kind of agent from tmux pane title text.
+///
+/// Titles are useful for wrapper processes where `pane_current_command` may
+/// be ambiguous (for example, a version string). Keep patterns conservative.
+pub fn detect_agent_kind_from_title(title: &str) -> Option<AgentKind> {
+    let lower = title.to_lowercase();
+    if lower.contains("claude code") {
+        return Some(AgentKind::ClaudeCode);
+    }
+    if lower.contains("codex") {
+        return Some(AgentKind::Codex);
+    }
+    if lower.contains("cursor") {
+        return Some(AgentKind::CursorAgent);
+    }
+    if lower.contains("opencode") {
+        return Some(AgentKind::OpenCode);
+    }
+    if lower.contains("gemini") {
+        return Some(AgentKind::Gemini);
+    }
+    None
+}
+
 /// Fallback kind detection from captured pane content.
 ///
 /// Used when process-based detection is inconclusive for host commands
 /// (`zsh`, `node`, etc.). Keep patterns narrow to avoid false positives.
 pub fn detect_agent_kind_from_content(content: &str) -> Option<AgentKind> {
+    detect_agent_kind_from_content_impl(content, false)
+}
+
+/// Fallback kind detection from captured pane content for wrapper-style
+/// commands where `pane_current_command` may be a version string (for
+/// example `2.1.63` in some Claude Code setups).
+///
+/// This includes Claude-specific content markers in addition to the standard
+/// content fallback markers.
+pub fn detect_agent_kind_from_wrapper_content(content: &str) -> Option<AgentKind> {
+    detect_agent_kind_from_content_impl(content, true)
+}
+
+fn detect_agent_kind_from_content_impl(
+    content: &str,
+    include_claude_markers: bool,
+) -> Option<AgentKind> {
     let clean = strip_ansi_codes(content);
     let lower = clean.to_lowercase();
 
@@ -67,6 +108,10 @@ pub fn detect_agent_kind_from_content(content: &str) -> Option<AgentKind> {
         || (lower.contains("codex") && lower.contains(" left") && clean.contains('·'))
     {
         return Some(AgentKind::Codex);
+    }
+
+    if include_claude_markers && lower.contains("claude code v") {
+        return Some(AgentKind::ClaudeCode);
     }
 
     None
@@ -91,6 +136,7 @@ struct AgentPatterns {
 const CLAUDE_PATTERNS: AgentPatterns = AgentPatterns {
     running: &["esc to interrupt", "ctrl+c to interrupt"],
     waiting: &[
+        "do you want to proceed?",
         "yes, allow",
         "yes, and always allow",
         "yes, and don't ask again",
@@ -368,6 +414,104 @@ pub fn detect_state(content: &str, kind: AgentKind) -> AgentState {
     }
 }
 
+/// Return the high-level rule that produced `state` for the given content.
+///
+/// This is intended for diagnostics (for example `kiosk status --debug-agent`),
+/// not for core state logic.
+pub fn detect_state_rule(content: &str, kind: AgentKind, state: AgentState) -> &'static str {
+    let clean = strip_ansi_codes(content);
+    let non_empty: Vec<&str> = clean
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    let len = non_empty.len();
+    let last_5 = join_tail(&non_empty, len, 5).to_lowercase();
+    let last_3 = join_tail(&non_empty, len, 3).to_lowercase();
+
+    match kind {
+        AgentKind::ClaudeCode => match state {
+            AgentState::Running => {
+                if matches_any(&last_5, CLAUDE_PATTERNS.running)
+                    || contains_braille_spinner(&last_5)
+                {
+                    "claude.running.tail_marker"
+                } else if contains_thinking_word(&last_5) {
+                    "claude.running.thinking_word"
+                } else {
+                    "claude.running.content_marker"
+                }
+            }
+            AgentState::Waiting => "claude.waiting.pattern",
+            AgentState::Idle => {
+                if matches_any(&last_5, CLAUDE_PATTERNS.idle_tail) {
+                    "claude.idle.footer"
+                } else if last_3
+                    .lines()
+                    .any(|line| is_idle_claude_prompt(line.trim_start()))
+                {
+                    "claude.idle.prompt_fallback"
+                } else {
+                    "claude.idle.other"
+                }
+            }
+            AgentState::Unknown => "claude.unknown.no_match",
+        },
+        AgentKind::Codex => match state {
+            AgentState::Running => "codex.running.pattern",
+            AgentState::Waiting => "codex.waiting.tail_pattern",
+            AgentState::Idle => {
+                if matches_any(&last_5, CODEX_PATTERNS.idle_tail) {
+                    "codex.idle.footer"
+                } else if looks_like_codex_idle_prompt(&last_5) {
+                    "codex.idle.prompt_and_footer"
+                } else if looks_like_codex_plain_idle_prompt(&last_5) {
+                    "codex.idle.plain_prompt"
+                } else {
+                    "codex.idle.other"
+                }
+            }
+            AgentState::Unknown => "codex.unknown.no_match",
+        },
+        AgentKind::CursorAgent => match state {
+            AgentState::Running => "cursor.running.pattern",
+            AgentState::Waiting => "cursor.waiting.pattern",
+            AgentState::Idle => {
+                if matches_any(&last_5, CURSOR_PATTERNS.idle_tail) {
+                    "cursor.idle.footer"
+                } else if last_5.contains("/ commands") {
+                    "cursor.idle.commands_footer"
+                } else {
+                    "cursor.idle.prompt"
+                }
+            }
+            AgentState::Unknown => "cursor.unknown.no_match",
+        },
+        AgentKind::OpenCode => match state {
+            AgentState::Running => "opencode.running.pattern",
+            AgentState::Waiting => "opencode.waiting.pattern",
+            AgentState::Idle => {
+                if matches_any(&last_5, OPENCODE_PATTERNS.idle_tail) {
+                    "opencode.idle.footer"
+                } else if last_5
+                    .lines()
+                    .any(|line| line.contains('┃') || line.contains('╹'))
+                {
+                    "opencode.idle.prompt_bar"
+                } else {
+                    "opencode.idle.other"
+                }
+            }
+            AgentState::Unknown => "opencode.unknown.no_match",
+        },
+        AgentKind::Gemini => match state {
+            AgentState::Running => "gemini.running.pattern",
+            AgentState::Waiting => "gemini.waiting.pattern",
+            AgentState::Idle => "gemini.idle.footer",
+            AgentState::Unknown => "gemini.unknown.no_match",
+        },
+    }
+}
+
 // ===========================================================================
 // Per-agent state detection
 // ===========================================================================
@@ -454,6 +598,12 @@ fn detect_codex_state(_content: &str, tail: &str) -> AgentState {
     // is not visible in tmux capture. Require both a non-menu prompt line
     // and the model/footer status line to avoid false idle from stale text.
     if looks_like_codex_idle_prompt(tail) {
+        return AgentState::Idle;
+    }
+    // Additional fallback: plain prompt line at the end without footer.
+    // Keep this conservative by requiring prompt on the last non-empty line
+    // and excluding "context left" tails which commonly appear mid-processing.
+    if looks_like_codex_plain_idle_prompt(tail) {
         return AgentState::Idle;
     }
     AgentState::Unknown
@@ -592,16 +742,10 @@ fn is_idle_claude_prompt(trimmed: &str) -> bool {
 }
 
 fn looks_like_codex_idle_prompt(tail: &str) -> bool {
-    let has_prompt = tail.lines().any(|line| {
-        let trimmed = line.trim_start();
-        // Exclude numbered menu entries like `› 1. Yes, continue`
-        trimmed.starts_with("› ")
-            && !trimmed.starts_with("› 1.")
-            && !trimmed.starts_with("› 2.")
-            && !trimmed.starts_with("› 3.")
-            && !trimmed.starts_with("› 4.")
-            && !trimmed.starts_with("› 5.")
-    });
+    // Strong idle fallback: when Codex footer is present, allow any
+    // non-menu prompt line (`› ...`). This matches real idle captures where
+    // the last prompt may include user text.
+    let has_prompt = tail.lines().any(is_non_menu_codex_prompt_line);
 
     // Newer Codex footer style, e.g.
     // `gpt-5.3-codex high · 100% left · ~/Development/kiosk`
@@ -613,6 +757,48 @@ fn looks_like_codex_idle_prompt(tail: &str) -> bool {
         && !lower.contains("context left");
 
     has_prompt && has_footer
+}
+
+fn is_non_menu_codex_prompt_line(line: &str) -> bool {
+    let Some(after_prompt) = codex_prompt_payload(line) else {
+        return false;
+    };
+    !is_menu_codex_prompt_payload(after_prompt)
+}
+
+fn is_bare_non_menu_codex_prompt_line(line: &str) -> bool {
+    let Some(after_prompt) = codex_prompt_payload(line) else {
+        return false;
+    };
+    after_prompt.is_empty() || after_prompt.eq_ignore_ascii_case("type a message")
+}
+
+fn codex_prompt_payload(line: &str) -> Option<&str> {
+    let trimmed = line.trim_start();
+    let after_prompt = trimmed.strip_prefix('›')?;
+    Some(after_prompt.trim())
+}
+
+fn is_menu_codex_prompt_payload(after_prompt: &str) -> bool {
+    let Some((prefix, suffix)) = after_prompt.split_once('.') else {
+        return false;
+    };
+    !prefix.is_empty() && prefix.chars().all(|c| c.is_ascii_digit()) && suffix.starts_with(' ')
+}
+
+fn looks_like_codex_plain_idle_prompt(tail: &str) -> bool {
+    let mut lines = tail.lines().map(str::trim).filter(|line| !line.is_empty());
+    let Some(last) = lines.next_back() else {
+        return false;
+    };
+    // Keep this strict: only a bare prompt line should be treated as idle.
+    if !is_bare_non_menu_codex_prompt_line(last) {
+        return false;
+    }
+    let lower = tail.to_lowercase();
+    // During processing Codex often shows "context left" with the user prompt.
+    // Keep that state as Unknown to avoid false Idle.
+    !lower.contains("context left")
 }
 
 fn matches_any(content: &str, patterns: &[&str]) -> bool {
@@ -805,6 +991,19 @@ mod tests {
     }
 
     #[test]
+    fn detect_kind_from_title_claude() {
+        assert_eq!(
+            detect_agent_kind_from_title("✳ Claude Code"),
+            Some(AgentKind::ClaudeCode)
+        );
+    }
+
+    #[test]
+    fn detect_kind_from_title_unknown() {
+        assert_eq!(detect_agent_kind_from_title("Toms-MacBook-Pro.local"), None);
+    }
+
+    #[test]
     fn detect_kind_from_content_codex() {
         let content = "╭──────────────────────────────────────────────────╮\n\
                        │ >_ OpenAI Codex (v0.105.0)                       │\n\
@@ -816,6 +1015,18 @@ mod tests {
             detect_agent_kind_from_content(content),
             Some(AgentKind::Codex)
         );
+    }
+
+    #[test]
+    fn detect_kind_from_wrapper_content_claude() {
+        let content = "▐▛███▜▌   Claude Code v2.1.63\n\
+                       ▝▜█████▛▘  Opus 4.6 · Claude Max\n\
+                       ❯ 1. Yes";
+        assert_eq!(
+            detect_agent_kind_from_wrapper_content(content),
+            Some(AgentKind::ClaudeCode)
+        );
+        assert_eq!(detect_agent_kind_from_content(content), None);
     }
 
     // -- Claude Code ---------------------------------------------------------
@@ -1090,7 +1301,7 @@ mod tests {
     #[test]
     fn codex_idle_prompt_footer_fallback() {
         let content = "■ Conversation interrupted - tell the model what to do differently.\n\
-            › Write tests for @filename\n\
+            › \n\
               gpt-5.3-codex high · 100% left · ~/Development/kiosk";
         assert_eq!(detect_state(content, AgentKind::Codex), AgentState::Idle);
     }
@@ -1140,6 +1351,30 @@ mod tests {
             • Ready for next step\n\
             › Type a message\n\
               gpt-5.3-codex high · 100% left";
+        assert_eq!(detect_state(content, AgentKind::Codex), AgentState::Idle);
+    }
+
+    #[test]
+    fn codex_plain_prompt_without_footer_is_idle() {
+        let content = "• Added regression tests for both core and TUI poller paths\n\
+            • Built and validated changes\n\
+            › ";
+        assert_eq!(detect_state(content, AgentKind::Codex), AgentState::Idle);
+    }
+
+    #[test]
+    fn codex_prompt_with_user_text_without_footer_stays_unknown() {
+        let content = "• Added regression tests for both core and TUI poller paths\n\
+            • Built and validated changes\n\
+            › Nice! Okay next bug. You are currently idle. I'm seeing [UNKNOWN]";
+        assert_eq!(detect_state(content, AgentKind::Codex), AgentState::Unknown);
+    }
+
+    #[test]
+    fn codex_prompt_with_user_text_and_footer_is_idle() {
+        let content = "■ Conversation interrupted - tell the model what to do differently.\n\
+            › Write tests for @filename\n\
+              gpt-5.3-codex high · 100% left · ~/Development/kiosk";
         assert_eq!(detect_state(content, AgentKind::Codex), AgentState::Idle);
     }
 

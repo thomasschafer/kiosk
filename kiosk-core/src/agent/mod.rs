@@ -70,6 +70,29 @@ pub struct AgentStatus {
     pub state: AgentState,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum KindSource {
+    PaneCommand,
+    ChildProcess,
+    PaneTitle,
+    ContentFallbackHost,
+    ContentFallbackWrapper,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StateSource {
+    ContentPattern,
+    ActivityRecency,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DetectionDebug {
+    pub kind_source: KindSource,
+    pub kind_rule: &'static str,
+    pub state_source: StateSource,
+    pub state_rule: &'static str,
+}
+
 /// Result of agent detection, pairing the status with the pane where
 /// the agent was found. This allows callers (e.g. `kiosk status`) to
 /// display content from the correct pane.
@@ -77,6 +100,7 @@ pub struct AgentStatus {
 pub struct DetectionResult {
     pub status: AgentStatus,
     pub pane_id: String,
+    pub debug: DetectionDebug,
 }
 
 pub mod detect;
@@ -89,11 +113,19 @@ pub fn detect_for_session(
     tmux: &(impl crate::tmux::TmuxProvider + ?Sized),
     session_name: &str,
 ) -> Option<DetectionResult> {
+    // Prefer the batched tmux query so we can use pane titles as an
+    // additional kind signal without extra subprocess calls.
+    let all_pane_data = tmux.list_all_panes_with_activity();
+    if let Some(data) = all_pane_data.get(session_name) {
+        return detect_from_pane_data(tmux, data);
+    }
+
     let panes = tmux.list_panes_detailed(session_name);
     let activity = tmux.session_activity(session_name).unwrap_or(0);
 
     let data = crate::tmux::provider::SessionPaneData {
         panes,
+        pane_titles: std::collections::HashMap::new(),
         session_activity: activity,
     };
 
@@ -141,24 +173,49 @@ fn detect_from_pane_data(
 
     for pane in &data.panes {
         let mut kind_from_content_fallback = false;
-        let mut kind = detect::detect_agent_kind(&pane.command, None).or_else(|| {
-            if may_host_agent(&pane.command) {
-                get_child_process_args(pane.pid)
-                    .as_deref()
-                    .and_then(|args| detect::detect_agent_kind(&pane.command, Some(args)))
-            } else {
-                None
-            }
-        });
+        let command = pane.command.trim();
+        let pane_title = data.pane_titles.get(&pane.pane_id).map(String::as_str);
+        let allow_wrapper_fallback = looks_like_version_command(command);
+        let mut kind_debug = detect::detect_agent_kind(command, None)
+            .map(|kind| (kind, KindSource::PaneCommand, "agent.kind.command_pattern"));
+        if kind_debug.is_none() && (may_host_agent(command) || allow_wrapper_fallback) {
+            kind_debug = get_child_process_args(pane.pid)
+                .as_deref()
+                .and_then(|args| detect::detect_agent_kind(command, Some(args)))
+                .map(|kind| (kind, KindSource::ChildProcess, "agent.kind.child_process"));
+        }
+        if kind_debug.is_none() {
+            kind_debug = pane_title
+                .and_then(detect::detect_agent_kind_from_title)
+                .map(|kind| (kind, KindSource::PaneTitle, "agent.kind.pane_title"));
+        }
+        let mut kind = kind_debug.as_ref().map(|(kind, _, _)| *kind);
         let mut captured_content: Option<String> = None;
 
         // Fallback for host commands where process tree lookup may miss:
         // infer kind from agent-specific UI markers in captured content.
-        if kind.is_none() && may_host_agent(&pane.command) {
+        if kind.is_none() && (may_host_agent(command) || allow_wrapper_fallback) {
             captured_content = tmux.capture_pane_content(&pane.pane_id, 30);
-            kind = captured_content
-                .as_deref()
-                .and_then(detect::detect_agent_kind_from_content);
+            kind_debug = captured_content.as_deref().and_then(|content| {
+                if allow_wrapper_fallback {
+                    detect::detect_agent_kind_from_wrapper_content(content).map(|kind| {
+                        (
+                            kind,
+                            KindSource::ContentFallbackWrapper,
+                            "agent.kind.content_wrapper",
+                        )
+                    })
+                } else {
+                    detect::detect_agent_kind_from_content(content).map(|kind| {
+                        (
+                            kind,
+                            KindSource::ContentFallbackHost,
+                            "agent.kind.content_fallback",
+                        )
+                    })
+                }
+            });
+            kind = kind_debug.as_ref().map(|(kind, _, _)| *kind);
             kind_from_content_fallback = kind.is_some();
         }
 
@@ -167,6 +224,8 @@ fn detect_from_pane_data(
                 captured_content.or_else(|| tmux.capture_pane_content(&pane.pane_id, 30))
         {
             let mut state = detect::detect_state(&content, kind);
+            let mut state_source = StateSource::ContentPattern;
+            let mut state_rule = detect::detect_state_rule(&content, kind, state);
 
             // When content-based detection returns Unknown (no recognisable
             // pattern), use the pre-fetched session_activity timestamp as a
@@ -180,6 +239,10 @@ fn detect_from_pane_data(
                 && !content.trim().is_empty()
             {
                 state = infer_state_from_activity_ts(data.session_activity);
+                if state == AgentState::Running {
+                    state_source = StateSource::ActivityRecency;
+                    state_rule = "agent.state.activity_recent";
+                }
             }
             // If kind was inferred only from pane content and state is still
             // Unknown, treat it as no agent. This avoids sticky stale badges
@@ -189,9 +252,19 @@ fn detect_from_pane_data(
             }
 
             let status = AgentStatus { kind, state };
+            let (kind_source, kind_rule) = kind_debug.as_ref().map_or(
+                (KindSource::PaneCommand, "agent.kind.unknown"),
+                |(_, source, rule)| (*source, *rule),
+            );
             let result = DetectionResult {
                 status,
                 pane_id: pane.pane_id.clone(),
+                debug: DetectionDebug {
+                    kind_source,
+                    kind_rule,
+                    state_source,
+                    state_rule,
+                },
             };
             if best.as_ref().is_none_or(|b| {
                 status.state.attention_priority() > b.status.state.attention_priority()
@@ -233,6 +306,27 @@ fn may_host_agent(command: &str) -> bool {
     AGENT_HOST_COMMANDS
         .iter()
         .any(|s| command.eq_ignore_ascii_case(s))
+}
+
+/// Some agent wrappers appear in tmux as a bare semantic version string
+/// (for example `2.1.63`), which is not useful for command-based detection.
+/// Treat those as wrapper commands and allow content-based kind fallback.
+fn looks_like_version_command(command: &str) -> bool {
+    let mut parts = command.split('.');
+    let Some(first) = parts.next() else {
+        return false;
+    };
+    if first.is_empty() || !first.chars().all(|c| c.is_ascii_digit()) {
+        return false;
+    }
+    let mut part_count = 1usize;
+    for part in parts {
+        if part.is_empty() || !part.chars().all(|c| c.is_ascii_digit()) {
+            return false;
+        }
+        part_count += 1;
+    }
+    part_count >= 2
 }
 
 /// How recently (in seconds) the session must have had activity for us to
@@ -664,6 +758,15 @@ mod tests {
     }
 
     #[test]
+    fn looks_like_version_command_matches_semver_like_strings() {
+        assert!(super::looks_like_version_command("2.1.63"));
+        assert!(super::looks_like_version_command("0.106.0"));
+        assert!(!super::looks_like_version_command("node"));
+        assert!(!super::looks_like_version_command("v2.1.63"));
+        assert!(!super::looks_like_version_command("2.1.beta"));
+    }
+
+    #[test]
     fn attention_priority_ordering() {
         // Waiting > Running > Idle > Unknown
         assert!(
@@ -763,7 +866,7 @@ mod tests {
         );
         tmux.pane_content.insert(
             "%0".to_string(),
-            "› Write tests for @filename\n\
+            "› \n\
               gpt-5.3-codex high · 100% left · ~/Development/kiosk"
                 .to_string(),
         );
@@ -771,6 +874,56 @@ mod tests {
         let status = detect_for_session(&tmux, session).unwrap().status;
         assert_eq!(status.kind, AgentKind::Codex);
         assert_eq!(status.state, AgentState::Idle);
+    }
+
+    #[test]
+    fn detect_claude_kind_from_wrapper_command_and_content() {
+        let mut tmux = MockTmuxProvider::default();
+        let session = "wrapper-claude";
+        tmux.pane_info.insert(
+            session.to_string(),
+            vec![PaneInfo {
+                pane_id: "%0".to_string(),
+                command: "2.1.63".to_string(),
+                pid: 99999, // No child args in tests
+            }],
+        );
+        tmux.pane_content.insert(
+            "%0".to_string(),
+            "▐▛███▜▌   Claude Code v2.1.63\n\
+             ▝▜█████▛▘  Opus 4.6 · Claude Max\n\
+             Do you want to proceed?\n\
+             ❯ 1. Yes"
+                .to_string(),
+        );
+
+        let status = detect_for_session(&tmux, session).unwrap().status;
+        assert_eq!(status.kind, AgentKind::ClaudeCode);
+        assert_eq!(status.state, AgentState::Waiting);
+    }
+
+    #[test]
+    fn detect_claude_kind_from_wrapper_command_and_pane_title() {
+        let mut tmux = MockTmuxProvider::default();
+        let session = "wrapper-title-claude";
+        tmux.pane_info.insert(
+            session.to_string(),
+            vec![PaneInfo {
+                pane_id: "%0".to_string(),
+                command: "2.1.63".to_string(),
+                pid: 99999, // No child args in tests
+            }],
+        );
+        tmux.pane_titles
+            .insert("%0".to_string(), "✳ Claude Code".to_string());
+        tmux.pane_content.insert(
+            "%0".to_string(),
+            "Bash command\nDo you want to proceed?\n❯ 1. Yes".to_string(),
+        );
+
+        let status = detect_for_session(&tmux, session).unwrap().status;
+        assert_eq!(status.kind, AgentKind::ClaudeCode);
+        assert_eq!(status.state, AgentState::Waiting);
     }
 
     #[test]
@@ -1262,6 +1415,7 @@ mod tests {
         let tmux = MockTmuxProvider::default();
         let data = crate::tmux::provider::SessionPaneData {
             panes: vec![],
+            pane_titles: std::collections::HashMap::new(),
             session_activity: 0,
         };
         assert!(super::detect_from_pane_data(&tmux, &data).is_none());

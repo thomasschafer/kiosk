@@ -21,6 +21,8 @@ pub struct MockTmuxProvider {
     pub send_keys_result: Mutex<Option<Result<()>>>,
     pub pipe_pane_result: Mutex<Option<Result<()>>>,
     pub pane_info: HashMap<String, Vec<PaneInfo>>,
+    /// Pane titles keyed by `pane_id` (e.g. `%0`)
+    pub pane_titles: HashMap<String, String>,
     /// Pane content keyed by `pane_id` (e.g. `%0`)
     pub pane_content: HashMap<String, String>,
     /// Session activity timestamps keyed by session name
@@ -37,10 +39,23 @@ impl TmuxProvider for MockTmuxProvider {
                 .get(session)
                 .copied()
                 .unwrap_or(1_234_567_890);
+            let pane_titles: HashMap<String, String> = panes
+                .iter()
+                .map(|pane| {
+                    (
+                        pane.pane_id.clone(),
+                        self.pane_titles
+                            .get(&pane.pane_id)
+                            .cloned()
+                            .unwrap_or_default(),
+                    )
+                })
+                .collect();
             result.insert(
                 session.clone(),
                 SessionPaneData {
                     panes: panes.clone(),
+                    pane_titles,
                     session_activity: activity,
                 },
             );

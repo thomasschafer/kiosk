@@ -109,6 +109,9 @@ enum Commands {
         /// Target pane index (default: 0)
         #[arg(long, default_value_t = 0)]
         pane: usize,
+        /// Include agent detection diagnostics in output
+        #[arg(long)]
+        debug_agent: bool,
     },
     /// List active kiosk sessions
     Sessions {
@@ -332,6 +335,7 @@ fn dispatch_command(
             json,
             lines,
             pane,
+            debug_agent,
         }) => {
             let args = crate::cli::StatusArgs {
                 repo,
@@ -339,6 +343,7 @@ fn dispatch_command(
                 json,
                 lines,
                 pane,
+                debug_agent,
             };
             crate::cli::cmd_status(config, git.as_ref(), tmux.as_ref(), &args)
         }

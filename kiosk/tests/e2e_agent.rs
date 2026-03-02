@@ -14,6 +14,7 @@
 use serde_json::Value;
 use serial_test::serial;
 use std::{
+    fmt::Write as _,
     fs,
     path::{Path, PathBuf},
     process::Command,
@@ -1362,6 +1363,159 @@ fn test_e2e_agent_codex_stale_content_waiting_then_idle() {
     assert_eq!(
         main_branch["agent_status"]["state"], "Idle",
         "should detect Idle after transitioning from Waiting (idle tail overrides stale content)"
+    );
+}
+
+fn replace_fake_codex_output_and_wait(
+    env: &AgentTestEnvDefault,
+    output: &str,
+    marker: &str,
+    timeout_msg: &str,
+) {
+    let _ = env
+        .tmux_cmd()
+        .args(["send-keys", "-t", &env.kiosk_session, "C-c", ""])
+        .status();
+    wait_ms(800);
+
+    let script_name = format!("codex-replace-{}", unique_id());
+    let script_path = write_fake_agent_script(env.tmp.path(), &script_name, output);
+    env.tmux_cmd()
+        .args([
+            "send-keys",
+            "-t",
+            &env.kiosk_session,
+            &script_path.to_string_lossy(),
+            "Enter",
+        ])
+        .status()
+        .unwrap();
+
+    if !wait_for_pane_content(&env.kiosk_session, marker, 10_000, &env.tmux_socket) {
+        let pane_dump = Command::new("tmux")
+            .args([
+                "-L",
+                &env.tmux_socket,
+                "capture-pane",
+                "-t",
+                &env.kiosk_session,
+                "-p",
+                "-S",
+                "-200",
+            ])
+            .output()
+            .ok()
+            .map_or_else(
+                || "<failed to capture pane>".to_string(),
+                |o| String::from_utf8_lossy(&o.stdout).to_string(),
+            );
+        panic!("{timeout_msg}\nMarker: {marker}\nPane dump:\n{pane_dump}");
+    }
+}
+
+fn push_fake_codex_log_lines(buf: &mut String, count: usize) {
+    for i in 0..count {
+        let _ = writeln!(buf, "• log line {i}");
+    }
+}
+
+#[test]
+#[serial]
+fn test_e2e_agent_codex_bare_prompt_without_footer_is_idle() {
+    if use_real_agents() {
+        return;
+    }
+
+    let env = AgentTestEnvDefault::new("codex-plain-idle");
+    env.launch_agent(AgentKind::Codex, FakeState::Running);
+
+    let mut prompt_only_output = String::new();
+    push_fake_codex_log_lines(&mut prompt_only_output, 12);
+    prompt_only_output.push_str(
+        "• Added regression tests for both core and TUI poller paths\\n\
+         • Built and validated changes\\n\
+         › ",
+    );
+    replace_fake_codex_output_and_wait(
+        &env,
+        &prompt_only_output,
+        "log line 11",
+        "Timed out waiting for prompt-only Codex output",
+    );
+
+    let json = env.run_cli_json(&["branches", &env.repo_name, "--json"]);
+    let branches = json.as_array().unwrap();
+    let main_branch = branches.iter().find(|b| b["name"] == "main").unwrap();
+    assert_eq!(
+        main_branch["agent_status"]["state"], "Idle",
+        "prompt-only Codex tail should classify as Idle"
+    );
+}
+
+#[test]
+#[serial]
+fn test_e2e_agent_codex_prompt_with_user_text_without_footer_is_unknown() {
+    if use_real_agents() {
+        return;
+    }
+
+    let env = AgentTestEnvDefault::new("codex-prompt-text-unknown");
+    env.launch_agent(AgentKind::Codex, FakeState::Running);
+
+    let mut prompt_output = String::new();
+    push_fake_codex_log_lines(&mut prompt_output, 12);
+    prompt_output.push_str(
+        "• Added regression tests for both core and TUI poller paths\\n\
+         • Built and validated changes\\n\
+         › Nice! Okay next bug. You are currently idle. I'm seeing",
+    );
+    replace_fake_codex_output_and_wait(
+        &env,
+        &prompt_output,
+        "log line 11",
+        "Timed out waiting for prompt text Codex output",
+    );
+
+    let json = env.run_cli_json(&["branches", &env.repo_name, "--json"]);
+    let branches = json.as_array().unwrap();
+    let main_branch = branches.iter().find(|b| b["name"] == "main").unwrap();
+    assert_eq!(
+        main_branch["agent_status"]["state"], "Unknown",
+        "prompt line with user text should not classify as Idle"
+    );
+}
+
+#[test]
+#[serial]
+fn test_e2e_agent_codex_prompt_with_user_text_and_footer_is_idle() {
+    if use_real_agents() {
+        return;
+    }
+
+    let env = AgentTestEnvDefault::new("codex-prompt-footer-idle");
+    env.launch_agent(AgentKind::Codex, FakeState::Running);
+
+    let mut prompt_output = String::new();
+    push_fake_codex_log_lines(&mut prompt_output, 12);
+    prompt_output.push_str(
+        "• Added regression tests for both core and TUI poller paths\\n\
+         • Built and validated changes\\n\
+         › Implement {feature}\\n\
+           gpt-5.3-codex high · left · ~/Development/kiosk",
+    );
+    replace_fake_codex_output_and_wait(
+        &env,
+        &prompt_output,
+        "log line 11",
+        "Timed out waiting for prompt + footer Codex output",
+    );
+
+    let json = env.run_cli_json(&["branches", &env.repo_name, "--json"]);
+    let branches = json.as_array().unwrap();
+    let main_branch = branches.iter().find(|b| b["name"] == "main").unwrap();
+    assert_eq!(
+        main_branch["agent_status"]["state"], "Idle",
+        "prompt line with Codex footer should classify as Idle"
     );
 }
 

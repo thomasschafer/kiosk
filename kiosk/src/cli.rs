@@ -80,6 +80,7 @@ pub struct StatusArgs {
     pub json: bool,
     pub lines: usize,
     pub pane: usize,
+    pub debug_agent: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -167,6 +168,8 @@ struct StatusOutput {
     source: StatusSource,
     #[serde(skip_serializing_if = "Option::is_none")]
     agent_status: Option<kiosk_core::AgentStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_debug: Option<kiosk_core::agent::DetectionDebug>,
     output: String,
 }
 
@@ -614,6 +617,12 @@ pub fn cmd_status(
         if let Some(ref agent) = output.agent_status {
             println!("agent: {} ({})", agent.kind, agent.state);
         }
+        if let Some(ref debug) = output.agent_debug {
+            println!(
+                "agent-debug: kind_source={:?} kind_rule={} state_source={:?} state_rule={}",
+                debug.kind_source, debug.kind_rule, debug.state_source, debug.state_rule
+            );
+        }
         println!("output:\n{}", output.output);
     }
 
@@ -664,6 +673,11 @@ fn status_internal(
         None
     };
     let agent_status = detection.as_ref().map(|d| d.status);
+    let agent_debug = if args.debug_agent {
+        detection.as_ref().map(|d| d.debug.clone())
+    } else {
+        None
+    };
 
     // When an agent is detected and the user didn't explicitly choose a
     // pane, re-capture from the agent's pane so the output shows the
@@ -683,6 +697,7 @@ fn status_internal(
         clients: clients.len(),
         source,
         agent_status,
+        agent_debug,
         output,
     })
 }
@@ -1745,6 +1760,7 @@ mod tests {
                 json: false,
                 lines: 10,
                 pane: 0,
+                debug_agent: false,
             },
         )
         .unwrap();
@@ -1753,6 +1769,66 @@ mod tests {
         assert_eq!(output.clients, 1);
         assert_eq!(output.source, StatusSource::Live);
         assert!(output.output.contains("line a"));
+    }
+
+    #[test]
+    fn status_debug_agent_includes_detection_metadata() {
+        let config = test_config();
+        let git = demo_git(vec![main_worktree()], vec![]);
+        let mut pane_info = HashMap::new();
+        pane_info.insert(
+            "demo".to_string(),
+            vec![kiosk_core::tmux::provider::PaneInfo {
+                pane_id: "%0".to_string(),
+                command: "codex".to_string(),
+                pid: 4242,
+            }],
+        );
+        let mut pane_content = HashMap::new();
+        pane_content.insert(
+            "%0".to_string(),
+            "› Type a message\n\n  ? for shortcuts".to_string(),
+        );
+        let tmux = MockTmuxProvider {
+            sessions: Mutex::new(vec!["demo".to_string()]),
+            pane_info,
+            pane_content,
+            capture_output: Mutex::new("capture output".to_string()),
+            ..Default::default()
+        };
+
+        let output = status_internal(
+            &config,
+            &git,
+            &tmux,
+            &StatusArgs {
+                repo: "demo".to_string(),
+                branch: None,
+                json: false,
+                lines: 20,
+                pane: 0,
+                debug_agent: true,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            output.agent_status.unwrap().state,
+            kiosk_core::AgentState::Idle
+        );
+        let debug = output
+            .agent_debug
+            .expect("debug metadata should be present");
+        assert_eq!(
+            debug.kind_source,
+            kiosk_core::agent::KindSource::PaneCommand
+        );
+        assert_eq!(debug.kind_rule, "agent.kind.command_pattern");
+        assert_eq!(
+            debug.state_source,
+            kiosk_core::agent::StateSource::ContentPattern
+        );
+        assert_eq!(debug.state_rule, "codex.idle.footer");
     }
 
     #[test]
@@ -2125,6 +2201,7 @@ mod tests {
                 json: false,
                 lines: 10,
                 pane: 0,
+                debug_agent: false,
             },
         );
 
@@ -2149,6 +2226,7 @@ mod tests {
                 json: false,
                 lines: 10,
                 pane: 0,
+                debug_agent: false,
             },
         )
         .unwrap_err();
@@ -2839,6 +2917,7 @@ mod tests {
                 json: false,
                 lines: 10,
                 pane: 0,
+                debug_agent: false,
             },
         )
         .unwrap();
@@ -2883,6 +2962,7 @@ mod tests {
                 json: true,
                 lines: 20,
                 pane: 1,
+                debug_agent: false,
             },
         );
 

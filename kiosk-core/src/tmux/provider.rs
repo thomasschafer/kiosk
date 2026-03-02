@@ -13,6 +13,8 @@ pub struct PaneInfo {
 #[derive(Debug, Clone)]
 pub struct SessionPaneData {
     pub panes: Vec<PaneInfo>,
+    /// Pane titles keyed by `pane_id` (e.g. `%0`).
+    pub pane_titles: std::collections::HashMap<String, String>,
     pub session_activity: u64,
 }
 

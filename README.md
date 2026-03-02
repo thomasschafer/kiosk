@@ -68,6 +68,9 @@ kiosk panes my-project feat/thing --json
 # Check session status
 kiosk status my-project feat/thing --json
 
+# Include agent detection debug metadata (kind/state source + matched rules)
+kiosk status my-project feat/thing --json --debug-agent
+
 # List active kiosk sessions (includes last_activity, pane_count, current_command)
 kiosk sessions --json
 
@@ -108,6 +111,22 @@ Kiosk names tmux sessions deterministically:
 - Branch worktree: `<repo-name>--<branch>` (with `/` replaced by `-`, `.` replaced by `_`)
 
 The `open --json` response includes the exact session name in the `session` field.
+
+#### Agent status troubleshooting
+
+When agent state looks wrong (`UNKNOWN` vs `IDLE`/`RUNNING`), capture both Kiosk's debug metadata and raw pane tail:
+
+```bash
+# Show detected kind/state and which rule matched
+kiosk status my-project feat/thing --json --debug-agent | jq '{agent_status, agent_debug}'
+
+# Confirm pane command/title and target pane ids
+kiosk panes my-project feat/thing --json
+tmux list-panes -t my-project--feat-thing -F '#{pane_id} cmd=#{pane_current_command} title=#{pane_title}'
+
+# Inspect recent pane content (strip ANSI, large enough tail)
+tmux capture-pane -ep -t my-project--feat-thing:0.0 -S -2000 | tail -n 80
+```
 
 </details>
 

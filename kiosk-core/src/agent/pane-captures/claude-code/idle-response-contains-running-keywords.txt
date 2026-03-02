@@ -1,0 +1,16 @@
+● Here's how agent status detection works:
+
+  The detection system looks for specific patterns in the terminal output. When an agent is
+  actively working, it shows indicators like "esc to interrupt" or "ctrl+c to interrupt" that
+  tell the user they can cancel the operation. Braille spinner characters (⠋ ⠙ ⠹ etc.) are
+  also used as running indicators.
+
+  For idle detection, Claude shows "? for shortcuts" in the footer, but this isn't always
+  captured reliably by tmux. As a fallback, the bare prompt character ❯ is used.
+
+✻ Crunched for 15s
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle)

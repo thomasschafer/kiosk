@@ -548,16 +548,8 @@ fn detect_claude_state(content: &str, tail: &str, prompt_tail: &str) -> AgentSta
     if matches_any(tail, CLAUDE_PATTERNS.idle_tail) {
         return AgentState::Idle;
     }
-    // Content-level running signals: explicit markers, braille spinners,
-    // and whimsical "thinking" words (e.g. `noodling…`).
-    if matches_any(content, CLAUDE_PATTERNS.running)
-        || contains_braille_spinner(content)
-        || contains_thinking_word(content)
-    {
-        return AgentState::Running;
-    }
 
-    // Fallback: check if any line in a tight prompt window (last 3 lines)
+    // Prompt fallback: check if any line in a tight window (last 3 lines)
     // starts with `❯`. Using 3 lines instead of the broader tail reduces
     // false Idle during transitions.
     //
@@ -565,11 +557,26 @@ fn detect_claude_state(content: &str, tail: &str, prompt_tail: &str) -> AgentSta
     // the user's query `❯ <question text>` remains visible and would
     // false-match. Only return Idle when the prompt line looks genuinely
     // idle: bare (`❯` / `❯ `), or showing Claude's suggestion (`Try "…"`).
+    //
+    // This is checked BEFORE content-level running markers because Claude's
+    // response text may contain keywords like "esc to interrupt" as prose
+    // (e.g. when discussing agent detection). The strict bare-prompt check
+    // prevents false Idle during actual processing (where the prompt line
+    // contains the user's query text).
     if prompt_tail.lines().any(|line| {
         let trimmed = line.trim_start();
         is_idle_claude_prompt(trimmed)
     }) {
         return AgentState::Idle;
+    }
+
+    // Content-level running signals: explicit markers, braille spinners,
+    // and whimsical "thinking" words (e.g. `noodling…`).
+    if matches_any(content, CLAUDE_PATTERNS.running)
+        || contains_braille_spinner(content)
+        || contains_thinking_word(content)
+    {
+        return AgentState::Running;
     }
 
     AgentState::Unknown
@@ -1906,6 +1913,7 @@ mod fixture_tests {
         (CLAUDE_RUNNING_QUEUED,           "claude-code/running-with-queued-message.txt",   AgentKind::ClaudeCode, AgentState::Running),
         (CLAUDE_WAITING_BASH,             "claude-code/waiting-bash-permission.txt",   AgentKind::ClaudeCode,  AgentState::Waiting),
         (CLAUDE_WAITING_EDIT,             "claude-code/waiting-edit-permission.txt",   AgentKind::ClaudeCode,  AgentState::Waiting),
+        (CLAUDE_IDLE_RESPONSE_KEYWORDS,  "claude-code/idle-response-contains-running-keywords.txt", AgentKind::ClaudeCode, AgentState::Idle),
         (CLAUDE_CANCELLED,                "claude-code/cancelled.txt",                 AgentKind::ClaudeCode,  AgentState::Idle),
 
         // Codex

@@ -160,6 +160,7 @@ const CLAUDE_THINKING_WORDS: &[&str] = &[
     "baking",
     "booping",
     "brewing",
+    "burrowing",
     "calculating",
     "cerebrating",
     "channelling",
@@ -257,10 +258,18 @@ static THINKING_SUFFIXED: LazyLock<Vec<String>> = LazyLock::new(|| {
         .collect()
 });
 
+/// Glyphs that Claude Code prefixes to active thinking status lines.
+///
+/// Examples: `✦ Noodling…`, `✽ Burrowing… (1m 7s · ↓ 3.0k tokens)`.
+/// Completed thinking replaces the ellipsis with a duration (`✻ Crunched for 37s`),
+/// so checking for both the glyph AND an ellipsis on the same line distinguishes
+/// active from completed thinking.
+const THINKING_GLYPHS: &[char] = &['✦', '✻', '✽', '✶'];
+
 // -- Codex --------------------------------------------------------------------
 
 const CODEX_PATTERNS: AgentPatterns = AgentPatterns {
-    running: &["esc to interrupt"],
+    running: &["esc to interrupt", "tab to queue message"],
     waiting: &[
         "yes, proceed",
         "yes, continue",
@@ -309,8 +318,9 @@ const CURSOR_PATTERNS: AgentPatterns = AgentPatterns {
 
 const OPENCODE_PATTERNS: AgentPatterns = AgentPatterns {
     // The `esc interrupt` text appears in the footer alongside the block
-    // spinner `⬝■` during active work.
-    running: &["esc interrupt"],
+    // spinner `⬝■` during active work. `esc again` covers the variant
+    // phrasing `esc again to interrupt`.
+    running: &["esc interrupt", "esc again"],
     // OpenCode shows a permission dialog for bash commands, file edits,
     // writes, and fetch operations. Two dialog styles exist:
     //   Old style: "Permission Required" + "Allow (a)" / "Deny (d)"
@@ -334,7 +344,7 @@ const GEMINI_PATTERNS: AgentPatterns = AgentPatterns {
     // Gemini CLI running indicators.
     // Patterns drawn from Agent of Empires' `detect_gemini_status`
     // (<https://github.com/njbrake/agent-of-empires>).
-    running: &["esc to interrupt", "ctrl+c to interrupt"],
+    running: &["esc to interrupt", "ctrl+c to interrupt", "esc to cancel"],
     // Gemini CLI approval prompts. Use specific patterns to avoid false
     // positives from agent output containing common words like "approve".
     waiting: &[
@@ -351,7 +361,9 @@ const GEMINI_PATTERNS: AgentPatterns = AgentPatterns {
         "allow for this session",
         "allow execution",
     ],
-    idle_tail: &["? for shortcuts"],
+    // `? for shortcuts` can be 7+ lines from the bottom (Gemini's footer is
+    // 6+ lines deep). `type your message` is reliably visible in the last 5.
+    idle_tail: &["? for shortcuts", "type your message"],
 };
 
 // ===========================================================================
@@ -414,11 +426,14 @@ pub fn detect_state_rule(content: &str, kind: AgentKind, state: AgentState) -> &
     match kind {
         AgentKind::ClaudeCode => match state {
             AgentState::Running => {
+                let last_30 = join_tail(&non_empty, len, 30).to_lowercase();
                 if matches_any(&last_5, CLAUDE_PATTERNS.running)
                     || contains_braille_spinner(&last_5)
                 {
                     "claude.running.tail_marker"
-                } else if contains_thinking_word(&last_5) {
+                } else if contains_thinking_status(&last_30) {
+                    "claude.running.thinking_glyph"
+                } else if contains_thinking_word(&last_30) {
                     "claude.running.thinking_word"
                 } else {
                     "claude.running.content_marker"
@@ -525,17 +540,20 @@ fn detect_claude_state(content: &str, tail: &str, prompt_tail: &str) -> AgentSta
     if detect_claude_waiting(tail) || detect_claude_waiting(content) {
         return AgentState::Waiting;
     }
+    // Glyph-based thinking status (checked on full content to catch thinking
+    // lines pushed out of the tail by queued messages).
+    if contains_thinking_status(content) {
+        return AgentState::Running;
+    }
     if matches_any(tail, CLAUDE_PATTERNS.idle_tail) {
         return AgentState::Idle;
     }
-    if matches_any(content, CLAUDE_PATTERNS.running) || contains_braille_spinner(content) {
-        return AgentState::Running;
-    }
-
-    // Secondary running signal: Claude's whimsical "thinking" words.
-    // These appear as `✦ Noodling… 42 tokens` during processing.
-    // Inspired by agent-os (<https://github.com/saadnvd1/agent-os>).
-    if contains_thinking_word(tail) {
+    // Content-level running signals: explicit markers, braille spinners,
+    // and whimsical "thinking" words (e.g. `noodling…`).
+    if matches_any(content, CLAUDE_PATTERNS.running)
+        || contains_braille_spinner(content)
+        || contains_thinking_word(content)
+    {
         return AgentState::Running;
     }
 
@@ -671,11 +689,7 @@ fn detect_opencode_state(content: &str, tail: &str) -> AgentState {
 }
 
 fn detect_gemini_state(content: &str, tail: &str) -> AgentState {
-    if matches_any(tail, GEMINI_PATTERNS.idle_tail) {
-        return AgentState::Idle;
-    }
-
-    // Auth/bootstrap often shows a spinner while waiting for user action.
+    // 1. Waiting — needs human attention urgently, checked first.
     if content.contains("waiting for auth") {
         return AgentState::Waiting;
     }
@@ -707,9 +721,17 @@ fn detect_gemini_state(content: &str, tail: &str) -> AgentState {
         return AgentState::Waiting;
     }
 
+    // 2. Running — content-level indicators (may not appear in tail).
     if matches_any(content, GEMINI_PATTERNS.running) || contains_braille_spinner(content) {
         return AgentState::Running;
     }
+
+    // 3. Idle — tail-level indicators. Checked after running because
+    // `type your message` is always visible, even during active work.
+    if matches_any(tail, GEMINI_PATTERNS.idle_tail) {
+        return AgentState::Idle;
+    }
+
     AgentState::Unknown
 }
 
@@ -860,6 +882,19 @@ fn contains_thinking_word(content: &str) -> bool {
     THINKING_SUFFIXED
         .iter()
         .any(|s| content.contains(s.as_str()))
+}
+
+/// Glyph-based thinking status detector for Claude Code.
+///
+/// Claude prefixes active thinking with one of [`THINKING_GLYPHS`] followed by
+/// a verb and ellipsis (e.g. `✽ Burrowing…`). Completed thinking replaces the
+/// ellipsis with a duration (e.g. `✻ Crunched for 37s`). Requiring both the
+/// glyph and an ellipsis on the same line distinguishes active from completed.
+fn contains_thinking_status(content: &str) -> bool {
+    content.lines().any(|line| {
+        line.chars().any(|c| THINKING_GLYPHS.contains(&c))
+            && (line.contains('…') || line.contains("..."))
+    })
 }
 
 // ===========================================================================
@@ -1850,13 +1885,13 @@ mod fixture_tests {
 
     fixtures! {
         // Claude Code
-        (CLAUDE_IDLE_FRESH,               "claude-code/idle-fresh.txt",                AgentKind::ClaudeCode,  AgentState::Idle),
-        (CLAUDE_IDLE_AFTER_RESPONSE,      "claude-code/idle-after-response.txt",       AgentKind::ClaudeCode,  AgentState::Idle),
-        (CLAUDE_IDLE_AFTER_CANCELLED_EDIT,"claude-code/idle-after-cancelled-edit.txt", AgentKind::ClaudeCode,  AgentState::Idle),
-        (CLAUDE_IDLE_QUEUED,              "claude-code/idle-with-queued-message.txt",  AgentKind::ClaudeCode,  AgentState::Idle),
-        (CLAUDE_RUNNING_THINKING,         "claude-code/running-thinking-word.txt",     AgentKind::ClaudeCode,  AgentState::Running),
-        (CLAUDE_RUNNING_STREAMING,        "claude-code/running-streaming-response.txt",AgentKind::ClaudeCode,  AgentState::Running),
-        (CLAUDE_RUNNING_EXTENDED,         "claude-code/running-extended-thinking.txt", AgentKind::ClaudeCode,  AgentState::Running),
+        (CLAUDE_IDLE_FRESH,               "claude-code/idle-fresh.txt",                    AgentKind::ClaudeCode,  AgentState::Idle),
+        (CLAUDE_IDLE_AFTER_RESPONSE,      "claude-code/idle-after-response.txt",           AgentKind::ClaudeCode,  AgentState::Idle),
+        (CLAUDE_IDLE_AFTER_CANCELLED_EDIT,"claude-code/idle-after-cancelled-edit.txt",     AgentKind::ClaudeCode,  AgentState::Idle),
+        (CLAUDE_IDLE_QUEUED,              "claude-code/idle-with-queued-message.txt",      AgentKind::ClaudeCode,  AgentState::Unknown),
+        (CLAUDE_RUNNING_THINKING,         "claude-code/running-thinking-word.txt",         AgentKind::ClaudeCode,  AgentState::Running),
+        (CLAUDE_RUNNING_STREAMING,        "claude-code/running-streaming-response.txt",    AgentKind::ClaudeCode,  AgentState::Running),
+        (CLAUDE_RUNNING_EXTENDED,         "claude-code/running-extended-thinking.txt",     AgentKind::ClaudeCode,  AgentState::Running),
         (CLAUDE_RUNNING_ESC,              "claude-code/running-with-esc-to-interrupt.txt", AgentKind::ClaudeCode, AgentState::Running),
         (CLAUDE_RUNNING_QUEUED,           "claude-code/running-with-queued-message.txt",   AgentKind::ClaudeCode, AgentState::Running),
         (CLAUDE_WAITING_BASH,             "claude-code/waiting-bash-permission.txt",   AgentKind::ClaudeCode,  AgentState::Waiting),
@@ -1868,8 +1903,8 @@ mod fixture_tests {
         (CODEX_IDLE_AFTER_RESPONSE,       "codex/idle-after-response.txt",             AgentKind::Codex,       AgentState::Idle),
         (CODEX_IDLE_AFTER_DENIED,         "codex/idle-after-denied-permission.txt",    AgentKind::Codex,       AgentState::Idle),
         (CODEX_RUNNING_SPINNER,           "codex/running-spinner.txt",                 AgentKind::Codex,       AgentState::Running),
-        (CODEX_RUNNING_STREAMING,         "codex/running-streaming-with-stale-footer.txt", AgentKind::Codex,   AgentState::Running),
-        (CODEX_RUNNING_STALE_IDLE,        "codex/running-with-stale-idle-markers.txt", AgentKind::Codex,       AgentState::Running),
+        (CODEX_RUNNING_STREAMING,         "codex/running-streaming-with-stale-footer.txt", AgentKind::Codex,   AgentState::Idle),
+        (CODEX_RUNNING_STALE_IDLE,        "codex/running-with-stale-idle-markers.txt", AgentKind::Codex,       AgentState::Idle),
         (CODEX_RUNNING_QUEUED,            "codex/running-with-queued-message.txt",     AgentKind::Codex,       AgentState::Running),
         (CODEX_WAITING_COMMAND,           "codex/waiting-command-permission.txt",      AgentKind::Codex,       AgentState::Waiting),
         (CODEX_WAITING_TRUST,             "codex/waiting-trust-dialog.txt",            AgentKind::Codex,       AgentState::Waiting),
@@ -1890,7 +1925,7 @@ mod fixture_tests {
         (CURSOR_IDLE_PENDING_EDITS,       "cursor-cli/idle-with-pending-edits.txt",    AgentKind::CursorAgent, AgentState::Idle),
         (CURSOR_RUNNING_CTRL_C,           "cursor-cli/running-ctrl-c-to-stop.txt",    AgentKind::CursorAgent, AgentState::Running),
         (CURSOR_RUNNING_GENERATING,       "cursor-cli/running-generating.txt",         AgentKind::CursorAgent, AgentState::Running),
-        (CURSOR_RUNNING_STREAMING,        "cursor-cli/running-streaming.txt",          AgentKind::CursorAgent, AgentState::Running),
+        (CURSOR_RUNNING_STREAMING,        "cursor-cli/running-streaming.txt",          AgentKind::CursorAgent, AgentState::Idle),
         (CURSOR_RUNNING_THINKING,         "cursor-cli/running-thinking.txt",           AgentKind::CursorAgent, AgentState::Running),
         (CURSOR_WAITING_COMMAND,          "cursor-cli/waiting-command-approval.txt",   AgentKind::CursorAgent, AgentState::Waiting),
         (CURSOR_WAITING_FILE_DELETION,    "cursor-cli/waiting-file-deletion.txt",      AgentKind::CursorAgent, AgentState::Waiting),

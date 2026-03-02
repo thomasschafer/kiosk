@@ -184,7 +184,7 @@ fn detect_from_pane_data(
                 .and_then(|args| detect::detect_agent_kind(command, Some(args)))
                 .map(|kind| (kind, KindSource::ChildProcess, "agent.kind.child_process"));
         }
-        if kind_debug.is_none() && (may_host_agent(command) || allow_wrapper_fallback) {
+        if kind_debug.is_none() && allow_wrapper_fallback {
             kind_debug = pane_title
                 .and_then(detect::detect_agent_kind_from_title)
                 .map(|kind| (kind, KindSource::PaneTitle, "agent.kind.pane_title"));
@@ -234,9 +234,15 @@ fn detect_from_pane_data(
             // Skip this for Codex: Codex sessions often include non-agent pane
             // activity (editor/shell), and session-level activity can cause
             // false Running while Codex itself is idle.
+            let kind_source = kind_debug
+                .as_ref()
+                .map(|(_, source, _)| *source)
+                .unwrap_or(KindSource::PaneCommand);
+
             if state == AgentState::Unknown
                 && kind != AgentKind::Codex
                 && !content.trim().is_empty()
+                && kind_source != KindSource::PaneTitle
             {
                 state = infer_state_from_activity_ts(data.session_activity);
                 if state == AgentState::Running {
@@ -950,6 +956,31 @@ mod tests {
     }
 
     #[test]
+    fn pane_title_not_used_for_host_shell_command() {
+        let mut tmux = MockTmuxProvider::default();
+        let session = "title-host-shell";
+        tmux.pane_info.insert(
+            session.to_string(),
+            vec![PaneInfo {
+                pane_id: "%0".to_string(),
+                command: "zsh".to_string(),
+                pid: 99999,
+            }],
+        );
+        tmux.pane_titles
+            .insert("%0".to_string(), "✳ Claude Code".to_string());
+        tmux.pane_content.insert(
+            "%0".to_string(),
+            "stale transcript text\n0 | host $".to_string(),
+        );
+
+        assert!(
+            detect_for_session(&tmux, session).is_none(),
+            "shell panes should not infer agent kind from title alone"
+        );
+    }
+
+    #[test]
     fn content_fallback_unknown_is_ignored() {
         let mut tmux = MockTmuxProvider::default();
         let session = "content-fallback-unknown";
@@ -1046,6 +1077,40 @@ mod tests {
             status.state,
             AgentState::Running,
             "Unknown + recent activity should infer Running"
+        );
+    }
+
+    #[test]
+    fn title_inferred_unknown_not_upgraded_by_activity() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let mut tmux = MockTmuxProvider::default();
+        let session = "title-unknown-active";
+        tmux.pane_info.insert(
+            session.to_string(),
+            vec![PaneInfo {
+                pane_id: "%0".to_string(),
+                command: "2.1.63".to_string(),
+                pid: 99999,
+            }],
+        );
+        tmux.pane_titles
+            .insert("%0".to_string(), "✳ Claude Code".to_string());
+        tmux.pane_content.insert(
+            "%0".to_string(),
+            "plain shell text without markers".to_string(),
+        );
+        tmux.session_activity_ts.insert(session.to_string(), now);
+
+        let status = detect_for_session(&tmux, session).unwrap().status;
+        assert_eq!(status.kind, AgentKind::ClaudeCode);
+        assert_eq!(
+            status.state,
+            AgentState::Unknown,
+            "title-inferred unknown should not be upgraded by activity"
         );
     }
 

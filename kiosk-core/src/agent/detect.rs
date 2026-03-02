@@ -688,7 +688,7 @@ fn detect_opencode_state(content: &str, tail: &str) -> AgentState {
     AgentState::Unknown
 }
 
-fn detect_gemini_state(content: &str, tail: &str) -> AgentState {
+fn detect_gemini_state(content: &str, _tail: &str) -> AgentState {
     // 1. Waiting — needs human attention urgently, checked first.
     if content.contains("waiting for auth") {
         return AgentState::Waiting;
@@ -726,9 +726,11 @@ fn detect_gemini_state(content: &str, tail: &str) -> AgentState {
         return AgentState::Running;
     }
 
-    // 3. Idle — tail-level indicators. Checked after running because
-    // `type your message` is always visible, even during active work.
-    if matches_any(tail, GEMINI_PATTERNS.idle_tail) {
+    // 3. Idle — checked against full content (not just tail) because Gemini's
+    // footer can push `? for shortcuts` 7+ lines from the bottom. This is safe
+    // because Gemini uses the alt screen (no stale scrollback) and running is
+    // checked first.
+    if matches_any(content, GEMINI_PATTERNS.idle_tail) {
         return AgentState::Idle;
     }
 
@@ -886,14 +888,21 @@ fn contains_thinking_word(content: &str) -> bool {
 
 /// Glyph-based thinking status detector for Claude Code.
 ///
-/// Claude prefixes active thinking with one of [`THINKING_GLYPHS`] followed by
-/// a verb and ellipsis (e.g. `✽ Burrowing…`). Completed thinking replaces the
-/// ellipsis with a duration (e.g. `✻ Crunched for 37s`). Requiring both the
-/// glyph and an ellipsis on the same line distinguishes active from completed.
+/// Claude prefixes active thinking with one of [`THINKING_GLYPHS`] at the start
+/// of the line, followed by a verb and ellipsis (e.g. `✽ Burrowing…`). Completed
+/// thinking replaces the ellipsis with a duration (e.g. `✻ Crunched for 37s`).
+///
+/// We require the glyph to be the first non-whitespace character AND an ellipsis
+/// on the same line. This avoids false matches from lines where a glyph appears
+/// in normal text (e.g. tool output or user-typed messages).
 fn contains_thinking_status(content: &str) -> bool {
     content.lines().any(|line| {
-        line.chars().any(|c| THINKING_GLYPHS.contains(&c))
-            && (line.contains('…') || line.contains("..."))
+        let trimmed = line.trim_start();
+        trimmed
+            .chars()
+            .next()
+            .is_some_and(|c| THINKING_GLYPHS.contains(&c))
+            && (trimmed.contains('…') || trimmed.contains("..."))
     })
 }
 

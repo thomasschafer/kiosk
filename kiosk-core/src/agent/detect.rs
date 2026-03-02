@@ -1898,6 +1898,7 @@ mod fixture_tests {
         (CLAUDE_IDLE_AFTER_RESPONSE,      "claude-code/idle-after-response.txt",           AgentKind::ClaudeCode,  AgentState::Idle),
         (CLAUDE_IDLE_AFTER_CANCELLED_EDIT,"claude-code/idle-after-cancelled-edit.txt",     AgentKind::ClaudeCode,  AgentState::Idle),
         (CLAUDE_IDLE_QUEUED,              "claude-code/idle-with-queued-message.txt",      AgentKind::ClaudeCode,  AgentState::Unknown),
+        (CLAUDE_IDLE_TYPING,             "claude-code/idle-typing-after-completed-thinking.txt", AgentKind::ClaudeCode, AgentState::Unknown),
         (CLAUDE_RUNNING_THINKING,         "claude-code/running-thinking-word.txt",         AgentKind::ClaudeCode,  AgentState::Running),
         (CLAUDE_RUNNING_STREAMING,        "claude-code/running-streaming-response.txt",    AgentKind::ClaudeCode,  AgentState::Running),
         (CLAUDE_RUNNING_EXTENDED,         "claude-code/running-extended-thinking.txt",     AgentKind::ClaudeCode,  AgentState::Running),
@@ -1944,6 +1945,7 @@ mod fixture_tests {
         // Gemini CLI
         (GEMINI_IDLE_FRESH,               "gemini-cli/idle-fresh.txt",                 AgentKind::Gemini,      AgentState::Idle),
         (GEMINI_IDLE_AFTER_RESPONSE,      "gemini-cli/idle-after-response.txt",        AgentKind::Gemini,      AgentState::Idle),
+        (GEMINI_IDLE_USER_MSG,           "gemini-cli/idle-with-user-message.txt",     AgentKind::Gemini,      AgentState::Idle),
         (GEMINI_RUNNING_BRAILLE,          "gemini-cli/running-braille-spinner.txt",    AgentKind::Gemini,      AgentState::Running),
         (GEMINI_RUNNING_LONG,             "gemini-cli/running-long-response.txt",      AgentKind::Gemini,      AgentState::Running),
         (GEMINI_WAITING_AUTH,             "gemini-cli/waiting-auth.txt",               AgentKind::Gemini,      AgentState::Waiting),

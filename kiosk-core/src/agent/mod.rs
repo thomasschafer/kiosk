@@ -184,7 +184,7 @@ fn detect_from_pane_data(
                 .and_then(|args| detect::detect_agent_kind(command, Some(args)))
                 .map(|kind| (kind, KindSource::ChildProcess, "agent.kind.child_process"));
         }
-        if kind_debug.is_none() {
+        if kind_debug.is_none() && (may_host_agent(command) || allow_wrapper_fallback) {
             kind_debug = pane_title
                 .and_then(detect::detect_agent_kind_from_title)
                 .map(|kind| (kind, KindSource::PaneTitle, "agent.kind.pane_title"));
@@ -924,6 +924,29 @@ mod tests {
         let status = detect_for_session(&tmux, session).unwrap().status;
         assert_eq!(status.kind, AgentKind::ClaudeCode);
         assert_eq!(status.state, AgentState::Waiting);
+    }
+
+    #[test]
+    fn pane_title_not_used_for_non_host_command() {
+        let mut tmux = MockTmuxProvider::default();
+        let session = "title-non-host";
+        tmux.pane_info.insert(
+            session.to_string(),
+            vec![PaneInfo {
+                pane_id: "%0".to_string(),
+                command: "vim".to_string(),
+                pid: 99999,
+            }],
+        );
+        tmux.pane_titles
+            .insert("%0".to_string(), "OpenAI Codex".to_string());
+        tmux.pane_content
+            .insert("%0".to_string(), "regular editor text".to_string());
+
+        assert!(
+            detect_for_session(&tmux, session).is_none(),
+            "pane title fallback should be restricted to host/wrapper commands"
+        );
     }
 
     #[test]

@@ -1265,6 +1265,15 @@ const KNOWN_SHELLS: &[&str] = &[
     "bash", "zsh", "fish", "sh", "dash", "ash", "ksh", "tcsh", "csh", "nu", "nushell", "pwsh",
 ];
 
+const WAIT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+const UNKNOWN_READY_POLLS: u32 = 8;
+
+#[derive(Clone, Copy)]
+struct WaitOptions {
+    poll_interval: std::time::Duration,
+    unknown_ready_polls: u32,
+}
+
 /// Core wait loop: blocks until the pane's foreground process is a shell
 /// (agent exited) **or** an agent is detected in a non-Running state
 /// (Idle or Waiting — both mean the agent needs user attention or is done).
@@ -1279,9 +1288,31 @@ fn wait_for_idle(
     timeout_secs: u64,
     agent_enabled: bool,
 ) -> CliResult<WaitOutput> {
+    wait_for_idle_with_options(
+        tmux,
+        session_name,
+        pane,
+        timeout_secs,
+        agent_enabled,
+        WaitOptions {
+            poll_interval: WAIT_POLL_INTERVAL,
+            unknown_ready_polls: UNKNOWN_READY_POLLS,
+        },
+    )
+}
+
+fn wait_for_idle_with_options(
+    tmux: &dyn TmuxProvider,
+    session_name: &str,
+    pane: usize,
+    timeout_secs: u64,
+    agent_enabled: bool,
+    options: WaitOptions,
+) -> CliResult<WaitOutput> {
     let pane_str = pane.to_string();
     let start_time = std::time::Instant::now();
     let timeout_duration = std::time::Duration::from_secs(timeout_secs);
+    let mut unknown_streak: u32 = 0;
 
     loop {
         if start_time.elapsed() >= timeout_duration {
@@ -1305,8 +1336,24 @@ fn wait_for_idle(
                             exit_code: None,
                         });
                     }
-                    // Running or Unknown — keep waiting
-                    _ => {}
+                    kiosk_core::AgentState::Unknown => {
+                        unknown_streak = unknown_streak.saturating_add(1);
+                        if unknown_streak >= options.unknown_ready_polls {
+                            let pane_cmd = tmux
+                                .pane_current_command(session_name, &pane_str)
+                                .unwrap_or_default();
+                            return Ok(WaitOutput {
+                                idle: true,
+                                timed_out: false,
+                                pane_command: pane_cmd,
+                                exit_code: None,
+                            });
+                        }
+                    }
+                    // Running keeps waiting; Unknown has a bounded fallback.
+                    kiosk_core::AgentState::Running => {
+                        unknown_streak = 0;
+                    }
                 }
             } else if let Ok(command) = tmux.pane_current_command(session_name, &pane_str)
                 && KNOWN_SHELLS.iter().any(|&shell| command == shell)
@@ -1318,6 +1365,8 @@ fn wait_for_idle(
                     pane_command: command,
                     exit_code: None,
                 });
+            } else {
+                unknown_streak = 0;
             }
         } else {
             match tmux.pane_current_command(session_name, &pane_str) {
@@ -1339,7 +1388,7 @@ fn wait_for_idle(
             }
         }
 
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        std::thread::sleep(options.poll_interval);
     }
 }
 
@@ -2822,6 +2871,69 @@ mod tests {
         );
 
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn wait_for_idle_unknown_fallback_returns_ready() {
+        let mut tmux = MockTmuxProvider::default();
+        tmux.pane_info.insert(
+            "demo".to_string(),
+            vec![kiosk_core::tmux::provider::PaneInfo {
+                pane_id: "%0".to_string(),
+                command: "claude".to_string(),
+                pid: 4242,
+            }],
+        );
+        tmux.pane_content.insert(
+            "%0".to_string(),
+            "random output with no patterns".to_string(),
+        );
+
+        let output = wait_for_idle_with_options(
+            &tmux,
+            "demo",
+            0,
+            1,
+            true,
+            WaitOptions {
+                poll_interval: std::time::Duration::from_millis(10),
+                unknown_ready_polls: 3,
+            },
+        )
+        .expect("should not timeout");
+        assert!(output.idle);
+        assert!(!output.timed_out);
+    }
+
+    #[test]
+    fn wait_for_idle_running_still_times_out() {
+        let mut tmux = MockTmuxProvider::default();
+        tmux.pane_info.insert(
+            "demo".to_string(),
+            vec![kiosk_core::tmux::provider::PaneInfo {
+                pane_id: "%0".to_string(),
+                command: "claude".to_string(),
+                pid: 4242,
+            }],
+        );
+        tmux.pane_content.insert(
+            "%0".to_string(),
+            "⠋ working... esc to interrupt".to_string(),
+        );
+
+        let err = wait_for_idle_with_options(
+            &tmux,
+            "demo",
+            0,
+            1,
+            true,
+            WaitOptions {
+                poll_interval: std::time::Duration::from_millis(10),
+                unknown_ready_polls: 3,
+            },
+        )
+        .expect_err("should timeout on running");
+        assert_eq!(err.message(), "wait timeout");
     }
 
     #[test]

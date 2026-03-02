@@ -27,12 +27,6 @@ pub fn detect_agent_kind(
 ) -> Option<AgentKind> {
     let cmd_lower = pane_command.to_lowercase();
 
-    // Cursor Agent is often launched as `agent` or `cursor` in newer
-    // releases, while older installs used `cursor-agent`.
-    if matches!(cmd_lower.as_str(), "agent" | "cursor") {
-        return Some(AgentKind::CursorAgent);
-    }
-
     for &(pattern, kind) in AGENT_PATTERNS {
         if cmd_lower.contains(pattern) {
             return Some(kind);
@@ -60,10 +54,10 @@ pub fn detect_agent_kind_from_title(title: &str) -> Option<AgentKind> {
     if lower.contains("claude code") {
         return Some(AgentKind::ClaudeCode);
     }
-    if lower.contains("codex") {
+    if lower.contains("openai codex") {
         return Some(AgentKind::Codex);
     }
-    if lower.contains("cursor") {
+    if lower.contains("cursor agent") {
         return Some(AgentKind::CursorAgent);
     }
     if lower.contains("opencode") {
@@ -136,18 +130,11 @@ struct AgentPatterns {
 const CLAUDE_PATTERNS: AgentPatterns = AgentPatterns {
     running: &["esc to interrupt", "ctrl+c to interrupt"],
     waiting: &[
-        "do you want to proceed?",
         "yes, allow",
         "yes, and always allow",
         "yes, and don't ask again",
         "allow once",
         "allow always",
-        "(y/n)",
-        "[y/n]",
-        "enter to select",
-        "enter to confirm",
-        "esc to cancel",
-        "esc to exit",
         "❯ 1.",
         "do you trust the files",
     ],
@@ -308,10 +295,6 @@ const CURSOR_PATTERNS: AgentPatterns = AgentPatterns {
         "run (once)",
         "run everything",
         "skip (esc or n)",
-        "enter to select",
-        "(y/n)",
-        "[y/n]",
-        "esc to cancel",
         // Cursor shows file operation approval dialogs
         "delete this file?",
         "delete (y)",
@@ -410,7 +393,7 @@ pub fn detect_state(content: &str, kind: AgentKind) -> AgentState {
         AgentKind::Codex => detect_codex_state(&last_30, &last_5),
         AgentKind::CursorAgent => detect_cursor_state(&last_30, &last_5),
         AgentKind::OpenCode => detect_opencode_state(&last_30, &last_5),
-        AgentKind::Gemini => detect_generic_state(&last_30, &last_5, &GEMINI_PATTERNS),
+        AgentKind::Gemini => detect_gemini_state(&last_30, &last_5),
     }
 }
 
@@ -504,8 +487,14 @@ pub fn detect_state_rule(content: &str, kind: AgentKind, state: AgentState) -> &
             AgentState::Unknown => "opencode.unknown.no_match",
         },
         AgentKind::Gemini => match state {
-            AgentState::Running => "gemini.running.pattern",
-            AgentState::Waiting => "gemini.waiting.pattern",
+            AgentState::Running => "gemini.running.pattern_or_spinner",
+            AgentState::Waiting => {
+                if last_5.contains("waiting for auth") {
+                    "gemini.waiting.auth"
+                } else {
+                    "gemini.waiting.pattern"
+                }
+            }
             AgentState::Idle => "gemini.idle.footer",
             AgentState::Unknown => "gemini.unknown.no_match",
         },
@@ -527,11 +516,20 @@ pub fn detect_state_rule(content: &str, kind: AgentKind, state: AgentState) -> &
 /// tmux. As a fallback, the input prompt `❯` on the last non-empty line
 /// (with no running/waiting indicators elsewhere) indicates idle.
 fn detect_claude_state(content: &str, tail: &str, prompt_tail: &str) -> AgentState {
-    // First try the standard detection (handles running, waiting, and
-    // the `? for shortcuts` idle pattern if tmux happens to capture it).
-    let state = detect_active_state(content, tail, &CLAUDE_PATTERNS);
-    if state != AgentState::Unknown {
-        return state;
+    // Claude priority differs from generic active-state detection because
+    // some waiting markers (for example "(y/n)") are too broad unless paired
+    // with an approval prompt. Keep waiting logic in a dedicated helper.
+    if matches_any(tail, CLAUDE_PATTERNS.running) || contains_braille_spinner(tail) {
+        return AgentState::Running;
+    }
+    if detect_claude_waiting(tail) || detect_claude_waiting(content) {
+        return AgentState::Waiting;
+    }
+    if matches_any(tail, CLAUDE_PATTERNS.idle_tail) {
+        return AgentState::Idle;
+    }
+    if matches_any(content, CLAUDE_PATTERNS.running) || contains_braille_spinner(content) {
+        return AgentState::Running;
     }
 
     // Secondary running signal: Claude's whimsical "thinking" words.
@@ -557,6 +555,22 @@ fn detect_claude_state(content: &str, tail: &str, prompt_tail: &str) -> AgentSta
     }
 
     AgentState::Unknown
+}
+
+fn detect_claude_waiting(content: &str) -> bool {
+    if matches_any(content, CLAUDE_PATTERNS.waiting) {
+        return true;
+    }
+    if content.contains("do you want to proceed?") {
+        return content.contains("(y/n)")
+            || content.contains("[y/n]")
+            || content.contains("❯ 1.")
+            || content.contains("enter to select")
+            || content.contains("yes, allow")
+            || content.contains("allow once")
+            || content.contains("allow always");
+    }
+    false
 }
 
 /// Codex-specific state detection.
@@ -656,6 +670,49 @@ fn detect_opencode_state(content: &str, tail: &str) -> AgentState {
     AgentState::Unknown
 }
 
+fn detect_gemini_state(content: &str, tail: &str) -> AgentState {
+    if matches_any(tail, GEMINI_PATTERNS.idle_tail) {
+        return AgentState::Idle;
+    }
+
+    // Auth/bootstrap often shows a spinner while waiting for user action.
+    if content.contains("waiting for auth") {
+        return AgentState::Waiting;
+    }
+    if matches_any(
+        content,
+        &["action required", "allow once", "allow for this session"],
+    ) {
+        return AgentState::Waiting;
+    }
+    if matches_any(
+        content,
+        &[
+            "run this command?",
+            "approve?",
+            "execute?",
+            "allow execution",
+        ],
+    ) {
+        return AgentState::Waiting;
+    }
+    // "(y/n)" is too broad on its own; require nearby approval context.
+    if (content.contains("(y/n)") || content.contains("[y/n]"))
+        && (content.contains("approve")
+            || content.contains("allow")
+            || content.contains("execute")
+            || content.contains("action required")
+            || content.contains("run this command"))
+    {
+        return AgentState::Waiting;
+    }
+
+    if matches_any(content, GEMINI_PATTERNS.running) || contains_braille_spinner(content) {
+        return AgentState::Running;
+    }
+    AgentState::Unknown
+}
+
 // ===========================================================================
 // Shared detection logic
 // ===========================================================================
@@ -686,26 +743,6 @@ fn detect_active_state(content: &str, tail: &str, patterns: &AgentPatterns) -> A
     }
     if matches_any(content, patterns.running) || contains_braille_spinner(content) {
         return AgentState::Running;
-    }
-    AgentState::Unknown
-}
-
-/// Generic agent state detection (for agents like Cursor, Gemini where we
-/// don't have a strong "absence of idle = running" signal).
-///
-/// 1. Check `idle_tail` patterns against the tail — if found, Idle.
-/// 2. Check running patterns + braille spinners against full content.
-/// 3. Check waiting patterns against full content.
-/// 4. Default to Unknown (no positive signal → honest uncertainty).
-fn detect_generic_state(content: &str, tail: &str, patterns: &AgentPatterns) -> AgentState {
-    if matches_any(tail, patterns.idle_tail) {
-        return AgentState::Idle;
-    }
-    if matches_any(content, patterns.running) || contains_braille_spinner(content) {
-        return AgentState::Running;
-    }
-    if matches_any(content, patterns.waiting) {
-        return AgentState::Waiting;
     }
     AgentState::Unknown
 }
@@ -922,14 +959,8 @@ mod tests {
             detect_agent_kind("cursor-agent", None),
             Some(AgentKind::CursorAgent),
         );
-        assert_eq!(
-            detect_agent_kind("agent", None),
-            Some(AgentKind::CursorAgent),
-        );
-        assert_eq!(
-            detect_agent_kind("cursor", None),
-            Some(AgentKind::CursorAgent),
-        );
+        assert_eq!(detect_agent_kind("agent", None), None);
+        assert_eq!(detect_agent_kind("cursor", None), None);
     }
 
     #[test]
@@ -995,6 +1026,23 @@ mod tests {
         assert_eq!(
             detect_agent_kind_from_title("✳ Claude Code"),
             Some(AgentKind::ClaudeCode)
+        );
+    }
+
+    #[test]
+    fn detect_kind_from_title_codex() {
+        assert_eq!(
+            detect_agent_kind_from_title(">_ OpenAI Codex"),
+            Some(AgentKind::Codex)
+        );
+    }
+
+    #[test]
+    fn detect_kind_from_title_cursor_requires_agent_word() {
+        assert_eq!(detect_agent_kind_from_title("Cursor"), None);
+        assert_eq!(
+            detect_agent_kind_from_title("Cursor Agent"),
+            Some(AgentKind::CursorAgent)
         );
     }
 
@@ -1106,6 +1154,24 @@ mod tests {
                 AgentKind::ClaudeCode
             ),
             AgentState::Waiting
+        );
+    }
+
+    #[test]
+    fn claude_proceed_phrase_without_dialog_context_is_not_waiting() {
+        let content = "I ask users: do you want to proceed? in docs\n? for shortcuts";
+        assert_eq!(
+            detect_state(content, AgentKind::ClaudeCode),
+            AgentState::Idle
+        );
+    }
+
+    #[test]
+    fn claude_y_n_in_prose_is_not_waiting() {
+        let content = "Guideline: use (y/n) to answer prompts in scripts\n? for shortcuts";
+        assert_eq!(
+            detect_state(content, AgentKind::ClaudeCode),
+            AgentState::Idle
         );
     }
 
@@ -1613,6 +1679,25 @@ mod tests {
         assert_eq!(
             detect_state("approve? yes or no", AgentKind::Gemini),
             AgentState::Waiting,
+        );
+    }
+
+    #[test]
+    fn gemini_waiting_for_auth_is_waiting() {
+        assert_eq!(
+            detect_state(
+                "⠴ Waiting for auth... (Press ESC to cancel)",
+                AgentKind::Gemini
+            ),
+            AgentState::Waiting,
+        );
+    }
+
+    #[test]
+    fn gemini_y_n_in_generic_prose_is_not_waiting() {
+        assert_eq!(
+            detect_state("The docs mention (y/n) as an example", AgentKind::Gemini),
+            AgentState::Unknown,
         );
     }
 

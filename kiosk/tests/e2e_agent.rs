@@ -460,10 +460,16 @@ impl AgentTestEnvDefault {
     }
 
     /// Agent-specific prompt that triggers a permission/approval prompt.
-    fn waiting_task_prompt(_agent: AgentKind) -> &'static str {
+    fn waiting_task_prompt(agent: AgentKind) -> &'static str {
         // Asking to delete a file triggers permission prompts in most agents.
         // The file delete-me.txt is created before sending this prompt.
-        "delete the file called delete-me.txt in this directory"
+        match agent {
+            // In untrusted mode Codex reliably prompts on explicit shell
+            // commands; natural-language delete requests may use direct file
+            // tools and skip approval in some versions.
+            AgentKind::Codex => "run this shell command exactly: rm delete-me.txt",
+            _ => "delete the file called delete-me.txt in this directory",
+        }
     }
 
     /// Create a tmux session, set PATH, and launch the agent binary.
@@ -531,21 +537,6 @@ impl AgentTestEnvDefault {
     /// - **Gemini**: folder trust dialog ("Trust folder")
     fn dismiss_startup_dialogs(&self, agent: AgentKind) {
         match agent {
-            AgentKind::Codex => {
-                // Codex shows "Update available! X -> Y" with options.
-                // Wait for it to appear, then press "2" to skip, then Enter.
-                // If no update dialog, this is harmless (just sends keys to
-                // the idle prompt which ignores them).
-                if wait_for_pane_content(
-                    &self.kiosk_session,
-                    "update available",
-                    10_000,
-                    &self.tmux_socket,
-                ) {
-                    self.send_to_agent("2"); // "Skip"
-                    wait_ms(1000);
-                }
-            }
             AgentKind::CursorAgent => {
                 // Cursor shows "Workspace Trust Required" with [a] Trust.
                 if wait_for_pane_content(&self.kiosk_session, "trust", 10_000, &self.tmux_socket) {
@@ -567,8 +558,9 @@ impl AgentTestEnvDefault {
                     wait_ms(2000);
                 }
             }
-            AgentKind::ClaudeCode | AgentKind::OpenCode => {
-                // These agents go straight to idle — no startup dialogs.
+            AgentKind::Codex | AgentKind::ClaudeCode | AgentKind::OpenCode => {
+                // These agents go straight to idle — no blocking startup dialogs.
+                // Codex may show an update banner, but it is informational.
             }
         }
     }
@@ -2011,6 +2003,13 @@ fn run_real_agent_all_states(agent: AgentKind) {
                 .unwrap();
             wait_ms(3000);
         }
+    } else if agent == AgentKind::Gemini {
+        assert!(
+            state.as_deref() == Some("Idle")
+                || state.as_deref() == Some("Waiting")
+                || state.as_deref() == Some("Unknown"),
+            "{agent_name}: expected Idle/Waiting/Unknown after startup, got {state:?}"
+        );
     } else {
         assert_eq!(
             state.as_deref(),

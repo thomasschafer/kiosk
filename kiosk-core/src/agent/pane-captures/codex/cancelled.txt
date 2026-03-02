@@ -1,0 +1,40 @@
+  ## 14. Known barriers to proving P vs NP
+
+  Three famous meta-barriers explain why many proof attempts fail:
+
+  1. Relativization (Baker-Gill-Solovay):
+     There are oracles where P=NP and others where P≠NP, so relativizing techniques can’t settle it.
+  2. Natural Proofs (Razborov-Rudich):
+     A broad class of combinatorial circuit lower-bound arguments would break standard cryptographic
+     assumptions, so likely insufficient as-is.
+  3. Algebrization (Aaronson-Wigderson):
+     Extends relativization barrier to algebraic oracle access; blocks many additional techniques.
+
+  These do not show impossibility, only that certain broad methods are inadequate.
+
+  ———
+
+  ## 15. What would follow from either answer
+
+  ### If P = NP
+
+  - NP-complete problems become polytime solvable.
+  - Major impact on optimization, theorem proving, synthesis, verification, AI planning.
+  - Most public-key cryptography as currently based on worst-case hardness assumptions would be
+    threatened (with caveats about average-case and concrete constructions).
+
+  ### If P ≠ NP
+
+  - Confirms intrinsic worst-case limits for exact polytime algorithms on NP-complete problems.
+  - Does not preclude:
+      - good approximation,
+      - average-case tractability,
+      - fixed-parameter tractability,
+      - heuristics that work well in practice.
+
+  ———
+
+
+› Use /skills to list available skills
+
+  ? for shortcuts                                                                100% context left

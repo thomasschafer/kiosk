@@ -1,0 +1,40 @@
+
+                                                                                                   
+  Create a new file called hello.py with a hello world program                                     
+                                                                                                   
+                                                                                                   
+
+  I’ll create hello.py with a simple Hello World program in your workspace.
+
+
+  ┌────────────────────────────────────────────────────────────────────────────────────────────────┐
+  │ hello.py +5                                                                                    │
+  │                                                                                                │
+  │ + def main():                                                                                  │
+  │ +     print("Hello, world!")                                                                   │
+  │                                                                                                │
+  │ +                                                                                              │
+  │ + if __name__ == "__main__":                                                                   │
+  │ +     main()                                                                                   │
+  └────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+
+
+  Result
+
+  Created hello.py with a simple Hello World program:
+
+  def main():
+      print("Hello, world!")
+  if __name__ == "__main__":
+      main()
+
+
+
+ ┌────────────────────────────────────────────────────────────────────────────────────────────────┐
+ │ → Add a follow-up                                                                              │
+ └────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+  Auto · 4.9% · 1 file edited
+  / commands · @ files · ! shell · ctrl+r to review edits
+

@@ -236,8 +236,7 @@ fn detect_from_pane_data(
             // false Running while Codex itself is idle.
             let kind_source = kind_debug
                 .as_ref()
-                .map(|(_, source, _)| *source)
-                .unwrap_or(KindSource::PaneCommand);
+                .map_or(KindSource::PaneCommand, |(_, source, _)| *source);
 
             if state == AgentState::Unknown
                 && kind != AgentKind::Codex

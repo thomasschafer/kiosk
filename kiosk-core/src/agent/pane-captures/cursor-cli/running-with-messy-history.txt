@@ -17,7 +17,7 @@
 
 0 | nix-server | gemini-test2 $ cd /tmp && mkdir -p cursor-test && cd cursor-test && ~/.local/bin/cu
 rsor
-/home/tomschafer/.local/bin/cursor: line 26: $1: unbound variable
+/home/user/.local/bin/cursor: line 26: $1: unbound variable
 1 | nix-server | cursor-test $ ~/.local/bin/cursor agent
 
 

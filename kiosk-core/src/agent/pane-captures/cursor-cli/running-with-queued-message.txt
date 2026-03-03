@@ -10,7 +10,7 @@
   ? for shortcuts                                                             Checking for updates
 
 Resume this session with:
-claude --resume 5226ea16-8510-453a-af54-7208d8e341ff
+claude --resume 4d94c60d-d66b-4932-8e48-3a200446ed74
 0 | nix-server | claude-test $ cd /tmp/cursor-test && ~/.local/bin/cursor agent
 
 

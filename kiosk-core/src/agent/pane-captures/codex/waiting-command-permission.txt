@@ -28,7 +28,7 @@
 
   Would you like to run the following command?
 
-  Reason: Do you want to allow creating /home/tomschafer/codex_test_outside_sandbox.txt outside
+  Reason: Do you want to allow creating /home/user/codex_test_outside_sandbox.txt outside
   the sandbox?
 
   $ touch ~/codex_test_outside_sandbox.txt

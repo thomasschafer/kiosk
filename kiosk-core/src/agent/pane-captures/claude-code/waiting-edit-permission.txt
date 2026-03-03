@@ -5,7 +5,7 @@
 │                      ▝▜█████▛▘                     │                                             │
 │                        ▘▘ ▝▝                       │                                             │
 │      Opus 4.6 · Claude Max ·                       │                                             │
-│      thomasschafer97@gmail.com's Organization      │                                             │
+│      user@example.com's Organization      │                                             │
 │                /tmp/tmp.c7z2QF1Syn                 │                                             │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 

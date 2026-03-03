@@ -10,7 +10,7 @@ export PATH="$HOME/.local/bin:$PATH" && claude
 │                      ▝▜█████▛▘                     │                                             │
 │                        ▘▘ ▝▝                       │                                             │
 │      Opus 4.6 · Claude Max ·                       │                                             │
-│      thomasschafer97@gmail.com's Organization      │                                             │
+│      user@example.com's Organization      │                                             │
 │                  /tmp/claude-test                  │                                             │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 

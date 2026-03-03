@@ -7,7 +7,7 @@
 
   ### Lock-Free Structures
 Token usage: total=1,475 input=1,219 (+ 7,424 cached) output=256 (reasoning 19)
-To continue this session, run codex resume 019cb571-db93-7340-858a-850b5446ff03
+To continue this session, run codex resume 4d38a4f7-fc7e-4c67-8ce4-f17bef75dcdc
 0 | nix-server | codex-test $ cd /tmp/claude-test && ~/.local/bin/claude --dangerously-skip-permissi
 ons
 
@@ -20,7 +20,7 @@ ons
 │                      ▝▜█████▛▘                     │                                             │
 │                        ▘▘ ▝▝                       │                                             │
 │      Opus 4.6 · Claude Max ·                       │                                             │
-│      thomasschafer97@gmail.com's Organization      │                                             │
+│      user@example.com's Organization      │                                             │
 │                  /tmp/claude-test                  │                                             │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 

@@ -13,8 +13,8 @@
   Session ID: f657a07c-39c6-49ed-848f-23e8e6944518
   cwd: /tmp/claude-test
   Login method: Claude Max Account
-  Organization: thomasschafer97@gmail.com's Organization
-  Email: thomasschafer97@gmail.com
+  Organization: user@example.com's Organization
+  Email: user@example.com
 
   Model: Default Opus 4.6 · Most capable for complex work
   MCP servers: claude.ai Google Calendar △, claude.ai Gmail △
@@ -22,7 +22,7 @@
   Setting sources: User settings
 
   System Diagnostics
-   ⚠ Leftover npm global installation at /home/tomschafer/.local/bin/claude
+   ⚠ Leftover npm global installation at /home/user/.local/bin/claude
 
   Esc to cancel
 

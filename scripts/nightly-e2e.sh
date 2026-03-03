@@ -88,8 +88,7 @@ command -v agent &>/dev/null   || AGENTS_MISSING+=("agent (cursor)")
 command -v gemini &>/dev/null  || AGENTS_MISSING+=("gemini")
 
 if [[ ${#AGENTS_MISSING[@]} -gt 0 ]]; then
-  log "WARNING: Missing agents: ${AGENTS_MISSING[*]}"
-  log "Tests for missing agents will be skipped or fail"
+  die "Missing agents: ${AGENTS_MISSING[*]}"
 fi
 
 # --- Update agents (optional) ---

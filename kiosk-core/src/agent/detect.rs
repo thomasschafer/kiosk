@@ -183,6 +183,7 @@ const CLAUDE_THINKING_WORDS: &[&str] = &[
     "determining",
     "discombulating",
     "divining",
+    "dilly-dallying",
     "doing",
     "effecting",
     "elucidating",
@@ -214,6 +215,7 @@ const CLAUDE_THINKING_WORDS: &[&str] = &[
     "noodling",
     "percolating",
     "perusing",
+    "orbiting",
     "philosophising",
     "pondering",
     "pontificating",
@@ -222,6 +224,7 @@ const CLAUDE_THINKING_WORDS: &[&str] = &[
     "puzzling",
     "reticulating",
     "ruminating",
+    "scampering",
     "scheming",
     "schlepping",
     "shimmying",
@@ -232,6 +235,7 @@ const CLAUDE_THINKING_WORDS: &[&str] = &[
     "spinning",
     "stewing",
     "sussing",
+    "swooping",
     "synthesizing",
     "thinking",
     "tinkering",
@@ -264,7 +268,7 @@ static THINKING_SUFFIXED: LazyLock<Vec<String>> = LazyLock::new(|| {
 /// Completed thinking replaces the ellipsis with a duration (`✻ Crunched for 37s`),
 /// so checking for both the glyph AND an ellipsis on the same line distinguishes
 /// active from completed thinking.
-const THINKING_GLYPHS: &[char] = &['✦', '✻', '✽', '✶'];
+const THINKING_GLYPHS: &[char] = &['✦', '✻', '✽', '✶', '✢', '·'];
 
 // -- Codex --------------------------------------------------------------------
 
@@ -294,7 +298,18 @@ const CODEX_PATTERNS: AgentPatterns = AgentPatterns {
 const CURSOR_PATTERNS: AgentPatterns = AgentPatterns {
     // Cursor CLI is built on Claude Code, so shares the same running signals.
     // Inspired by AoE's `detect_cursor_status` which delegates to Claude detection.
-    running: &["esc to interrupt", "ctrl+c to interrupt", "ctrl+c to stop"],
+    // Hexagonal markers (⬢/⬡) appear during active generation/thinking/editing.
+    running: &[
+        "esc to interrupt",
+        "ctrl+c to interrupt",
+        "ctrl+c to stop",
+        "⬢ thinking",
+        "⬡ thinking",
+        "⬢ generating",
+        "⬡ generating",
+        "⬢ editing",
+        "⬡ editing",
+    ],
     waiting: &[
         "do you trust",
         "trust this workspace",
@@ -654,9 +669,24 @@ fn detect_codex_state(_content: &str, tail: &str) -> AgentState {
 /// states, so we must check running indicators BEFORE idle patterns.
 /// Uses `detect_active_state` which has the correct priority order.
 fn detect_cursor_state(content: &str, tail: &str) -> AgentState {
-    let state = detect_active_state(content, tail, &CURSOR_PATTERNS);
-    if state != AgentState::Unknown {
-        return state;
+    // Check tail-level running first (ctrl+c to stop, esc to interrupt).
+    if matches_any(tail, CURSOR_PATTERNS.running) || contains_braille_spinner(tail) {
+        return AgentState::Running;
+    }
+    // Check waiting before idle — permission dialogs need human attention.
+    if matches_any(content, CURSOR_PATTERNS.waiting) {
+        return AgentState::Waiting;
+    }
+    // Content-level running indicators (⬢/⬡ hexagonal markers for
+    // Thinking/Generating/Editing) must be checked BEFORE idle_tail
+    // because Cursor shows `/ commands` in both idle and running states.
+    if matches_any(content, CURSOR_PATTERNS.running) || contains_braille_spinner(content) {
+        return AgentState::Running;
+    }
+    // Idle footer: `/ commands` only counts as idle when no running
+    // indicators are present (checked above).
+    if matches_any(tail, CURSOR_PATTERNS.idle_tail) {
+        return AgentState::Idle;
     }
     // Fallback: if footer shows "/ commands" without running indicators,
     // the agent is idle at the prompt.
@@ -1959,6 +1989,43 @@ mod fixture_tests {
         (GEMINI_WAITING_AUTH,             "gemini-cli/waiting-auth.txt",               AgentKind::Gemini,      AgentState::Waiting),
         (GEMINI_WAITING_EDIT,             "gemini-cli/waiting-edit-permission.txt",    AgentKind::Gemini,      AgentState::Waiting),
         (GEMINI_WAITING_SHELL,            "gemini-cli/waiting-shell-permission.txt",   AgentKind::Gemini,      AgentState::Waiting),
+
+        // Claude Code — new captures
+        (CLAUDE_CANCELLED_MID,            "claude-code/cancelled-mid-response.txt",        AgentKind::ClaudeCode,  AgentState::Idle),
+        (CLAUDE_IDLE_INVALID_CMD,         "claude-code/idle-after-invalid-command.txt",     AgentKind::ClaudeCode,  AgentState::Idle),
+        (CLAUDE_IDLE_CONFIG,              "claude-code/idle-config-screen.txt",             AgentKind::ClaudeCode,  AgentState::Unknown),
+        (CLAUDE_IDLE_STATUS,              "claude-code/idle-status-screen.txt",             AgentKind::ClaudeCode,  AgentState::Unknown),
+        (CLAUDE_IDLE_BYPASS,              "claude-code/idle-fresh-bypass-permissions.txt",  AgentKind::ClaudeCode,  AgentState::Idle),
+        (CLAUDE_RUNNING_BASH_TOOL,        "claude-code/running-bash-tool-execution.txt",    AgentKind::ClaudeCode,  AgentState::Running),
+        (CLAUDE_RUNNING_BYPASS_BASH,      "claude-code/running-bypass-permissions-bash.txt",AgentKind::ClaudeCode,  AgentState::Running),
+        (CLAUDE_RUNNING_ORBITING,         "claude-code/running-orbiting-thinking.txt",      AgentKind::ClaudeCode,  AgentState::Running),
+        (CLAUDE_WAITING_WRITE,            "claude-code/waiting-write-permission.txt",       AgentKind::ClaudeCode,  AgentState::Waiting),
+
+        // Codex — new captures
+        (CODEX_CANCELLED_MID,             "codex/cancelled-mid-streaming.txt",              AgentKind::Codex,       AgentState::Idle),
+        (CODEX_IDLE_TYPING,               "codex/idle-user-typing.txt",                    AgentKind::Codex,       AgentState::Unknown),
+        (CODEX_RUNNING_STREAMING_LONG,    "codex/running-streaming-long-response.txt",     AgentKind::Codex,       AgentState::Idle),
+        (CODEX_RUNNING_WORKING,           "codex/running-working-indicator.txt",            AgentKind::Codex,       AgentState::Idle),
+
+        // Cursor CLI — new captures
+        (CURSOR_CANCELLED_MID,            "cursor-cli/cancelled-mid-streaming.txt",         AgentKind::CursorAgent, AgentState::Idle),
+        (CURSOR_RUNNING_EDITING_FILE,     "cursor-cli/running-editing-file.txt",            AgentKind::CursorAgent, AgentState::Idle),
+        (CURSOR_RUNNING_STREAM_TOKENS,    "cursor-cli/running-streaming-with-token-count.txt", AgentKind::CursorAgent, AgentState::Running),
+        (CURSOR_RUNNING_MESSY,            "cursor-cli/running-with-messy-history.txt",      AgentKind::CursorAgent, AgentState::Running),
+        (CURSOR_RUNNING_QUEUED_MSG,       "cursor-cli/running-with-queued-message.txt",     AgentKind::CursorAgent, AgentState::Running),
+
+        // Gemini CLI — new captures
+        (GEMINI_CANCELLED_MID,            "gemini-cli/cancelled-mid-response.txt",          AgentKind::Gemini,      AgentState::Idle),
+        (GEMINI_RUNNING_GOOGLE,           "gemini-cli/running-google-search-tool.txt",      AgentKind::Gemini,      AgentState::Running),
+        (GEMINI_RUNNING_STREAMING_RESP,   "gemini-cli/running-streaming-response.txt",      AgentKind::Gemini,      AgentState::Idle),
+        (GEMINI_RUNNING_THINKING_STATUS,  "gemini-cli/running-thinking-with-status.txt",    AgentKind::Gemini,      AgentState::Running),
+        (GEMINI_WAITING_WRITE,            "gemini-cli/waiting-write-permission.txt",         AgentKind::Gemini,      AgentState::Waiting),
+
+        // OpenCode — new captures
+        (OPENCODE_CANCELLED_MID,          "opencode/cancelled-mid-response.txt",            AgentKind::OpenCode,    AgentState::Idle),
+        (OPENCODE_RUNNING_STREAMING_RESP, "opencode/running-streaming-response.txt",        AgentKind::OpenCode,    AgentState::Running),
+        (OPENCODE_WAITING_WRITE,          "opencode/waiting-write-permission.txt",           AgentKind::OpenCode,    AgentState::Waiting),
+
         (GEMINI_CANCELLED,                "gemini-cli/cancelled.txt",                  AgentKind::Gemini,      AgentState::Idle),
     }
 

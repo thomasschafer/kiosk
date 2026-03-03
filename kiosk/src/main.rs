@@ -109,6 +109,9 @@ enum Commands {
         /// Target pane index (default: 0)
         #[arg(long, default_value_t = 0)]
         pane: usize,
+        /// Include agent detection diagnostics in output
+        #[arg(long)]
+        debug_agent: bool,
     },
     /// List active kiosk sessions
     Sessions {
@@ -332,6 +335,7 @@ fn dispatch_command(
             json,
             lines,
             pane,
+            debug_agent,
         }) => {
             let args = crate::cli::StatusArgs {
                 repo,
@@ -339,6 +343,7 @@ fn dispatch_command(
                 json,
                 lines,
                 pane,
+                debug_agent,
             };
             crate::cli::cmd_status(config, git.as_ref(), tmux.as_ref(), &args)
         }
@@ -473,6 +478,9 @@ fn run_tui(
         s
     };
     state.pending_worktree_deletes = load_pending_worktree_deletes();
+    state.agent_enabled = config.agent.enabled;
+    state.agent_poll_interval = std::time::Duration::from_millis(config.agent.poll_interval_ms);
+    state.agent_labels = config.agent.labels.clone();
 
     let theme = Theme::from_config(&config.theme);
 

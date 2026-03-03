@@ -80,6 +80,7 @@ pub struct StatusArgs {
     pub json: bool,
     pub lines: usize,
     pub pane: usize,
+    pub debug_agent: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -143,6 +144,8 @@ struct BranchOutput {
     has_session: bool,
     is_current: bool,
     remote: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_status: Option<kiosk_core::AgentStatus>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -163,6 +166,10 @@ struct StatusOutput {
     attached: bool,
     clients: usize,
     source: StatusSource,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_status: Option<kiosk_core::AgentStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_debug: Option<kiosk_core::agent::DetectionDebug>,
     output: String,
 }
 
@@ -183,6 +190,8 @@ struct SessionOutput {
     last_activity: u64,
     pane_count: usize,
     current_command: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_status: Option<kiosk_core::AgentStatus>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -309,12 +318,25 @@ pub fn cmd_branches(
     entries.extend(remote);
     BranchEntry::sort_entries(&mut entries);
 
+    // Detect agent status for branches with active sessions
+    if config.agent.enabled {
+        for entry in &mut entries {
+            if entry.has_session
+                && let Some(ref wt_path) = entry.worktree_path
+            {
+                let session_name = repo.tmux_session_name(wt_path);
+                entry.agent_status =
+                    kiosk_core::agent::detect_for_session(tmux, &session_name).map(|r| r.status);
+            }
+        }
+    }
+
     let output: Vec<BranchOutput> = entries.iter().map(BranchOutput::from).collect();
 
     if json {
         print_json(&output)?;
     } else {
-        print!("{}", format_branch_table(&entries));
+        print!("{}", format_branch_table(&entries, &config.agent.labels));
     }
 
     Ok(())
@@ -446,6 +468,7 @@ fn open_internal(
             &resolved.session_name,
             args.wait_pane,
             args.wait_timeout,
+            config.agent.enabled,
         ))
     } else {
         None
@@ -591,6 +614,15 @@ pub fn cmd_status(
                 StatusSource::Log => "log",
             }
         );
+        if let Some(ref agent) = output.agent_status {
+            println!("agent: {} ({})", agent.kind, agent.state);
+        }
+        if let Some(ref debug) = output.agent_debug {
+            println!(
+                "agent-debug: kind_source={:?} kind_rule={} state_source={:?} state_rule={}",
+                debug.kind_source, debug.kind_rule, debug.state_source, debug.state_rule
+            );
+        }
         println!("output:\n{}", output.output);
     }
 
@@ -616,7 +648,7 @@ fn status_internal(
     let session_name = repo.tmux_session_name(&worktree_path);
     let session_exists = tmux.session_exists(&session_name);
 
-    let (output, clients, source) = if session_exists {
+    let (mut output, clients, source) = if session_exists {
         let captured = tmux
             .capture_pane_with_pane(&session_name, &args.pane.to_string(), lines)
             .map_err(CliError::from)?;
@@ -635,12 +667,37 @@ fn status_internal(
         (tail_lines(&log, lines), Vec::new(), StatusSource::Log)
     };
 
+    let detection = if session_exists && config.agent.enabled {
+        kiosk_core::agent::detect_for_session(tmux, &session_name)
+    } else {
+        None
+    };
+    let agent_status = detection.as_ref().map(|d| d.status);
+    let agent_debug = if args.debug_agent {
+        detection.as_ref().map(|d| d.debug.clone())
+    } else {
+        None
+    };
+
+    // When an agent is detected and the user didn't explicitly choose a
+    // pane, re-capture from the agent's pane so the output shows the
+    // agent's content rather than pane 0 (which might be a shell).
+    if let Some(ref det) = detection
+        && args.pane == 0
+        && let Some(agent_content) =
+            tmux.capture_pane_content(&det.pane_id, u32::try_from(lines).unwrap_or(u32::MAX))
+    {
+        output = agent_content;
+    }
+
     Ok(StatusOutput {
         session: session_name,
         path: worktree_path,
         attached: !clients.is_empty(),
         clients: clients.len(),
         source,
+        agent_status,
+        agent_debug,
         output,
     })
 }
@@ -666,6 +723,11 @@ pub fn cmd_sessions(
             let current_command = tmux
                 .pane_current_command(&session, "0")
                 .unwrap_or_else(|_| "unknown".to_string());
+            let agent_status = if config.agent.enabled {
+                kiosk_core::agent::detect_for_session(tmux, &session).map(|r| r.status)
+            } else {
+                None
+            };
 
             output.push(SessionOutput {
                 session: session.clone(),
@@ -676,6 +738,7 @@ pub fn cmd_sessions(
                 last_activity,
                 pane_count,
                 current_command,
+                agent_status,
             });
         }
     }
@@ -685,7 +748,7 @@ pub fn cmd_sessions(
     if json {
         print_json(&output)?;
     } else {
-        print!("{}", format_session_table(&output));
+        print!("{}", format_session_table(&output, &config.agent.labels));
     }
 
     Ok(())
@@ -858,6 +921,7 @@ impl From<&BranchEntry> for BranchOutput {
             has_session: entry.has_session,
             is_current: entry.is_current,
             remote: entry.remote.clone(),
+            agent_status: entry.agent_status,
         }
     }
 }
@@ -905,97 +969,174 @@ fn format_repo_table(repos: &[RepoOutput]) -> String {
     out
 }
 
-fn format_branch_table(entries: &[BranchEntry]) -> String {
-    let branch_header = "branch";
-    let stat_header = "stat";
-    let worktree_header = "worktree";
-    let branch_width = entries
+/// Build a formatted table with optional agent column.
+/// Each column is a `(header, min_width)` pair. Rows are `Vec<String>`.
+/// When `has_agents` is true an agent column is inserted before the last column.
+fn format_table_with_optional_agent(
+    columns: &[(&str, usize)],
+    rows: &[Vec<String>],
+    agent_values: &[String],
+    has_agents: bool,
+) -> String {
+    // Compute column widths from data
+    let widths: Vec<usize> = columns
         .iter()
-        .map(|entry| entry.name.len())
-        .max()
-        .unwrap_or(branch_header.len())
-        .max(branch_header.len());
-    let stat_width = stat_header.len().max(4);
+        .enumerate()
+        .map(|(col_idx, (header, min_w))| {
+            rows.iter()
+                .map(|row| row.get(col_idx).map_or(0, String::len))
+                .max()
+                .unwrap_or(header.len())
+                .max(header.len())
+                .max(*min_w)
+        })
+        .collect();
+
+    let agent_header = "agent";
+    let agent_width = if has_agents {
+        agent_values
+            .iter()
+            .map(String::len)
+            .max()
+            .unwrap_or(agent_header.len())
+            .max(agent_header.len())
+    } else {
+        0
+    };
+
+    // Insert agent column before the last column
+    let agent_insert_pos = columns.len().saturating_sub(1);
 
     let mut out = String::new();
-    let _ = writeln!(
-        out,
-        "{branch_header:<branch_width$}  {stat_header:<stat_width$}  {worktree_header}"
-    );
-    for entry in entries {
-        let stat = format!(
-            "{}{}{}{}",
-            if entry.is_current { '*' } else { '-' },
-            if entry.worktree_path.is_some() {
-                'W'
+    // Header
+    for (i, (header, _)) in columns.iter().enumerate() {
+        if i > 0 {
+            out.push_str("  ");
+        }
+        if has_agents && i == agent_insert_pos {
+            let _ = write!(out, "{agent_header:<agent_width$}  ");
+        }
+        // Last column (when no agent after it): no padding
+        if i == columns.len() - 1 && !(has_agents && i == agent_insert_pos) {
+            let _ = write!(out, "{header}");
+        } else {
+            let _ = write!(out, "{:<width$}", header, width = widths[i]);
+        }
+    }
+    out.push('\n');
+
+    // Rows
+    for (row_idx, row) in rows.iter().enumerate() {
+        for (i, cell) in row.iter().enumerate() {
+            if i > 0 {
+                out.push_str("  ");
+            }
+            if has_agents && i == agent_insert_pos {
+                let agent = agent_values.get(row_idx).map_or("-", String::as_str);
+                let _ = write!(out, "{agent:<agent_width$}  ");
+            }
+            // Last column: no padding
+            if i == row.len() - 1 {
+                let _ = write!(out, "{cell}");
             } else {
-                '-'
-            },
-            if entry.has_session { 'S' } else { '-' },
-            if entry.remote.is_some() { 'R' } else { '-' },
-        );
-        let worktree = entry
-            .worktree_path
-            .as_ref()
-            .map_or_else(|| "-".to_string(), |path| path.display().to_string());
-        let _ = writeln!(
-            out,
-            "{:<branch_width$}  {:<stat_width$}  {}",
-            entry.name, stat, worktree
-        );
+                let _ = write!(out, "{cell:<width$}", width = widths[i]);
+            }
+        }
+        out.push('\n');
     }
     out
 }
 
-fn format_session_table(rows: &[SessionOutput]) -> String {
-    let session_header = "session";
-    let repo_header = "repo";
-    let branch_header = "branch";
-    let path_header = "path";
-    let attached_header = "attached";
+fn format_branch_table(
+    entries: &[BranchEntry],
+    labels: &kiosk_core::config::AgentLabelsConfig,
+) -> String {
+    let has_agents = entries.iter().any(|e| e.agent_status.is_some());
+    let rows: Vec<Vec<String>> = entries
+        .iter()
+        .map(|entry| {
+            let stat = format!(
+                "{}{}{}{}",
+                if entry.is_current { '*' } else { '-' },
+                if entry.worktree_path.is_some() {
+                    'W'
+                } else {
+                    '-'
+                },
+                if entry.has_session { 'S' } else { '-' },
+                if entry.remote.is_some() { 'R' } else { '-' },
+            );
+            let worktree = entry
+                .worktree_path
+                .as_ref()
+                .map_or_else(|| "-".to_string(), |path| path.display().to_string());
+            vec![entry.name.clone(), stat, worktree]
+        })
+        .collect();
+    let agent_values: Vec<String> = entries
+        .iter()
+        .map(|e| {
+            e.agent_status
+                .map_or_else(|| "-".to_string(), |s| agent_state_label(s.state, labels))
+        })
+        .collect();
+    format_table_with_optional_agent(
+        &[("branch", 0), ("stat", 4), ("worktree", 0)],
+        &rows,
+        &agent_values,
+        has_agents,
+    )
+}
 
-    let session_width = rows
-        .iter()
-        .map(|row| row.session.len())
-        .max()
-        .unwrap_or(session_header.len())
-        .max(session_header.len());
-    let repo_width = rows
-        .iter()
-        .map(|row| row.repo.len())
-        .max()
-        .unwrap_or(repo_header.len())
-        .max(repo_header.len());
-    let branch_width = rows
-        .iter()
-        .map(|row| row.branch.as_deref().unwrap_or("(detached)").len())
-        .max()
-        .unwrap_or(branch_header.len())
-        .max(branch_header.len());
-    let path_width = rows
-        .iter()
-        .map(|row| row.path.display().to_string().len())
-        .max()
-        .unwrap_or(path_header.len())
-        .max(path_header.len());
-
-    let mut out = String::new();
-    let _ = writeln!(
-        out,
-        "{session_header:<session_width$}  {repo_header:<repo_width$}  {branch_header:<branch_width$}  {path_header:<path_width$}  {attached_header}"
-    );
-    for row in rows {
-        let _ = writeln!(
-            out,
-            "{:<session_width$}  {:<repo_width$}  {:<branch_width$}  {:<path_width$}  {}",
-            row.session,
-            row.repo,
-            row.branch.as_deref().unwrap_or("(detached)"),
-            row.path.display(),
-            row.attached
-        );
+fn agent_state_label(
+    state: kiosk_core::AgentState,
+    labels: &kiosk_core::config::AgentLabelsConfig,
+) -> String {
+    match state {
+        kiosk_core::AgentState::Running => labels.running.clone(),
+        kiosk_core::AgentState::Waiting => labels.waiting.clone(),
+        kiosk_core::AgentState::Idle => labels.idle.clone(),
+        kiosk_core::AgentState::Unknown => labels.unknown.clone(),
     }
-    out
+}
+
+fn format_session_table(
+    rows: &[SessionOutput],
+    labels: &kiosk_core::config::AgentLabelsConfig,
+) -> String {
+    let has_agents = rows.iter().any(|r| r.agent_status.is_some());
+    let table_rows: Vec<Vec<String>> = rows
+        .iter()
+        .map(|row| {
+            let branch = row.branch.as_deref().unwrap_or("(detached)").to_string();
+            vec![
+                row.session.clone(),
+                row.repo.clone(),
+                branch,
+                row.path.display().to_string(),
+                row.attached.to_string(),
+            ]
+        })
+        .collect();
+    let agent_values: Vec<String> = rows
+        .iter()
+        .map(|r| {
+            r.agent_status
+                .map_or_else(|| "-".to_string(), |s| agent_state_label(s.state, labels))
+        })
+        .collect();
+    format_table_with_optional_agent(
+        &[
+            ("session", 0),
+            ("repo", 0),
+            ("branch", 0),
+            ("path", 0),
+            ("attached", 0),
+        ],
+        &table_rows,
+        &agent_values,
+        has_agents,
+    )
 }
 
 fn log_dir() -> CliResult<PathBuf> {
@@ -1124,42 +1265,130 @@ const KNOWN_SHELLS: &[&str] = &[
     "bash", "zsh", "fish", "sh", "dash", "ash", "ksh", "tcsh", "csh", "nu", "nushell", "pwsh",
 ];
 
-/// Core wait loop: blocks until the pane's foreground process is a shell, or timeout.
+const WAIT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+const UNKNOWN_READY_POLLS: u32 = 8;
+
+#[derive(Clone, Copy)]
+struct WaitOptions {
+    poll_interval: std::time::Duration,
+    unknown_ready_polls: u32,
+}
+
+/// Core wait loop: blocks until the pane's foreground process is a shell
+/// (agent exited) **or** an agent is detected in a non-Running state
+/// (Idle or Waiting — both mean the agent needs user attention or is done).
+///
+/// When agent detection finds Idle or Waiting, returns immediately so
+/// callers can react (e.g. send the next prompt, approve a permission).
 /// Returns `Ok(WaitOutput)` on idle, `Err` on timeout or failure.
 fn wait_for_idle(
     tmux: &dyn TmuxProvider,
     session_name: &str,
     pane: usize,
     timeout_secs: u64,
+    agent_enabled: bool,
+) -> CliResult<WaitOutput> {
+    wait_for_idle_with_options(
+        tmux,
+        session_name,
+        pane,
+        timeout_secs,
+        agent_enabled,
+        WaitOptions {
+            poll_interval: WAIT_POLL_INTERVAL,
+            unknown_ready_polls: UNKNOWN_READY_POLLS,
+        },
+    )
+}
+
+fn wait_for_idle_with_options(
+    tmux: &dyn TmuxProvider,
+    session_name: &str,
+    pane: usize,
+    timeout_secs: u64,
+    agent_enabled: bool,
+    options: WaitOptions,
 ) -> CliResult<WaitOutput> {
     let pane_str = pane.to_string();
     let start_time = std::time::Instant::now();
     let timeout_duration = std::time::Duration::from_secs(timeout_secs);
+    let mut unknown_streak: u32 = 0;
 
     loop {
         if start_time.elapsed() >= timeout_duration {
             return Err(CliError::user("wait timeout"));
         }
 
-        match tmux.pane_current_command(session_name, &pane_str) {
-            Ok(command) => {
-                if KNOWN_SHELLS.iter().any(|&shell| command == shell) {
-                    return Ok(WaitOutput {
-                        idle: true,
-                        timed_out: false,
-                        pane_command: command,
-                        exit_code: None,
-                    });
+        // When agent detection is enabled, check agent state first.
+        // This avoids false-early returns from the shell check on pane 0
+        // when the agent is actually running in a different pane.
+        if agent_enabled {
+            if let Some(detection) = kiosk_core::agent::detect_for_session(tmux, session_name) {
+                match detection.status.state {
+                    kiosk_core::AgentState::Idle | kiosk_core::AgentState::Waiting => {
+                        let pane_cmd = tmux
+                            .pane_current_command(session_name, &pane_str)
+                            .unwrap_or_default();
+                        return Ok(WaitOutput {
+                            idle: true,
+                            timed_out: false,
+                            pane_command: pane_cmd,
+                            exit_code: None,
+                        });
+                    }
+                    kiosk_core::AgentState::Unknown => {
+                        unknown_streak = unknown_streak.saturating_add(1);
+                        if unknown_streak >= options.unknown_ready_polls {
+                            let pane_cmd = tmux
+                                .pane_current_command(session_name, &pane_str)
+                                .unwrap_or_default();
+                            return Ok(WaitOutput {
+                                idle: true,
+                                timed_out: false,
+                                pane_command: pane_cmd,
+                                exit_code: None,
+                            });
+                        }
+                    }
+                    // Running keeps waiting; Unknown has a bounded fallback.
+                    kiosk_core::AgentState::Running => {
+                        unknown_streak = 0;
+                    }
                 }
+            } else if let Ok(command) = tmux.pane_current_command(session_name, &pane_str)
+                && KNOWN_SHELLS.iter().any(|&shell| command == shell)
+            {
+                // No agent detected and pane shows a shell → agent exited
+                return Ok(WaitOutput {
+                    idle: true,
+                    timed_out: false,
+                    pane_command: command,
+                    exit_code: None,
+                });
+            } else {
+                unknown_streak = 0;
             }
-            Err(e) => {
-                return Err(CliError::system(format!(
-                    "failed to get pane current command: {e}"
-                )));
+        } else {
+            match tmux.pane_current_command(session_name, &pane_str) {
+                Ok(command) => {
+                    if KNOWN_SHELLS.iter().any(|&shell| command == shell) {
+                        return Ok(WaitOutput {
+                            idle: true,
+                            timed_out: false,
+                            pane_command: command,
+                            exit_code: None,
+                        });
+                    }
+                }
+                Err(e) => {
+                    return Err(CliError::system(format!(
+                        "failed to get pane current command: {e}"
+                    )));
+                }
             }
         }
 
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        std::thread::sleep(options.poll_interval);
     }
 }
 
@@ -1185,7 +1414,13 @@ pub fn cmd_wait(
         )));
     }
 
-    match wait_for_idle(tmux, &session_name, args.pane, args.timeout) {
+    match wait_for_idle(
+        tmux,
+        &session_name,
+        args.pane,
+        args.timeout,
+        config.agent.enabled,
+    ) {
         Ok(output) => {
             if args.json {
                 print_json(&output)?;
@@ -1574,6 +1809,7 @@ mod tests {
                 json: false,
                 lines: 10,
                 pane: 0,
+                debug_agent: false,
             },
         )
         .unwrap();
@@ -1582,6 +1818,66 @@ mod tests {
         assert_eq!(output.clients, 1);
         assert_eq!(output.source, StatusSource::Live);
         assert!(output.output.contains("line a"));
+    }
+
+    #[test]
+    fn status_debug_agent_includes_detection_metadata() {
+        let config = test_config();
+        let git = demo_git(vec![main_worktree()], vec![]);
+        let mut pane_info = HashMap::new();
+        pane_info.insert(
+            "demo".to_string(),
+            vec![kiosk_core::tmux::provider::PaneInfo {
+                pane_id: "%0".to_string(),
+                command: "codex".to_string(),
+                pid: 4242,
+            }],
+        );
+        let mut pane_content = HashMap::new();
+        pane_content.insert(
+            "%0".to_string(),
+            "› Type a message\n\n  ? for shortcuts".to_string(),
+        );
+        let tmux = MockTmuxProvider {
+            sessions: Mutex::new(vec!["demo".to_string()]),
+            pane_info,
+            pane_content,
+            capture_output: Mutex::new("capture output".to_string()),
+            ..Default::default()
+        };
+
+        let output = status_internal(
+            &config,
+            &git,
+            &tmux,
+            &StatusArgs {
+                repo: "demo".to_string(),
+                branch: None,
+                json: false,
+                lines: 20,
+                pane: 0,
+                debug_agent: true,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            output.agent_status.unwrap().state,
+            kiosk_core::AgentState::Idle
+        );
+        let debug = output
+            .agent_debug
+            .expect("debug metadata should be present");
+        assert_eq!(
+            debug.kind_source,
+            kiosk_core::agent::KindSource::PaneCommand
+        );
+        assert_eq!(debug.kind_rule, "agent.kind.command_pattern");
+        assert_eq!(
+            debug.state_source,
+            kiosk_core::agent::StateSource::ContentPattern
+        );
+        assert_eq!(debug.state_rule, "codex.idle.footer");
     }
 
     #[test]
@@ -1623,6 +1919,7 @@ mod tests {
                 is_default: false,
                 remote: None,
                 session_activity_ts: None,
+                agent_status: None,
             },
             BranchEntry {
                 name: "feat/test".to_string(),
@@ -1632,9 +1929,11 @@ mod tests {
                 is_default: false,
                 remote: Some("origin".to_string()),
                 session_activity_ts: None,
+                agent_status: None,
             },
         ];
-        let rendered = format_branch_table(&rows);
+        let rendered =
+            format_branch_table(&rows, &kiosk_core::config::AgentLabelsConfig::default());
         assert_eq!(
             rendered,
             "branch     stat  worktree\n\
@@ -1655,6 +1954,7 @@ mod tests {
                 last_activity: 1_234_567_890,
                 pane_count: 1,
                 current_command: "zsh".to_string(),
+                agent_status: None,
             },
             SessionOutput {
                 session: "repo".to_string(),
@@ -1665,9 +1965,11 @@ mod tests {
                 last_activity: 1_234_567_891,
                 pane_count: 2,
                 current_command: "bash".to_string(),
+                agent_status: None,
             },
         ];
-        let rendered = format_session_table(&rows);
+        let rendered =
+            format_session_table(&rows, &kiosk_core::config::AgentLabelsConfig::default());
         assert_eq!(
             rendered,
             "session     repo  branch      path            attached\n\
@@ -1948,6 +2250,7 @@ mod tests {
                 json: false,
                 lines: 10,
                 pane: 0,
+                debug_agent: false,
             },
         );
 
@@ -1972,6 +2275,7 @@ mod tests {
                 json: false,
                 lines: 10,
                 pane: 0,
+                debug_agent: false,
             },
         )
         .unwrap_err();
@@ -2209,6 +2513,7 @@ mod tests {
             is_default: true,
             remote: None,
             session_activity_ts: Some(12345),
+            agent_status: None,
         };
 
         let output = BranchOutput::from(&entry);
@@ -2337,6 +2642,133 @@ mod tests {
     }
 
     #[test]
+    fn format_branch_table_with_agent_column() {
+        use kiosk_core::agent::{AgentKind, AgentState, AgentStatus};
+
+        let rows = vec![
+            BranchEntry {
+                name: "main".to_string(),
+                worktree_path: Some(PathBuf::from("/tmp/repo")),
+                has_session: true,
+                is_current: true,
+                is_default: false,
+                remote: None,
+                session_activity_ts: None,
+                agent_status: Some(AgentStatus {
+                    kind: AgentKind::ClaudeCode,
+                    state: AgentState::Waiting,
+                }),
+            },
+            BranchEntry {
+                name: "feat/test".to_string(),
+                worktree_path: Some(PathBuf::from("/tmp/feat")),
+                has_session: true,
+                is_current: false,
+                is_default: false,
+                remote: None,
+                session_activity_ts: None,
+                agent_status: Some(AgentStatus {
+                    kind: AgentKind::Codex,
+                    state: AgentState::Running,
+                }),
+            },
+            BranchEntry {
+                name: "develop".to_string(),
+                worktree_path: None,
+                has_session: false,
+                is_current: false,
+                is_default: false,
+                remote: None,
+                session_activity_ts: None,
+                agent_status: None,
+            },
+        ];
+        let rendered =
+            format_branch_table(&rows, &kiosk_core::config::AgentLabelsConfig::default());
+        // Agent column should appear since some entries have agent_status
+        assert!(
+            rendered.contains("agent"),
+            "Should have agent column header: {rendered}"
+        );
+        assert!(
+            rendered.contains("[WAITING]"),
+            "Should show [WAITING] label: {rendered}"
+        );
+        assert!(
+            rendered.contains("[RUNNING]"),
+            "Should show [RUNNING] label: {rendered}"
+        );
+    }
+
+    #[test]
+    fn format_branch_table_custom_labels_no_brackets() {
+        use kiosk_core::agent::{AgentKind, AgentState, AgentStatus};
+        use kiosk_core::config::AgentLabelsConfig;
+
+        let rows = vec![BranchEntry {
+            name: "main".to_string(),
+            worktree_path: Some(PathBuf::from("/tmp/repo")),
+            has_session: true,
+            is_current: true,
+            is_default: false,
+            remote: None,
+            session_activity_ts: None,
+            agent_status: Some(AgentStatus {
+                kind: AgentKind::ClaudeCode,
+                state: AgentState::Running,
+            }),
+        }];
+        let labels = AgentLabelsConfig {
+            running: "RUN".to_string(),
+            waiting: "WAIT".to_string(),
+            idle: "IDLE".to_string(),
+            unknown: "??".to_string(),
+        };
+        let rendered = format_branch_table(&rows, &labels);
+        assert!(
+            rendered.contains("RUN"),
+            "Should show custom label without brackets: {rendered}"
+        );
+        // Brackets should NOT appear since the custom label doesn't include them
+        assert!(
+            !rendered.contains("[RUN]"),
+            "Should NOT wrap custom label in brackets: {rendered}"
+        );
+    }
+
+    #[test]
+    fn format_session_table_custom_labels() {
+        use kiosk_core::agent::{AgentKind, AgentState, AgentStatus};
+        use kiosk_core::config::AgentLabelsConfig;
+
+        let rows = vec![SessionOutput {
+            session: "repo--feat".to_string(),
+            repo: "repo".to_string(),
+            branch: Some("feat/test".to_string()),
+            path: PathBuf::from("/tmp/repo-feat"),
+            attached: false,
+            last_activity: 0,
+            pane_count: 1,
+            current_command: "zsh".to_string(),
+            agent_status: Some(AgentStatus {
+                kind: AgentKind::Codex,
+                state: AgentState::Waiting,
+            }),
+        }];
+        let labels = AgentLabelsConfig {
+            running: "R".to_string(),
+            waiting: "W".to_string(),
+            idle: "I".to_string(),
+            unknown: "?".to_string(),
+        };
+        let rendered = format_session_table(&rows, &labels);
+        assert!(
+            rendered.contains("  W  "),
+            "Should show custom single-char label: {rendered}"
+        );
+    }
+
+    #[test]
     fn test_send_keys_mode() {
         let config = test_config();
         let git = demo_git(vec![main_worktree()], vec![]);
@@ -2442,6 +2874,69 @@ mod tests {
     }
 
     #[test]
+    fn wait_for_idle_unknown_fallback_returns_ready() {
+        let mut tmux = MockTmuxProvider::default();
+        tmux.pane_info.insert(
+            "demo".to_string(),
+            vec![kiosk_core::tmux::provider::PaneInfo {
+                pane_id: "%0".to_string(),
+                command: "claude".to_string(),
+                pid: 4242,
+            }],
+        );
+        tmux.pane_content.insert(
+            "%0".to_string(),
+            "random output with no patterns".to_string(),
+        );
+
+        let output = wait_for_idle_with_options(
+            &tmux,
+            "demo",
+            0,
+            1,
+            true,
+            WaitOptions {
+                poll_interval: std::time::Duration::from_millis(10),
+                unknown_ready_polls: 3,
+            },
+        )
+        .expect("should not timeout");
+        assert!(output.idle);
+        assert!(!output.timed_out);
+    }
+
+    #[test]
+    fn wait_for_idle_running_still_times_out() {
+        let mut tmux = MockTmuxProvider::default();
+        tmux.pane_info.insert(
+            "demo".to_string(),
+            vec![kiosk_core::tmux::provider::PaneInfo {
+                pane_id: "%0".to_string(),
+                command: "claude".to_string(),
+                pid: 4242,
+            }],
+        );
+        tmux.pane_content.insert(
+            "%0".to_string(),
+            "⠋ working... esc to interrupt".to_string(),
+        );
+
+        let err = wait_for_idle_with_options(
+            &tmux,
+            "demo",
+            0,
+            1,
+            true,
+            WaitOptions {
+                poll_interval: std::time::Duration::from_millis(10),
+                unknown_ready_polls: 3,
+            },
+        )
+        .expect_err("should timeout on running");
+        assert_eq!(err.message(), "wait timeout");
+    }
+
+    #[test]
     fn test_log_command_no_file() {
         let config = test_config();
         let git = demo_git(vec![main_worktree()], vec![]);
@@ -2475,6 +2970,93 @@ mod tests {
     }
 
     #[test]
+    fn branches_skips_agent_detection_when_disabled() {
+        let mut config = test_config();
+        config.agent.enabled = false;
+
+        let git = MockGitProvider {
+            repos: vec![repo("/tmp/demo", "demo")],
+            worktrees: vec![Worktree {
+                path: PathBuf::from("/tmp/demo"),
+                branch: Some("main".to_string()),
+                is_main: true,
+            }],
+            branches: vec!["main".to_string()],
+            ..Default::default()
+        };
+
+        // Create a session with "claude" as the command — would normally trigger detection
+        let mut tmux = MockTmuxProvider::default();
+        tmux.sessions.lock().unwrap().push("demo".to_string());
+        tmux.pane_info.insert(
+            "demo".to_string(),
+            vec![kiosk_core::tmux::provider::PaneInfo {
+                pane_id: "%0".to_string(),
+                command: "claude".to_string(),
+                pid: 99999,
+            }],
+        );
+        tmux.pane_content
+            .insert("%0".to_string(), "❯ \n? for shortcuts".to_string());
+
+        // With agent.enabled = false, branches should have no agent_status
+        let result = cmd_branches(&config, &git, &tmux, "demo", true);
+        assert!(result.is_ok());
+        // The function prints JSON to stdout — we can't easily capture it here,
+        // but we verify no panics and the function completes successfully.
+        // The real test is that detect_for_session is never called.
+    }
+
+    #[test]
+    fn status_skips_agent_detection_when_disabled() {
+        let mut config = test_config();
+        config.agent.enabled = false;
+
+        let git = demo_git(vec![main_worktree()], vec![]);
+        let tmux = MockTmuxProvider {
+            sessions: Mutex::new(vec!["demo".to_string()]),
+            capture_output: Mutex::new("some output".to_string()),
+            ..Default::default()
+        };
+
+        let output = status_internal(
+            &config,
+            &git,
+            &tmux,
+            &StatusArgs {
+                repo: "demo".to_string(),
+                branch: None,
+                json: false,
+                lines: 10,
+                pane: 0,
+                debug_agent: false,
+            },
+        )
+        .unwrap();
+
+        assert!(
+            output.agent_status.is_none(),
+            "agent_status should be None when agent.enabled = false"
+        );
+    }
+
+    #[test]
+    fn sessions_skips_agent_detection_when_disabled() {
+        let mut config = test_config();
+        config.agent.enabled = false;
+
+        let git = demo_git(vec![main_worktree()], vec![]);
+        let tmux = MockTmuxProvider {
+            sessions: Mutex::new(vec!["demo".to_string()]),
+            ..Default::default()
+        };
+
+        // Should succeed without calling detect_for_session
+        let result = cmd_sessions(&config, &git, &tmux, true);
+        assert!(result.is_ok());
+    }
+
+    #[test]
     fn test_status_with_pane() {
         let config = test_config();
         let git = demo_git(vec![main_worktree()], vec![]);
@@ -2492,9 +3074,116 @@ mod tests {
                 json: true,
                 lines: 20,
                 pane: 1,
+                debug_agent: false,
             },
         );
 
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn format_branch_table_no_agent_column_when_no_agents() {
+        let rows = vec![BranchEntry {
+            name: "main".to_string(),
+            worktree_path: Some(PathBuf::from("/tmp/repo")),
+            has_session: false,
+            is_current: true,
+            is_default: false,
+            remote: None,
+            session_activity_ts: None,
+            agent_status: None,
+        }];
+        let rendered =
+            format_branch_table(&rows, &kiosk_core::config::AgentLabelsConfig::default());
+        assert!(
+            !rendered.contains("agent"),
+            "Should NOT have agent column when no agents: {rendered}"
+        );
+    }
+
+    #[test]
+    fn format_session_table_with_agent_column() {
+        use kiosk_core::agent::{AgentKind, AgentState, AgentStatus};
+
+        let rows = vec![
+            SessionOutput {
+                session: "repo--feat".to_string(),
+                repo: "repo".to_string(),
+                branch: Some("feat/test".to_string()),
+                path: PathBuf::from("/tmp/repo-feat"),
+                attached: false,
+                last_activity: 0,
+                pane_count: 1,
+                current_command: "zsh".to_string(),
+                agent_status: Some(AgentStatus {
+                    kind: AgentKind::ClaudeCode,
+                    state: AgentState::Idle,
+                }),
+            },
+            SessionOutput {
+                session: "repo".to_string(),
+                repo: "repo".to_string(),
+                branch: None,
+                path: PathBuf::from("/tmp/repo"),
+                attached: true,
+                last_activity: 0,
+                pane_count: 1,
+                current_command: "zsh".to_string(),
+                agent_status: None,
+            },
+        ];
+        let rendered =
+            format_session_table(&rows, &kiosk_core::config::AgentLabelsConfig::default());
+        assert!(
+            rendered.contains("agent"),
+            "Should have agent column: {rendered}"
+        );
+        assert!(
+            rendered.contains("[IDLE]"),
+            "Should show [IDLE] label: {rendered}"
+        );
+    }
+
+    #[test]
+    fn branch_output_includes_agent_status_in_json() {
+        use kiosk_core::agent::{AgentKind, AgentState, AgentStatus};
+
+        let entry = BranchEntry {
+            name: "feat/agent".to_string(),
+            worktree_path: Some(PathBuf::from("/tmp/wt")),
+            has_session: true,
+            is_current: false,
+            is_default: false,
+            remote: None,
+            session_activity_ts: None,
+            agent_status: Some(AgentStatus {
+                kind: AgentKind::ClaudeCode,
+                state: AgentState::Waiting,
+            }),
+        };
+        let output = BranchOutput::from(&entry);
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["agent_status"]["kind"], "ClaudeCode");
+        assert_eq!(json["agent_status"]["state"], "Waiting");
+    }
+
+    #[test]
+    fn branch_output_omits_agent_status_when_none() {
+        let entry = BranchEntry {
+            name: "main".to_string(),
+            worktree_path: None,
+            has_session: false,
+            is_current: true,
+            is_default: false,
+            remote: None,
+            session_activity_ts: None,
+            agent_status: None,
+        };
+        let output = BranchOutput::from(&entry);
+        let json = serde_json::to_value(&output).unwrap();
+        assert!(
+            json.get("agent_status").is_none(),
+            "agent_status should be omitted when None: {json}"
+        );
     }
 }

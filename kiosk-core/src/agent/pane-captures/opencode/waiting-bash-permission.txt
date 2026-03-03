@@ -1,0 +1,40 @@
+
+  ┃                                                                                               
+  ┃  # Merge sort explained with complexity analysis                            9,989  2% ($0.00) 
+  ┃                                                                                               
+
+     - Extra memory usage (O(n)) for arrays.
+     - Often slower constant factors than quicksort for in-memory arrays in practice (though 
+     language/runtime-specific).
+
+     Bottom-up (iterative) variant
+     - Instead of recursion, merge subarrays of size 1, then 2, then 4, then 8, etc.
+     - Same asymptotic complexity: O(n log n) time, O(n) extra space.
+     - Avoids recursion overhead.
+
+     If you want, I can also show:
+     1) clean pseudocode, or  
+     2) a step-by-step visual trace of the merge pointers on one merge pass.
+
+     ▣  Build · gpt-5.3-codex · 16.3s
+
+  ┃                                                                                               
+  ┃  Run the command: rm test.txt                                                                 
+  ┃                                                                                               
+
+  ┃  Thinking: Preparing to run destructive bash command
+
+     $ rm test.txt
+
+     ▣  Build · gpt-5.3-codex
+
+  ┃                                                                                               
+  ┃  △ Permission required                                                                        
+  ┃    # Removes test.txt from current directory                                                  
+  ┃                                                                                               
+  ┃  $ rm test.txt                                                                                
+  ┃                                                                                               
+  ┃                                                                                               
+  ┃   Allow once   Allow always   Reject             ctrl+f fullscreen  ⇆ select  enter confirm   
+  ┃                                                                                               
+

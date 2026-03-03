@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use kiosk_core::config::{KeysConfig, NamedColor, ThemeConfig};
+use kiosk_core::config::{Config, KeysConfig, NamedColor, ThemeConfig};
 use quote::ToTokens;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
@@ -50,10 +50,13 @@ fn generate_config_docs(content: &str, config_path: &Path) -> Result<String> {
 
     let structs = parse_config_structs(config_path)?;
 
+    let defaults =
+        toml::Value::try_from(Config::default()).context("Failed to serialize default Config")?;
+
     let mut docs = String::new();
 
     if let Some(config_struct) = structs.get("Config") {
-        process_struct(&mut docs, config_struct, &structs, "")?;
+        process_struct(&mut docs, config_struct, &structs, "", Some(&defaults))?;
     } else {
         anyhow::bail!("Config struct not found in the source file.");
     }
@@ -71,6 +74,7 @@ fn process_struct(
     struct_item: &ItemStruct,
     all_structs: &HashMap<String, ItemStruct>,
     toml_prefix: &str,
+    defaults: Option<&toml::Value>,
 ) -> Result<()> {
     if struct_item.ident == "ThemeConfig" && toml_prefix == "theme" {
         docs.push_str(&generate_theme_docs()?);
@@ -90,6 +94,7 @@ fn process_struct(
             if let Some(ident) = &field.ident {
                 let field_name = ident.to_string();
                 let field_doc = extract_doc_comment(&field.attrs);
+                let field_default = defaults.and_then(|d| d.get(&field_name));
 
                 if let Some(nested_struct) = all_structs.get(&get_type_name(field)) {
                     let toml_path = if toml_prefix.is_empty() {
@@ -106,11 +111,22 @@ fn process_struct(
                         docs.push_str("\n\n");
                     }
 
-                    process_struct(docs, nested_struct, all_structs, &toml_path)?;
+                    process_struct(docs, nested_struct, all_structs, &toml_path, field_default)?;
                 } else {
                     let _ = writeln!(docs, "#### `{field_name}`\n");
-                    docs.push_str(&field_doc);
-                    docs.push_str("\n\n");
+                    if !field_doc.is_empty() {
+                        docs.push_str(&field_doc);
+                        docs.push('\n');
+                    }
+                    if let Some(default_val) = field_default.filter(|v| !is_empty_composite(v)) {
+                        let formatted = format_toml_value(default_val);
+                        if field_doc.is_empty() {
+                            let _ = writeln!(docs, "Default: `{formatted}`");
+                        } else {
+                            let _ = writeln!(docs, "\nDefault: `{formatted}`");
+                        }
+                    }
+                    docs.push('\n');
                 }
             }
         }
@@ -214,19 +230,14 @@ fn generate_theme_docs() -> Result<String> {
 
     // List available colours and aliases (auto-generated from NamedColor)
     let color_names: Vec<&str> = NamedColor::all().iter().map(|(name, _)| *name).collect();
-    let alias_notes: Vec<String> = NamedColor::aliases()
-        .iter()
-        .map(|(alias, canonical)| format!("`{alias}` for `{canonical}`"))
-        .collect();
     let _ = writeln!(
         docs,
-        "Colors can be a named color ({}) or a hex value (`#rrggbb`). Alternative spellings are also accepted: {}.\n",
+        "Colors can be a named color ({}) or a hex value (`#rrggbb`).\n",
         color_names
             .iter()
             .map(|n| format!("`{n}`"))
             .collect::<Vec<_>>()
             .join(", "),
-        alias_notes.join(", "),
     );
 
     // Generate default TOML
@@ -313,6 +324,32 @@ fn escape_toml_string(input: &str) -> String {
     input.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
+fn format_toml_value(value: &toml::Value) -> String {
+    match value {
+        toml::Value::String(s) => format!("\"{s}\""),
+        toml::Value::Integer(i) => i.to_string(),
+        toml::Value::Boolean(b) => b.to_string(),
+        toml::Value::Float(f) => f.to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn is_empty_composite(value: &toml::Value) -> bool {
+    match value {
+        toml::Value::Array(a) => a.is_empty(),
+        toml::Value::Table(t) => t.is_empty(),
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+fn config_source_path() -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("kiosk-core/src/config/mod.rs")
+}
+
 fn replace_section_content(
     content: &str,
     start_marker: &str,
@@ -339,4 +376,127 @@ fn replace_section_content(
     }
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_toml_value_string() {
+        let val = toml::Value::String("hello".into());
+        assert_eq!(format_toml_value(&val), "\"hello\"");
+    }
+
+    #[test]
+    fn format_toml_value_integer() {
+        let val = toml::Value::Integer(500);
+        assert_eq!(format_toml_value(&val), "500");
+    }
+
+    #[test]
+    fn format_toml_value_boolean() {
+        assert_eq!(format_toml_value(&toml::Value::Boolean(true)), "true");
+        assert_eq!(format_toml_value(&toml::Value::Boolean(false)), "false");
+    }
+
+    #[test]
+    fn format_toml_value_float() {
+        let val = toml::Value::Float(1.5);
+        assert_eq!(format_toml_value(&val), "1.5");
+    }
+
+    #[test]
+    fn is_empty_composite_empty_array() {
+        assert!(is_empty_composite(&toml::Value::Array(vec![])));
+    }
+
+    #[test]
+    fn is_empty_composite_non_empty_array() {
+        let arr = toml::Value::Array(vec![toml::Value::Integer(1)]);
+        assert!(!is_empty_composite(&arr));
+    }
+
+    #[test]
+    fn is_empty_composite_empty_table() {
+        assert!(is_empty_composite(&toml::Value::Table(
+            toml::value::Table::new()
+        )));
+    }
+
+    #[test]
+    fn is_empty_composite_scalars_are_not_empty() {
+        assert!(!is_empty_composite(&toml::Value::Boolean(false)));
+        assert!(!is_empty_composite(&toml::Value::Integer(0)));
+        assert!(!is_empty_composite(&toml::Value::String(String::new())));
+    }
+
+    fn generate_docs() -> String {
+        let stub = "<!-- CONFIG START -->\n<!-- CONFIG END -->\n";
+        generate_config_docs(stub, &config_source_path()).unwrap()
+    }
+
+    #[test]
+    fn generated_docs_include_agent_label_defaults() {
+        let docs = generate_docs();
+        assert!(
+            docs.contains("Default: `\"[RUNNING]\"`"),
+            "Missing running default in:\n{docs}"
+        );
+        assert!(
+            docs.contains("Default: `\"[WAITING]\"`"),
+            "Missing waiting default in:\n{docs}"
+        );
+        assert!(
+            docs.contains("Default: `\"[IDLE]\"`"),
+            "Missing idle default in:\n{docs}"
+        );
+        assert!(
+            docs.contains("Default: `\"[UNKNOWN]\"`"),
+            "Missing unknown default in:\n{docs}"
+        );
+    }
+
+    #[test]
+    fn generated_docs_include_agent_scalar_defaults() {
+        let docs = generate_docs();
+        assert!(
+            docs.contains("Default: `true`"),
+            "Missing enabled default in:\n{docs}"
+        );
+        assert!(
+            docs.contains("Default: `500`"),
+            "Missing poll_interval_ms default in:\n{docs}"
+        );
+    }
+
+    #[test]
+    fn generated_docs_omit_empty_array_default() {
+        let docs = generate_docs();
+        // search_dirs defaults to [] but we should not show that
+        let search_dirs_section = docs
+            .split("#### `search_dirs`")
+            .nth(1)
+            .and_then(|rest| rest.split("###").next())
+            .unwrap();
+        assert!(
+            !search_dirs_section.contains("Default:"),
+            "search_dirs should not show a default, found:\n{search_dirs_section}"
+        );
+    }
+
+    #[test]
+    fn generated_docs_omit_none_default() {
+        let docs = generate_docs();
+        // split_command is Option<String> with None default — should not show a default
+        let split_cmd_section = docs
+            .split("#### `split_command`")
+            .nth(1)
+            .and_then(|rest| rest.split("###").next())
+            .unwrap();
+        assert!(
+            !split_cmd_section.contains("Default:"),
+            "split_command should not show a default, found:\n{split_cmd_section}"
+        );
+    }
 }

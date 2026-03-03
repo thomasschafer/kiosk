@@ -1,0 +1,40 @@
+
+  ┃                                                                                               
+  ┃  # Merge sort explained with complexity analysis                           10,034  3% ($0.00) 
+  ┃                                                                                               
+
+  ┃  Thinking: Preparing to run destructive bash command
+
+     $ rm test.txt
+
+  ┃                                                                                               
+  ┃  Write a comprehensive guide to data structures                                               
+  ┃                                                                                               
+
+  ┃  Thinking: Planning comprehensive guide structure
+
+     Great topic. Here’s a practical, comprehensive guide that covers the core data structures, 
+     how they work, trade-offs, and when to use them.
+
+     Foundations
+     - A data structure is a way to organize data so operations like lookup, insert, delete, and 
+     traversal are efficient.
+     - Always evaluate structures by operation costs, memory overhead, implementation complexity, 
+     and correctness constraints.
+     - Time complexity is usually given in Big-O (worst-case unless stated otherwise), but 
+     constants and cache behavior matter in real systems.
+     - Choice should follow access pattern: random access, ordered traversal, frequent inserts/
+     deletes, membership checks, range queries, etc.
+
+     Complexity Cheat Sheet
+     - n = number of
+
+     ▣  Build · gpt-5.3-codex
+
+  ┃                                                                                               
+  ┃                                                                                               
+  ┃                                                                                               
+  ┃  Build  GPT-5.3 Codex OpenAI                                                                  
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   ⬝⬝⬝⬝⬝⬝⬝⬝  esc again to interrupt                   ctrl+t variants  tab agents  ctrl+p commands
+

@@ -1,0 +1,40 @@
+  • In-order (left, root, right)
+
+    Traverse left, visit node, then right.
+    • In a BST, this gives the values in sorted order.
+  • Post-order (left, right, root)
+
+    Traverse left, right, then visit node.
+
+
+  Breadth-first traversal (level order)
+
+  • Visit nodes level by level, from top to bottom, left to right.
+  • Uses a queue: enqueue root, then repeatedly dequeue a node and enqueue its children.
+
+
+
+  Shape and performance
+
+  • If the tree is balanced (roughly the same number of nodes on left and right subtrees), the
+    height is about \(\log_2 n\), so:
+    • Search, insert, delete: \(O(\log n)\) on average.
+  • If the tree becomes skewed (like a linked list), height becomes \(O(n)\) and operations
+    degrade to \(O(n)\).
+
+  Self-balancing trees (like AVL trees, Red‑Black trees) automatically rearrange themselves on
+  insert/delete to keep height near \(\log n\).
+
+  ────────────────────────────────────────
+
+  If you tell me your preferred language (e.g., Python, Java, C++), I can show you a minimal
+  binary tree / BST implementation and walk through the code.
+
+
+ ┌────────────────────────────────────────────────────────────────────────────────────────────────┐
+ │ → Add a follow-up                                                                              │
+ └────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+  Auto · 4.7%
+  / commands · @ files · ! shell
+

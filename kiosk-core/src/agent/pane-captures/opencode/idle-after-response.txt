@@ -1,0 +1,40 @@
+
+  ┃                                                                                               
+  ┃  # Merge sort explained with complexity analysis                            9,989  2% ($0.00) 
+  ┃                                                                                               
+
+     - Merge sort is stable (equal elements keep relative order) if merge is implemented 
+     carefully (choose left element first on equality).
+     - This makes it great when sorting by multiple keys (e.g., sort by last name then by first 
+     name).
+
+     Why people use merge sort
+     - Guaranteed O(n log n) performance.
+     - Stable sort.
+     - Works very well for:
+       - Linked lists (can be done with little extra memory),
+       - External sorting (data too big for RAM; merge chunks from disk).
+
+     Trade-offs
+     - Extra memory usage (O(n)) for arrays.
+     - Often slower constant factors than quicksort for in-memory arrays in practice (though 
+     language/runtime-specific).
+
+     Bottom-up (iterative) variant
+     - Instead of recursion, merge subarrays of size 1, then 2, then 4, then 8, etc.
+     - Same asymptotic complexity: O(n log n) time, O(n) extra space.
+     - Avoids recursion overhead.
+
+     If you want, I can also show:
+     1) clean pseudocode, or  
+     2) a step-by-step visual trace of the merge pointers on one merge pass.
+
+     ▣  Build · gpt-5.3-codex · 16.3s
+
+  ┃                                                                                               
+  ┃                                                                                               
+  ┃                                                                                               
+  ┃  Build  GPT-5.3 Codex OpenAI                                                                  
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+                                                      ctrl+t variants  tab agents  ctrl+p commands
+

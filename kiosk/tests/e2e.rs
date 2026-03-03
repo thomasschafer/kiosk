@@ -447,8 +447,16 @@ impl TestEnv {
             .args(args)
             .env("XDG_CONFIG_HOME", &self.config_dir)
             .env("XDG_STATE_HOME", &self.state_dir)
+            .env("KIOSK_TMUX_SOCKET", &self.tmux_socket)
             .output()
             .unwrap()
+    }
+
+    /// Create a tmux `Command` targeting this test's isolated socket.
+    fn tmux_cmd(&self) -> Command {
+        let mut cmd = Command::new("tmux");
+        cmd.args(["-L", &self.tmux_socket]);
+        cmd
     }
 }
 
@@ -1889,7 +1897,7 @@ fn test_e2e_headless_open_status_delete_workflow() {
     let open_json: Value = serde_json::from_slice(&open_output.stdout).unwrap();
     let session = open_json["session"].as_str().unwrap().to_string();
     assert!(
-        wait_for_tmux_session(None, &session, 5000),
+        wait_for_tmux_session(Some(&env.tmux_socket), &session, 5000),
         "tmux session {session} should exist"
     );
 
@@ -1989,7 +1997,7 @@ fn test_e2e_headless_sessions_json() {
     let open_json: Value = serde_json::from_slice(&open_output.stdout).unwrap();
     let session = open_json["session"].as_str().unwrap().to_string();
     assert!(
-        wait_for_tmux_session(None, &session, 5000),
+        wait_for_tmux_session(Some(&env.tmux_socket), &session, 5000),
         "tmux session {session} should exist"
     );
 
@@ -2015,7 +2023,8 @@ fn test_e2e_headless_sessions_json() {
         "attached should be a boolean"
     );
 
-    let _ = Command::new("tmux")
+    let _ = env
+        .tmux_cmd()
         .args(["kill-session", "-t", &session])
         .output();
 }
@@ -2042,7 +2051,8 @@ fn test_e2e_headless_open_json_includes_repo_and_branch() {
     assert_eq!(json["branch"].as_str(), Some("main"));
 
     if let Some(session) = json["session"].as_str() {
-        let _ = Command::new("tmux")
+        let _ = env
+            .tmux_cmd()
             .args(["kill-session", "-t", session])
             .output();
     }
@@ -2068,7 +2078,7 @@ fn test_e2e_headless_status_source_field() {
     let open_json: Value = serde_json::from_slice(&open_output.stdout).unwrap();
     let session = open_json["session"].as_str().unwrap().to_string();
     assert!(
-        wait_for_tmux_session(None, &session, 5000),
+        wait_for_tmux_session(Some(&env.tmux_socket), &session, 5000),
         "tmux session {session} should exist"
     );
 
@@ -2085,7 +2095,8 @@ fn test_e2e_headless_status_source_field() {
         "source should be 'live' for an active session: {status_json}"
     );
 
-    let _ = Command::new("tmux")
+    let _ = env
+        .tmux_cmd()
         .args(["kill-session", "-t", &session])
         .output();
 }
@@ -2131,7 +2142,7 @@ fn test_e2e_headless_open_log_and_status_log_fallback() {
     let open_json: Value = serde_json::from_slice(&open_output.stdout).unwrap();
     let session = open_json["session"].as_str().unwrap().to_string();
     assert!(
-        wait_for_tmux_session(None, &session, 5000),
+        wait_for_tmux_session(Some(&env.tmux_socket), &session, 5000),
         "tmux session {session} should exist"
     );
 
@@ -2139,7 +2150,8 @@ fn test_e2e_headless_open_log_and_status_log_fallback() {
     wait_ms(2000);
 
     // Kill the session so status falls back to the log file
-    let _ = Command::new("tmux")
+    let _ = env
+        .tmux_cmd()
         .args(["kill-session", "-t", &session])
         .output();
     wait_ms(500);
@@ -2464,11 +2476,13 @@ fn test_e2e_setup_wizard_typing_shows_all_matching_completions() {
     env.send_special("Enter");
     wait_for_screen(&env, 2000, |s| s.contains("Add directory"));
 
-    // Type path with prefix "De" — completions update as you type
+    // Type path with prefix "De" — completions update as you type.
+    // The full path string is long, so give tmux + TUI time to process all
+    // keystrokes before checking completions.
     env.send(&format!("{}/De", parent.display()));
 
     // Both Desktop and Development match "De" and should be visible
-    let screen = wait_for_screen(&env, 2000, |s| {
+    let screen = wait_for_screen(&env, 5000, |s| {
         s.contains("Desktop") && s.contains("Development")
     });
     assert!(

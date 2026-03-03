@@ -1,0 +1,40 @@
+
+  ┃                                                                                               
+  ┃  # Merge sort explained with complexity analysis                                              
+  ┃                                                                                               
+
+     Because merging two sorted lists is linear, merge sort is efficient and predictable.
+
+     Example (high level)
+     Suppose we sort: [38, 27, 43, 3, 9, 82, 10]
+
+     1) Split repeatedly:
+     - [38, 27, 43, 3] and [9, 82, 10]
+     - [38, 27] [43, 3] [9, 82] [10]
+     - [38] [27] [43] [3] [9] [82] [10]
+
+     2) Merge sorted pairs:
+     - [38] + [27] -> [27, 38]
+     - [43] + [3] -> [3, 43]
+     - [9] + [82] -> [9, 82]
+     - [10] stays as is
+
+     3) Merge larger sorted parts:
+     - [27, 38] + [3, 43] -> [3, 27, 38, 43]
+     - [9, 82] + [10] -> [9, 10, 82]
+
+     4) Final merge:
+     - [3, 27, 38, 43] + [9, 10, 82] -> [3, 9, 10, 27, 38, 43, 82]
+
+     The merge step (important)
+     Given two sorted arrays `
+
+     ▣  Build · gpt-5.3-codex
+
+  ┃                                                                                               
+  ┃                                                                                               
+  ┃                                                                                               
+  ┃  Build  GPT-5.3 Codex OpenAI                                                                  
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   ■■■■■⬝⬝⬝  esc interrupt                            ctrl+t variants  tab agents  ctrl+p commands
+

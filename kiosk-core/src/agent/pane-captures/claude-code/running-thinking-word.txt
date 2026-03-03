@@ -1,0 +1,40 @@
+  - Alternatively, use low < high with a half-open interval [low, high) and move low = mid + 1 /
+  high = mid.
+
+  Mixing conventions (e.g., inclusive bounds with high = mid instead of high = mid - 1) causes
+  infinite loops.
+
+  Common variations
+
+  ┌─────────────────────┬───────────────────────────────────────────────────────────────────────┐
+  │      Variation      │                              Description                              │
+  ├─────────────────────┼───────────────────────────────────────────────────────────────────────┤
+  │ Lower bound         │ First index where arr[i] >= target                                    │
+  ├─────────────────────┼───────────────────────────────────────────────────────────────────────┤
+  │ Upper bound         │ First index where arr[i] > target                                     │
+  ├─────────────────────┼───────────────────────────────────────────────────────────────────────┤
+  │ Search on real      │ Use for _ in range(100) iterations instead of integer convergence     │
+  │ numbers             │                                                                       │
+  ├─────────────────────┼───────────────────────────────────────────────────────────────────────┤
+  │ Search on answer    │ Binary search over a monotonic predicate (e.g., "can we achieve X     │
+  │                     │ with capacity C?")                                                    │
+  └─────────────────────┴───────────────────────────────────────────────────────────────────────┘
+
+  When binary search applies
+
+  The requirement is not strictly "sorted array" but rather a monotonic predicate: there exists some
+   boundary where a condition flips from false to true (or vice versa). This makes binary search
+  applicable to optimization problems, not just lookup in sorted data.
+
+❯ Explain quantum computing in detail                                                           
+                                                                                                
+
+✽ Dilly-dallying… 
+  ⎿  Tip: Run /terminal-setup to enable convenient terminal integration like Shift + Enter for new 
+     line and more
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+❯  
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt
+

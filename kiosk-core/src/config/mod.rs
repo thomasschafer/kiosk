@@ -48,7 +48,7 @@ pub enum SearchDirEntry {
     Rich { path: String, depth: Option<u16> },
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     /// Directories to scan for git repositories. Each directory can be scanned to a specified depth, with a default of 1 (i.e. just the top level).
@@ -70,6 +70,80 @@ pub struct Config {
     /// To unbind an inherited key mapping, assign it to `noop`.
     #[serde(default)]
     pub keys: KeysConfig,
+
+    /// Agent detection configuration.
+    #[serde(default)]
+    pub agent: AgentConfig,
+}
+
+/// Agent detection configuration.
+///
+/// ```toml
+/// [agent]
+/// enabled = true
+/// poll_interval_ms = 2000
+/// ```
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(deny_unknown_fields, default)]
+pub struct AgentConfig {
+    /// Whether agent status detection is enabled.
+    /// Set to `false` to completely disable agent polling and status display.
+    pub enabled: bool,
+    /// Interval in milliseconds between agent status polls.
+    pub poll_interval_ms: u64,
+    /// Label text for each agent state shown in the branch picker.
+    #[serde(default)]
+    pub labels: AgentLabelsConfig,
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            poll_interval_ms: 500,
+            labels: AgentLabelsConfig::default(),
+        }
+    }
+}
+
+/// Label text for each agent state shown in the branch picker.
+///
+/// ```toml
+/// [agent.labels]
+/// running = "[RUNNING]"
+/// waiting = "[WAITING]"
+/// idle = "[IDLE]"
+/// unknown = "[UNKNOWN]"
+/// ```
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(deny_unknown_fields, default)]
+pub struct AgentLabelsConfig {
+    pub running: String,
+    pub waiting: String,
+    pub idle: String,
+    pub unknown: String,
+}
+
+impl Default for AgentLabelsConfig {
+    fn default() -> Self {
+        Self {
+            running: "[RUNNING]".to_string(),
+            waiting: "[WAITING]".to_string(),
+            idle: "[IDLE]".to_string(),
+            unknown: "[UNKNOWN]".to_string(),
+        }
+    }
+}
+
+impl AgentLabelsConfig {
+    /// Maximum char count across all labels (for fixed-width column padding).
+    pub fn max_label_width(&self) -> usize {
+        [&self.running, &self.waiting, &self.idle, &self.unknown]
+            .iter()
+            .map(|s| s.chars().count())
+            .max()
+            .unwrap_or(0)
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -281,9 +355,23 @@ impl Config {
     }
 }
 
+/// Minimum allowed poll interval to prevent accidental busy loops.
+pub const MIN_POLL_INTERVAL_MS: u64 = 100;
+
 pub fn load_config_from_str(s: &str) -> Result<Config> {
     let config: Config = toml::from_str(s)?;
+    validate_config(&config)?;
     Ok(config)
+}
+
+fn validate_config(config: &Config) -> Result<()> {
+    if config.agent.poll_interval_ms < MIN_POLL_INTERVAL_MS {
+        anyhow::bail!(
+            "agent.poll_interval_ms must be at least {MIN_POLL_INTERVAL_MS}ms, got {}",
+            config.agent.poll_interval_ms
+        );
+    }
+    Ok(())
 }
 
 /// Check whether the default config file exists
@@ -352,6 +440,7 @@ pub fn load_config(config_override: Option<&Path>) -> Result<Config> {
     }
     let contents = fs::read_to_string(&config_file)?;
     let config: Config = toml::from_str(&contents)?;
+    validate_config(&config)?;
     Ok(config)
 }
 
@@ -668,6 +757,155 @@ unknown = "bad"
     }
 
     #[test]
+    fn test_agent_config_defaults() {
+        let config = load_config_from_str(r#"search_dirs = ["~/Dev"]"#).unwrap();
+        assert_eq!(config.agent.poll_interval_ms, 500);
+    }
+
+    #[test]
+    fn test_agent_config_custom_poll_interval() {
+        let config = load_config_from_str(
+            r#"
+search_dirs = ["~/Dev"]
+
+[agent]
+poll_interval_ms = 5000
+"#,
+        )
+        .unwrap();
+        assert_eq!(config.agent.poll_interval_ms, 5000);
+    }
+
+    #[test]
+    fn test_agent_config_rejects_unknown_fields() {
+        let result = load_config_from_str(
+            r#"
+search_dirs = ["~/Dev"]
+
+[agent]
+poll_interval_ms = 2000
+unknown_field = true
+"#,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_agent_config_enabled_defaults_to_true() {
+        let config = load_config_from_str(r#"search_dirs = ["~/Dev"]"#).unwrap();
+        assert!(config.agent.enabled);
+    }
+
+    #[test]
+    fn test_agent_config_enabled_false() {
+        let config = load_config_from_str(
+            r#"
+search_dirs = ["~/Dev"]
+
+[agent]
+enabled = false
+"#,
+        )
+        .unwrap();
+        assert!(!config.agent.enabled);
+        // poll_interval_ms should still default
+        assert_eq!(config.agent.poll_interval_ms, 500);
+    }
+
+    #[test]
+    fn test_agent_config_enabled_true_explicit() {
+        let config = load_config_from_str(
+            r#"
+search_dirs = ["~/Dev"]
+
+[agent]
+enabled = true
+poll_interval_ms = 3000
+"#,
+        )
+        .unwrap();
+        assert!(config.agent.enabled);
+        assert_eq!(config.agent.poll_interval_ms, 3000);
+    }
+
+    #[test]
+    fn test_agent_config_only_poll_interval() {
+        // Setting only poll_interval_ms should keep enabled as default (true)
+        let config = load_config_from_str(
+            r#"
+search_dirs = ["~/Dev"]
+
+[agent]
+poll_interval_ms = 500
+"#,
+        )
+        .unwrap();
+        assert!(config.agent.enabled);
+        assert_eq!(config.agent.poll_interval_ms, 500);
+    }
+
+    #[test]
+    fn test_agent_config_only_enabled() {
+        // Setting only enabled should keep poll_interval_ms as default
+        let config = load_config_from_str(
+            r#"
+search_dirs = ["~/Dev"]
+
+[agent]
+enabled = false
+"#,
+        )
+        .unwrap();
+        assert!(!config.agent.enabled);
+        assert_eq!(config.agent.poll_interval_ms, 500);
+    }
+
+    #[test]
+    fn test_agent_config_poll_interval_minimum_enforced() {
+        let result = load_config_from_str(
+            r#"
+search_dirs = ["~/Dev"]
+
+[agent]
+poll_interval_ms = 50
+"#,
+        );
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("at least"),
+            "Error should mention minimum: {err}"
+        );
+    }
+
+    #[test]
+    fn test_agent_config_poll_interval_zero_rejected() {
+        let result = load_config_from_str(
+            r#"
+search_dirs = ["~/Dev"]
+
+[agent]
+poll_interval_ms = 0
+"#,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_agent_config_poll_interval_at_minimum_accepted() {
+        let config = load_config_from_str(
+            r#"
+search_dirs = ["~/Dev"]
+
+[agent]
+poll_interval_ms = 100
+"#,
+        )
+        .unwrap();
+        assert_eq!(config.agent.poll_interval_ms, 100);
+    }
+
+    #[test]
     fn test_write_default_config_create_new_rejects_existing() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("config.toml");
@@ -682,5 +920,101 @@ unknown = "bad"
             result.unwrap_err().kind(),
             std::io::ErrorKind::AlreadyExists
         );
+    }
+
+    #[test]
+    fn test_agent_labels_defaults() {
+        let labels = AgentLabelsConfig::default();
+        assert_eq!(labels.running, "[RUNNING]");
+        assert_eq!(labels.waiting, "[WAITING]");
+        assert_eq!(labels.idle, "[IDLE]");
+        assert_eq!(labels.unknown, "[UNKNOWN]");
+    }
+
+    #[test]
+    fn test_agent_labels_custom() {
+        let config = load_config_from_str(
+            r#"
+search_dirs = ["~/Dev"]
+
+[agent.labels]
+running = "ACTIVE"
+waiting = "PEND"
+idle = "OFF"
+unknown = "N/A"
+"#,
+        )
+        .unwrap();
+        assert_eq!(config.agent.labels.running, "ACTIVE");
+        assert_eq!(config.agent.labels.waiting, "PEND");
+        assert_eq!(config.agent.labels.idle, "OFF");
+        assert_eq!(config.agent.labels.unknown, "N/A");
+    }
+
+    #[test]
+    fn test_agent_labels_partial_override() {
+        let config = load_config_from_str(
+            r#"
+search_dirs = ["~/Dev"]
+
+[agent.labels]
+running = "GO"
+"#,
+        )
+        .unwrap();
+        assert_eq!(config.agent.labels.running, "GO");
+        assert_eq!(config.agent.labels.waiting, "[WAITING]");
+        assert_eq!(config.agent.labels.idle, "[IDLE]");
+        assert_eq!(config.agent.labels.unknown, "[UNKNOWN]");
+    }
+
+    #[test]
+    fn test_agent_labels_full_custom_no_brackets() {
+        let config = load_config_from_str(
+            r#"
+search_dirs = ["~/Dev"]
+
+[agent.labels]
+running = "RUN"
+waiting = "WAIT"
+idle = "IDLE"
+unknown = "??"
+"#,
+        )
+        .unwrap();
+        assert_eq!(config.agent.labels.running, "RUN");
+        assert_eq!(config.agent.labels.waiting, "WAIT");
+        assert_eq!(config.agent.labels.idle, "IDLE");
+        assert_eq!(config.agent.labels.unknown, "??");
+        assert_eq!(config.agent.labels.max_label_width(), 4);
+    }
+
+    #[test]
+    fn test_agent_labels_rejects_unknown_fields() {
+        let result = load_config_from_str(
+            r#"
+search_dirs = ["~/Dev"]
+
+[agent.labels]
+running = "RUN"
+bogus = "BAD"
+"#,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_agent_labels_max_width() {
+        let labels = AgentLabelsConfig::default();
+        // "[RUNNING]", "[WAITING]", "[UNKNOWN]" are 9 chars; "[IDLE]" is 6
+        assert_eq!(labels.max_label_width(), 9);
+
+        let labels = AgentLabelsConfig {
+            running: "RUNNING".to_string(),
+            waiting: "W".to_string(),
+            idle: "I".to_string(),
+            unknown: "?".to_string(),
+        };
+        assert_eq!(labels.max_label_width(), 7);
     }
 }

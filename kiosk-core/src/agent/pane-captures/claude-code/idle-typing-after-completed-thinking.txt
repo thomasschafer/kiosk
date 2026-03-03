@@ -1,0 +1,22 @@
+● All clean. Now commit and push.
+
+● Bash(git -C /home/tomschafer/Development/kiosk add kiosk-core/src/agent/detect.rs)
+  ⎿  (No output)
+
+● Bash(git commit -m "$(cat <<'EOF'
+      Fix 11 fixture test failures in agent state detection…)
+  ⎿  [feat/agent-status 2352810] Fix 11 fixture test failures in agent state detection
+      1 file changed, 64 insertions(+), 29 deletions(-)
+
+● Bash(git -C /home/tomschafer/Development/kiosk push)
+  ⎿  To https://github.com/thomasschafer/kiosk.git
+        b2d8d7f..2352810  feat/agent-status -> feat/agent-status
+
+● Committed and pushed. All 688 workspace tests pass, clippy is clean, and formatting is good.
+
+✻ Worked for 2m 48s
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ Thanks! Now I'm wondering if we have a couple of bugs here maybe we can fix
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle)                              ctrl+g to edit in Hx

@@ -1,0 +1,40 @@
+
+╭─── Claude Code v2.1.63 ──────────────────────────────────────────────────────────────────────────╮
+│                                                    │ Tips for getting started                    │
+│                  Welcome back Tom!                 │ Run /init to create a CLAUDE.md file with … │
+│                                                    │ ─────────────────────────────────────────── │
+│                                                    │ Recent activity                             │
+│                       ▐▛███▜▌                      │ No recent activity                          │
+│                      ▝▜█████▛▘                     │                                             │
+│                        ▘▘ ▝▝                       │                                             │
+│      Opus 4.6 · Claude Max ·                       │                                             │
+│      thomasschafer97@gmail.com's Organization      │                                             │
+│                /tmp/tmp.c7z2QF1Syn                 │                                             │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+❯ Please run the command: echo hello > /tmp/test_perm.txt                                       
+                                                                                                
+
+● Bash(echo hello > /tmp/test_perm.txt)
+  ⎿  Interrupted · What should Claude do instead?
+
+❯ Please edit test.txt and add a new line that says hello world                                 
+                                                                                                
+
+● Let me read the file first.
+
+● Read 1 file (ctrl+o to expand)
+
+● Update(test.txt)
+  ⎿  User rejected update to test.txt
+      1  test
+      2 +hello world                                                                         
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+❯  
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ? for shortcuts
+
+
+
+

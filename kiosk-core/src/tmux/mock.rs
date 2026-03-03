@@ -1,4 +1,4 @@
-use super::provider::TmuxProvider;
+use super::provider::{PaneInfo, SessionPaneData, TmuxProvider};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::Path;
@@ -20,9 +20,49 @@ pub struct MockTmuxProvider {
     pub capture_pane_result: Mutex<Option<Result<String>>>,
     pub send_keys_result: Mutex<Option<Result<()>>>,
     pub pipe_pane_result: Mutex<Option<Result<()>>>,
+    pub pane_info: HashMap<String, Vec<PaneInfo>>,
+    /// Pane titles keyed by `pane_id` (e.g. `%0`)
+    pub pane_titles: HashMap<String, String>,
+    /// Pane content keyed by `pane_id` (e.g. `%0`)
+    pub pane_content: HashMap<String, String>,
+    /// Session activity timestamps keyed by session name
+    pub session_activity_ts: HashMap<String, u64>,
 }
 
 impl TmuxProvider for MockTmuxProvider {
+    fn list_all_panes_with_activity(&self) -> HashMap<String, SessionPaneData> {
+        // Build from existing mock data: pane_info + session_activity_ts
+        let mut result = HashMap::new();
+        for (session, panes) in &self.pane_info {
+            let activity = self
+                .session_activity_ts
+                .get(session)
+                .copied()
+                .unwrap_or(1_234_567_890);
+            let pane_titles: HashMap<String, String> = panes
+                .iter()
+                .map(|pane| {
+                    (
+                        pane.pane_id.clone(),
+                        self.pane_titles
+                            .get(&pane.pane_id)
+                            .cloned()
+                            .unwrap_or_default(),
+                    )
+                })
+                .collect();
+            result.insert(
+                session.clone(),
+                SessionPaneData {
+                    panes: panes.clone(),
+                    pane_titles,
+                    session_activity: activity,
+                },
+            );
+        }
+        result
+    }
+
     fn list_sessions_with_activity(&self) -> Vec<(String, u64)> {
         if self.sessions_with_activity.is_empty() {
             self.sessions
@@ -142,11 +182,23 @@ impl TmuxProvider for MockTmuxProvider {
         Ok("zsh".to_string())
     }
 
-    fn session_activity(&self, _session: &str) -> anyhow::Result<u64> {
-        Ok(1_234_567_890)
+    fn session_activity(&self, session: &str) -> anyhow::Result<u64> {
+        Ok(self
+            .session_activity_ts
+            .get(session)
+            .copied()
+            .unwrap_or(1_234_567_890))
     }
 
     fn pane_count(&self, _session: &str) -> anyhow::Result<usize> {
         Ok(1)
+    }
+
+    fn list_panes_detailed(&self, session: &str) -> Vec<PaneInfo> {
+        self.pane_info.get(session).cloned().unwrap_or_default()
+    }
+
+    fn capture_pane_content(&self, pane_id: &str, _lines: u32) -> Option<String> {
+        self.pane_content.get(pane_id).cloned()
     }
 }

@@ -1,5 +1,9 @@
 use crate::{
-    config::keys::{Command, FlattenedKeybindingRow},
+    agent::AgentStatus,
+    config::{
+        AgentConfig, AgentLabelsConfig,
+        keys::{Command, FlattenedKeybindingRow},
+    },
     constants::{WORKTREE_DIR_DEDUP_MAX_ATTEMPTS, WORKTREE_DIR_NAME, WORKTREE_NAME_SEPARATOR},
     git::Repo,
     pending_delete::PendingWorktreeDelete,
@@ -8,6 +12,10 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -369,6 +377,8 @@ pub struct BranchEntry {
     pub remote: Option<String>,
     /// Last activity timestamp for the session (if any)
     pub session_activity_ts: Option<u64>,
+    /// Status of any AI agent running in the session
+    pub agent_status: Option<AgentStatus>,
 }
 
 impl BranchEntry {
@@ -468,6 +478,7 @@ impl BranchEntry {
                     is_default,
                     remote: None,
                     session_activity_ts,
+                    agent_status: None,
                 }
             })
             .collect()
@@ -493,6 +504,7 @@ impl BranchEntry {
                 is_default: false,
                 remote: Some(remote.to_string()),
                 session_activity_ts: None,
+                agent_status: None,
             })
             .collect()
     }
@@ -514,10 +526,25 @@ impl BranchEntry {
                 ))
                 // Branches with sessions (even without activity timestamps) before those without
                 .then(b.has_session.cmp(&a.has_session))
+                // Agent needing attention sorts first (Waiting > Running > Idle/Unknown > None)
+                .then(agent_sort_priority(b.agent_status).cmp(&agent_sort_priority(a.agent_status)))
                 // Branches with worktrees before those without
                 .then(b.worktree_path.is_some().cmp(&a.worktree_path.is_some()))
                 .then(a.name.cmp(&b.name))
         });
+    }
+}
+
+/// Sort priority for agent status: higher = sorts first.
+/// Waiting (needs user input) is most urgent, then Running, then the rest.
+fn agent_sort_priority(status: Option<crate::agent::AgentStatus>) -> u8 {
+    match status {
+        Some(s) => match s.state {
+            crate::AgentState::Waiting => 3,
+            crate::AgentState::Running => 2,
+            crate::AgentState::Idle | crate::AgentState::Unknown => 1,
+        },
+        None => 0,
     }
 }
 
@@ -735,6 +762,7 @@ pub struct HelpOverlayState {
 
 /// Central application state. Components read from this, actions modify it.
 #[derive(Debug, Clone)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct AppState {
     pub repos: Vec<Repo>,
     pub repo_list: SearchableList,
@@ -756,6 +784,16 @@ pub struct AppState {
     active_list_page_rows: usize,
     pub pending_worktree_deletes: Vec<PendingWorktreeDelete>,
     pub session_activity: HashMap<String, u64>,
+    /// Cancel token for the active agent status poller thread.
+    /// Setting this flag stops the current poller; clearing it (via `cancel_agent_poller`)
+    /// prepares for a new one.
+    pub agent_poller_cancel: Option<Arc<AtomicBool>>,
+    /// Whether agent status detection is enabled (configurable via `[agent] enabled`).
+    pub agent_enabled: bool,
+    /// Agent poll interval (configurable via `[agent] poll_interval_ms`).
+    pub agent_poll_interval: std::time::Duration,
+    /// Label text for each agent state shown in the branch picker.
+    pub agent_labels: AgentLabelsConfig,
     /// Main repo root path from CWD (for repo ordering)
     pub current_repo_path: Option<PathBuf>,
     /// CWD resolved to repo/worktree root (for branch current detection)
@@ -785,6 +823,12 @@ impl AppState {
             active_list_page_rows: 10,
             pending_worktree_deletes: Vec::new(),
             session_activity: HashMap::new(),
+            agent_poller_cancel: None,
+            agent_enabled: true,
+            agent_poll_interval: std::time::Duration::from_millis(
+                AgentConfig::default().poll_interval_ms,
+            ),
+            agent_labels: AgentLabelsConfig::default(),
             current_repo_path: None,
             cwd_worktree_path: None,
             seen_repo_paths: HashSet::new(),
@@ -825,6 +869,13 @@ impl AppState {
         Self {
             setup: Some(SetupState::new()),
             ..Self::base(Mode::Setup(SetupStep::Welcome))
+        }
+    }
+
+    /// Signal the current agent poller thread to stop and clear the cancel token.
+    pub fn cancel_agent_poller(&mut self) {
+        if let Some(token) = self.agent_poller_cancel.take() {
+            token.store(true, Ordering::Relaxed);
         }
     }
 
@@ -1927,6 +1978,60 @@ mod tests {
     }
 
     #[test]
+    fn test_branch_sort_agent_waiting_before_running() {
+        use crate::agent::{AgentKind, AgentState, AgentStatus};
+
+        let mut entries = vec![
+            BranchEntry {
+                name: "feat-running".to_string(),
+                worktree_path: Some(PathBuf::from("/tmp/r")),
+                has_session: true,
+                is_current: false,
+                is_default: false,
+                remote: None,
+                session_activity_ts: Some(100),
+                agent_status: Some(AgentStatus {
+                    kind: AgentKind::ClaudeCode,
+                    state: AgentState::Running,
+                }),
+            },
+            BranchEntry {
+                name: "feat-waiting".to_string(),
+                worktree_path: Some(PathBuf::from("/tmp/w")),
+                has_session: true,
+                is_current: false,
+                is_default: false,
+                remote: None,
+                session_activity_ts: Some(100),
+                agent_status: Some(AgentStatus {
+                    kind: AgentKind::Codex,
+                    state: AgentState::Waiting,
+                }),
+            },
+            BranchEntry {
+                name: "feat-idle".to_string(),
+                worktree_path: Some(PathBuf::from("/tmp/i")),
+                has_session: true,
+                is_current: false,
+                is_default: false,
+                remote: None,
+                session_activity_ts: Some(100),
+                agent_status: Some(AgentStatus {
+                    kind: AgentKind::ClaudeCode,
+                    state: AgentState::Idle,
+                }),
+            },
+        ];
+        BranchEntry::sort_entries(&mut entries);
+        assert_eq!(entries[0].name, "feat-waiting", "Waiting should sort first");
+        assert_eq!(
+            entries[1].name, "feat-running",
+            "Running should sort second"
+        );
+        assert_eq!(entries[2].name, "feat-idle", "Idle should sort last");
+    }
+
+    #[test]
     fn test_branch_sort_remote_always_last() {
         let mut entries = vec![
             BranchEntry {
@@ -1937,6 +2042,7 @@ mod tests {
                 is_default: false,
                 remote: Some("origin".to_string()),
                 session_activity_ts: None,
+                agent_status: None,
             },
             BranchEntry {
                 name: "zzz-local".to_string(),
@@ -1946,6 +2052,7 @@ mod tests {
                 is_default: false,
                 remote: None,
                 session_activity_ts: None,
+                agent_status: None,
             },
             BranchEntry {
                 name: "mmm-local".to_string(),
@@ -1955,6 +2062,7 @@ mod tests {
                 is_default: false,
                 remote: None,
                 session_activity_ts: None,
+                agent_status: None,
             },
         ];
 
@@ -2143,6 +2251,7 @@ mod tests {
             is_default: false,
             remote: None,
             session_activity_ts: Some(12345),
+            agent_status: None,
         };
 
         let json = serde_json::to_string(&entry).unwrap();
@@ -2232,5 +2341,53 @@ mod tests {
             }),
         };
         assert_eq!(*mode.effective(), Mode::RepoSelect);
+    }
+
+    #[test]
+    fn test_agent_enabled_defaults_to_true() {
+        let state = AppState::new(vec![], None);
+        assert!(state.agent_enabled);
+    }
+
+    #[test]
+    fn test_agent_poll_interval_defaults_to_config_default() {
+        let state = AppState::new(vec![], None);
+        assert_eq!(
+            state.agent_poll_interval,
+            std::time::Duration::from_millis(500)
+        );
+    }
+
+    #[test]
+    fn test_agent_poll_interval_can_be_overridden() {
+        let mut state = AppState::new(vec![], None);
+        state.agent_poll_interval = std::time::Duration::from_millis(5000);
+        assert_eq!(
+            state.agent_poll_interval,
+            std::time::Duration::from_millis(5000)
+        );
+    }
+
+    #[test]
+    fn test_agent_enabled_can_be_disabled() {
+        let mut state = AppState::new(vec![], None);
+        state.agent_enabled = false;
+        assert!(!state.agent_enabled);
+    }
+
+    #[test]
+    fn test_agent_labels_stored_in_state() {
+        let mut state = AppState::new(vec![], None);
+        assert_eq!(state.agent_labels.running, "[RUNNING]");
+        assert_eq!(state.agent_labels.waiting, "[WAITING]");
+
+        state.agent_labels = AgentLabelsConfig {
+            running: "GO".to_string(),
+            waiting: "PEND".to_string(),
+            idle: "OFF".to_string(),
+            unknown: "N/A".to_string(),
+        };
+        assert_eq!(state.agent_labels.running, "GO");
+        assert_eq!(state.agent_labels.waiting, "PEND");
     }
 }

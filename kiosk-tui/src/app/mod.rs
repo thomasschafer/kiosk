@@ -28,7 +28,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Padding, Paragraph},
 };
-use spawn::spawn_repo_discovery;
+use spawn::{spawn_agent_status_poller, spawn_repo_discovery};
 use std::{
     fmt::Write as _,
     path::PathBuf,
@@ -97,13 +97,13 @@ pub fn run(
         spawn_repo_discovery(git, tmux, &event_sender, search_dirs);
     }
 
-    loop {
+    let result = loop {
         terminal.draw(|f| draw(f, state, theme, keys, &spinner_start))?;
 
         // Check background channel (non-blocking)
         if let Ok(app_event) = rx.try_recv() {
             if let Some(result) = process_app_event(app_event, state, git, tmux, &event_sender) {
-                return Ok(Some(result));
+                break result;
             }
             continue;
         }
@@ -125,7 +125,7 @@ pub fn run(
                 {
                     // Signal cancellation to background threads
                     cancel.store(true, Ordering::Relaxed);
-                    return Ok(Some(OpenAction::Quit));
+                    break OpenAction::Quit;
                 }
                 continue;
             }
@@ -153,10 +153,14 @@ pub fn run(
             if let Some(action) = keymap::resolve_action(key, state, keys)
                 && let Some(result) = process_action(action, state, &ctx)
             {
-                return Ok(Some(result));
+                break result;
             }
         }
-    }
+    };
+
+    // Ensure background agent poller is cancelled before exiting
+    state.cancel_agent_poller();
+    Ok(Some(result))
 }
 
 fn draw(
@@ -407,28 +411,6 @@ fn draw_confirm_delete_dialog(
     }
 }
 
-/// Deduplicate `incoming` branches against `state.branches`, append any new ones,
-/// and rebuild the filtered list preserving search.
-fn extend_branches_deduped(state: &mut AppState, incoming: Vec<BranchEntry>) {
-    if incoming.is_empty() {
-        return;
-    }
-    let mut seen: std::collections::HashSet<(String, Option<String>)> = state
-        .branches
-        .iter()
-        .map(|b| (b.name.clone(), b.remote.clone()))
-        .collect();
-    let new_branches: Vec<_> = incoming
-        .into_iter()
-        .filter(|b| seen.insert((b.name.clone(), b.remote.clone())))
-        .collect();
-    if !new_branches.is_empty() {
-        state.branches.extend(new_branches);
-        let names: Vec<&str> = state.branches.iter().map(|b| b.name.as_str()).collect();
-        rebuild_filtered_preserving_search(&mut state.branch_list, &names);
-    }
-}
-
 /// Rebuild a `SearchableList`'s filtered entries from new item names while preserving
 /// the current search text, cursor position, and selection (clamped to bounds).
 fn rebuild_filtered_preserving_search(list: &mut SearchableList, names: &[&str]) {
@@ -482,6 +464,29 @@ fn sort_repos_preserving_selection(state: &mut AppState) {
 }
 
 /// Handle events from background tasks
+#[allow(clippy::too_many_lines)]
+/// Deduplicate `incoming` branches against `state.branches`, append any new ones,
+/// and rebuild the filtered list preserving search.
+///
+/// Deduplication is intentionally by name only: local branches take priority
+/// over remote ones with the same name, so a remote-only duplicate is dropped.
+fn extend_branches_deduped(state: &mut AppState, incoming: Vec<BranchEntry>) {
+    if incoming.is_empty() {
+        return;
+    }
+    let existing_names: std::collections::HashSet<&str> =
+        state.branches.iter().map(|b| b.name.as_str()).collect();
+    let new_branches: Vec<_> = incoming
+        .into_iter()
+        .filter(|b| !existing_names.contains(b.name.as_str()))
+        .collect();
+    if !new_branches.is_empty() {
+        state.branches.extend(new_branches);
+        let names: Vec<&str> = state.branches.iter().map(|b| b.name.as_str()).collect();
+        rebuild_filtered_preserving_search(&mut state.branch_list, &names);
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
     event: AppEvent,
@@ -675,7 +680,39 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
                     local_names.clone(),
                 );
                 state.fetching_remotes = true;
-                spawn::spawn_git_fetch(git, sender, repo_path, local_names);
+                spawn::spawn_git_fetch(git, sender, repo_path);
+
+                // Kick off agent status polling for sessions in the current
+                // branch view. Only polls sessions that actually exist.
+                let session_names: Vec<String> = state
+                    .branches
+                    .iter()
+                    .filter(|b| b.has_session)
+                    .filter_map(|b| {
+                        b.worktree_path.as_ref().and_then(|wt_path| {
+                            state
+                                .selected_repo_idx
+                                .and_then(|idx| state.repos.get(idx))
+                                .map(|repo| repo.tmux_session_name(wt_path))
+                        })
+                    })
+                    .collect();
+
+                // Always cancel the previous poller before deciding whether
+                // to spawn a new one — avoids leaking stale pollers when
+                // navigating to repos with no sessions or agent disabled.
+                state.cancel_agent_poller();
+                if !session_names.is_empty() && state.agent_enabled {
+                    let cancel = Arc::new(AtomicBool::new(false));
+                    spawn_agent_status_poller(
+                        tmux,
+                        sender,
+                        Arc::clone(&cancel),
+                        state.agent_poll_interval,
+                        session_names,
+                    );
+                    state.agent_poller_cancel = Some(cancel);
+                }
             }
         }
         AppEvent::RemoteBranchesLoaded { branches } => {
@@ -688,16 +725,40 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             repo_path,
             is_final,
         } => {
+            // Clear fetching_remotes when the last remote finishes, even on
+            // repo mismatch, so the flag doesn't stay stuck if user switched.
+            if is_final {
+                state.fetching_remotes = false;
+            }
+
             let current_repo_path = state
                 .selected_repo_idx
                 .and_then(|idx| state.repos.get(idx).map(|r| &r.path));
             if *state.mode.effective() == Mode::BranchSelect
                 && current_repo_path == Some(&repo_path)
             {
-                if is_final {
-                    state.fetching_remotes = false;
-                }
                 extend_branches_deduped(state, branches);
+            }
+        }
+        AppEvent::AgentStatesUpdated { states } => {
+            if *state.mode.effective() == Mode::BranchSelect {
+                // Update agent states in-place — no re-sorting or filter changes.
+                // None values clear stale statuses (agent exited since last poll).
+                for (session_name, agent_status) in states {
+                    for branch in &mut state.branches {
+                        if branch.has_session
+                            && branch.worktree_path.as_ref().is_some_and(|path| {
+                                if let Some(repo_idx) = state.selected_repo_idx {
+                                    state.repos[repo_idx].tmux_session_name(path) == session_name
+                                } else {
+                                    false
+                                }
+                            })
+                        {
+                            branch.agent_status = agent_status;
+                        }
+                    }
+                }
             }
         }
         AppEvent::GitError(msg) => {
@@ -1057,6 +1118,8 @@ mod tests {
 
     #[test]
     fn test_remote_branches_appended() {
+        use kiosk_core::state::BranchEntry;
+
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
         state.selected_repo_idx = Some(0);
@@ -1069,6 +1132,7 @@ mod tests {
             remote: None,
             is_default: false,
             session_activity_ts: None,
+            agent_status: None,
         }];
         state.branch_list.reset(1);
 
@@ -1086,6 +1150,7 @@ mod tests {
                 remote: Some("origin".to_string()),
                 is_default: false,
                 session_activity_ts: None,
+                agent_status: None,
             },
             BranchEntry {
                 name: "feature-y".to_string(),
@@ -1095,6 +1160,7 @@ mod tests {
                 remote: Some("origin".to_string()),
                 is_default: false,
                 session_activity_ts: None,
+                agent_status: None,
             },
         ];
 
@@ -1117,6 +1183,8 @@ mod tests {
 
     #[test]
     fn test_remote_branches_filtered_with_search() {
+        use kiosk_core::state::BranchEntry;
+
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
         state.selected_repo_idx = Some(0);
@@ -1129,6 +1197,7 @@ mod tests {
             remote: None,
             is_default: false,
             session_activity_ts: None,
+            agent_status: None,
         }];
         state.branch_list.reset(1);
         state.branch_list.input.text = "feat".to_string();
@@ -1151,6 +1220,7 @@ mod tests {
                     remote: Some("origin".to_string()),
                     is_default: false,
                     session_activity_ts: None,
+                    agent_status: None,
                 }],
             },
             &mut state,
@@ -1353,6 +1423,7 @@ mod tests {
             remote: None,
             is_default: false,
             session_activity_ts: None,
+            agent_status: None,
         }];
         state.branch_list.filtered = vec![(0, 0)];
         state.branch_list.selected = Some(0);
@@ -1391,6 +1462,7 @@ mod tests {
             remote: None,
             is_default: false,
             session_activity_ts: None,
+            agent_status: None,
         }];
         state.branch_list.filtered = vec![(0, 0)];
         state.branch_list.selected = Some(0);
@@ -1631,6 +1703,7 @@ mod tests {
             remote: None,
             is_default: true,
             session_activity_ts: None,
+            agent_status: None,
         }];
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider {
@@ -1663,6 +1736,7 @@ mod tests {
             remote: None,
             is_default: false,
             session_activity_ts: None,
+            agent_status: None,
         }];
         state.branch_list.filtered = vec![(0, 0)];
         state.branch_list.selected = Some(0);
@@ -1694,6 +1768,7 @@ mod tests {
             remote: None,
             is_default: false,
             session_activity_ts: None,
+            agent_status: None,
         }];
         state.branch_list.filtered = vec![(0, 0)];
         state.branch_list.selected = Some(0);
@@ -1725,6 +1800,7 @@ mod tests {
             remote: None,
             is_default: false,
             session_activity_ts: None,
+            agent_status: None,
         }];
         state.branch_list.filtered = vec![(0, 0)];
         state.branch_list.selected = Some(0);
@@ -1761,6 +1837,7 @@ mod tests {
             remote: None,
             is_default: false,
             session_activity_ts: None,
+            agent_status: None,
         }];
         state.branch_list.filtered = vec![(0, 0)];
         state.branch_list.selected = Some(0);
@@ -1805,6 +1882,7 @@ mod tests {
             remote: None,
             is_default: false,
             session_activity_ts: None,
+            agent_status: None,
         }];
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
@@ -1850,6 +1928,7 @@ mod tests {
             remote: None,
             is_default: false,
             session_activity_ts: None,
+            agent_status: None,
         }];
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
@@ -3390,6 +3469,249 @@ mod tests {
         assert_eq!(state.setup.as_ref().unwrap().selected_completion, None);
     }
 
+    #[test]
+    fn test_agent_states_updated_sets_status_on_matching_branch() {
+        use kiosk_core::agent::{AgentKind, AgentState, AgentStatus};
+
+        let repos = vec![make_repo("my-repo")];
+        let mut state = AppState::new(repos, None);
+        state.selected_repo_idx = Some(0);
+        state.mode = Mode::BranchSelect;
+        state.branches = vec![BranchEntry {
+            name: "feat/test".to_string(),
+            worktree_path: Some(std::path::PathBuf::from("/tmp/wt")),
+            has_session: true,
+            is_current: false,
+            is_default: false,
+            remote: None,
+            session_activity_ts: None,
+            agent_status: None,
+        }];
+        state.branch_list.filtered = vec![(0, 0)];
+        state.branch_list.selected = Some(0);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let sender = make_sender();
+
+        let session_name = state.repos[0].tmux_session_name(&std::path::PathBuf::from("/tmp/wt"));
+        let status = AgentStatus {
+            kind: AgentKind::ClaudeCode,
+            state: AgentState::Waiting,
+        };
+
+        process_app_event(
+            AppEvent::AgentStatesUpdated {
+                states: vec![(session_name, Some(status))],
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+        );
+
+        assert_eq!(state.branches[0].agent_status, Some(status));
+    }
+
+    #[test]
+    fn test_agent_states_updated_ignores_non_matching_session() {
+        use kiosk_core::agent::{AgentKind, AgentState, AgentStatus};
+
+        let repos = vec![make_repo("my-repo")];
+        let mut state = AppState::new(repos, None);
+        state.selected_repo_idx = Some(0);
+        state.mode = Mode::BranchSelect;
+        state.branches = vec![BranchEntry {
+            name: "feat/test".to_string(),
+            worktree_path: Some(std::path::PathBuf::from("/tmp/wt")),
+            has_session: true,
+            is_current: false,
+            is_default: false,
+            remote: None,
+            session_activity_ts: None,
+            agent_status: None,
+        }];
+        state.branch_list.filtered = vec![(0, 0)];
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let sender = make_sender();
+
+        process_app_event(
+            AppEvent::AgentStatesUpdated {
+                states: vec![(
+                    "nonexistent-session".to_string(),
+                    Some(AgentStatus {
+                        kind: AgentKind::ClaudeCode,
+                        state: AgentState::Running,
+                    }),
+                )],
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+        );
+
+        assert_eq!(state.branches[0].agent_status, None);
+    }
+
+    #[test]
+    fn test_agent_states_updated_preserves_search_and_selection() {
+        use kiosk_core::agent::{AgentKind, AgentState, AgentStatus};
+
+        let repos = vec![make_repo("my-repo")];
+        let mut state = AppState::new(repos, None);
+        state.selected_repo_idx = Some(0);
+        state.mode = Mode::BranchSelect;
+        state.branches = vec![
+            BranchEntry {
+                name: "feat/alpha".to_string(),
+                worktree_path: Some(std::path::PathBuf::from("/tmp/alpha")),
+                has_session: true,
+                is_current: false,
+                is_default: false,
+                remote: None,
+                session_activity_ts: None,
+                agent_status: None,
+            },
+            BranchEntry {
+                name: "feat/beta".to_string(),
+                worktree_path: Some(std::path::PathBuf::from("/tmp/beta")),
+                has_session: true,
+                is_current: false,
+                is_default: false,
+                remote: None,
+                session_activity_ts: None,
+                agent_status: None,
+            },
+        ];
+        // Simulate a search filter that only shows feat/beta
+        state.branch_list.input.text = "beta".to_string();
+        state.branch_list.filtered = vec![(1, 100)];
+        state.branch_list.selected = Some(0);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let sender = make_sender();
+
+        let session_name =
+            state.repos[0].tmux_session_name(&std::path::PathBuf::from("/tmp/alpha"));
+
+        process_app_event(
+            AppEvent::AgentStatesUpdated {
+                states: vec![(
+                    session_name,
+                    Some(AgentStatus {
+                        kind: AgentKind::ClaudeCode,
+                        state: AgentState::Running,
+                    }),
+                )],
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+        );
+
+        // Search and selection must be preserved
+        assert_eq!(state.branch_list.search(), "beta");
+        assert_eq!(state.branch_list.filtered, vec![(1, 100)]);
+        assert_eq!(state.branch_list.selected, Some(0));
+        // But the agent status was still applied to the underlying branch
+        assert!(state.branches[0].agent_status.is_some());
+    }
+
+    #[test]
+    fn test_agent_states_updated_ignored_outside_branch_select() {
+        use kiosk_core::agent::{AgentKind, AgentState, AgentStatus};
+
+        let repos = vec![make_repo("my-repo")];
+        let mut state = AppState::new(repos, None);
+        state.selected_repo_idx = Some(0);
+        state.mode = Mode::RepoSelect; // Not in BranchSelect
+        state.branches = vec![BranchEntry {
+            name: "feat/test".to_string(),
+            worktree_path: Some(std::path::PathBuf::from("/tmp/wt")),
+            has_session: true,
+            is_current: false,
+            is_default: false,
+            remote: None,
+            session_activity_ts: None,
+            agent_status: None,
+        }];
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let sender = make_sender();
+
+        process_app_event(
+            AppEvent::AgentStatesUpdated {
+                states: vec![(
+                    "whatever".to_string(),
+                    Some(AgentStatus {
+                        kind: AgentKind::ClaudeCode,
+                        state: AgentState::Waiting,
+                    }),
+                )],
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+        );
+
+        // Should be ignored when not in BranchSelect
+        assert_eq!(state.branches[0].agent_status, None);
+    }
+
+    #[test]
+    fn test_agent_states_updated_applies_during_help_overlay() {
+        use kiosk_core::agent::{AgentKind, AgentState, AgentStatus};
+
+        let repos = vec![make_repo("my-repo")];
+        let mut state = AppState::new(repos, None);
+        state.selected_repo_idx = Some(0);
+        // Help overlay wrapping BranchSelect — effective() should still be BranchSelect
+        state.mode = Mode::Help {
+            previous: Box::new(Mode::BranchSelect),
+        };
+        state.branches = vec![BranchEntry {
+            name: "feat/test".to_string(),
+            worktree_path: Some(std::path::PathBuf::from("/tmp/wt")),
+            has_session: true,
+            is_current: false,
+            is_default: false,
+            remote: None,
+            session_activity_ts: None,
+            agent_status: None,
+        }];
+        state.branch_list.filtered = vec![(0, 0)];
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let sender = make_sender();
+
+        let session_name = state.repos[0].tmux_session_name(&std::path::PathBuf::from("/tmp/wt"));
+        let status = AgentStatus {
+            kind: AgentKind::ClaudeCode,
+            state: AgentState::Running,
+        };
+
+        process_app_event(
+            AppEvent::AgentStatesUpdated {
+                states: vec![(session_name, Some(status))],
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+        );
+
+        // Agent status should be applied even though Help overlay is active
+        assert_eq!(state.branches[0].agent_status, Some(status));
+    }
+
     // ── GitFetchCompleted tests ──
 
     fn make_branch(name: &str, remote: Option<&str>) -> BranchEntry {
@@ -3401,6 +3723,7 @@ mod tests {
             is_default: false,
             remote: remote.map(String::from),
             session_activity_ts: None,
+            agent_status: None,
         }
     }
 
@@ -3537,10 +3860,9 @@ mod tests {
             &sender,
         );
 
-        // Should be ignored since we're not in BranchSelect
+        // Stale event should clear fetching flag but not touch branches
+        assert!(!state.fetching_remotes);
         assert_eq!(state.branches.len(), 1);
-        // fetching_remotes stays true because the event was ignored (wrong mode)
-        assert!(state.fetching_remotes);
     }
 
     #[test]
@@ -3702,8 +4024,8 @@ mod tests {
             &sender,
         );
 
-        // Stale event should leave state untouched
-        assert!(state.fetching_remotes);
+        // Stale event should clear fetching flag but not touch branches
+        assert!(!state.fetching_remotes);
         assert_eq!(state.branches.len(), 1);
     }
 

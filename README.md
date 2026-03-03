@@ -1,6 +1,8 @@
 # kiosk
 
-Kiosk is a Git-aware tmux session manager. Search for the repo you want, and optionally select a branch or create a new one. If a session already exists, you jump straight in - if it doesn't, a new session is created, with a new worktree if needed.
+Kiosk is a Git-aware tmux session manager, which shows the status of your AI agents (waiting for permissions, idle or running).
+
+Search for the repo you want, and optionally select a branch or create a new one. If a session already exists, you jump straight in - if it doesn't, a new session is created, with a new worktree if needed.
 
 ![kiosk preview](media/preview.png)
 
@@ -66,6 +68,9 @@ kiosk panes my-project feat/thing --json
 # Check session status
 kiosk status my-project feat/thing --json
 
+# Include agent detection debug metadata (kind/state source + matched rules)
+kiosk status my-project feat/thing --json --debug-agent
+
 # List active kiosk sessions (includes last_activity, pane_count, current_command)
 kiosk sessions --json
 
@@ -106,6 +111,22 @@ Kiosk names tmux sessions deterministically:
 - Branch worktree: `<repo-name>--<branch>` (with `/` replaced by `-`, `.` replaced by `_`)
 
 The `open --json` response includes the exact session name in the `session` field.
+
+#### Agent status troubleshooting
+
+When agent state looks wrong (`UNKNOWN` vs `IDLE`/`RUNNING`), capture both Kiosk's debug metadata and raw pane tail:
+
+```bash
+# Show detected kind/state and which rule matched
+kiosk status my-project feat/thing --json --debug-agent | jq '{agent_status, agent_debug}'
+
+# Confirm pane command/title and target pane ids
+kiosk panes my-project feat/thing --json
+tmux list-panes -t my-project--feat-thing -F '#{pane_id} cmd=#{pane_current_command} title=#{pane_title}'
+
+# Inspect recent pane content (strip ANSI, large enough tail)
+tmux capture-pane -ep -t my-project--feat-thing:0.0 -S -2000 | tail -n 80
+```
 
 </details>
 
@@ -191,7 +212,7 @@ split_command = "hx"
 
 Color theme configuration.
 
-Colors can be a named color (`black`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `white`, `gray`, `dark_gray`) or a hex value (`#rrggbb`). Alternative spellings are also accepted: `grey` for `gray`, `darkgray` for `dark_gray`, `dark_grey` for `dark_gray`, `darkgrey` for `dark_gray`.
+Colors can be a named color (`black`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `white`, `gray`, `dark_gray`) or a hex value (`#rrggbb`).
 
 Defaults:
 
@@ -272,5 +293,42 @@ Defaults are shown below.
 "tab" = "tab_complete"
 
 ```
+
+### `[agent]` section
+
+Agent detection configuration.
+
+#### `enabled`
+
+Whether agent status detection is enabled.
+Set to `false` to completely disable agent polling and status display.
+
+Default: `true`
+
+#### `poll_interval_ms`
+
+Interval in milliseconds between agent status polls.
+
+Default: `500`
+
+### `[agent.labels]` section
+
+Label text for each agent state shown in the branch picker.
+
+#### `running`
+
+Default: `"[RUNNING]"`
+
+#### `waiting`
+
+Default: `"[WAITING]"`
+
+#### `idle`
+
+Default: `"[IDLE]"`
+
+#### `unknown`
+
+Default: `"[UNKNOWN]"`
 
 <!-- CONFIG END -->

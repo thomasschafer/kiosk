@@ -1,0 +1,40 @@
+
+╭─── Claude Code v2.1.63 ──────────────────────────────────────────────────────────────────────────╮
+│                                                    │ Tips for getting started                    │
+│                  Welcome back Tom!                 │ Run /init to create a CLAUDE.md file with … │
+│                                                    │ ─────────────────────────────────────────── │
+│                                                    │ Recent activity                             │
+│                       ▐▛███▜▌                      │ No recent activity                          │
+│                      ▝▜█████▛▘                     │                                             │
+│                        ▘▘ ▝▝                       │                                             │
+│      Opus 4.6 · Claude Max ·                       │                                             │
+│      thomasschafer97@gmail.com's Organization      │                                             │
+│                  /tmp/claude-test                  │                                             │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+✻ Conversation compacted (ctrl+o for history)
+
+
+❯ /compact
+  ⎿  Compacted (ctrl+o to see full summary)
+  ⎿  Read test.txt (2 lines)
+
+❯ Run this bash command: sleep 30
+
+  Bash(sleep 30)
+  ⎿  Running… (8s)
+     ctrl+b ctrl+b (twice) to run in background
+
+✢ Swooping… (thinking)
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  esc to interrupt
+
+
+
+
+
+
+

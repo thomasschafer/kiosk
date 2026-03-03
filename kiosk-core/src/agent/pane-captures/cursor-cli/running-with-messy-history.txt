@@ -1,0 +1,40 @@
+│  Performance                                                                                     │
+│  Wall Time:                  3m 31s                                                              │
+│  Agent Active:               1m 47s                                                              │
+│    » API Time:               1m 27s (81.5%)                                                      │
+│    » Tool Time:              19.9s (18.5%)                                                       │
+│                                                                                                  │
+│  Model Usage                                                                                     │
+│  Model                       Reqs   Input Tokens   Cache Reads  Output Tokens                    │
+│  ────────────────────────────────────────────────────────────────────────────                    │
+│  gemini-2.5-flash-lite          2          5,605             0            105                    │
+│  gemini-3-flash-preview         5         20,746        15,185          2,268                    │
+│                                                                                                  │
+│  Savings Highlight: 15,185 (36.6%) of input tokens were served from the cache, reducing costs.   │
+│                                                                                                  │
+│  Tip: Resume a previous session using gemini --resume or /resume                                 │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+0 | nix-server | gemini-test2 $ cd /tmp && mkdir -p cursor-test && cd cursor-test && ~/.local/bin/cu
+rsor
+/home/tomschafer/.local/bin/cursor: line 26: $1: unbound variable
+1 | nix-server | cursor-test $ ~/.local/bin/cursor agent
+
+
+  Cursor Agent v2026.02.27-e7d2ef6
+  /tmp/cursor-test
+  (cwd is not a git repository, cursor rules and ignore files don't apply)
+
+
+  Write a very detailed essay about the history of computing
+
+
+  ⬢ Generating...
+ ┌────────────────────────────────────────────────────────────────────────────────────────────────┐
+ │ → Add a follow-up                                                               ctrl+c to stop │
+ └────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+  Auto
+  / commands · @ files · ! shell
+
+

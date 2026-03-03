@@ -40,3 +40,20 @@ Rules:
 - Wait briefly (`sleep 1-2`) after launch and after major key actions before querying/capturing.
 - `KIOSK_NO_ALT_SCREEN=1` should be the default for agent-driven capture runs.
 - Optional full isolation: run all commands on a dedicated tmux socket (`tmux -L <temp-sock> ...`).
+
+## Sending keys to agent TUIs in tmux
+Agent TUIs use raw terminal input modes. The critical rule: **text and Enter must be separate `tmux send-keys` calls with a brief delay (~300ms+)**. Sending them in the same invocation drops the Enter in most agents.
+
+```bash
+# Wrong — Enter is dropped when combined with text:
+tmux send-keys -t mysession "hello" Enter
+
+# Correct — separate calls with delay:
+tmux send-keys -t mysession "hello"
+sleep 0.3
+tmux send-keys -t mysession Enter
+```
+
+**Alternative for Claude Code specifically:** `tmux send-keys -H 0d` (raw CR byte) also works even in the same call, but the separate-call pattern is more universal across all agents.
+
+Other keys that work normally: `BSpace`, `Escape`, `C-c`, `C-d`, regular text.

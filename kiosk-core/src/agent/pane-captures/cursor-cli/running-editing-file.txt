@@ -1,0 +1,40 @@
+
+  Create a file called hello.py with a simple hello world program
+
+
+  I’ll create hello.py in your workspace with a minimal Hello World script.
+
+
+  ┌────────────────────────────────────────────────────────────────────────────────────────────────┐
+  │ hello.py +5                                                                                    │
+  │                                                                                                │
+  │ + def main():                                                                                  │
+  │ +     print("Hello, world!")                                                                   │
+  │                                                                                                │
+  │ +                                                                                              │
+  │ + if __name__ == "__main__":                                                                   │
+  │ +     main()                                                                                   │
+  └────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+
+
+  Summary
+
+  • File created: hello.py in /tmp/cursor-test.
+  • Contents: a simple, executable Hello World program:
+
+
+  def main():
+      print("Hello, world!")
+  if __name__ == "__main__":
+      main()
+
+
+
+ ┌────────────────────────────────────────────────────────────────────────────────────────────────┐
+ │ → Add a follow-up                                                                              │
+ └────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+  Auto · 4.5% · 1 file edited
+  / commands · @ files · ! shell · ctrl+r to review edits
+

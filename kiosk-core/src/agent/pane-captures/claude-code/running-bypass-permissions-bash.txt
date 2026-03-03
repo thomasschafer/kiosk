@@ -1,0 +1,40 @@
+  ## 12) Concurrency-Oriented Structures
+
+  ### Lock-Based Queues and Maps
+
+  Traditional mutex-guarded structures are easiest to reason about. Performance depends on
+  contention and critical section size.
+
+  ### Lock-Free Structures
+Token usage: total=1,475 input=1,219 (+ 7,424 cached) output=256 (reasoning 19)
+To continue this session, run codex resume 019cb571-db93-7340-858a-850b5446ff03
+0 | nix-server | codex-test $ cd /tmp/claude-test && ~/.local/bin/claude --dangerously-skip-permissi
+ons
+
+╭─── Claude Code v2.1.63 ──────────────────────────────────────────────────────────────────────────╮
+│                                                    │ Tips for getting started                    │
+│                  Welcome back Tom!                 │ Run /init to create a CLAUDE.md file with … │
+│                                                    │ ─────────────────────────────────────────── │
+│                                                    │ Recent activity                             │
+│                       ▐▛███▜▌                      │ No recent activity                          │
+│                      ▝▜█████▛▘                     │                                             │
+│                        ▘▘ ▝▝                       │                                             │
+│      Opus 4.6 · Claude Max ·                       │                                             │
+│      thomasschafer97@gmail.com's Organization      │                                             │
+│                  /tmp/claude-test                  │                                             │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+❯ Run: echo hello && sleep 15 && echo done
+
+● Bash(echo hello && sleep 15 && echo done)
+  ⎿  hello
+     (6s)
+     ctrl+b ctrl+b (twice) to run in background
+
+✻ Scampering…
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt
+

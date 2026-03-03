@@ -1,0 +1,40 @@
+0 | nix-server | openclaw-workspace (master) $ cd /tmp && mkdir -p claude-test && cd claude-test &&
+export PATH="$HOME/.local/bin:$PATH" && claude
+
+╭─── Claude Code v2.1.63 ──────────────────────────────────────────────────────────────────────────╮
+│                                                    │ Tips for getting started                    │
+│                  Welcome back Tom!                 │ Run /init to create a CLAUDE.md file with … │
+│                                                    │ ─────────────────────────────────────────── │
+│                                                    │ Recent activity                             │
+│                       ▐▛███▜▌                      │ No recent activity                          │
+│                      ▝▜█████▛▘                     │                                             │
+│                        ▘▘ ▝▝                       │                                             │
+│      Opus 4.6 · Claude Max ·                       │                                             │
+│      thomasschafer97@gmail.com's Organization      │                                             │
+│                  /tmp/claude-test                  │                                             │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+❯ hi
+
+● Hi! How can I help you today?
+
+❯ Please create a file called test.txt with the content 'hello world'
+
+● Write(test.txt)
+  ⎿  Wrote 1 lines to test.txt
+      1 hello world
+
+● Done! Created test.txt with the content hello world.
+
+❯ Write a very detailed 5000 word essay about the history of mathematics
+
+· Orbiting… (thinking)
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  esc to interrupt
+
+
+
+

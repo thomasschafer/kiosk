@@ -108,6 +108,16 @@ fn detect_agent_kind_from_content_impl(
         return Some(AgentKind::ClaudeCode);
     }
 
+    // Gemini CLI shows its banner in the content.
+    if lower.contains("gemini code assist") || lower.contains("/model auto (gemini") {
+        return Some(AgentKind::Gemini);
+    }
+
+    // Cursor Agent header line, e.g. `Cursor Agent v2026.02.27-e7d2ef6`
+    if lower.contains("cursor agent v") {
+        return Some(AgentKind::CursorAgent);
+    }
+
     None
 }
 
@@ -917,16 +927,25 @@ fn contains_braille_spinner(content: &str) -> bool {
 ///
 /// Claude shows status like `✦ Noodling… 42 tokens` during processing.
 /// We look for `<word>…` or `<word>...` to avoid false positives on normal
-/// English text that might contain words like "working" or "processing".
+/// English text that might contain words like "working..." or "processing...".
+///
+/// Only matches when the thinking word appears near the start of a line
+/// (after optional whitespace), to avoid false positives from prose text
+/// like "the system is working...". The glyph-based [`contains_thinking_status`]
+/// check handles the canonical `✽ Burrowing…` format; this is a fallback for
+/// cases where the glyph is stripped or missing.
 ///
 /// Uses pre-computed suffixed strings ([`THINKING_SUFFIXED`]) to avoid
 /// allocations on every poll cycle.
 ///
 /// Inspired by agent-os (<https://github.com/saadnvd1/agent-os>).
 fn contains_thinking_word(content: &str) -> bool {
-    THINKING_SUFFIXED
-        .iter()
-        .any(|s| content.contains(s.as_str()))
+    content.lines().any(|line| {
+        let trimmed = line.trim_start();
+        THINKING_SUFFIXED
+            .iter()
+            .any(|s| trimmed.starts_with(s.as_str()))
+    })
 }
 
 /// Glyph-based thinking status detector for Claude Code.
@@ -1895,15 +1914,32 @@ mod tests {
 
     #[test]
     fn thinking_word_with_ellipsis() {
+        // Bare word at line start (glyph stripped or missing)
         assert!(contains_thinking_word("noodling…"));
-        assert!(contains_thinking_word("✦ cogitating… 42 tokens"));
         assert!(contains_thinking_word("spelunking..."));
+        // With leading whitespace
+        assert!(contains_thinking_word("  noodling…"));
+    }
+
+    #[test]
+    fn thinking_word_with_glyph_defers_to_thinking_status() {
+        // When the glyph is present, contains_thinking_status() handles
+        // detection. contains_thinking_word() is a fallback for when the
+        // glyph is stripped, so it does NOT match glyph-prefixed lines.
+        assert!(!contains_thinking_word("✦ cogitating… 42 tokens"));
     }
 
     #[test]
     fn thinking_word_without_ellipsis_no_match() {
         assert!(!contains_thinking_word("noodling"));
         assert!(!contains_thinking_word("I was thinking about it"));
+    }
+
+    #[test]
+    fn thinking_word_in_prose_no_match() {
+        // Words mid-sentence should NOT match (could be response text)
+        assert!(!contains_thinking_word("The system is working… and done"));
+        assert!(!contains_thinking_word("It was processing... the data"));
     }
 }
 

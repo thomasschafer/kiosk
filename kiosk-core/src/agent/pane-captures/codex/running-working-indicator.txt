@@ -1,0 +1,40 @@
+╭─────────────────────────────────────────────────╮
+│ ✨ Update available! 0.104.0 -> 0.107.0         │
+│ Run npm install -g @openai/codex to update.     │
+│                                                 │
+│ See full release notes:                         │
+│ https://github.com/openai/codex/releases/latest │
+╰─────────────────────────────────────────────────╯
+
+╭─────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.104.0)                  │
+│                                             │
+│ model:     gpt-5.3-codex   /model to change │
+│ directory: /tmp/codex-test                  │
+╰─────────────────────────────────────────────╯
+
+  Tip: New 2x rate limits until April 2nd.
+
+
+› What is 2+2?
+
+
+• 4
+
+
+› Write a comprehensive 3000 word essay about the complete history of computer science
+
+
+• Computer science is often described as a modern discipline, born in the twentieth century with
+  electronic machines and digital logic. Yet its roots stretch deep into humanity’s oldest efforts
+  to count, symbolize, reason, and automate thought. The history of computer science is not merely
+  the story of hardware becoming faster. It is the story of formalizing processes, representing
+  knowledge, and building machines that execute abstract rules with growing precision and autonomy.
+  Across centuries, philosophers, mathematicians, engineers, and programmers transformed computation
+  from a craft into a science, and then into a foundational infrastructure of civilization.
+
+
+› Write tests for @filename
+
+  ? for shortcuts                                                                100% context left
+

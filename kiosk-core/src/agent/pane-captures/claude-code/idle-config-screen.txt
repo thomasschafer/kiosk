@@ -1,0 +1,40 @@
+
+❯ /config
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ ──────────────────────────────────────────────────────────────────────────────────────────────────
+  Settings:  Status   Config   Usage  (←/→ or tab to cycle)
+
+
+  Configure Claude Code preferences
+
+  ╭───────────────────────────────────────────────────────────────────────────────────────────────╮
+  │ ⌕ Search settings...                                                                          │
+  ╰───────────────────────────────────────────────────────────────────────────────────────────────╯
+
+  ❯ Auto-compact                              true
+    Show tips                                 true
+    Reduce motion                             false
+    Thinking mode                             true
+    Fast mode (Opus 4.6 only)                 false
+    Rewind code (checkpoints)                 true
+    Verbose output                            false
+    Terminal progress bar                     true
+    Default permission mode                   Default
+    Respect .gitignore in file picker         true
+    Always copy full response (skip /copy     false
+  picker)
+    Auto-update channel                       latest
+    Theme                                     Dark mode
+    Notifications                             Auto
+    Output style                              default
+    Language                                  Default (English)
+    Editor mode                               normal
+    Show PR status footer                     true
+    Model                                     Default (recommended)
+    Auto-connect to IDE (external terminal)   false
+    Claude in Chrome enabled by default       true
+    Enable Remote Control for all sessions    default
+
+  Type to filter · Enter/↓ to select · Esc to clear
+
+

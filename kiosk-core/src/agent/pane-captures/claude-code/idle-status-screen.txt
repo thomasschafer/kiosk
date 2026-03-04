@@ -1,0 +1,40 @@
+
+❯ /config
+  ⎿  Config dialog dismissed
+
+❯ /status
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ ──────────────────────────────────────────────────────────────────────────────────────────────────
+  Settings:  Status   Config   Usage  (←/→ or tab to cycle)
+
+
+  Version: 2.1.63
+  Session name: /rename to add a name
+  Session ID: f657a07c-39c6-49ed-848f-23e8e6944518
+  cwd: /tmp/claude-test
+  Login method: Claude Max Account
+  Organization: user@example.com's Organization
+  Email: user@example.com
+
+  Model: Default Opus 4.6 · Most capable for complex work
+  MCP servers: claude.ai Google Calendar △, claude.ai Gmail △
+  Memory: user (~/.claude/CLAUDE.md)
+  Setting sources: User settings
+
+  System Diagnostics
+   ⚠ Leftover npm global installation at /home/user/.local/bin/claude
+
+  Esc to cancel
+
+
+
+
+
+
+
+
+
+
+
+
+

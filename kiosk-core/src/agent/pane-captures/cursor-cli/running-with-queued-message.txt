@@ -1,0 +1,40 @@
+│                  /tmp/claude-test                  │                                             │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+❯ /exit
+  ⎿  Bye!
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ? for shortcuts                                                             Checking for updates
+
+Resume this session with:
+claude --resume 4d94c60d-d66b-4932-8e48-3a200446ed74
+0 | nix-server | claude-test $ cd /tmp/cursor-test && ~/.local/bin/cursor agent
+
+
+  Cursor Agent v2026.02.27-e7d2ef6
+  /tmp/cursor-test
+  (cwd is not a git repository, cursor rules and ignore files don't apply)
+
+
+  Write a comprehensive analysis of every design pattern in software engineering
+
+
+
+  Planning pattern analysis
+
+  I’m thinking about how to structure the analysis of various patterns. I’ll organize it with an
+  intent paragraph followed by key ideas and trade-offs for each pattern, especially since there
+  are 23 to cover. I
+
+
+  ⬢ Thinking     59 tokens
+ ┌────────────────────────────────────────────────────────────────────────────────────────────────┐
+ │ → then summarize them all                                                                      │
+ └────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+  Auto
+  / commands · @ files · ! shell
+

@@ -1,3 +1,27 @@
+
+  - Fast scans, compact, good locality.
+  - Harder dynamic updates than linked-list adjacency.
+
+  Use cases:
+
+  - Graph analytics (PageRank, BFS batches).
+  - Scientific computing and sparse linear algebra.
+
+  ## 12) Concurrency-Oriented Structures
+
+  ### Lock-Based Queues and Maps
+
+  Traditional mutex-guarded structures are easiest to reason about. Performance depends on
+  contention and critical section size.
+
+  ### Lock-Free Structures
+Token usage: total=1,475 input=1,219 (+ 7,424 cached) output=256 (reasoning 19)
+To continue this session, run codex resume 00000000-0000-0000-0000-000000000000
+0 | nix-server | codex-test $ cd /tmp/claude-test && ~/.local/bin/claude --dangerously-skip-permissi
+ons
+
+╭─── Claude Code v2.1.63 ──────────────────────────────────────────────────────────────────────────╮
+│                                                    │ Tips for getting started                    │
 │                  Welcome back!                        │ Run /init to create a CLAUDE.md file with … │
 │                                                    │ ─────────────────────────────────────────── │
 │                                                    │ Recent activity                             │
@@ -6,35 +30,11 @@
 │                        ▘▘ ▝▝                       │                                             │
 │      Opus 4.6 · Claude Max ·                       │                                             │
 │      user@example.com's Organization      │                                             │
-│                /tmp/tmp.c7z2QF1Syn                 │                                             │
+│                  /tmp/claude-test                  │                                             │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
-❯ Please run the command: echo hello > /tmp/test_perm.txt                                       
-                                                                                                
-
-● Bash(echo hello > /tmp/test_perm.txt)
-  ⎿  Interrupted · What should Claude do instead?
-
-❯ Please edit test.txt and add a new line that says hello world                                 
-                                                                                                
-
-● Let me read the file first.
-
-● Read 1 file (ctrl+o to expand)
-
-● Update(test.txt)
-
 ────────────────────────────────────────────────────────────────────────────────────────────────────
- Edit file
- test.txt
-╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
- 1  test
- 2 +hello world
-╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
- Do you want to make this edit to test.txt?
- ❯ 1. Yes
-   2. Yes, allow all edits during this session (shift+tab)
-   3. No
-
- Esc to cancel · Tab to amend
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle)
 

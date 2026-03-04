@@ -9,7 +9,7 @@
 ░░░            ░░░░░░░░░  ░░░░░░░░░░ ░░░░░     ░░░░░ ░░░░░ ░░░░░    ░░░░░ ░░░░░
 
 
-Logged in with Google: thomasschafer97@gmail.com /auth
+Logged in with Google: user@example.com /auth
 Plan: Gemini Code Assist for individuals
 ╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
 │                                                                                                  │

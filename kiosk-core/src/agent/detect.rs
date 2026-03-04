@@ -108,6 +108,16 @@ fn detect_agent_kind_from_content_impl(
         return Some(AgentKind::ClaudeCode);
     }
 
+    // Gemini CLI shows its banner in the content.
+    if lower.contains("gemini code assist") || lower.contains("/model auto (gemini") {
+        return Some(AgentKind::Gemini);
+    }
+
+    // Cursor Agent header line, e.g. `Cursor Agent v2026.02.27-e7d2ef6`
+    if lower.contains("cursor agent v") {
+        return Some(AgentKind::CursorAgent);
+    }
+
     None
 }
 
@@ -142,7 +152,13 @@ const CLAUDE_PATTERNS: AgentPatterns = AgentPatterns {
     // captured by `tmux capture-pane` in Claude Code >= v2.1 (rendered as a
     // status-bar element outside the normal text flow). We fall back to
     // detecting the input prompt character `❯` in `detect_claude_state`.
-    idle_tail: &["? for shortcuts"],
+    idle_tail: &[
+        "? for shortcuts",
+        // Config overlay: unique filter prompt shown in /config screen
+        "type to filter · enter",
+        // Status overlay: shown in /status screen with session info
+        "esc to cancel",
+    ],
 };
 
 /// Claude Code's whimsical "thinking" words shown during processing.
@@ -183,6 +199,7 @@ const CLAUDE_THINKING_WORDS: &[&str] = &[
     "determining",
     "discombulating",
     "divining",
+    "dilly-dallying",
     "doing",
     "effecting",
     "elucidating",
@@ -214,6 +231,7 @@ const CLAUDE_THINKING_WORDS: &[&str] = &[
     "noodling",
     "percolating",
     "perusing",
+    "orbiting",
     "philosophising",
     "pondering",
     "pontificating",
@@ -222,6 +240,7 @@ const CLAUDE_THINKING_WORDS: &[&str] = &[
     "puzzling",
     "reticulating",
     "ruminating",
+    "scampering",
     "scheming",
     "schlepping",
     "shimmying",
@@ -232,6 +251,7 @@ const CLAUDE_THINKING_WORDS: &[&str] = &[
     "spinning",
     "stewing",
     "sussing",
+    "swooping",
     "synthesizing",
     "thinking",
     "tinkering",
@@ -264,7 +284,13 @@ static THINKING_SUFFIXED: LazyLock<Vec<String>> = LazyLock::new(|| {
 /// Completed thinking replaces the ellipsis with a duration (`✻ Crunched for 37s`),
 /// so checking for both the glyph AND an ellipsis on the same line distinguishes
 /// active from completed thinking.
-const THINKING_GLYPHS: &[char] = &['✦', '✻', '✽', '✶'];
+///
+/// Note: `·` (middle dot) was observed as a rare thinking glyph (`· Orbiting…`)
+/// but is excluded because it also appears extensively in normal UI elements
+/// (e.g. `Opus 4.6 · Claude Max ·`). A line starting with `·` that contains
+/// `...` in response text would false-match. When `·` is the thinking glyph,
+/// `esc to interrupt` is always present as a primary running indicator.
+const THINKING_GLYPHS: &[char] = &['✦', '✻', '✽', '✶', '✢'];
 
 // -- Codex --------------------------------------------------------------------
 
@@ -294,7 +320,18 @@ const CODEX_PATTERNS: AgentPatterns = AgentPatterns {
 const CURSOR_PATTERNS: AgentPatterns = AgentPatterns {
     // Cursor CLI is built on Claude Code, so shares the same running signals.
     // Inspired by AoE's `detect_cursor_status` which delegates to Claude detection.
-    running: &["esc to interrupt", "ctrl+c to interrupt", "ctrl+c to stop"],
+    // Hexagonal markers (⬢/⬡) appear during active generation/thinking/editing.
+    running: &[
+        "esc to interrupt",
+        "ctrl+c to interrupt",
+        "ctrl+c to stop",
+        "⬢ thinking",
+        "⬡ thinking",
+        "⬢ generating",
+        "⬡ generating",
+        "⬢ editing",
+        "⬡ editing",
+    ],
     waiting: &[
         "do you trust",
         "trust this workspace",
@@ -654,9 +691,24 @@ fn detect_codex_state(_content: &str, tail: &str) -> AgentState {
 /// states, so we must check running indicators BEFORE idle patterns.
 /// Uses `detect_active_state` which has the correct priority order.
 fn detect_cursor_state(content: &str, tail: &str) -> AgentState {
-    let state = detect_active_state(content, tail, &CURSOR_PATTERNS);
-    if state != AgentState::Unknown {
-        return state;
+    // Check tail-level running first (ctrl+c to stop, esc to interrupt).
+    if matches_any(tail, CURSOR_PATTERNS.running) || contains_braille_spinner(tail) {
+        return AgentState::Running;
+    }
+    // Check waiting before idle — permission dialogs need human attention.
+    if matches_any(content, CURSOR_PATTERNS.waiting) {
+        return AgentState::Waiting;
+    }
+    // Content-level running indicators (⬢/⬡ hexagonal markers for
+    // Thinking/Generating/Editing) must be checked BEFORE idle_tail
+    // because Cursor shows `/ commands` in both idle and running states.
+    if matches_any(content, CURSOR_PATTERNS.running) || contains_braille_spinner(content) {
+        return AgentState::Running;
+    }
+    // Idle footer: `/ commands` only counts as idle when no running
+    // indicators are present (checked above).
+    if matches_any(tail, CURSOR_PATTERNS.idle_tail) {
+        return AgentState::Idle;
     }
     // Fallback: if footer shows "/ commands" without running indicators,
     // the agent is idle at the prompt.
@@ -881,16 +933,25 @@ fn contains_braille_spinner(content: &str) -> bool {
 ///
 /// Claude shows status like `✦ Noodling… 42 tokens` during processing.
 /// We look for `<word>…` or `<word>...` to avoid false positives on normal
-/// English text that might contain words like "working" or "processing".
+/// English text that might contain words like "working..." or "processing...".
+///
+/// Only matches when the thinking word appears near the start of a line
+/// (after optional whitespace), to avoid false positives from prose text
+/// like "the system is working...". The glyph-based [`contains_thinking_status`]
+/// check handles the canonical `✽ Burrowing…` format; this is a fallback for
+/// cases where the glyph is stripped or missing.
 ///
 /// Uses pre-computed suffixed strings ([`THINKING_SUFFIXED`]) to avoid
 /// allocations on every poll cycle.
 ///
 /// Inspired by agent-os (<https://github.com/saadnvd1/agent-os>).
 fn contains_thinking_word(content: &str) -> bool {
-    THINKING_SUFFIXED
-        .iter()
-        .any(|s| content.contains(s.as_str()))
+    content.lines().any(|line| {
+        let trimmed = line.trim_start();
+        THINKING_SUFFIXED
+            .iter()
+            .any(|s| trimmed.starts_with(s.as_str()))
+    })
 }
 
 /// Glyph-based thinking status detector for Claude Code.
@@ -1113,6 +1174,36 @@ mod tests {
         assert_eq!(
             detect_agent_kind_from_content(content),
             Some(AgentKind::Codex)
+        );
+    }
+
+    #[test]
+    fn detect_kind_from_content_gemini() {
+        // Banner text from Gemini CLI startup
+        let content = "Plan: Gemini Code Assist for individuals
+                       ╭──────────────────────────────────────╮
+                       │ ? for shortcuts";
+        assert_eq!(
+            detect_agent_kind_from_content(content),
+            Some(AgentKind::Gemini)
+        );
+        // Footer with model selector
+        let content2 = "/tmp/project (main)  no sandbox (see /docs)  /model Auto (Gemini 3)";
+        assert_eq!(
+            detect_agent_kind_from_content(content2),
+            Some(AgentKind::Gemini)
+        );
+    }
+
+    #[test]
+    fn detect_kind_from_content_cursor() {
+        let content = "  Cursor Agent v2026.02.27-e7d2ef6
+                       
+                       Write tests for the parser module
+                       / commands";
+        assert_eq!(
+            detect_agent_kind_from_content(content),
+            Some(AgentKind::CursorAgent)
         );
     }
 
@@ -1859,15 +1950,32 @@ mod tests {
 
     #[test]
     fn thinking_word_with_ellipsis() {
+        // Bare word at line start (glyph stripped or missing)
         assert!(contains_thinking_word("noodling…"));
-        assert!(contains_thinking_word("✦ cogitating… 42 tokens"));
         assert!(contains_thinking_word("spelunking..."));
+        // With leading whitespace
+        assert!(contains_thinking_word("  noodling…"));
+    }
+
+    #[test]
+    fn thinking_word_with_glyph_defers_to_thinking_status() {
+        // When the glyph is present, contains_thinking_status() handles
+        // detection. contains_thinking_word() is a fallback for when the
+        // glyph is stripped, so it does NOT match glyph-prefixed lines.
+        assert!(!contains_thinking_word("✦ cogitating… 42 tokens"));
     }
 
     #[test]
     fn thinking_word_without_ellipsis_no_match() {
         assert!(!contains_thinking_word("noodling"));
         assert!(!contains_thinking_word("I was thinking about it"));
+    }
+
+    #[test]
+    fn thinking_word_in_prose_no_match() {
+        // Words mid-sentence should NOT match (could be response text)
+        assert!(!contains_thinking_word("The system is working… and done"));
+        assert!(!contains_thinking_word("It was processing... the data"));
     }
 }
 
@@ -1900,68 +2008,102 @@ mod fixture_tests {
     }
 
     fixtures! {
-        // Claude Code
-        (CLAUDE_IDLE_FRESH,               "claude-code/idle-fresh.txt",                    AgentKind::ClaudeCode,  AgentState::Idle),
-        (CLAUDE_IDLE_AFTER_RESPONSE,      "claude-code/idle-after-response.txt",           AgentKind::ClaudeCode,  AgentState::Idle),
-        (CLAUDE_IDLE_AFTER_CANCELLED_EDIT,"claude-code/idle-after-cancelled-edit.txt",     AgentKind::ClaudeCode,  AgentState::Idle),
-        (CLAUDE_IDLE_QUEUED,              "claude-code/idle-with-queued-message.txt",      AgentKind::ClaudeCode,  AgentState::Unknown),
-        (CLAUDE_IDLE_TYPING,             "claude-code/idle-typing-after-completed-thinking.txt", AgentKind::ClaudeCode, AgentState::Unknown),
-        (CLAUDE_RUNNING_THINKING,         "claude-code/running-thinking-word.txt",         AgentKind::ClaudeCode,  AgentState::Running),
-        (CLAUDE_RUNNING_STREAMING,        "claude-code/running-streaming-response.txt",    AgentKind::ClaudeCode,  AgentState::Running),
-        (CLAUDE_RUNNING_EXTENDED,         "claude-code/running-extended-thinking.txt",     AgentKind::ClaudeCode,  AgentState::Running),
-        (CLAUDE_RUNNING_ESC,              "claude-code/running-with-esc-to-interrupt.txt", AgentKind::ClaudeCode, AgentState::Running),
-        (CLAUDE_RUNNING_QUEUED,           "claude-code/running-with-queued-message.txt",   AgentKind::ClaudeCode, AgentState::Running),
-        (CLAUDE_WAITING_BASH,             "claude-code/waiting-bash-permission.txt",   AgentKind::ClaudeCode,  AgentState::Waiting),
-        (CLAUDE_WAITING_EDIT,             "claude-code/waiting-edit-permission.txt",   AgentKind::ClaudeCode,  AgentState::Waiting),
-        (CLAUDE_IDLE_RESPONSE_KEYWORDS,  "claude-code/idle-response-contains-running-keywords.txt", AgentKind::ClaudeCode, AgentState::Idle),
-        (CLAUDE_CANCELLED,                "claude-code/cancelled.txt",                 AgentKind::ClaudeCode,  AgentState::Idle),
+        // ── Claude Code ─────────────────────────────────────────────────
+        (CLAUDE_IDLE_FRESH,               "claude-code/idle-fresh.txt",                             AgentKind::ClaudeCode,  AgentState::Idle),
+        (CLAUDE_IDLE_AFTER_RESPONSE,      "claude-code/idle-after-response.txt",                    AgentKind::ClaudeCode,  AgentState::Idle),
+        (CLAUDE_IDLE_AFTER_CANCELLED_EDIT,"claude-code/idle-after-cancelled-edit.txt",              AgentKind::ClaudeCode,  AgentState::Idle),
+        // FIXME: should be Idle — user typed follow-up, Claude is idle but no `? for shortcuts` visible
+        (CLAUDE_IDLE_QUEUED,              "claude-code/idle-with-queued-message.txt",               AgentKind::ClaudeCode,  AgentState::Unknown),
+        // FIXME: should be Idle — thinking completed, user is typing, but no idle indicator captured
+        (CLAUDE_IDLE_TYPING,              "claude-code/idle-typing-after-completed-thinking.txt",   AgentKind::ClaudeCode,  AgentState::Unknown),
+        (CLAUDE_IDLE_RESPONSE_KEYWORDS,   "claude-code/idle-response-contains-running-keywords.txt",AgentKind::ClaudeCode,  AgentState::Idle),
+        (CLAUDE_IDLE_INVALID_CMD,         "claude-code/idle-after-invalid-command.txt",             AgentKind::ClaudeCode,  AgentState::Idle),
+        (CLAUDE_IDLE_CONFIG,              "claude-code/idle-config-screen.txt",                     AgentKind::ClaudeCode,  AgentState::Idle),
+        (CLAUDE_IDLE_STATUS,              "claude-code/idle-status-screen.txt",                     AgentKind::ClaudeCode,  AgentState::Idle),
+        (CLAUDE_IDLE_BYPASS,              "claude-code/idle-fresh-bypass-permissions.txt",          AgentKind::ClaudeCode,  AgentState::Idle),
+        (CLAUDE_RUNNING_THINKING,         "claude-code/running-thinking-word.txt",                  AgentKind::ClaudeCode,  AgentState::Running),
+        (CLAUDE_RUNNING_STREAMING,        "claude-code/running-streaming-response.txt",             AgentKind::ClaudeCode,  AgentState::Running),
+        (CLAUDE_RUNNING_EXTENDED,         "claude-code/running-extended-thinking.txt",              AgentKind::ClaudeCode,  AgentState::Running),
+        (CLAUDE_RUNNING_ESC,              "claude-code/running-with-esc-to-interrupt.txt",          AgentKind::ClaudeCode,  AgentState::Running),
+        (CLAUDE_RUNNING_QUEUED,           "claude-code/running-with-queued-message.txt",            AgentKind::ClaudeCode,  AgentState::Running),
+        (CLAUDE_RUNNING_BASH_TOOL,        "claude-code/running-bash-tool-execution.txt",            AgentKind::ClaudeCode,  AgentState::Running),
+        (CLAUDE_RUNNING_BYPASS_BASH,      "claude-code/running-bypass-permissions-bash.txt",        AgentKind::ClaudeCode,  AgentState::Running),
+        (CLAUDE_RUNNING_ORBITING,         "claude-code/running-orbiting-thinking.txt",              AgentKind::ClaudeCode,  AgentState::Running),
+        (CLAUDE_WAITING_BASH,             "claude-code/waiting-bash-permission.txt",                AgentKind::ClaudeCode,  AgentState::Waiting),
+        (CLAUDE_WAITING_EDIT,             "claude-code/waiting-edit-permission.txt",                AgentKind::ClaudeCode,  AgentState::Waiting),
+        (CLAUDE_WAITING_WRITE,            "claude-code/waiting-write-permission.txt",               AgentKind::ClaudeCode,  AgentState::Waiting),
+        (CLAUDE_CANCELLED,                "claude-code/cancelled.txt",                              AgentKind::ClaudeCode,  AgentState::Idle),
+        (CLAUDE_CANCELLED_MID,            "claude-code/cancelled-mid-response.txt",                 AgentKind::ClaudeCode,  AgentState::Idle),
 
-        // Codex
-        (CODEX_IDLE_FRESH,                "codex/idle-fresh.txt",                      AgentKind::Codex,       AgentState::Idle),
-        (CODEX_IDLE_AFTER_RESPONSE,       "codex/idle-after-response.txt",             AgentKind::Codex,       AgentState::Idle),
-        (CODEX_IDLE_AFTER_DENIED,         "codex/idle-after-denied-permission.txt",    AgentKind::Codex,       AgentState::Idle),
-        (CODEX_RUNNING_SPINNER,           "codex/running-spinner.txt",                 AgentKind::Codex,       AgentState::Running),
-        (CODEX_RUNNING_STREAMING,         "codex/running-streaming-with-stale-footer.txt", AgentKind::Codex,   AgentState::Idle),
-        (CODEX_RUNNING_STALE_IDLE,        "codex/running-with-stale-idle-markers.txt", AgentKind::Codex,       AgentState::Idle),
-        (CODEX_RUNNING_QUEUED,            "codex/running-with-queued-message.txt",     AgentKind::Codex,       AgentState::Running),
-        (CODEX_WAITING_COMMAND,           "codex/waiting-command-permission.txt",      AgentKind::Codex,       AgentState::Waiting),
-        (CODEX_WAITING_TRUST,             "codex/waiting-trust-dialog.txt",            AgentKind::Codex,       AgentState::Waiting),
-        (CODEX_CANCELLED,                 "codex/cancelled.txt",                       AgentKind::Codex,       AgentState::Idle),
+        // ── Codex ───────────────────────────────────────────────────────
+        (CODEX_IDLE_FRESH,                "codex/idle-fresh.txt",                                   AgentKind::Codex,       AgentState::Idle),
+        (CODEX_IDLE_AFTER_RESPONSE,       "codex/idle-after-response.txt",                          AgentKind::Codex,       AgentState::Idle),
+        (CODEX_IDLE_AFTER_DENIED,         "codex/idle-after-denied-permission.txt",                 AgentKind::Codex,       AgentState::Idle),
+        // FIXME: should be Idle — user is mid-typing a prompt
+        (CODEX_IDLE_TYPING,               "codex/idle-user-typing.txt",                             AgentKind::Codex,       AgentState::Unknown),
+        (CODEX_RUNNING_SPINNER,           "codex/running-spinner.txt",                              AgentKind::Codex,       AgentState::Running),
+        // FIXME: should be Running — Codex is actively streaming but `? for shortcuts` stays visible
+        (CODEX_RUNNING_STREAMING,         "codex/running-streaming-with-stale-footer.txt",          AgentKind::Codex,       AgentState::Idle),
+        // FIXME: should be Running — stale idle markers in scrollback cause false Idle
+        (CODEX_RUNNING_STALE_IDLE,        "codex/running-with-stale-idle-markers.txt",              AgentKind::Codex,       AgentState::Idle),
+        // FIXME: should be Running — same stale `? for shortcuts` footer issue as above
+        (CODEX_RUNNING_STREAMING_LONG,    "codex/running-streaming-long-response.txt",              AgentKind::Codex,       AgentState::Idle),
+        // FIXME: should be Running — "Working" indicator was transient, capture shows stale idle footer
+        (CODEX_RUNNING_WORKING,           "codex/running-working-indicator.txt",                    AgentKind::Codex,       AgentState::Idle),
+        (CODEX_RUNNING_QUEUED,            "codex/running-with-queued-message.txt",                  AgentKind::Codex,       AgentState::Running),
+        (CODEX_WAITING_COMMAND,           "codex/waiting-command-permission.txt",                   AgentKind::Codex,       AgentState::Waiting),
+        (CODEX_WAITING_TRUST,             "codex/waiting-trust-dialog.txt",                         AgentKind::Codex,       AgentState::Waiting),
+        (CODEX_CANCELLED,                 "codex/cancelled.txt",                                    AgentKind::Codex,       AgentState::Idle),
+        (CODEX_CANCELLED_MID,             "codex/cancelled-mid-streaming.txt",                      AgentKind::Codex,       AgentState::Idle),
 
-        // OpenCode
-        (OPENCODE_IDLE_FRESH,             "opencode/idle-fresh.txt",                   AgentKind::OpenCode,    AgentState::Idle),
-        (OPENCODE_IDLE_AFTER_RESPONSE,    "opencode/idle-after-response.txt",          AgentKind::OpenCode,    AgentState::Idle),
-        (OPENCODE_IDLE_AFTER_REJECTED,    "opencode/idle-after-rejected-permission.txt", AgentKind::OpenCode,  AgentState::Idle),
-        (OPENCODE_RUNNING_SPINNER,        "opencode/running-block-spinner.txt",        AgentKind::OpenCode,    AgentState::Running),
-        (OPENCODE_RUNNING_ESC,            "opencode/running-esc-again-to-interrupt.txt", AgentKind::OpenCode,  AgentState::Running),
-        (OPENCODE_WAITING_BASH,           "opencode/waiting-bash-permission.txt",      AgentKind::OpenCode,    AgentState::Waiting),
-        (OPENCODE_CANCELLED,              "opencode/cancelled.txt",                    AgentKind::OpenCode,    AgentState::Idle),
+        // ── OpenCode ────────────────────────────────────────────────────
+        (OPENCODE_IDLE_FRESH,             "opencode/idle-fresh.txt",                                AgentKind::OpenCode,    AgentState::Idle),
+        (OPENCODE_IDLE_AFTER_RESPONSE,    "opencode/idle-after-response.txt",                       AgentKind::OpenCode,    AgentState::Idle),
+        (OPENCODE_IDLE_AFTER_REJECTED,    "opencode/idle-after-rejected-permission.txt",            AgentKind::OpenCode,    AgentState::Idle),
+        (OPENCODE_RUNNING_SPINNER,        "opencode/running-block-spinner.txt",                     AgentKind::OpenCode,    AgentState::Running),
+        (OPENCODE_RUNNING_ESC,            "opencode/running-esc-again-to-interrupt.txt",            AgentKind::OpenCode,    AgentState::Running),
+        (OPENCODE_RUNNING_STREAMING_RESP, "opencode/running-streaming-response.txt",                AgentKind::OpenCode,    AgentState::Running),
+        (OPENCODE_WAITING_BASH,           "opencode/waiting-bash-permission.txt",                   AgentKind::OpenCode,    AgentState::Waiting),
+        (OPENCODE_WAITING_WRITE,          "opencode/waiting-write-permission.txt",                  AgentKind::OpenCode,    AgentState::Waiting),
+        (OPENCODE_CANCELLED,              "opencode/cancelled.txt",                                 AgentKind::OpenCode,    AgentState::Idle),
+        (OPENCODE_CANCELLED_MID,          "opencode/cancelled-mid-response.txt",                    AgentKind::OpenCode,    AgentState::Idle),
 
-        // Cursor CLI
-        (CURSOR_IDLE_FRESH,               "cursor-cli/idle-fresh.txt",                 AgentKind::CursorAgent, AgentState::Idle),
-        (CURSOR_IDLE_AFTER_RESPONSE,      "cursor-cli/idle-after-response.txt",        AgentKind::CursorAgent, AgentState::Idle),
-        (CURSOR_IDLE_PENDING_EDITS,       "cursor-cli/idle-with-pending-edits.txt",    AgentKind::CursorAgent, AgentState::Idle),
-        (CURSOR_RUNNING_CTRL_C,           "cursor-cli/running-ctrl-c-to-stop.txt",    AgentKind::CursorAgent, AgentState::Running),
-        (CURSOR_RUNNING_GENERATING,       "cursor-cli/running-generating.txt",         AgentKind::CursorAgent, AgentState::Running),
-        (CURSOR_RUNNING_STREAMING,        "cursor-cli/running-streaming.txt",          AgentKind::CursorAgent, AgentState::Idle),
-        (CURSOR_RUNNING_THINKING,         "cursor-cli/running-thinking.txt",           AgentKind::CursorAgent, AgentState::Running),
-        (CURSOR_WAITING_COMMAND,          "cursor-cli/waiting-command-approval.txt",   AgentKind::CursorAgent, AgentState::Waiting),
-        (CURSOR_WAITING_FILE_DELETION,    "cursor-cli/waiting-file-deletion.txt",      AgentKind::CursorAgent, AgentState::Waiting),
-        (CURSOR_WAITING_TRUST,            "cursor-cli/waiting-trust-workspace.txt",    AgentKind::CursorAgent, AgentState::Waiting),
-        (CURSOR_CANCELLED,                "cursor-cli/cancelled.txt",                  AgentKind::CursorAgent, AgentState::Idle),
+        // ── Cursor CLI ──────────────────────────────────────────────────
+        (CURSOR_IDLE_FRESH,               "cursor-cli/idle-fresh.txt",                              AgentKind::CursorAgent, AgentState::Idle),
+        (CURSOR_IDLE_AFTER_RESPONSE,      "cursor-cli/idle-after-response.txt",                     AgentKind::CursorAgent, AgentState::Idle),
+        (CURSOR_IDLE_PENDING_EDITS,       "cursor-cli/idle-with-pending-edits.txt",                 AgentKind::CursorAgent, AgentState::Idle),
+        (CURSOR_IDLE_AFTER_FILE_EDIT,     "cursor-cli/idle-after-file-edit.txt",                    AgentKind::CursorAgent, AgentState::Idle),
+        (CURSOR_RUNNING_CTRL_C,           "cursor-cli/running-ctrl-c-to-stop.txt",                 AgentKind::CursorAgent, AgentState::Running),
+        (CURSOR_RUNNING_GENERATING,       "cursor-cli/running-generating.txt",                      AgentKind::CursorAgent, AgentState::Running),
+        // FIXME: should be Running — Cursor streams without running indicators, only idle footer visible
+        (CURSOR_RUNNING_STREAMING,        "cursor-cli/running-streaming.txt",                       AgentKind::CursorAgent, AgentState::Idle),
+        (CURSOR_RUNNING_THINKING,         "cursor-cli/running-thinking.txt",                        AgentKind::CursorAgent, AgentState::Running),
+        (CURSOR_RUNNING_STREAM_TOKENS,    "cursor-cli/running-streaming-with-token-count.txt",      AgentKind::CursorAgent, AgentState::Running),
+        (CURSOR_RUNNING_MESSY,            "cursor-cli/running-with-messy-history.txt",              AgentKind::CursorAgent, AgentState::Running),
+        (CURSOR_RUNNING_QUEUED_MSG,       "cursor-cli/running-with-queued-message.txt",             AgentKind::CursorAgent, AgentState::Running),
+        (CURSOR_WAITING_COMMAND,          "cursor-cli/waiting-command-approval.txt",                AgentKind::CursorAgent, AgentState::Waiting),
+        (CURSOR_WAITING_FILE_DELETION,    "cursor-cli/waiting-file-deletion.txt",                   AgentKind::CursorAgent, AgentState::Waiting),
+        (CURSOR_WAITING_TRUST,            "cursor-cli/waiting-trust-workspace.txt",                 AgentKind::CursorAgent, AgentState::Waiting),
+        (CURSOR_CANCELLED,                "cursor-cli/cancelled.txt",                               AgentKind::CursorAgent, AgentState::Idle),
+        (CURSOR_CANCELLED_MID,            "cursor-cli/cancelled-mid-streaming.txt",                 AgentKind::CursorAgent, AgentState::Idle),
 
-        // Gemini CLI
-        (GEMINI_IDLE_FRESH,               "gemini-cli/idle-fresh.txt",                 AgentKind::Gemini,      AgentState::Idle),
-        (GEMINI_IDLE_AFTER_RESPONSE,      "gemini-cli/idle-after-response.txt",        AgentKind::Gemini,      AgentState::Idle),
-        (GEMINI_IDLE_USER_MSG,           "gemini-cli/idle-with-user-message.txt",     AgentKind::Gemini,      AgentState::Idle),
-        (GEMINI_RUNNING_BRAILLE,          "gemini-cli/running-braille-spinner.txt",    AgentKind::Gemini,      AgentState::Running),
-        (GEMINI_RUNNING_LONG,             "gemini-cli/running-long-response.txt",      AgentKind::Gemini,      AgentState::Running),
-        (GEMINI_WAITING_AUTH,             "gemini-cli/waiting-auth.txt",               AgentKind::Gemini,      AgentState::Waiting),
-        (GEMINI_WAITING_EDIT,             "gemini-cli/waiting-edit-permission.txt",    AgentKind::Gemini,      AgentState::Waiting),
-        (GEMINI_WAITING_SHELL,            "gemini-cli/waiting-shell-permission.txt",   AgentKind::Gemini,      AgentState::Waiting),
-        (GEMINI_CANCELLED,                "gemini-cli/cancelled.txt",                  AgentKind::Gemini,      AgentState::Idle),
+        // ── Gemini CLI ──────────────────────────────────────────────────
+        (GEMINI_IDLE_FRESH,               "gemini-cli/idle-fresh.txt",                              AgentKind::Gemini,      AgentState::Idle),
+        (GEMINI_IDLE_AFTER_RESPONSE,      "gemini-cli/idle-after-response.txt",                     AgentKind::Gemini,      AgentState::Idle),
+        (GEMINI_IDLE_USER_MSG,            "gemini-cli/idle-with-user-message.txt",                  AgentKind::Gemini,      AgentState::Idle),
+        (GEMINI_RUNNING_BRAILLE,          "gemini-cli/running-braille-spinner.txt",                 AgentKind::Gemini,      AgentState::Running),
+        (GEMINI_RUNNING_LONG,             "gemini-cli/running-long-response.txt",                   AgentKind::Gemini,      AgentState::Running),
+        (GEMINI_RUNNING_GOOGLE,           "gemini-cli/running-google-search-tool.txt",              AgentKind::Gemini,      AgentState::Running),
+        // FIXME: should be Running — Gemini streams without any running indicator, only idle footer visible
+        (GEMINI_RUNNING_STREAMING_RESP,   "gemini-cli/running-streaming-response.txt",              AgentKind::Gemini,      AgentState::Idle),
+        (GEMINI_RUNNING_THINKING_STATUS,  "gemini-cli/running-thinking-with-status.txt",            AgentKind::Gemini,      AgentState::Running),
+        (GEMINI_WAITING_AUTH,             "gemini-cli/waiting-auth.txt",                            AgentKind::Gemini,      AgentState::Waiting),
+        (GEMINI_WAITING_EDIT,             "gemini-cli/waiting-edit-permission.txt",                 AgentKind::Gemini,      AgentState::Waiting),
+        (GEMINI_WAITING_SHELL,            "gemini-cli/waiting-shell-permission.txt",                AgentKind::Gemini,      AgentState::Waiting),
+        (GEMINI_WAITING_WRITE,            "gemini-cli/waiting-write-permission.txt",                AgentKind::Gemini,      AgentState::Waiting),
+        (GEMINI_CANCELLED,                "gemini-cli/cancelled.txt",                               AgentKind::Gemini,      AgentState::Idle),
+        (GEMINI_CANCELLED_MID,            "gemini-cli/cancelled-mid-response.txt",                  AgentKind::Gemini,      AgentState::Idle),
     }
-
     #[test]
     fn all_fixture_captures() {
         let cases = fixture_cases();

@@ -1,4 +1,9 @@
-│                  Welcome back!                        │ Run /init to create a CLAUDE.md file with … │
+0 | nix-server | openclaw-workspace (master) $ cd /tmp && mkdir -p claude-test && cd claude-test &&
+export PATH="$HOME/.local/bin:$PATH" && claude
+
+╭─── Claude Code v2.1.63 ──────────────────────────────────────────────────────────────────────────╮
+│                                                    │ Tips for getting started                    │
+│                  Welcome back!                        │ Ask Claude to create a new app or clone a … │
 │                                                    │ ─────────────────────────────────────────── │
 │                                                    │ Recent activity                             │
 │                       ▐▛███▜▌                      │ No recent activity                          │
@@ -6,35 +11,30 @@
 │                        ▘▘ ▝▝                       │                                             │
 │      Opus 4.6 · Claude Max ·                       │                                             │
 │      user@example.com's Organization      │                                             │
-│                /tmp/tmp.c7z2QF1Syn                 │                                             │
+│                  /tmp/claude-test                  │                                             │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
-❯ Please run the command: echo hello > /tmp/test_perm.txt                                       
-                                                                                                
+❯ hi
 
-● Bash(echo hello > /tmp/test_perm.txt)
-  ⎿  Interrupted · What should Claude do instead?
+● Hi! How can I help you today?
 
-❯ Please edit test.txt and add a new line that says hello world                                 
-                                                                                                
+❯ Please create a file called test.txt with the content 'hello world'
 
-● Let me read the file first.
-
-● Read 1 file (ctrl+o to expand)
-
-● Update(test.txt)
+● Write(test.txt)
 
 ────────────────────────────────────────────────────────────────────────────────────────────────────
- Edit file
+ Create file
  test.txt
 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
- 1  test
- 2 +hello world
+  1 hello world
 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
- Do you want to make this edit to test.txt?
+ Do you want to create test.txt?
  ❯ 1. Yes
    2. Yes, allow all edits during this session (shift+tab)
    3. No
 
  Esc to cancel · Tab to amend
+
+
+
 

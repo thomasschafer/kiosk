@@ -140,7 +140,11 @@ fn draw_search_dirs(f: &mut Frame, state: &AppState, theme: &Theme, show_selecti
             .highlight_spacing(HighlightSpacing::Always);
 
         let mut list_state = ListState::default();
-        list_state.select(show_selection.then_some(setup.selected_completion).flatten());
+        list_state.select(
+            show_selection
+                .then_some(setup.selected_completion)
+                .flatten(),
+        );
         f.render_stateful_widget(list, chunks[2], &mut list_state);
     }
 

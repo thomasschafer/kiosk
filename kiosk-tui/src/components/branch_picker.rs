@@ -224,7 +224,11 @@ pub fn draw(
         .highlight_spacing(HighlightSpacing::Always);
 
     let mut list_state = ListState::default();
-    list_state.select(show_selection.then_some(state.branch_list.selected).flatten());
+    list_state.select(
+        show_selection
+            .then_some(state.branch_list.selected)
+            .flatten(),
+    );
     *list_state.offset_mut() = state.branch_list.scroll_offset;
     f.render_stateful_widget(list, chunks[1], &mut list_state);
 }

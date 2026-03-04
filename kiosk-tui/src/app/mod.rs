@@ -191,6 +191,10 @@ fn draw(
     let mode = state.mode.clone();
     draw_mode(f, main_area, &mode, state, theme, keys, true);
 
+    if state.error.is_some() {
+        components::dim_area(f, main_area);
+    }
+
     // Error toast overlay (rendered on top of everything)
     components::error_toast::draw(f, f.area(), state, keys, theme);
 
@@ -253,7 +257,7 @@ fn draw_mode(
         Mode::Help { previous } => {
             draw_mode(f, main_area, previous, state, theme, keys, false);
             components::dim_area(f, main_area);
-            components::help::draw(f, state, theme);
+            components::help::draw(f, state, theme, show_selection);
         }
         // Loading is handled by the early-return guard above.
         Mode::Loading(_) => unreachable!(),
@@ -1043,10 +1047,13 @@ fn process_action<T: TmuxProvider + ?Sized + 'static>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::Theme;
+    use kiosk_core::config::ThemeConfig;
     use kiosk_core::git::mock::MockGitProvider;
     use kiosk_core::git::{Repo, Worktree};
     use kiosk_core::state::{AppState, BranchEntry, Mode, SearchableList};
     use kiosk_core::tmux::{TmuxProvider, mock::MockTmuxProvider};
+    use ratatui::{Terminal, backend::TestBackend};
 
     fn make_sender() -> EventSender {
         let (tx, _rx) = mpsc::channel();
@@ -2872,6 +2879,39 @@ mod tests {
         s
     }
 
+    fn render_app_to_buffer(
+        state: &mut AppState,
+        terminal_width: u16,
+        terminal_height: u16,
+    ) -> ratatui::buffer::Buffer {
+        let backend = TestBackend::new(terminal_width, terminal_height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let theme = Theme::from_config(&ThemeConfig::default());
+        let keys = KeysConfig::default();
+        let spinner_start = Instant::now();
+
+        terminal
+            .draw(|f| {
+                draw(f, state, &theme, &keys, &spinner_start);
+            })
+            .unwrap();
+
+        terminal.backend().buffer().clone()
+    }
+
+    fn count_symbol(buf: &ratatui::buffer::Buffer, symbol: &str) -> usize {
+        let area = buf.area();
+        let mut count = 0;
+        for y in area.y..area.y + area.height {
+            for x in area.x..area.x + area.width {
+                if buf.cell((x, y)).is_some_and(|cell| cell.symbol() == symbol) {
+                    count += 1;
+                }
+            }
+        }
+        count
+    }
+
     fn render_confirm_dialog_to_buffer(
         branch_name: &str,
         has_session: bool,
@@ -3003,6 +3043,102 @@ mod tests {
         assert_eq!(buf.cell((w - 1, 0)).unwrap().symbol(), "┐");
         assert_eq!(buf.cell((0, h - 1)).unwrap().symbol(), "└");
         assert_eq!(buf.cell((w - 1, h - 1)).unwrap().symbol(), "┘");
+    }
+
+    fn show_help(state: &mut AppState) {
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let keys = KeysConfig::default();
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+        let ctx = default_ctx(&git, &tmux, &keys, &matcher, &sender);
+        process_action(Action::ShowHelp, state, &ctx);
+    }
+
+    #[test]
+    fn test_help_overlay_hides_background_selection_but_keeps_help_selection() {
+        let repos = vec![make_repo("alpha"), make_repo("beta")];
+        let mut state = AppState::new(repos, None);
+        state.mode = Mode::RepoSelect;
+        state.repo_list.selected = Some(0);
+        show_help(&mut state);
+
+        let buf = render_app_to_buffer(&mut state, 100, 30);
+        let rendered = buf_to_string(&buf);
+        let marker_count = count_symbol(&buf, "▸");
+
+        assert_eq!(
+            marker_count, 1,
+            "expected only the help list marker while background is inactive:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn test_error_toast_hides_selection_in_repo_list() {
+        let repos = vec![make_repo("alpha"), make_repo("beta")];
+        let mut state = AppState::new(repos, None);
+        state.mode = Mode::RepoSelect;
+        state.repo_list.selected = Some(0);
+        state.error = Some("boom".to_string());
+
+        let buf = render_app_to_buffer(&mut state, 100, 30);
+        let rendered = buf_to_string(&buf);
+        let marker_count = count_symbol(&buf, "▸");
+
+        assert_eq!(
+            marker_count, 0,
+            "expected no selection markers while error toast is visible:\n{rendered}"
+        );
+        assert!(rendered.contains("Error:"), "error toast should be visible");
+    }
+
+    #[test]
+    fn test_error_toast_hides_help_selection() {
+        let repos = vec![make_repo("alpha"), make_repo("beta")];
+        let mut state = AppState::new(repos, None);
+        state.mode = Mode::RepoSelect;
+        show_help(&mut state);
+        state.error = Some("boom".to_string());
+
+        let buf = render_app_to_buffer(&mut state, 100, 30);
+        let rendered = buf_to_string(&buf);
+        let marker_count = count_symbol(&buf, "▸");
+
+        assert_eq!(
+            marker_count, 0,
+            "expected no selection markers in help or background when error toast is visible:\n{rendered}"
+        );
+        assert!(rendered.contains("Error:"), "error toast should be visible");
+    }
+
+    #[test]
+    fn test_help_overlay_dims_background_main_area() {
+        let repos = vec![make_repo("alpha"), make_repo("beta")];
+        let mut state = AppState::new(repos, None);
+        state.mode = Mode::RepoSelect;
+        show_help(&mut state);
+
+        let buf = render_app_to_buffer(&mut state, 100, 30);
+        let cell = buf.cell((1, 1)).expect("cell in main area");
+        assert!(
+            cell.modifier.contains(Modifier::DIM),
+            "expected DIM modifier on background cell when help overlay is visible"
+        );
+    }
+
+    #[test]
+    fn test_error_toast_dims_background_main_area() {
+        let repos = vec![make_repo("alpha"), make_repo("beta")];
+        let mut state = AppState::new(repos, None);
+        state.mode = Mode::RepoSelect;
+        state.error = Some("boom".to_string());
+
+        let buf = render_app_to_buffer(&mut state, 100, 30);
+        let cell = buf.cell((1, 1)).expect("cell in main area");
+        assert!(
+            cell.modifier.contains(Modifier::DIM),
+            "expected DIM modifier on background cell when error toast is visible"
+        );
     }
 
     // ── Setup wizard unit tests ──

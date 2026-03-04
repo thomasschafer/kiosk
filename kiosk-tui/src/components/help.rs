@@ -37,7 +37,7 @@ fn compute_help_layout(overlay: &HelpOverlayState) -> Vec<HelpLayoutEntry> {
 }
 
 /// Help overlay showing keybindings.
-pub fn draw(f: &mut Frame, state: &AppState, theme: &crate::theme::Theme) {
+pub fn draw(f: &mut Frame, state: &AppState, theme: &crate::theme::Theme, show_selection: bool) {
     let Some(overlay) = state.help_overlay.as_ref() else {
         return;
     };
@@ -60,11 +60,15 @@ pub fn draw(f: &mut Frame, state: &AppState, theme: &crate::theme::Theme) {
     );
 
     let (items, row_item_indices) = build_visible_items(overlay, theme.muted);
-    let selected_item = overlay
-        .list
-        .selected
-        .and_then(|selected| row_item_indices.get(selected))
-        .copied();
+    let selected_item = if show_selection {
+        overlay
+            .list
+            .selected
+            .and_then(|selected| row_item_indices.get(selected))
+            .copied()
+    } else {
+        None
+    };
     // For the help overlay, scroll_offset is already in visual-row space
     // (computed by update_help_scroll_offset), unlike other lists where it's
     // a logical item index. This is because the help list has non-selectable

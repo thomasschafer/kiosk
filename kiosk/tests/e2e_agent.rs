@@ -320,6 +320,15 @@ impl AgentTestEnvDefault {
         )
         .unwrap();
 
+        // OpenCode config: force permission prompts so E2E tests can detect
+        // "Waiting" state, regardless of the user's global opencode config.
+        let opencode_config_dir = config_dir.join("opencode");
+        fs::create_dir_all(&opencode_config_dir).unwrap();
+        fs::write(
+            opencode_config_dir.join("config.json"),
+            r#"{"$schema":"https://opencode.ai/config.json","permission":{"*":"ask"}}"#,
+        )
+        .unwrap();
         // kiosk session name for main worktree = repo name
         let kiosk_session = repo_name.clone();
         let tmux_socket = format!("kiosk-e2e-agent-{id}");
@@ -508,7 +517,10 @@ impl AgentTestEnvDefault {
                 "send-keys",
                 "-t",
                 &self.kiosk_session,
-                &format!("export PATH='{path}'"),
+                &format!(
+                    "export PATH='{path}' XDG_CONFIG_HOME='{}'",
+                    self.config_dir.to_string_lossy()
+                ),
                 "Enter",
             ])
             .status()

@@ -75,7 +75,7 @@ pub enum AppEvent {
     /// Agent states updated from background detection (full snapshot —
     /// `None` means no agent detected, allowing stale statuses to be cleared)
     AgentStatesUpdated {
-        /// tuple: (session_name, session_exists, detected_agent_status)
+        /// tuple: (`session_name`, `session_exists`, `detected_agent_status`)
         states: Vec<(String, bool, Option<AgentStatus>)>,
     },
 

@@ -766,6 +766,11 @@ pub fn cmd_next(
     tmux: &dyn TmuxProvider,
     json: bool,
 ) -> CliResult<()> {
+    if !config.agent.enabled {
+        return Err(CliError::user(
+            "agent detection is disabled. Enable it in config to use kiosk next",
+        ));
+    }
     if !tmux.is_inside_tmux() {
         return Err(CliError::user(
             "not inside tmux. kiosk next must be run from within a tmux session",
@@ -777,12 +782,8 @@ pub fn cmd_next(
     let all_pane_data = tmux.list_all_panes_with_activity();
     let active_sessions: HashSet<String> = tmux.list_session_names().into_iter().collect();
 
-    // Collect all kiosk-managed sessions with their agent status and activity
-    let mut candidates: Vec<(String, kiosk_core::AgentState, u64)> = Vec::new();
-
+    // Collect non-current kiosk-managed sessions for agent detection
     let mut session_names: Vec<String> = Vec::new();
-    let mut session_activities: std::collections::HashMap<String, u64> =
-        std::collections::HashMap::new();
 
     for repo in &repos {
         for worktree in &repo.worktrees {
@@ -793,29 +794,29 @@ pub fn cmd_next(
             if current_session.as_deref() == Some(session.as_str()) {
                 continue;
             }
-            let activity = all_pane_data
-                .get(&session)
-                .map_or(0, |d| d.session_activity);
-            session_names.push(session.clone());
-            session_activities.insert(session, activity);
+            session_names.push(session);
         }
     }
 
-    // Batched agent detection
+    // Batched agent detection — filter to Waiting/Idle with activity timestamps
     let detection_results =
         kiosk_core::agent::detect_for_sessions_batched(tmux, &session_names, &all_pane_data);
 
-    for (session, detection) in &detection_results {
-        if let Some(det) = detection {
+    let mut candidates: Vec<(String, kiosk_core::AgentState, u64)> = detection_results
+        .into_iter()
+        .filter_map(|(session, detection)| {
+            let det = detection?;
             match det.status.state {
                 kiosk_core::AgentState::Waiting | kiosk_core::AgentState::Idle => {
-                    let activity = session_activities.get(session).copied().unwrap_or(0);
-                    candidates.push((session.clone(), det.status.state, activity));
+                    let activity = all_pane_data
+                        .get(&session)
+                        .map_or(0, |d| d.session_activity);
+                    Some((session, det.status.state, activity))
                 }
-                _ => {}
+                _ => None,
             }
-        }
-    }
+        })
+        .collect();
 
     // Sort: Waiting before Idle, then oldest activity first
     candidates.sort_by(|a, b| {
@@ -826,28 +827,18 @@ pub fn cmd_next(
 
     if let Some((session, state, _)) = candidates.first() {
         tmux.switch_to_session(session);
-        let state_str = state.to_string();
         let output = NextOutput {
             switched: true,
             session: session.clone(),
-            agent_state: state_str.clone(),
+            agent_state: state.to_string(),
         };
         if json {
             print_json(&output)?;
         } else {
-            println!("Switched to: {session} ({state_str})");
+            println!("Switched to: {session} ({})", output.agent_state);
         }
         Ok(())
     } else {
-        if json {
-            let output = serde_json::json!({
-                "switched": false,
-                "error": "No other agent sessions need attention"
-            });
-            eprintln!("{}", serde_json::to_string(&output).unwrap_or_default());
-        } else {
-            eprintln!("No other agent sessions need attention");
-        }
         Err(CliError::user("No other agent sessions need attention"))
     }
 }
@@ -3514,5 +3505,44 @@ mod tests {
 
         let result = cmd_next(&config, &git, &tmux, true);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn next_agent_detection_disabled_returns_error() {
+        let mut config = test_config();
+        config.agent.enabled = false;
+
+        let git = demo_git(vec![main_worktree()], vec![]);
+        let tmux = MockTmuxProvider {
+            inside_tmux: true,
+            current_session: Some("demo".to_string()),
+            ..Default::default()
+        };
+
+        let error = cmd_next(&config, &git, &tmux, false).unwrap_err();
+        assert_eq!(error.code(), 1);
+        assert!(error.message().contains("agent detection is disabled"));
+    }
+
+    #[test]
+    fn next_only_current_session_eligible_returns_error() {
+        let (config, git, tmux) = mock_with_sessions_and_agents(
+            "demo--feat-wait",
+            &[(
+                "demo--feat-wait",
+                "claude",
+                "Allow write?\n  Yes, allow\n  No, deny",
+                800,
+            )],
+        );
+
+        let error = cmd_next(&config, &git, &tmux, false).unwrap_err();
+        assert!(
+            error
+                .message()
+                .contains("No other agent sessions need attention"),
+            "Should return error when only eligible session is the current one"
+        );
+        assert!(tmux.switched_sessions.lock().unwrap().is_empty());
     }
 }

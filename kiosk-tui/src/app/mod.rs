@@ -187,50 +187,9 @@ fn draw(
     // Determine the effective mode for footer hints
     let effective_mode = state.mode.effective();
 
-    match &state.mode {
-        Mode::RepoSelect => components::repo_list::draw(f, main_area, state, theme, keys),
-        Mode::BranchSelect => components::branch_picker::draw(f, main_area, state, theme, keys),
-        Mode::SelectBaseBranch => {
-            components::branch_picker::draw(f, main_area, state, theme, keys);
-            components::new_branch::draw(f, state, theme);
-        }
-        Mode::ConfirmWorktreeDelete { .. } => {
-            components::branch_picker::draw(f, main_area, state, theme, keys);
-            draw_confirm_delete_dialog(f, main_area, state, theme, keys);
-        }
-        Mode::Setup(_) => {
-            components::setup::draw(f, state, theme);
-        }
-        Mode::Help { previous } => {
-            // Draw the previous mode as background
-            match previous.as_ref() {
-                Mode::RepoSelect => {
-                    components::repo_list::draw(f, main_area, state, theme, keys);
-                }
-                Mode::BranchSelect => {
-                    components::branch_picker::draw(f, main_area, state, theme, keys);
-                }
-                Mode::SelectBaseBranch => {
-                    components::branch_picker::draw(f, main_area, state, theme, keys);
-                    components::new_branch::draw(f, state, theme);
-                }
-                Mode::ConfirmWorktreeDelete { .. } => {
-                    components::branch_picker::draw(f, main_area, state, theme, keys);
-                    draw_confirm_delete_dialog(f, main_area, state, theme, keys);
-                }
-                Mode::Setup(_) => {
-                    components::setup::draw(f, state, theme);
-                }
-                // Loading is handled by the early-return guard; Help cannot nest.
-                Mode::Loading(_) | Mode::Help { .. } => {}
-            }
-            // Dim the background behind the overlay
-            components::dim_area(f, main_area);
-            // Draw help overlay on top
-            components::help::draw(f, state, theme);
-        }
-        Mode::Loading(_) => unreachable!(),
-    }
+    // Clone mode to avoid borrow conflict with state
+    let mode = state.mode.clone();
+    draw_mode(f, main_area, &mode, state, theme, keys, true);
 
     // Error toast overlay (rendered on top of everything)
     components::error_toast::draw(f, f.area(), state, keys, theme);
@@ -257,6 +216,48 @@ fn draw(
     ))
     .alignment(Alignment::Center);
     f.render_widget(footer, footer_area);
+}
+
+/// Render a mode's UI into `main_area`. When `active` is false the mode is
+/// being drawn as an inactive background behind an overlay, so list selections
+/// are hidden. An error toast also suppresses selection because it covers the
+/// underlying content.
+fn draw_mode(
+    f: &mut Frame,
+    main_area: Rect,
+    mode: &Mode,
+    state: &AppState,
+    theme: &crate::theme::Theme,
+    keys: &kiosk_core::config::KeysConfig,
+    active: bool,
+) {
+    let show_selection = active && state.error.is_none();
+    match mode {
+        Mode::RepoSelect => {
+            components::repo_list::draw(f, main_area, state, theme, keys, show_selection);
+        }
+        Mode::BranchSelect => {
+            components::branch_picker::draw(f, main_area, state, theme, keys, show_selection);
+        }
+        Mode::SelectBaseBranch => {
+            components::branch_picker::draw(f, main_area, state, theme, keys, false);
+            components::new_branch::draw(f, state, theme, show_selection);
+        }
+        Mode::ConfirmWorktreeDelete { .. } => {
+            components::branch_picker::draw(f, main_area, state, theme, keys, false);
+            draw_confirm_delete_dialog(f, main_area, state, theme, keys);
+        }
+        Mode::Setup(_) => {
+            components::setup::draw(f, state, theme, show_selection);
+        }
+        Mode::Help { previous } => {
+            draw_mode(f, main_area, previous, state, theme, keys, false);
+            components::dim_area(f, main_area);
+            components::help::draw(f, state, theme);
+        }
+        // Loading is handled by the early-return guard above.
+        Mode::Loading(_) => unreachable!(),
+    }
 }
 
 fn build_footer_hints(mode: &Mode, keys: &KeysConfig) -> Vec<(String, &'static str)> {

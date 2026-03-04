@@ -8,7 +8,10 @@ use ratatui::{
     layout::{Alignment, Constraint, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Padding, Paragraph, Wrap},
+    widgets::{
+        Block, Borders, Clear, HighlightSpacing, List, ListItem, ListState, Padding, Paragraph,
+        Wrap,
+    },
 };
 
 fn draw_welcome(f: &mut Frame, theme: &Theme) {
@@ -57,7 +60,7 @@ fn draw_welcome(f: &mut Frame, theme: &Theme) {
 }
 
 #[allow(clippy::too_many_lines)]
-fn draw_search_dirs(f: &mut Frame, state: &AppState, theme: &Theme) {
+fn draw_search_dirs(f: &mut Frame, state: &AppState, theme: &Theme, show_selection: bool) {
     let Some(setup) = &state.setup else {
         return;
     };
@@ -133,10 +136,11 @@ fn draw_search_dirs(f: &mut Frame, state: &AppState, theme: &Theme) {
                     .bg(theme.accent)
                     .add_modifier(Modifier::BOLD),
             )
-            .highlight_symbol("▸ ");
+            .highlight_symbol("▸ ")
+            .highlight_spacing(HighlightSpacing::Always);
 
         let mut list_state = ListState::default();
-        list_state.select(setup.selected_completion);
+        list_state.select(show_selection.then_some(setup.selected_completion).flatten());
         f.render_stateful_widget(list, chunks[2], &mut list_state);
     }
 
@@ -202,10 +206,10 @@ fn draw_search_dirs(f: &mut Frame, state: &AppState, theme: &Theme) {
     f.render_widget(instructions, instructions_area);
 }
 
-pub fn draw(f: &mut Frame, state: &AppState, theme: &Theme) {
+pub fn draw(f: &mut Frame, state: &AppState, theme: &Theme, show_selection: bool) {
     match &state.mode {
         Mode::Setup(SetupStep::Welcome) => draw_welcome(f, theme),
-        Mode::Setup(SetupStep::SearchDirs) => draw_search_dirs(f, state, theme),
+        Mode::Setup(SetupStep::SearchDirs) => draw_search_dirs(f, state, theme, show_selection),
         _ => {}
     }
 }

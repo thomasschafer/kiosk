@@ -412,7 +412,7 @@ pub(super) fn spawn_agent_status_poller<T: TmuxProvider + ?Sized + 'static>(
 
             // Adapt interval: use fast polling when any agent is active,
             // slow polling when all are idle/unknown.
-            let any_active = states.iter().any(|(_, status)| {
+            let any_active = states.iter().any(|(_, _, status)| {
                 status.as_ref().is_some_and(|s| {
                     matches!(
                         s.state,
@@ -445,14 +445,19 @@ pub(super) fn spawn_agent_status_poller<T: TmuxProvider + ?Sized + 'static>(
 fn detect_agent_statuses<T: TmuxProvider + ?Sized>(
     tmux: &T,
     sessions: &[String],
-) -> Vec<(String, Option<AgentStatus>)> {
+) -> Vec<(String, bool, Option<AgentStatus>)> {
     // Batch: fetch all pane info + session activity in a single tmux call,
     // then detect agents using the pre-fetched data. Only capture_pane_content
     // still requires per-pane calls.
     let all_pane_data = tmux.list_all_panes_with_activity();
+    let active_sessions: std::collections::HashSet<String> =
+        all_pane_data.keys().cloned().collect();
     agent::detect_for_sessions_batched(tmux, sessions, &all_pane_data)
         .into_iter()
-        .map(|(name, result)| (name, result.map(|r| r.status)))
+        .map(|(name, result)| {
+            let exists = active_sessions.contains(&name);
+            (name, exists, result.map(|r| r.status))
+        })
         .collect()
 }
 
@@ -490,9 +495,11 @@ mod tests {
 
         let states = detect_agent_statuses(&tmux, std::slice::from_ref(&session));
         assert_eq!(states.len(), 1);
-        assert_eq!(states[0].0, session);
-        let status = states[0]
-            .1
+        let (name, exists, status) = &states[0];
+        assert_eq!(name, &session);
+        assert!(*exists);
+        let status = status
+            .to_owned()
             .expect("wrapper command should resolve to Claude via pane title");
         assert_eq!(status.kind, AgentKind::ClaudeCode);
         assert_eq!(status.state, AgentState::Waiting);

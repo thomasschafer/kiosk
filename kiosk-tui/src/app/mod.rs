@@ -692,7 +692,6 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
                 let session_names: Vec<String> = state
                     .branches
                     .iter()
-                    .filter(|b| b.has_session)
                     .filter_map(|b| {
                         b.worktree_path.as_ref().and_then(|wt_path| {
                             state
@@ -701,6 +700,8 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
                                 .map(|repo| repo.tmux_session_name(wt_path))
                         })
                     })
+                    .collect::<std::collections::HashSet<_>>()
+                    .into_iter()
                     .collect();
 
                 // Always cancel the previous poller before deciding whether
@@ -749,17 +750,16 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             if *state.mode.effective() == Mode::BranchSelect {
                 // Update agent states in-place — no re-sorting or filter changes.
                 // None values clear stale statuses (agent exited since last poll).
-                for (session_name, agent_status) in states {
+                for (session_name, has_session, agent_status) in states {
                     for branch in &mut state.branches {
-                        if branch.has_session
-                            && branch.worktree_path.as_ref().is_some_and(|path| {
-                                if let Some(repo_idx) = state.selected_repo_idx {
-                                    state.repos[repo_idx].tmux_session_name(path) == session_name
-                                } else {
-                                    false
-                                }
-                            })
-                        {
+                        if branch.worktree_path.as_ref().is_some_and(|path| {
+                            if let Some(repo_idx) = state.selected_repo_idx {
+                                state.repos[repo_idx].tmux_session_name(path) == session_name
+                            } else {
+                                false
+                            }
+                        }) {
+                            branch.has_session = has_session;
                             branch.agent_status = agent_status;
                         }
                     }
@@ -3676,7 +3676,7 @@ mod tests {
 
         process_app_event(
             AppEvent::AgentStatesUpdated {
-                states: vec![(session_name, Some(status))],
+                states: vec![(session_name, true, Some(status))],
             },
             &mut state,
             &git,
@@ -3715,6 +3715,7 @@ mod tests {
             AppEvent::AgentStatesUpdated {
                 states: vec![(
                     "nonexistent-session".to_string(),
+                    true,
                     Some(AgentStatus {
                         kind: AgentKind::ClaudeCode,
                         state: AgentState::Running,
@@ -3728,6 +3729,50 @@ mod tests {
         );
 
         assert_eq!(state.branches[0].agent_status, None);
+    }
+
+    #[test]
+    fn test_agent_states_updated_recovers_stale_has_session_flag() {
+        use kiosk_core::agent::{AgentKind, AgentState, AgentStatus};
+
+        let repos = vec![make_repo("my-repo")];
+        let mut state = AppState::new(repos, None);
+        state.selected_repo_idx = Some(0);
+        state.mode = Mode::BranchSelect;
+        state.branches = vec![BranchEntry {
+            name: "feat/test".to_string(),
+            worktree_path: Some(std::path::PathBuf::from("/tmp/wt")),
+            has_session: false, // stale state from initial branch load
+            is_current: false,
+            is_default: false,
+            remote: None,
+            session_activity_ts: None,
+            agent_status: None,
+        }];
+        state.branch_list.filtered = vec![(0, 0)];
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let sender = make_sender();
+
+        let session_name = state.repos[0].tmux_session_name(&std::path::PathBuf::from("/tmp/wt"));
+        let status = AgentStatus {
+            kind: AgentKind::OpenCode,
+            state: AgentState::Running,
+        };
+
+        process_app_event(
+            AppEvent::AgentStatesUpdated {
+                states: vec![(session_name, true, Some(status))],
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+        );
+
+        assert!(state.branches[0].has_session);
+        assert_eq!(state.branches[0].agent_status, Some(status));
     }
 
     #[test]
@@ -3776,6 +3821,7 @@ mod tests {
             AppEvent::AgentStatesUpdated {
                 states: vec![(
                     session_name,
+                    true,
                     Some(AgentStatus {
                         kind: AgentKind::ClaudeCode,
                         state: AgentState::Running,
@@ -3823,6 +3869,7 @@ mod tests {
             AppEvent::AgentStatesUpdated {
                 states: vec![(
                     "whatever".to_string(),
+                    true,
                     Some(AgentStatus {
                         kind: AgentKind::ClaudeCode,
                         state: AgentState::Waiting,
@@ -3874,7 +3921,7 @@ mod tests {
 
         process_app_event(
             AppEvent::AgentStatesUpdated {
-                states: vec![(session_name, Some(status))],
+                states: vec![(session_name, true, Some(status))],
             },
             &mut state,
             &git,

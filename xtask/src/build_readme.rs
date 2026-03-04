@@ -30,7 +30,7 @@ pub fn generate_readme(readme_path: &Path, config_path: &Path, check_only: bool)
     } else {
         if check_only {
             println!(
-                "README is out of date and needs regenerating. Run: cargo run -p xtask -- readme"
+                "README is out of date and needs regenerating. Run: cargo xtask readme"
             );
             std::process::exit(1);
         }

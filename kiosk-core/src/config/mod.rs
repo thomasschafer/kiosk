@@ -163,34 +163,34 @@ pub struct SessionConfig {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(deny_unknown_fields, default)]
 pub struct ThemeConfig {
-    /// Primary accent color (default: "magenta").
+    /// Primary accent color.
     #[serde(deserialize_with = "deserialize_color")]
     pub accent: ThemeColor,
-    /// Secondary accent color (default: "cyan").
+    /// Secondary accent color.
     #[serde(deserialize_with = "deserialize_color")]
     pub secondary: ThemeColor,
-    /// Tertiary accent color (default: "green").
+    /// Tertiary accent color.
     #[serde(deserialize_with = "deserialize_color")]
     pub tertiary: ThemeColor,
-    /// Success/positive color (default: "green").
+    /// Success/positive color.
     #[serde(deserialize_with = "deserialize_color")]
     pub success: ThemeColor,
-    /// Error color (default: "red").
+    /// Error color.
     #[serde(deserialize_with = "deserialize_color")]
     pub error: ThemeColor,
-    /// Warning color (default: "yellow").
+    /// Warning color.
     #[serde(deserialize_with = "deserialize_color")]
     pub warning: ThemeColor,
-    /// Muted/dim text color (default: "`dark_gray`").
+    /// Muted/dim text color.
     #[serde(deserialize_with = "deserialize_color")]
     pub muted: ThemeColor,
-    /// Border color (default: "`dark_gray`").
+    /// Border color.
     #[serde(deserialize_with = "deserialize_color")]
     pub border: ThemeColor,
-    /// Hint/key binding color (default: "blue").
+    /// Hint/key binding color.
     #[serde(deserialize_with = "deserialize_color")]
     pub hint: ThemeColor,
-    /// Foreground color for highlighted/selected items (default: "black").
+    /// Foreground color for highlighted/selected items.
     #[serde(deserialize_with = "deserialize_color")]
     pub highlight_fg: ThemeColor,
 }
@@ -221,7 +221,7 @@ theme_defaults! {
     muted        => ThemeColor::Named(N::DarkGray),
     border       => ThemeColor::Named(N::DarkGray),
     hint         => ThemeColor::Named(N::Blue),
-    highlight_fg => ThemeColor::Rgb(0, 0, 0),
+    highlight_fg => ThemeColor::Named(N::Black),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

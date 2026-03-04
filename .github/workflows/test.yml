@@ -37,14 +37,14 @@ jobs:
 
       - name: Check README is up to date
         id: check-readme
-        run: cargo run -p xtask -- readme --check
+        run: cargo xtask readme --check
 
       - name: Show diff (if outdated)
         if: failure() && steps.check-readme.outcome == 'failure'
         run: |
-          cargo run -p xtask -- readme
+          cargo xtask readme
           git diff README.md
-          echo "Run \`cargo run -p xtask -- readme\` to regenerate"
+          echo "Run \`cargo xtask readme\` to regenerate"
 
   test:
     name: Test (${{ matrix.os }})

@@ -227,7 +227,7 @@ warning = "yellow"
 muted = "dark_gray"
 border = "dark_gray"
 hint = "blue"
-highlight_fg = "#000000"
+highlight_fg = "black"
 ```
 
 ### `[keys]` section

@@ -142,7 +142,13 @@ const CLAUDE_PATTERNS: AgentPatterns = AgentPatterns {
     // captured by `tmux capture-pane` in Claude Code >= v2.1 (rendered as a
     // status-bar element outside the normal text flow). We fall back to
     // detecting the input prompt character `❯` in `detect_claude_state`.
-    idle_tail: &["? for shortcuts"],
+    idle_tail: &[
+        "? for shortcuts",
+        // Config overlay: unique filter prompt shown in /config screen
+        "type to filter · enter",
+        // Status overlay: shown in /status screen with session info
+        "esc to cancel",
+    ],
 };
 
 /// Claude Code's whimsical "thinking" words shown during processing.
@@ -1977,7 +1983,8 @@ mod fixture_tests {
         (CURSOR_IDLE_PENDING_EDITS,       "cursor-cli/idle-with-pending-edits.txt",    AgentKind::CursorAgent, AgentState::Idle),
         (CURSOR_RUNNING_CTRL_C,           "cursor-cli/running-ctrl-c-to-stop.txt",    AgentKind::CursorAgent, AgentState::Running),
         (CURSOR_RUNNING_GENERATING,       "cursor-cli/running-generating.txt",         AgentKind::CursorAgent, AgentState::Running),
-                // FIXME: should be Running — Cursor streams with `/ commands` footer still visible
+
+                // FIXME: should be Running — Cursor streams without running indicators, only idle footer visible
         (CURSOR_RUNNING_STREAMING,        "cursor-cli/running-streaming.txt",          AgentKind::CursorAgent, AgentState::Idle),
         (CURSOR_RUNNING_THINKING,         "cursor-cli/running-thinking.txt",           AgentKind::CursorAgent, AgentState::Running),
         (CURSOR_WAITING_COMMAND,          "cursor-cli/waiting-command-approval.txt",   AgentKind::CursorAgent, AgentState::Waiting),
@@ -1998,10 +2005,8 @@ mod fixture_tests {
         // Claude Code — new captures
         (CLAUDE_CANCELLED_MID,            "claude-code/cancelled-mid-response.txt",        AgentKind::ClaudeCode,  AgentState::Idle),
         (CLAUDE_IDLE_INVALID_CMD,         "claude-code/idle-after-invalid-command.txt",     AgentKind::ClaudeCode,  AgentState::Idle),
-                // FIXME: should be Idle — config overlay is shown, user is browsing settings
-        (CLAUDE_IDLE_CONFIG,              "claude-code/idle-config-screen.txt",             AgentKind::ClaudeCode,  AgentState::Unknown),
-                // FIXME: should be Idle — status overlay is shown
-        (CLAUDE_IDLE_STATUS,              "claude-code/idle-status-screen.txt",             AgentKind::ClaudeCode,  AgentState::Unknown),
+        (CLAUDE_IDLE_CONFIG,              "claude-code/idle-config-screen.txt",             AgentKind::ClaudeCode,  AgentState::Idle),
+        (CLAUDE_IDLE_STATUS,              "claude-code/idle-status-screen.txt",             AgentKind::ClaudeCode,  AgentState::Idle),
         (CLAUDE_IDLE_BYPASS,              "claude-code/idle-fresh-bypass-permissions.txt",  AgentKind::ClaudeCode,  AgentState::Idle),
         (CLAUDE_RUNNING_BASH_TOOL,        "claude-code/running-bash-tool-execution.txt",    AgentKind::ClaudeCode,  AgentState::Running),
         (CLAUDE_RUNNING_BYPASS_BASH,      "claude-code/running-bypass-permissions-bash.txt",AgentKind::ClaudeCode,  AgentState::Running),

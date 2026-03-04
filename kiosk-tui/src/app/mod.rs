@@ -31,7 +31,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Padding, Paragraph},
 };
-use spawn::{spawn_agent_status_poller, spawn_repo_discovery};
+use spawn::{spawn_agent_status_poller, spawn_repo_discovery, spawn_sessions_discovery};
 use std::{
     fmt::Write as _,
     path::PathBuf,
@@ -53,6 +53,8 @@ pub enum OpenAction {
     /// Setup wizard completed — dirs are stored in `AppState.setup`
     SetupComplete,
     Quit,
+    /// Switch to an existing tmux session
+    SwitchSession(String),
 }
 
 /// Handle for dispatching background work
@@ -243,6 +245,9 @@ fn draw_mode(
         Mode::RepoSelect => {
             components::repo_list::draw(f, main_area, state, theme, keys, show_selection);
         }
+        Mode::Sessions => {
+            components::sessions_view::draw(f, main_area, state, theme, keys);
+        }
         Mode::BranchSelect => {
             components::branch_picker::draw(f, main_area, state, theme, keys, show_selection);
         }
@@ -287,7 +292,10 @@ fn list_rows_from_list_area(list_area: Rect) -> usize {
 
 fn active_list_page_rows(full_area: Rect, main_area: Rect, mode: &Mode) -> usize {
     match mode {
-        Mode::RepoSelect | Mode::BranchSelect | Mode::ConfirmWorktreeDelete { .. } => {
+        Mode::RepoSelect
+        | Mode::Sessions
+        | Mode::BranchSelect
+        | Mode::ConfirmWorktreeDelete { .. } => {
             let chunks =
                 Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(main_area);
             list_rows_from_list_area(chunks[1])
@@ -692,6 +700,14 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             if matches!(state.mode, Mode::Loading(_)) {
                 state.mode = Mode::RepoSelect;
             }
+            // If --sessions flag was set, enter sessions view now
+            if state.sessions_initial && state.mode == Mode::RepoSelect {
+                state.mode = Mode::Sessions;
+                state.loading_sessions = true;
+                state.sessions.clear();
+                state.sessions_list = kiosk_core::state::SearchableList::new(0);
+                spawn_sessions_discovery(git, tmux, sender, state);
+            }
         }
         AppEvent::SessionActivityLoaded { session_activity } => {
             state.session_activity = session_activity;
@@ -862,6 +878,47 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
                 apply_session_runtime_updates(state, states);
             }
         }
+        AppEvent::SessionsLoaded { sessions } => {
+            state.sessions = sessions;
+            kiosk_core::state::sort_sessions(&mut state.sessions);
+            let search_targets: Vec<String> = state
+                .sessions
+                .iter()
+                .map(|s| {
+                    let branch = s.branch.as_deref().unwrap_or("");
+                    format!("{} {} {}", s.session_name, s.repo_name, branch)
+                })
+                .collect();
+            state.sessions_list.reset(state.sessions.len());
+            let names: Vec<&str> = search_targets.iter().map(String::as_str).collect();
+            rebuild_filtered_preserving_search(&mut state.sessions_list, &names);
+            state.loading_sessions = false;
+        }
+
+        AppEvent::SessionAgentStatesUpdated { states } => {
+            if *state.mode.effective() == Mode::Sessions {
+                for (session_name, agent_statuses) in states {
+                    for session in &mut state.sessions {
+                        if session.session_name == session_name {
+                            session.agent_statuses.clone_from(&agent_statuses);
+                        }
+                    }
+                }
+                kiosk_core::state::sort_sessions(&mut state.sessions);
+                let search_targets: Vec<String> = state
+                    .sessions
+                    .iter()
+                    .map(|s| {
+                        let branch = s.branch.as_deref().unwrap_or("");
+                        format!("{} {} {}", s.session_name, s.repo_name, branch)
+                    })
+                    .collect();
+                state.sessions_list.reset(state.sessions.len());
+                let names: Vec<&str> = search_targets.iter().map(String::as_str).collect();
+                rebuild_filtered_preserving_search(&mut state.sessions_list, &names);
+            }
+        }
+
         AppEvent::GitError(msg) => {
             // Return to the appropriate mode
             if state.base_branch_selection.is_some() {
@@ -1046,7 +1103,13 @@ fn process_action<T: TmuxProvider + ?Sized + 'static>(
             }
         }
 
-        Action::GoBack => handle_go_back(state),
+        Action::GoBack => {
+            if matches!(state.mode, Mode::Sessions) && state.sessions_initial {
+                state.cancel_sessions_poller();
+                return Some(OpenAction::Quit);
+            }
+            handle_go_back(state);
+        }
 
         Action::OpenBranch => {
             if let Some(result) = handle_open_branch(state, ctx.git, ctx.sender) {
@@ -1114,6 +1177,30 @@ fn process_action<T: TmuxProvider + ?Sized + 'static>(
         Action::SetupCancel => {
             if let Some(result) = handle_setup_cancel(state) {
                 return Some(result);
+            }
+        }
+        Action::ToggleSessions => {
+            if state.mode == Mode::Sessions {
+                state.cancel_sessions_poller();
+                state.mode = Mode::RepoSelect;
+            } else {
+                state.mode = Mode::Sessions;
+                state.loading_sessions = true;
+                state.sessions.clear();
+                state.sessions_list = kiosk_core::state::SearchableList::new(0);
+                spawn_sessions_discovery(ctx.git, ctx.tmux, ctx.sender, state);
+            }
+        }
+
+        Action::SwitchToSession => {
+            if state.mode == Mode::Sessions
+                && let Some(selected) = state.sessions_list.selected
+                && let Some((idx, _)) = state.sessions_list.filtered.get(selected)
+            {
+                let session = &state.sessions[*idx];
+                let session_name = session.session_name.clone();
+                state.cancel_sessions_poller();
+                return Some(OpenAction::SwitchSession(session_name));
             }
         }
 
@@ -1628,7 +1715,9 @@ mod tests {
                 assert_eq!(path, PathBuf::from("/tmp/alpha"));
                 assert_eq!(session_name, "alpha");
             }
-            OpenAction::Quit | OpenAction::SetupComplete => panic!("Expected OpenAction::Open"),
+            OpenAction::Quit | OpenAction::SetupComplete | OpenAction::SwitchSession(_) => {
+                panic!("Expected OpenAction::Open")
+            }
         }
     }
 
@@ -1836,7 +1925,9 @@ mod tests {
                 assert_eq!(session_name, "beta");
                 assert_eq!(split_command.as_deref(), Some("hx"));
             }
-            OpenAction::Quit | OpenAction::SetupComplete => panic!("Expected OpenAction::Open"),
+            OpenAction::Quit | OpenAction::SetupComplete | OpenAction::SwitchSession(_) => {
+                panic!("Expected OpenAction::Open")
+            }
         }
     }
 

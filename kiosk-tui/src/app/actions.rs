@@ -35,6 +35,10 @@ pub(super) fn handle_go_back(state: &mut AppState) {
             state.help_overlay = None;
             state.mode = *previous;
         }
+        Mode::Sessions => {
+            state.cancel_sessions_poller();
+            state.mode = Mode::RepoSelect;
+        }
         Mode::Setup(_) | Mode::RepoSelect | Mode::Loading(_) => {}
     }
 }
@@ -243,6 +247,7 @@ pub(super) fn handle_open_branch(
             }
         }
         Mode::RepoSelect
+        | Mode::Sessions
         | Mode::ConfirmWorktreeDelete { .. }
         | Mode::Loading(_)
         | Mode::Help { .. }

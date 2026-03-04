@@ -20,6 +20,7 @@ pub mod new_branch;
 pub mod path_input;
 pub mod repo_list;
 pub mod search_bar;
+pub mod sessions_view;
 pub mod setup;
 
 /// Helper function to center a rect within another rect

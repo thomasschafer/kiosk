@@ -46,4 +46,7 @@ pub enum Action {
     SetupAddDir,
     SetupTabComplete,
     SetupCancel,
+    // Sessions
+    ToggleSessions,
+    SwitchToSession,
 }

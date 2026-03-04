@@ -241,6 +241,7 @@ Defaults are shown below.
 [keys.general]
 "C-c" = "quit"
 "C-h" = "show_help"
+"C-s" = "toggle_sessions"
 
 [keys.text_edit]
 "A-b" = "move_cursor_word_left"
@@ -285,6 +286,10 @@ Defaults are shown below.
 "C-o" = "new_branch"
 "C-x" = "delete_worktree"
 "enter" = "open_branch"
+"esc" = "go_back"
+
+[keys.sessions_select]
+"enter" = "switch_to_session"
 "esc" = "go_back"
 
 [keys.modal]

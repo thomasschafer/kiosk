@@ -1243,7 +1243,7 @@ fn test_e2e_help_rapid_down_only_hits_visual_bottom_at_true_end() {
         let (selected_row, body_rows, selected_line) = help_view_detail(&env.capture());
         if selected_row + 1 == body_rows {
             assert!(
-                selected_line.contains("Show help"),
+                selected_line.contains("Show help") || selected_line.contains("Toggle sessions"),
                 "Bottom row should only be the true end in branch help, got: {selected_line}"
             );
         }

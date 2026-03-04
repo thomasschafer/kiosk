@@ -28,6 +28,10 @@ struct Cli {
     #[arg(long, default_value = logging::DEFAULT_LOG_LEVEL)]
     log_level: log::LevelFilter,
 
+    /// Open directly into sessions view
+    #[arg(short, long)]
+    sessions: bool,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -276,7 +280,7 @@ fn main() -> ExitCode {
     let git: Arc<dyn GitProvider> = Arc::new(CliGitProvider);
     let tmux: Arc<dyn TmuxProvider> = Arc::new(CliTmuxProvider);
 
-    let result = dispatch_command(cli.command, &config, &git, &tmux);
+    let result = dispatch_command(cli.sessions, cli.command, &config, &git, &tmux);
 
     match result {
         Ok(()) => ExitCode::from(0),
@@ -293,6 +297,8 @@ fn main() -> ExitCode {
 
 #[allow(clippy::too_many_lines)]
 fn dispatch_command(
+    sessions: bool,
+
     command: Option<Commands>,
     config: &config::Config,
     git: &Arc<dyn GitProvider>,
@@ -438,11 +444,12 @@ fn dispatch_command(
                 Err(crate::cli::CliError::user("config subcommand required"))
             }
         },
-        None => run_tui(config, git, tmux).map_err(crate::cli::CliError::from),
+        None => run_tui(sessions, config, git, tmux).map_err(crate::cli::CliError::from),
     }
 }
 
 fn run_tui(
+    sessions_flag: bool,
     config: &config::Config,
     git: &Arc<dyn GitProvider>,
     tmux: &Arc<dyn TmuxProvider>,
@@ -491,6 +498,7 @@ fn run_tui(
     state.agent_enabled = config.agent.enabled;
     state.agent_poll_interval = std::time::Duration::from_millis(config.agent.poll_interval_ms);
     state.agent_labels = config.agent.labels.clone();
+    state.sessions_initial = sessions_flag;
 
     let theme = Theme::from_config(&config.theme);
 
@@ -527,6 +535,9 @@ fn run_tui(
             tmux.switch_to_session(&session_name);
         }
         Some(OpenAction::Quit | OpenAction::SetupComplete) | None => {}
+        Some(OpenAction::SwitchSession(session_name)) => {
+            tmux.switch_to_session(&session_name);
+        }
     }
 
     Ok(())
@@ -581,7 +592,7 @@ fn run_setup_then_tui() -> ExitCode {
             }
             // Load the newly written config and continue into normal TUI
             match config::load_config(None) {
-                Ok(config) => match run_tui(&config, &git, &tmux) {
+                Ok(config) => match run_tui(false, &config, &git, &tmux) {
                     Ok(()) => ExitCode::from(0),
                     Err(e) => {
                         eprintln!("Error: {e}");
@@ -597,6 +608,10 @@ fn run_setup_then_tui() -> ExitCode {
         Ok(Some(kiosk_tui::OpenAction::Quit) | None) => ExitCode::from(0),
         Ok(Some(kiosk_tui::OpenAction::Open { .. })) => {
             eprintln!("Unexpected OpenAction::Open during setup flow");
+            ExitCode::from(2)
+        }
+        Ok(Some(kiosk_tui::OpenAction::SwitchSession(_))) => {
+            eprintln!("Unexpected OpenAction::SwitchSession during setup flow");
             ExitCode::from(2)
         }
         Err(e) => {

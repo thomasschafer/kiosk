@@ -246,6 +246,16 @@ define_commands! {
         hint: "complete",
         description: "Tab completion",
     },
+    ToggleSessions {
+        config_name: "toggle_sessions",
+        hint: "sessions",
+        description: "Toggle sessions view",
+    },
+    SwitchToSession {
+        config_name: "switch_to_session",
+        hint: "switch",
+        description: "Switch to selected session",
+    },
 }
 
 /// Effective key bindings after composing mode-relevant layers.
@@ -328,7 +338,7 @@ macro_rules! define_layer_commands {
     };
 }
 
-define_layer_commands!(GeneralCommand => [Quit, ShowHelp]);
+define_layer_commands!(GeneralCommand => [Quit, ShowHelp, ToggleSessions]);
 define_layer_commands!(TextEditCommand => [
     MoveCursorLeft,
     MoveCursorRight,
@@ -356,6 +366,7 @@ define_layer_commands!(ListNavigationCommand => [
 define_layer_commands!(ModalCommand => [Confirm, Cancel, TabComplete]);
 define_layer_commands!(RepoSelectCommand => [OpenRepo, EnterRepo, Quit]);
 define_layer_commands!(BranchSelectCommand => [OpenBranch, GoBack, NewBranch, DeleteWorktree]);
+define_layer_commands!(SessionsSelectCommand => [SwitchToSession, GoBack]);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeybindingEntry {
@@ -395,16 +406,18 @@ enum Layer {
     ListNavigation,
     RepoSelect,
     BranchSelect,
+    SessionsSelect,
     Modal,
 }
 
 impl Layer {
-    const ORDER_ASC: [Layer; 6] = [
+    const ORDER_ASC: [Layer; 7] = [
         Layer::General,
         Layer::TextEdit,
         Layer::ListNavigation,
         Layer::RepoSelect,
         Layer::BranchSelect,
+        Layer::SessionsSelect,
         Layer::Modal,
     ];
 
@@ -415,6 +428,7 @@ impl Layer {
             Layer::ListNavigation => "list_navigation",
             Layer::RepoSelect => "repo_select",
             Layer::BranchSelect => "branch_select",
+            Layer::SessionsSelect => "sessions_select",
             Layer::Modal => "modal",
         }
     }
@@ -429,6 +443,7 @@ pub struct KeysConfig {
     pub modal: LayerKeyMap<ModalCommand>,
     pub repo_select: LayerKeyMap<RepoSelectCommand>,
     pub branch_select: LayerKeyMap<BranchSelectCommand>,
+    pub sessions_select: LayerKeyMap<SessionsSelectCommand>,
 }
 
 /// Intermediate structure for deserializing key bindings
@@ -446,6 +461,8 @@ struct KeysConfigRaw {
     repo_select: HashMap<String, String>,
     #[serde(default)]
     branch_select: HashMap<String, String>,
+    #[serde(default)]
+    sessions_select: HashMap<String, String>,
 }
 
 impl Default for KeysConfig {
@@ -463,6 +480,7 @@ impl KeysConfig {
             modal: Self::default_modal(),
             repo_select: Self::default_repo_select(),
             branch_select: Self::default_branch_select(),
+            sessions_select: Self::default_sessions_select(),
         }
     }
 
@@ -479,6 +497,9 @@ impl KeysConfig {
                     }
                     Layer::RepoSelect => Self::apply_layer(&mut combined, &self.repo_select),
                     Layer::BranchSelect => Self::apply_layer(&mut combined, &self.branch_select),
+                    Layer::SessionsSelect => {
+                        Self::apply_layer(&mut combined, &self.sessions_select);
+                    }
                     Layer::Modal => Self::apply_layer(&mut combined, &self.modal),
                 }
             }
@@ -502,6 +523,7 @@ impl KeysConfig {
                     Layer::ListNavigation => Self::entries_for_layer(&self.list_navigation),
                     Layer::RepoSelect => Self::entries_for_layer(&self.repo_select),
                     Layer::BranchSelect => Self::entries_for_layer(&self.branch_select),
+                    Layer::SessionsSelect => Self::entries_for_layer(&self.sessions_select),
                     Layer::Modal => Self::entries_for_layer(&self.modal),
                 }
                 .into_iter()
@@ -634,6 +656,7 @@ impl KeysConfig {
             Layer::ListNavigation => mode.supports_list_navigation(),
             Layer::RepoSelect => mode.supports_repo_select_actions(),
             Layer::BranchSelect => mode.supports_branch_select_actions(),
+            Layer::SessionsSelect => mode.supports_sessions_select_actions(),
             Layer::Modal => mode.supports_modal_actions(),
         }
     }
@@ -647,6 +670,10 @@ impl KeysConfig {
         map.insert(
             KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL),
             GeneralCommand::ShowHelp,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+            GeneralCommand::ToggleSessions,
         );
         map
     }
@@ -835,6 +862,18 @@ impl KeysConfig {
         );
         map
     }
+    fn default_sessions_select() -> LayerKeyMap<SessionsSelectCommand> {
+        let mut map = LayerKeyMap::new();
+        map.insert(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            SessionsSelectCommand::SwitchToSession,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            SessionsSelectCommand::GoBack,
+        );
+        map
+    }
 
     /// Parse a string representation of keybindings into a `KeyMap`
     fn parse_keymap(raw_map: &HashMap<String, String>) -> Result<KeyMap, String> {
@@ -875,6 +914,7 @@ impl KeysConfig {
         Self::extend_typed_layer(&mut config.modal, &raw.modal)?;
         Self::extend_typed_layer(&mut config.repo_select, &raw.repo_select)?;
         Self::extend_typed_layer(&mut config.branch_select, &raw.branch_select)?;
+        Self::extend_typed_layer(&mut config.sessions_select, &raw.sessions_select)?;
 
         Ok(config)
     }
@@ -972,6 +1012,7 @@ mod tests {
                 map
             },
             branch_select: HashMap::new(),
+            sessions_select: HashMap::new(),
         };
 
         let config = KeysConfig::from_raw(&raw).unwrap();
@@ -1048,6 +1089,7 @@ mod tests {
                 map.insert("C-n".to_string(), "noop".to_string());
                 map
             },
+            sessions_select: HashMap::new(),
         };
 
         let config = KeysConfig::from_raw(&raw).unwrap();
@@ -1096,6 +1138,7 @@ mod tests {
             modal: HashMap::new(),
             repo_select: HashMap::new(),
             branch_select: HashMap::new(),
+            sessions_select: HashMap::new(),
         };
 
         let config = KeysConfig::from_raw(&raw).unwrap();
@@ -1124,6 +1167,7 @@ mod tests {
             },
             repo_select: HashMap::new(),
             branch_select: HashMap::new(),
+            sessions_select: HashMap::new(),
         };
 
         let config = KeysConfig::from_raw(&raw).unwrap();
@@ -1164,6 +1208,7 @@ mod tests {
                 "list_navigation",
                 "repo_select",
                 "branch_select",
+                "sessions_select",
                 "modal",
             ]
         );
@@ -1198,6 +1243,7 @@ mod tests {
             modal: HashMap::new(),
             repo_select: HashMap::new(),
             branch_select: HashMap::new(),
+            sessions_select: HashMap::new(),
         };
 
         let config = KeysConfig::from_raw(&raw).unwrap();
@@ -1207,7 +1253,7 @@ mod tests {
             .find(|section| section.name == "general")
             .unwrap();
 
-        assert_eq!(general.entries.len(), 1);
+        assert_eq!(general.entries.len(), 2);
         assert_eq!(general.entries[0].command, Command::ShowHelp);
     }
 
@@ -1225,6 +1271,7 @@ mod tests {
                 map.insert("C-n".to_string(), "noop".to_string());
                 map
             },
+            sessions_select: HashMap::new(),
         };
 
         let config = KeysConfig::from_raw(&raw).unwrap();
@@ -1262,6 +1309,7 @@ mod tests {
                 let mut map = HashMap::new();
                 map.insert("C-c".to_string(), "noop".to_string());
                 map.insert("C-h".to_string(), "noop".to_string());
+                map.insert("C-s".to_string(), "noop".to_string());
                 map
             },
             text_edit: HashMap::new(),
@@ -1273,6 +1321,7 @@ mod tests {
                 map
             },
             branch_select: HashMap::new(),
+            sessions_select: HashMap::new(),
         };
 
         let config = KeysConfig::from_raw(&raw).unwrap();
@@ -1337,6 +1386,7 @@ mod tests {
             modal: HashMap::new(),
             repo_select: HashMap::new(),
             branch_select: HashMap::new(),
+            sessions_select: HashMap::new(),
         };
 
         let config = KeysConfig::from_raw(&raw).unwrap();
@@ -1445,6 +1495,8 @@ mod tests {
             Command::Confirm,
             Command::Cancel,
             Command::TabComplete,
+            Command::ToggleSessions,
+            Command::SwitchToSession,
         ];
 
         for cmd in &all_commands {
@@ -1494,6 +1546,8 @@ mod tests {
             Command::Confirm,
             Command::Cancel,
             Command::TabComplete,
+            Command::ToggleSessions,
+            Command::SwitchToSession,
         ];
 
         for cmd in &all_commands {
@@ -1519,6 +1573,7 @@ mod tests {
             modal: HashMap::new(),
             repo_select: HashMap::new(),
             branch_select: HashMap::new(),
+            sessions_select: HashMap::new(),
         };
 
         let config = KeysConfig::from_raw(&raw).unwrap();
@@ -1548,6 +1603,7 @@ mod tests {
         let modes: Vec<Mode> = vec![
             Mode::RepoSelect,
             Mode::BranchSelect,
+            Mode::Sessions,
             Mode::SelectBaseBranch,
             Mode::ConfirmWorktreeDelete {
                 branch_name: "x".into(),
@@ -1571,6 +1627,7 @@ mod tests {
         let modes: Vec<Mode> = vec![
             Mode::RepoSelect,
             Mode::BranchSelect,
+            Mode::Sessions,
             Mode::SelectBaseBranch,
             Mode::ConfirmWorktreeDelete {
                 branch_name: "x".into(),

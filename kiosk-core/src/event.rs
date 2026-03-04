@@ -87,4 +87,13 @@ pub enum AppEvent {
 
     /// A background git operation failed
     GitError(String),
+    /// Sessions discovered and loaded for the sessions view
+    SessionsLoaded {
+        sessions: Vec<crate::state::SessionEntry>,
+    },
+
+    /// Agent statuses updated for sessions view
+    SessionAgentStatesUpdated {
+        states: Vec<(String, Vec<AgentStatus>)>,
+    },
 }

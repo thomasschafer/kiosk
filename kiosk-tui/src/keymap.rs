@@ -99,6 +99,8 @@ fn command_to_action(command: &Command, state: &AppState) -> Option<Action> {
             Mode::Setup(SetupStep::SearchDirs) => Some(Action::SetupCancel),
             _ => None,
         },
+        Command::ToggleSessions => Some(Action::ToggleSessions),
+        Command::SwitchToSession => Some(Action::SwitchToSession),
         Command::TabComplete => match state.mode {
             Mode::Setup(SetupStep::SearchDirs) => Some(Action::SetupTabComplete),
             _ => None,

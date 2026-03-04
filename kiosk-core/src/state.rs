@@ -656,11 +656,50 @@ impl Default for SetupState {
     }
 }
 
+/// A session entry for the sessions view (cross-repo tmux session list).
+#[derive(Debug, Clone)]
+pub struct SessionEntry {
+    pub session_name: String,
+    pub repo_name: String,
+    pub branch: Option<String>,
+    pub path: PathBuf,
+    pub agent_statuses: Vec<AgentStatus>,
+    pub session_activity: u64,
+    pub attached: bool,
+}
+
+/// Sort priority for sessions view: higher = sorts first.
+fn session_sort_priority(statuses: &[AgentStatus]) -> u8 {
+    statuses
+        .iter()
+        .map(|s| match s.state {
+            crate::AgentState::Waiting => 4,
+            crate::AgentState::Idle => 3,
+            crate::AgentState::Running => 2,
+            crate::AgentState::Unknown => 1,
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+/// Sort sessions by: Waiting first, then Idle, then Running, then no agents.
+/// Within same tier: oldest activity first (least recently visited).
+pub fn sort_sessions(sessions: &mut [SessionEntry]) {
+    sessions.sort_by(|a, b| {
+        let a_priority = session_sort_priority(&a.agent_statuses);
+        let b_priority = session_sort_priority(&b.agent_statuses);
+        b_priority
+            .cmp(&a_priority)
+            .then(a.session_activity.cmp(&b.session_activity))
+    });
+}
+
 /// What mode the app is in
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Mode {
     RepoSelect,
     BranchSelect,
+    Sessions,
     SelectBaseBranch,
     /// Blocking loading state — shows spinner, no input except Ctrl+C
     Loading(String),
@@ -695,6 +734,12 @@ impl Mode {
                 Command::ShowHelp,
                 Command::Quit,
             ],
+            Mode::Sessions => &[
+                Command::GoBack,
+                Command::ToggleSessions,
+                Command::ShowHelp,
+                Command::Quit,
+            ],
             Mode::BranchSelect => &[
                 Command::GoBack,
                 Command::OpenBranch,
@@ -722,6 +767,7 @@ impl Mode {
         matches!(
             self,
             Mode::RepoSelect
+                | Mode::Sessions
                 | Mode::BranchSelect
                 | Mode::SelectBaseBranch
                 | Mode::Help { .. }
@@ -733,6 +779,7 @@ impl Mode {
         matches!(
             self,
             Mode::RepoSelect
+                | Mode::Sessions
                 | Mode::BranchSelect
                 | Mode::SelectBaseBranch
                 | Mode::Help { .. }
@@ -753,6 +800,9 @@ impl Mode {
 
     pub(crate) fn supports_branch_select_actions(&self) -> bool {
         matches!(self, Mode::BranchSelect)
+    }
+    pub(crate) fn supports_sessions_select_actions(&self) -> bool {
+        matches!(self, Mode::Sessions)
     }
 }
 
@@ -815,6 +865,14 @@ pub struct AppState {
     /// Tracks repo paths already seen during streaming discovery (O(1) dedup).
     /// Cleared when a new scan starts.
     pub seen_repo_paths: HashSet<PathBuf>,
+    /// Sessions view data
+    pub sessions: Vec<SessionEntry>,
+    pub sessions_list: SearchableList,
+    pub loading_sessions: bool,
+    /// Whether the TUI was launched with --sessions flag
+    pub sessions_initial: bool,
+    /// Cancel token for the sessions agent poller
+    pub sessions_poller_cancel: Option<Arc<AtomicBool>>,
 }
 
 impl AppState {
@@ -847,6 +905,11 @@ impl AppState {
             current_repo_path: None,
             cwd_worktree_path: None,
             seen_repo_paths: HashSet::new(),
+            sessions: Vec::new(),
+            sessions_list: SearchableList::new(0),
+            loading_sessions: false,
+            sessions_initial: false,
+            sessions_poller_cancel: None,
         }
     }
 
@@ -893,6 +956,12 @@ impl AppState {
             token.store(true, Ordering::Relaxed);
         }
     }
+    /// Signal the current sessions agent poller thread to stop.
+    pub fn cancel_sessions_poller(&mut self) {
+        if let Some(token) = self.sessions_poller_cancel.take() {
+            token.store(true, Ordering::Relaxed);
+        }
+    }
 
     /// Get the active text input for the current mode (mutable).
     /// Works for both `SearchableList` modes and Setup mode.
@@ -907,6 +976,7 @@ impl AppState {
     pub fn active_list_mut(&mut self) -> Option<&mut SearchableList> {
         match self.mode {
             Mode::RepoSelect => Some(&mut self.repo_list),
+            Mode::Sessions => Some(&mut self.sessions_list),
             Mode::BranchSelect => Some(&mut self.branch_list),
             Mode::SelectBaseBranch => self.base_branch_selection.as_mut().map(|f| &mut f.list),
             Mode::Help { .. } => self.active_help_list_mut(),
@@ -918,6 +988,7 @@ impl AppState {
     pub fn active_list(&self) -> Option<&SearchableList> {
         match self.mode {
             Mode::RepoSelect => Some(&self.repo_list),
+            Mode::Sessions => Some(&self.sessions_list),
             Mode::BranchSelect => Some(&self.branch_list),
             Mode::SelectBaseBranch => self.base_branch_selection.as_ref().map(|f| &f.list),
             Mode::Help { .. } => self.active_help_list(),
@@ -2404,5 +2475,113 @@ mod tests {
         };
         assert_eq!(state.agent_labels.running, "GO");
         assert_eq!(state.agent_labels.waiting, "PEND");
+    }
+    #[test]
+    fn test_sort_sessions_waiting_first() {
+        use crate::agent::{AgentKind, AgentState, AgentStatus};
+
+        let mut sessions = vec![
+            SessionEntry {
+                session_name: "no-agent".into(),
+                repo_name: "repo1".into(),
+                branch: Some("main".into()),
+                path: PathBuf::from("/tmp/a"),
+                agent_statuses: vec![],
+                session_activity: 100,
+                attached: false,
+            },
+            SessionEntry {
+                session_name: "running".into(),
+                repo_name: "repo2".into(),
+                branch: Some("feat".into()),
+                path: PathBuf::from("/tmp/b"),
+                agent_statuses: vec![AgentStatus {
+                    kind: AgentKind::ClaudeCode,
+                    state: AgentState::Running,
+                }],
+                session_activity: 200,
+                attached: false,
+            },
+            SessionEntry {
+                session_name: "waiting".into(),
+                repo_name: "repo3".into(),
+                branch: Some("fix".into()),
+                path: PathBuf::from("/tmp/c"),
+                agent_statuses: vec![AgentStatus {
+                    kind: AgentKind::ClaudeCode,
+                    state: AgentState::Waiting,
+                }],
+                session_activity: 300,
+                attached: false,
+            },
+            SessionEntry {
+                session_name: "idle".into(),
+                repo_name: "repo4".into(),
+                branch: Some("dev".into()),
+                path: PathBuf::from("/tmp/d"),
+                agent_statuses: vec![AgentStatus {
+                    kind: AgentKind::ClaudeCode,
+                    state: AgentState::Idle,
+                }],
+                session_activity: 50,
+                attached: false,
+            },
+        ];
+
+        sort_sessions(&mut sessions);
+
+        assert_eq!(
+            sessions[0].session_name, "waiting",
+            "Waiting should be first"
+        );
+        assert_eq!(sessions[1].session_name, "idle", "Idle should be second");
+        assert_eq!(
+            sessions[2].session_name, "running",
+            "Running should be third"
+        );
+        assert_eq!(
+            sessions[3].session_name, "no-agent",
+            "No agent should be last"
+        );
+    }
+
+    #[test]
+    fn test_sort_sessions_same_tier_oldest_first() {
+        use crate::agent::{AgentKind, AgentState, AgentStatus};
+
+        let mut sessions = vec![
+            SessionEntry {
+                session_name: "recent".into(),
+                repo_name: "repo1".into(),
+                branch: Some("main".into()),
+                path: PathBuf::from("/tmp/a"),
+                agent_statuses: vec![AgentStatus {
+                    kind: AgentKind::ClaudeCode,
+                    state: AgentState::Running,
+                }],
+                session_activity: 500,
+                attached: false,
+            },
+            SessionEntry {
+                session_name: "old".into(),
+                repo_name: "repo2".into(),
+                branch: Some("feat".into()),
+                path: PathBuf::from("/tmp/b"),
+                agent_statuses: vec![AgentStatus {
+                    kind: AgentKind::ClaudeCode,
+                    state: AgentState::Running,
+                }],
+                session_activity: 100,
+                attached: false,
+            },
+        ];
+
+        sort_sessions(&mut sessions);
+
+        assert_eq!(
+            sessions[0].session_name, "old",
+            "Oldest activity should be first within same tier"
+        );
+        assert_eq!(sessions[1].session_name, "recent");
     }
 }

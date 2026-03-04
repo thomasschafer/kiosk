@@ -533,3 +533,171 @@ mod tests {
         assert!(update.agent_statuses.is_empty());
     }
 }
+
+/// Spawn background session discovery for the sessions view.
+/// Uses already-discovered repos from state to find active sessions.
+pub(super) fn spawn_sessions_discovery<T: TmuxProvider + ?Sized + 'static>(
+    git: &Arc<dyn GitProvider>,
+    tmux: &Arc<T>,
+    sender: &EventSender,
+    state: &mut kiosk_core::state::AppState,
+) {
+    use kiosk_core::state::SessionEntry;
+
+    // Collect repo data while we have access to state
+    let repos: Vec<(String, PathBuf, Vec<kiosk_core::git::Worktree>)> = state
+        .repos
+        .iter()
+        .map(|r| (r.name.clone(), r.path.clone(), r.worktrees.clone()))
+        .collect();
+
+    let git = Arc::clone(git);
+    let tmux_clone = Arc::clone(tmux);
+    let sender_clone = sender.clone();
+
+    // Cancel any existing sessions poller
+    state.cancel_sessions_poller();
+
+    let poller_cancel = Arc::new(AtomicBool::new(false));
+    state.sessions_poller_cancel = Some(Arc::clone(&poller_cancel));
+
+    let poller_cancel_for_poller = Arc::clone(&poller_cancel);
+    let tmux_for_poller = Arc::clone(tmux);
+    let sender_for_poller = sender.clone();
+
+    thread::spawn(move || {
+        if sender_clone.cancel.load(Ordering::Relaxed) {
+            return;
+        }
+
+        // Re-enrich repos with worktrees if empty (may happen if session view
+        // is entered before enrichment completes).
+        let repos: Vec<(String, PathBuf, Vec<kiosk_core::git::Worktree>)> =
+            if repos.iter().all(|(_, _, wts)| wts.is_empty()) {
+                repos
+                    .into_iter()
+                    .map(|(name, path, _)| {
+                        let wts = git.list_worktrees(&path);
+                        (name, path, wts)
+                    })
+                    .collect()
+            } else {
+                repos
+            };
+
+        let sessions_with_activity = tmux_clone.list_sessions_with_activity();
+        let active_sessions: HashMap<String, u64> = sessions_with_activity.into_iter().collect();
+        let attached_clients: std::collections::HashSet<String> = {
+            let mut set = std::collections::HashSet::new();
+            // Check each active session for attached clients
+            for session_name in active_sessions.keys() {
+                if !tmux_clone.list_clients(session_name).is_empty() {
+                    set.insert(session_name.clone());
+                }
+            }
+            set
+        };
+
+        let mut sessions = Vec::new();
+        let mut session_names = Vec::new();
+
+        for (repo_name, repo_path, worktrees) in &repos {
+            for wt in worktrees {
+                let session_name = {
+                    let repo = kiosk_core::git::Repo {
+                        session_name: repo_name.clone(),
+                        name: repo_name.clone(),
+                        path: repo_path.clone(),
+                        worktrees: vec![wt.clone()],
+                    };
+                    repo.tmux_session_name(&wt.path)
+                };
+
+                if let Some(&activity) = active_sessions.get(&session_name) {
+                    sessions.push(SessionEntry {
+                        session_name: session_name.clone(),
+                        repo_name: repo_name.clone(),
+                        branch: wt.branch.clone(),
+                        path: wt.path.clone(),
+                        agent_statuses: Vec::new(),
+                        session_activity: activity,
+                        attached: attached_clients.contains(&session_name),
+                    });
+                    session_names.push(session_name);
+                }
+            }
+        }
+
+        sender_clone.send(AppEvent::SessionsLoaded { sessions });
+
+        // Now do initial agent detection
+        if !session_names.is_empty() {
+            let states = detect_agent_statuses(&*tmux_clone, &session_names);
+            sender_clone.send(AppEvent::SessionAgentStatesUpdated { states });
+        }
+
+        // Start the sessions agent poller
+        if !session_names.is_empty() {
+            spawn_sessions_agent_poller(
+                &tmux_for_poller,
+                &sender_for_poller,
+                poller_cancel_for_poller,
+                std::time::Duration::from_secs(3),
+                session_names,
+            );
+        }
+    });
+}
+
+/// Agent status poller for the sessions view — polls ALL sessions.
+fn spawn_sessions_agent_poller<T: TmuxProvider + ?Sized + 'static>(
+    tmux: &Arc<T>,
+    sender: &EventSender,
+    cancel: Arc<AtomicBool>,
+    base_interval: std::time::Duration,
+    session_names: Vec<String>,
+) {
+    let tmux = Arc::clone(tmux);
+    let sender = sender.clone();
+    let idle_interval = base_interval.saturating_mul(3);
+    thread::spawn(move || {
+        let is_cancelled =
+            || cancel.load(Ordering::Relaxed) || sender.cancel.load(Ordering::Relaxed);
+        loop {
+            // Sleep first since we already did an initial detection
+            let states_peek = detect_agent_statuses(&*tmux, &session_names);
+            let any_active = states_peek.iter().any(|(_, statuses)| {
+                statuses.iter().any(|s| {
+                    matches!(
+                        s.state,
+                        kiosk_core::agent::AgentState::Running
+                            | kiosk_core::agent::AgentState::Waiting
+                    )
+                })
+            });
+            let current_interval = if any_active {
+                base_interval
+            } else {
+                idle_interval
+            };
+
+            // Sleep in small increments
+            let mut remaining = current_interval;
+            while !remaining.is_zero() {
+                if is_cancelled() {
+                    return;
+                }
+                let sleep = remaining.min(std::time::Duration::from_millis(200));
+                thread::sleep(sleep);
+                remaining = remaining.saturating_sub(sleep);
+            }
+
+            if is_cancelled() {
+                return;
+            }
+
+            let states = detect_agent_statuses(&*tmux, &session_names);
+            sender.send(AppEvent::SessionAgentStatesUpdated { states });
+        }
+    });
+}

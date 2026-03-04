@@ -2481,17 +2481,19 @@ fn test_e2e_setup_wizard_typing_shows_all_matching_completions() {
     // keystrokes before checking completions.
     env.send(&format!("{}/De", parent.display()));
 
-    // Both Desktop and Development match "De" and should be visible
+    // Both Desktop and Development match "De" and should be visible.
+    // Development may be right-truncated by the list viewport, so match by
+    // stable prefix instead of full word.
     let screen = wait_for_screen(&env, 5000, |s| {
-        s.contains("Desktop") && s.contains("Development")
+        s.contains("Desktop") && s.contains("Develop")
     });
     assert!(
         screen.contains("Desktop"),
         "Should show Desktop in completions: {screen}"
     );
     assert!(
-        screen.contains("Development"),
-        "Should show Development in completions (both match 'De'): {screen}"
+        screen.contains("Develop"),
+        "Should show Development completion (possibly truncated) for prefix 'De': {screen}"
     );
     // Documents should NOT match "De"
     assert!(

@@ -511,6 +511,43 @@ fn branch_session_names(state: &AppState) -> Vec<String> {
         .collect()
 }
 
+fn seed_session_runtime_from_branches(
+    state: &mut AppState,
+    branches: &[BranchEntry],
+    session_activity: &std::collections::HashMap<String, u64>,
+) {
+    let Some(repo_idx) = state.selected_repo_idx else {
+        return;
+    };
+    let repo = &state.repos[repo_idx];
+
+    let mut fresh: std::collections::HashMap<String, SessionRuntimeState> =
+        std::collections::HashMap::new();
+    for branch in branches {
+        let Some(worktree_path) = branch.worktree_path.as_ref() else {
+            continue;
+        };
+        let session_name = repo.tmux_session_name(worktree_path);
+        let activity_ts = branch
+            .session_activity_ts
+            .or_else(|| session_activity.get(&session_name).copied());
+        fresh.insert(
+            session_name,
+            SessionRuntimeState {
+                exists: branch.has_session,
+                activity_ts,
+                // Fresh branch snapshots are authoritative for existence/activity,
+                // but not for agent status; let poller refresh it.
+                agent_status: None,
+            },
+        );
+    }
+
+    for (session_name, runtime) in fresh {
+        state.session_runtime.insert(session_name, runtime);
+    }
+}
+
 fn apply_session_runtime_updates(state: &mut AppState, updates: Vec<SessionRuntimeUpdate>) {
     for update in updates {
         let session_name = update.session_name;
@@ -721,6 +758,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             local_names,
             session_activity,
         } => {
+            seed_session_runtime_from_branches(state, &branches, &session_activity);
             state.session_activity = session_activity;
             if let Some(repo) = state
                 .selected_repo_idx
@@ -1092,7 +1130,7 @@ mod tests {
     use kiosk_core::config::ThemeConfig;
     use kiosk_core::git::mock::MockGitProvider;
     use kiosk_core::git::{Repo, Worktree};
-    use kiosk_core::state::{AppState, BranchEntry, Mode, SearchableList};
+    use kiosk_core::state::{AppState, BranchEntry, Mode, SearchableList, SessionRuntimeState};
     use kiosk_core::tmux::{TmuxProvider, mock::MockTmuxProvider};
     use ratatui::{Terminal, backend::TestBackend};
 
@@ -1165,6 +1203,63 @@ mod tests {
         assert_eq!(state.mode, Mode::BranchSelect);
         assert!(!state.loading_branches);
         assert_eq!(state.branches.len(), 2);
+    }
+
+    #[test]
+    fn test_branches_loaded_refreshes_runtime_snapshot_before_reconcile() {
+        use std::collections::HashMap;
+
+        let repos = vec![make_repo("my-repo")];
+        let mut state = AppState::new(repos, None);
+        state.selected_repo_idx = Some(0);
+        state.mode = Mode::BranchSelect;
+
+        let wt_path = std::path::PathBuf::from("/tmp/wt");
+        let session_name = state.repos[0].tmux_session_name(&wt_path);
+        state.session_runtime.insert(
+            session_name.clone(),
+            SessionRuntimeState {
+                exists: true,
+                activity_ts: Some(9999),
+                agent_status: Some(kiosk_core::agent::AgentStatus {
+                    kind: kiosk_core::agent::AgentKind::OpenCode,
+                    state: kiosk_core::agent::AgentState::Running,
+                }),
+            },
+        );
+
+        let loaded = BranchEntry {
+            name: "feat/test".to_string(),
+            worktree_path: Some(wt_path),
+            has_session: false,
+            is_current: false,
+            is_default: false,
+            remote: None,
+            session_activity_ts: None,
+            agent_status: None,
+        };
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let sender = make_sender();
+
+        process_app_event(
+            AppEvent::BranchesLoaded {
+                branches: vec![loaded],
+                worktrees: vec![],
+                local_names: vec!["feat/test".to_string()],
+                session_activity: HashMap::new(),
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+        );
+
+        assert!(!state.branches[0].has_session);
+        assert_eq!(state.branches[0].agent_status, None);
+        assert!(!state.session_runtime[&session_name].exists);
+        assert_eq!(state.session_runtime[&session_name].agent_status, None);
     }
 
     #[test]

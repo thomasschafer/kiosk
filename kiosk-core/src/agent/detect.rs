@@ -2008,115 +2008,102 @@ mod fixture_tests {
     }
 
     fixtures! {
-        // Claude Code
-        (CLAUDE_IDLE_FRESH,               "claude-code/idle-fresh.txt",                    AgentKind::ClaudeCode,  AgentState::Idle),
-        (CLAUDE_IDLE_AFTER_RESPONSE,      "claude-code/idle-after-response.txt",           AgentKind::ClaudeCode,  AgentState::Idle),
-        (CLAUDE_IDLE_AFTER_CANCELLED_EDIT,"claude-code/idle-after-cancelled-edit.txt",     AgentKind::ClaudeCode,  AgentState::Idle),
-                // FIXME: should be Idle — user typed follow-up, Claude is idle but no `? for shortcuts` visible
-        (CLAUDE_IDLE_QUEUED,              "claude-code/idle-with-queued-message.txt",      AgentKind::ClaudeCode,  AgentState::Unknown),
-                // FIXME: should be Idle — thinking completed, user is typing, but no idle indicator captured
-        (CLAUDE_IDLE_TYPING,             "claude-code/idle-typing-after-completed-thinking.txt", AgentKind::ClaudeCode, AgentState::Unknown),
-        (CLAUDE_RUNNING_THINKING,         "claude-code/running-thinking-word.txt",         AgentKind::ClaudeCode,  AgentState::Running),
-        (CLAUDE_RUNNING_STREAMING,        "claude-code/running-streaming-response.txt",    AgentKind::ClaudeCode,  AgentState::Running),
-        (CLAUDE_RUNNING_EXTENDED,         "claude-code/running-extended-thinking.txt",     AgentKind::ClaudeCode,  AgentState::Running),
-        (CLAUDE_RUNNING_ESC,              "claude-code/running-with-esc-to-interrupt.txt", AgentKind::ClaudeCode, AgentState::Running),
-        (CLAUDE_RUNNING_QUEUED,           "claude-code/running-with-queued-message.txt",   AgentKind::ClaudeCode, AgentState::Running),
-        (CLAUDE_WAITING_BASH,             "claude-code/waiting-bash-permission.txt",   AgentKind::ClaudeCode,  AgentState::Waiting),
-        (CLAUDE_WAITING_EDIT,             "claude-code/waiting-edit-permission.txt",   AgentKind::ClaudeCode,  AgentState::Waiting),
-        (CLAUDE_IDLE_RESPONSE_KEYWORDS,  "claude-code/idle-response-contains-running-keywords.txt", AgentKind::ClaudeCode, AgentState::Idle),
-        (CLAUDE_CANCELLED,                "claude-code/cancelled.txt",                 AgentKind::ClaudeCode,  AgentState::Idle),
+        // ── Claude Code ─────────────────────────────────────────────────
+        (CLAUDE_IDLE_FRESH,               "claude-code/idle-fresh.txt",                             AgentKind::ClaudeCode,  AgentState::Idle),
+        (CLAUDE_IDLE_AFTER_RESPONSE,      "claude-code/idle-after-response.txt",                    AgentKind::ClaudeCode,  AgentState::Idle),
+        (CLAUDE_IDLE_AFTER_CANCELLED_EDIT,"claude-code/idle-after-cancelled-edit.txt",              AgentKind::ClaudeCode,  AgentState::Idle),
+        // FIXME: should be Idle — user typed follow-up, Claude is idle but no `? for shortcuts` visible
+        (CLAUDE_IDLE_QUEUED,              "claude-code/idle-with-queued-message.txt",               AgentKind::ClaudeCode,  AgentState::Unknown),
+        // FIXME: should be Idle — thinking completed, user is typing, but no idle indicator captured
+        (CLAUDE_IDLE_TYPING,              "claude-code/idle-typing-after-completed-thinking.txt",   AgentKind::ClaudeCode,  AgentState::Unknown),
+        (CLAUDE_IDLE_RESPONSE_KEYWORDS,   "claude-code/idle-response-contains-running-keywords.txt",AgentKind::ClaudeCode,  AgentState::Idle),
+        (CLAUDE_IDLE_INVALID_CMD,         "claude-code/idle-after-invalid-command.txt",             AgentKind::ClaudeCode,  AgentState::Idle),
+        (CLAUDE_IDLE_CONFIG,              "claude-code/idle-config-screen.txt",                     AgentKind::ClaudeCode,  AgentState::Idle),
+        (CLAUDE_IDLE_STATUS,              "claude-code/idle-status-screen.txt",                     AgentKind::ClaudeCode,  AgentState::Idle),
+        (CLAUDE_IDLE_BYPASS,              "claude-code/idle-fresh-bypass-permissions.txt",          AgentKind::ClaudeCode,  AgentState::Idle),
+        (CLAUDE_RUNNING_THINKING,         "claude-code/running-thinking-word.txt",                  AgentKind::ClaudeCode,  AgentState::Running),
+        (CLAUDE_RUNNING_STREAMING,        "claude-code/running-streaming-response.txt",             AgentKind::ClaudeCode,  AgentState::Running),
+        (CLAUDE_RUNNING_EXTENDED,         "claude-code/running-extended-thinking.txt",              AgentKind::ClaudeCode,  AgentState::Running),
+        (CLAUDE_RUNNING_ESC,              "claude-code/running-with-esc-to-interrupt.txt",          AgentKind::ClaudeCode,  AgentState::Running),
+        (CLAUDE_RUNNING_QUEUED,           "claude-code/running-with-queued-message.txt",            AgentKind::ClaudeCode,  AgentState::Running),
+        (CLAUDE_RUNNING_BASH_TOOL,        "claude-code/running-bash-tool-execution.txt",            AgentKind::ClaudeCode,  AgentState::Running),
+        (CLAUDE_RUNNING_BYPASS_BASH,      "claude-code/running-bypass-permissions-bash.txt",        AgentKind::ClaudeCode,  AgentState::Running),
+        (CLAUDE_RUNNING_ORBITING,         "claude-code/running-orbiting-thinking.txt",              AgentKind::ClaudeCode,  AgentState::Running),
+        (CLAUDE_WAITING_BASH,             "claude-code/waiting-bash-permission.txt",                AgentKind::ClaudeCode,  AgentState::Waiting),
+        (CLAUDE_WAITING_EDIT,             "claude-code/waiting-edit-permission.txt",                AgentKind::ClaudeCode,  AgentState::Waiting),
+        (CLAUDE_WAITING_WRITE,            "claude-code/waiting-write-permission.txt",               AgentKind::ClaudeCode,  AgentState::Waiting),
+        (CLAUDE_CANCELLED,                "claude-code/cancelled.txt",                              AgentKind::ClaudeCode,  AgentState::Idle),
+        (CLAUDE_CANCELLED_MID,            "claude-code/cancelled-mid-response.txt",                 AgentKind::ClaudeCode,  AgentState::Idle),
 
-        // Codex
-        (CODEX_IDLE_FRESH,                "codex/idle-fresh.txt",                      AgentKind::Codex,       AgentState::Idle),
-        (CODEX_IDLE_AFTER_RESPONSE,       "codex/idle-after-response.txt",             AgentKind::Codex,       AgentState::Idle),
-        (CODEX_IDLE_AFTER_DENIED,         "codex/idle-after-denied-permission.txt",    AgentKind::Codex,       AgentState::Idle),
-        (CODEX_RUNNING_SPINNER,           "codex/running-spinner.txt",                 AgentKind::Codex,       AgentState::Running),
-                // FIXME: should be Running — Codex is actively streaming but `? for shortcuts` stays visible
-        (CODEX_RUNNING_STREAMING,         "codex/running-streaming-with-stale-footer.txt", AgentKind::Codex,   AgentState::Idle),
-                // FIXME: should be Running — stale idle markers in scrollback cause false Idle
-        (CODEX_RUNNING_STALE_IDLE,        "codex/running-with-stale-idle-markers.txt", AgentKind::Codex,       AgentState::Idle),
-        (CODEX_RUNNING_QUEUED,            "codex/running-with-queued-message.txt",     AgentKind::Codex,       AgentState::Running),
-        (CODEX_WAITING_COMMAND,           "codex/waiting-command-permission.txt",      AgentKind::Codex,       AgentState::Waiting),
-        (CODEX_WAITING_TRUST,             "codex/waiting-trust-dialog.txt",            AgentKind::Codex,       AgentState::Waiting),
-        (CODEX_CANCELLED,                 "codex/cancelled.txt",                       AgentKind::Codex,       AgentState::Idle),
+        // ── Codex ───────────────────────────────────────────────────────
+        (CODEX_IDLE_FRESH,                "codex/idle-fresh.txt",                                   AgentKind::Codex,       AgentState::Idle),
+        (CODEX_IDLE_AFTER_RESPONSE,       "codex/idle-after-response.txt",                          AgentKind::Codex,       AgentState::Idle),
+        (CODEX_IDLE_AFTER_DENIED,         "codex/idle-after-denied-permission.txt",                 AgentKind::Codex,       AgentState::Idle),
+        // FIXME: should be Idle — user is mid-typing a prompt
+        (CODEX_IDLE_TYPING,               "codex/idle-user-typing.txt",                             AgentKind::Codex,       AgentState::Unknown),
+        (CODEX_RUNNING_SPINNER,           "codex/running-spinner.txt",                              AgentKind::Codex,       AgentState::Running),
+        // FIXME: should be Running — Codex is actively streaming but `? for shortcuts` stays visible
+        (CODEX_RUNNING_STREAMING,         "codex/running-streaming-with-stale-footer.txt",          AgentKind::Codex,       AgentState::Idle),
+        // FIXME: should be Running — stale idle markers in scrollback cause false Idle
+        (CODEX_RUNNING_STALE_IDLE,        "codex/running-with-stale-idle-markers.txt",              AgentKind::Codex,       AgentState::Idle),
+        // FIXME: should be Running — same stale `? for shortcuts` footer issue as above
+        (CODEX_RUNNING_STREAMING_LONG,    "codex/running-streaming-long-response.txt",              AgentKind::Codex,       AgentState::Idle),
+        // FIXME: should be Running — "Working" indicator was transient, capture shows stale idle footer
+        (CODEX_RUNNING_WORKING,           "codex/running-working-indicator.txt",                    AgentKind::Codex,       AgentState::Idle),
+        (CODEX_RUNNING_QUEUED,            "codex/running-with-queued-message.txt",                  AgentKind::Codex,       AgentState::Running),
+        (CODEX_WAITING_COMMAND,           "codex/waiting-command-permission.txt",                   AgentKind::Codex,       AgentState::Waiting),
+        (CODEX_WAITING_TRUST,             "codex/waiting-trust-dialog.txt",                         AgentKind::Codex,       AgentState::Waiting),
+        (CODEX_CANCELLED,                 "codex/cancelled.txt",                                    AgentKind::Codex,       AgentState::Idle),
+        (CODEX_CANCELLED_MID,             "codex/cancelled-mid-streaming.txt",                      AgentKind::Codex,       AgentState::Idle),
 
-        // OpenCode
-        (OPENCODE_IDLE_FRESH,             "opencode/idle-fresh.txt",                   AgentKind::OpenCode,    AgentState::Idle),
-        (OPENCODE_IDLE_AFTER_RESPONSE,    "opencode/idle-after-response.txt",          AgentKind::OpenCode,    AgentState::Idle),
-        (OPENCODE_IDLE_AFTER_REJECTED,    "opencode/idle-after-rejected-permission.txt", AgentKind::OpenCode,  AgentState::Idle),
-        (OPENCODE_RUNNING_SPINNER,        "opencode/running-block-spinner.txt",        AgentKind::OpenCode,    AgentState::Running),
-        (OPENCODE_RUNNING_ESC,            "opencode/running-esc-again-to-interrupt.txt", AgentKind::OpenCode,  AgentState::Running),
-        (OPENCODE_WAITING_BASH,           "opencode/waiting-bash-permission.txt",      AgentKind::OpenCode,    AgentState::Waiting),
-        (OPENCODE_CANCELLED,              "opencode/cancelled.txt",                    AgentKind::OpenCode,    AgentState::Idle),
+        // ── OpenCode ────────────────────────────────────────────────────
+        (OPENCODE_IDLE_FRESH,             "opencode/idle-fresh.txt",                                AgentKind::OpenCode,    AgentState::Idle),
+        (OPENCODE_IDLE_AFTER_RESPONSE,    "opencode/idle-after-response.txt",                       AgentKind::OpenCode,    AgentState::Idle),
+        (OPENCODE_IDLE_AFTER_REJECTED,    "opencode/idle-after-rejected-permission.txt",            AgentKind::OpenCode,    AgentState::Idle),
+        (OPENCODE_RUNNING_SPINNER,        "opencode/running-block-spinner.txt",                     AgentKind::OpenCode,    AgentState::Running),
+        (OPENCODE_RUNNING_ESC,            "opencode/running-esc-again-to-interrupt.txt",            AgentKind::OpenCode,    AgentState::Running),
+        (OPENCODE_RUNNING_STREAMING_RESP, "opencode/running-streaming-response.txt",                AgentKind::OpenCode,    AgentState::Running),
+        (OPENCODE_WAITING_BASH,           "opencode/waiting-bash-permission.txt",                   AgentKind::OpenCode,    AgentState::Waiting),
+        (OPENCODE_WAITING_WRITE,          "opencode/waiting-write-permission.txt",                  AgentKind::OpenCode,    AgentState::Waiting),
+        (OPENCODE_CANCELLED,              "opencode/cancelled.txt",                                 AgentKind::OpenCode,    AgentState::Idle),
+        (OPENCODE_CANCELLED_MID,          "opencode/cancelled-mid-response.txt",                    AgentKind::OpenCode,    AgentState::Idle),
 
-        // Cursor CLI
-        (CURSOR_IDLE_FRESH,               "cursor-cli/idle-fresh.txt",                 AgentKind::CursorAgent, AgentState::Idle),
-        (CURSOR_IDLE_AFTER_RESPONSE,      "cursor-cli/idle-after-response.txt",        AgentKind::CursorAgent, AgentState::Idle),
-        (CURSOR_IDLE_PENDING_EDITS,       "cursor-cli/idle-with-pending-edits.txt",    AgentKind::CursorAgent, AgentState::Idle),
-        (CURSOR_RUNNING_CTRL_C,           "cursor-cli/running-ctrl-c-to-stop.txt",    AgentKind::CursorAgent, AgentState::Running),
-        (CURSOR_RUNNING_GENERATING,       "cursor-cli/running-generating.txt",         AgentKind::CursorAgent, AgentState::Running),
+        // ── Cursor CLI ──────────────────────────────────────────────────
+        (CURSOR_IDLE_FRESH,               "cursor-cli/idle-fresh.txt",                              AgentKind::CursorAgent, AgentState::Idle),
+        (CURSOR_IDLE_AFTER_RESPONSE,      "cursor-cli/idle-after-response.txt",                     AgentKind::CursorAgent, AgentState::Idle),
+        (CURSOR_IDLE_PENDING_EDITS,       "cursor-cli/idle-with-pending-edits.txt",                 AgentKind::CursorAgent, AgentState::Idle),
+        (CURSOR_IDLE_AFTER_FILE_EDIT,     "cursor-cli/idle-after-file-edit.txt",                    AgentKind::CursorAgent, AgentState::Idle),
+        (CURSOR_RUNNING_CTRL_C,           "cursor-cli/running-ctrl-c-to-stop.txt",                 AgentKind::CursorAgent, AgentState::Running),
+        (CURSOR_RUNNING_GENERATING,       "cursor-cli/running-generating.txt",                      AgentKind::CursorAgent, AgentState::Running),
+        // FIXME: should be Running — Cursor streams without running indicators, only idle footer visible
+        (CURSOR_RUNNING_STREAMING,        "cursor-cli/running-streaming.txt",                       AgentKind::CursorAgent, AgentState::Idle),
+        (CURSOR_RUNNING_THINKING,         "cursor-cli/running-thinking.txt",                        AgentKind::CursorAgent, AgentState::Running),
+        (CURSOR_RUNNING_STREAM_TOKENS,    "cursor-cli/running-streaming-with-token-count.txt",      AgentKind::CursorAgent, AgentState::Running),
+        (CURSOR_RUNNING_MESSY,            "cursor-cli/running-with-messy-history.txt",              AgentKind::CursorAgent, AgentState::Running),
+        (CURSOR_RUNNING_QUEUED_MSG,       "cursor-cli/running-with-queued-message.txt",             AgentKind::CursorAgent, AgentState::Running),
+        (CURSOR_WAITING_COMMAND,          "cursor-cli/waiting-command-approval.txt",                AgentKind::CursorAgent, AgentState::Waiting),
+        (CURSOR_WAITING_FILE_DELETION,    "cursor-cli/waiting-file-deletion.txt",                   AgentKind::CursorAgent, AgentState::Waiting),
+        (CURSOR_WAITING_TRUST,            "cursor-cli/waiting-trust-workspace.txt",                 AgentKind::CursorAgent, AgentState::Waiting),
+        (CURSOR_CANCELLED,                "cursor-cli/cancelled.txt",                               AgentKind::CursorAgent, AgentState::Idle),
+        (CURSOR_CANCELLED_MID,            "cursor-cli/cancelled-mid-streaming.txt",                 AgentKind::CursorAgent, AgentState::Idle),
 
-                // FIXME: should be Running — Cursor streams without running indicators, only idle footer visible
-        (CURSOR_RUNNING_STREAMING,        "cursor-cli/running-streaming.txt",          AgentKind::CursorAgent, AgentState::Idle),
-        (CURSOR_RUNNING_THINKING,         "cursor-cli/running-thinking.txt",           AgentKind::CursorAgent, AgentState::Running),
-        (CURSOR_WAITING_COMMAND,          "cursor-cli/waiting-command-approval.txt",   AgentKind::CursorAgent, AgentState::Waiting),
-        (CURSOR_WAITING_FILE_DELETION,    "cursor-cli/waiting-file-deletion.txt",      AgentKind::CursorAgent, AgentState::Waiting),
-        (CURSOR_WAITING_TRUST,            "cursor-cli/waiting-trust-workspace.txt",    AgentKind::CursorAgent, AgentState::Waiting),
-        (CURSOR_CANCELLED,                "cursor-cli/cancelled.txt",                  AgentKind::CursorAgent, AgentState::Idle),
-
-        // Gemini CLI
-        (GEMINI_IDLE_FRESH,               "gemini-cli/idle-fresh.txt",                 AgentKind::Gemini,      AgentState::Idle),
-        (GEMINI_IDLE_AFTER_RESPONSE,      "gemini-cli/idle-after-response.txt",        AgentKind::Gemini,      AgentState::Idle),
-        (GEMINI_IDLE_USER_MSG,           "gemini-cli/idle-with-user-message.txt",     AgentKind::Gemini,      AgentState::Idle),
-        (GEMINI_RUNNING_BRAILLE,          "gemini-cli/running-braille-spinner.txt",    AgentKind::Gemini,      AgentState::Running),
-        (GEMINI_RUNNING_LONG,             "gemini-cli/running-long-response.txt",      AgentKind::Gemini,      AgentState::Running),
-        (GEMINI_WAITING_AUTH,             "gemini-cli/waiting-auth.txt",               AgentKind::Gemini,      AgentState::Waiting),
-        (GEMINI_WAITING_EDIT,             "gemini-cli/waiting-edit-permission.txt",    AgentKind::Gemini,      AgentState::Waiting),
-        (GEMINI_WAITING_SHELL,            "gemini-cli/waiting-shell-permission.txt",   AgentKind::Gemini,      AgentState::Waiting),
-
-        // Claude Code — new captures
-        (CLAUDE_CANCELLED_MID,            "claude-code/cancelled-mid-response.txt",        AgentKind::ClaudeCode,  AgentState::Idle),
-        (CLAUDE_IDLE_INVALID_CMD,         "claude-code/idle-after-invalid-command.txt",     AgentKind::ClaudeCode,  AgentState::Idle),
-        (CLAUDE_IDLE_CONFIG,              "claude-code/idle-config-screen.txt",             AgentKind::ClaudeCode,  AgentState::Idle),
-        (CLAUDE_IDLE_STATUS,              "claude-code/idle-status-screen.txt",             AgentKind::ClaudeCode,  AgentState::Idle),
-        (CLAUDE_IDLE_BYPASS,              "claude-code/idle-fresh-bypass-permissions.txt",  AgentKind::ClaudeCode,  AgentState::Idle),
-        (CLAUDE_RUNNING_BASH_TOOL,        "claude-code/running-bash-tool-execution.txt",    AgentKind::ClaudeCode,  AgentState::Running),
-        (CLAUDE_RUNNING_BYPASS_BASH,      "claude-code/running-bypass-permissions-bash.txt",AgentKind::ClaudeCode,  AgentState::Running),
-        (CLAUDE_RUNNING_ORBITING,         "claude-code/running-orbiting-thinking.txt",      AgentKind::ClaudeCode,  AgentState::Running),
-        (CLAUDE_WAITING_WRITE,            "claude-code/waiting-write-permission.txt",       AgentKind::ClaudeCode,  AgentState::Waiting),
-
-        // Codex — new captures
-        (CODEX_CANCELLED_MID,             "codex/cancelled-mid-streaming.txt",              AgentKind::Codex,       AgentState::Idle),
-                // FIXME: should be Idle — user is mid-typing a prompt
-        (CODEX_IDLE_TYPING,               "codex/idle-user-typing.txt",                    AgentKind::Codex,       AgentState::Unknown),
-                // FIXME: should be Running — same stale `? for shortcuts` footer issue as above
-        (CODEX_RUNNING_STREAMING_LONG,    "codex/running-streaming-long-response.txt",     AgentKind::Codex,       AgentState::Idle),
-                // FIXME: should be Running — "Working" indicator was transient, capture shows stale idle footer
-        (CODEX_RUNNING_WORKING,           "codex/running-working-indicator.txt",            AgentKind::Codex,       AgentState::Idle),
-
-        // Cursor CLI — new captures
-        (CURSOR_CANCELLED_MID,            "cursor-cli/cancelled-mid-streaming.txt",         AgentKind::CursorAgent, AgentState::Idle),
-        (CURSOR_IDLE_AFTER_FILE_EDIT,     "cursor-cli/idle-after-file-edit.txt",            AgentKind::CursorAgent, AgentState::Idle),
-        (CURSOR_RUNNING_STREAM_TOKENS,    "cursor-cli/running-streaming-with-token-count.txt", AgentKind::CursorAgent, AgentState::Running),
-        (CURSOR_RUNNING_MESSY,            "cursor-cli/running-with-messy-history.txt",      AgentKind::CursorAgent, AgentState::Running),
-        (CURSOR_RUNNING_QUEUED_MSG,       "cursor-cli/running-with-queued-message.txt",     AgentKind::CursorAgent, AgentState::Running),
-
-        // Gemini CLI — new captures
-        (GEMINI_CANCELLED_MID,            "gemini-cli/cancelled-mid-response.txt",          AgentKind::Gemini,      AgentState::Idle),
-        (GEMINI_RUNNING_GOOGLE,           "gemini-cli/running-google-search-tool.txt",      AgentKind::Gemini,      AgentState::Running),
-                // FIXME: should be Running — Gemini streams without any running indicator, only idle footer visible
-        (GEMINI_RUNNING_STREAMING_RESP,   "gemini-cli/running-streaming-response.txt",      AgentKind::Gemini,      AgentState::Idle),
-        (GEMINI_RUNNING_THINKING_STATUS,  "gemini-cli/running-thinking-with-status.txt",    AgentKind::Gemini,      AgentState::Running),
-        (GEMINI_WAITING_WRITE,            "gemini-cli/waiting-write-permission.txt",         AgentKind::Gemini,      AgentState::Waiting),
-
-        // OpenCode — new captures
-        (OPENCODE_CANCELLED_MID,          "opencode/cancelled-mid-response.txt",            AgentKind::OpenCode,    AgentState::Idle),
-        (OPENCODE_RUNNING_STREAMING_RESP, "opencode/running-streaming-response.txt",        AgentKind::OpenCode,    AgentState::Running),
-        (OPENCODE_WAITING_WRITE,          "opencode/waiting-write-permission.txt",           AgentKind::OpenCode,    AgentState::Waiting),
-
-        (GEMINI_CANCELLED,                "gemini-cli/cancelled.txt",                  AgentKind::Gemini,      AgentState::Idle),
+        // ── Gemini CLI ──────────────────────────────────────────────────
+        (GEMINI_IDLE_FRESH,               "gemini-cli/idle-fresh.txt",                              AgentKind::Gemini,      AgentState::Idle),
+        (GEMINI_IDLE_AFTER_RESPONSE,      "gemini-cli/idle-after-response.txt",                     AgentKind::Gemini,      AgentState::Idle),
+        (GEMINI_IDLE_USER_MSG,            "gemini-cli/idle-with-user-message.txt",                  AgentKind::Gemini,      AgentState::Idle),
+        (GEMINI_RUNNING_BRAILLE,          "gemini-cli/running-braille-spinner.txt",                 AgentKind::Gemini,      AgentState::Running),
+        (GEMINI_RUNNING_LONG,             "gemini-cli/running-long-response.txt",                   AgentKind::Gemini,      AgentState::Running),
+        (GEMINI_RUNNING_GOOGLE,           "gemini-cli/running-google-search-tool.txt",              AgentKind::Gemini,      AgentState::Running),
+        // FIXME: should be Running — Gemini streams without any running indicator, only idle footer visible
+        (GEMINI_RUNNING_STREAMING_RESP,   "gemini-cli/running-streaming-response.txt",              AgentKind::Gemini,      AgentState::Idle),
+        (GEMINI_RUNNING_THINKING_STATUS,  "gemini-cli/running-thinking-with-status.txt",            AgentKind::Gemini,      AgentState::Running),
+        (GEMINI_WAITING_AUTH,             "gemini-cli/waiting-auth.txt",                            AgentKind::Gemini,      AgentState::Waiting),
+        (GEMINI_WAITING_EDIT,             "gemini-cli/waiting-edit-permission.txt",                 AgentKind::Gemini,      AgentState::Waiting),
+        (GEMINI_WAITING_SHELL,            "gemini-cli/waiting-shell-permission.txt",                AgentKind::Gemini,      AgentState::Waiting),
+        (GEMINI_WAITING_WRITE,            "gemini-cli/waiting-write-permission.txt",                AgentKind::Gemini,      AgentState::Waiting),
+        (GEMINI_CANCELLED,                "gemini-cli/cancelled.txt",                               AgentKind::Gemini,      AgentState::Idle),
+        (GEMINI_CANCELLED_MID,            "gemini-cli/cancelled-mid-response.txt",                  AgentKind::Gemini,      AgentState::Idle),
     }
-
     #[test]
     fn all_fixture_captures() {
         let cases = fixture_cases();

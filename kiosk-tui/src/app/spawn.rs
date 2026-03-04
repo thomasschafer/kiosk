@@ -504,7 +504,6 @@ mod tests {
         assert!(update.session_activity_ts.is_some());
         let status = update
             .agent_status
-            .to_owned()
             .expect("wrapper command should resolve to Claude via pane title");
         assert_eq!(status.kind, AgentKind::ClaudeCode);
         assert_eq!(status.state, AgentState::Waiting);

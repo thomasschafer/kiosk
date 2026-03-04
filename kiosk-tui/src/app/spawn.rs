@@ -413,7 +413,7 @@ pub(super) fn spawn_agent_status_poller<T: TmuxProvider + ?Sized + 'static>(
             // Adapt interval: use fast polling when any agent is active,
             // slow polling when all are idle/unknown.
             let any_active = states.iter().any(|update| {
-                update.agent_status.as_ref().is_some_and(|s| {
+                update.agent_statuses.iter().any(|s| {
                     matches!(
                         s.state,
                         agent::AgentState::Running | agent::AgentState::Waiting
@@ -448,12 +448,11 @@ fn detect_agent_statuses<T: TmuxProvider + ?Sized>(
 ) -> Vec<SessionRuntimeUpdate> {
     let sessions_with_activity: HashMap<String, u64> =
         tmux.list_sessions_with_activity().into_iter().collect();
-
     // Batch: fetch all pane info + session activity in a single tmux call,
     // then detect agents using the pre-fetched data. Only capture_pane_content
     // still requires per-pane calls.
     let all_pane_data = tmux.list_all_panes_with_activity();
-    agent::detect_for_sessions_batched(tmux, sessions, &all_pane_data)
+    agent::detect_all_for_sessions_batched(tmux, sessions, &all_pane_data)
         .into_iter()
         .map(|(session_name, result)| {
             let session_activity_ts = sessions_with_activity
@@ -465,7 +464,7 @@ fn detect_agent_statuses<T: TmuxProvider + ?Sized>(
                     || all_pane_data.contains_key(&session_name),
                 session_name,
                 session_activity_ts,
-                agent_status: result.map(|r| r.status),
+                agent_statuses: result.into_iter().map(|r| r.status).collect(),
             }
         })
         .collect()
@@ -510,9 +509,11 @@ mod tests {
         assert_eq!(update.session_name, session);
         assert!(update.session_exists);
         assert!(update.session_activity_ts.is_some());
-        let status = update
-            .agent_status
-            .expect("wrapper command should resolve to Claude via pane title");
+        assert!(
+            !update.agent_statuses.is_empty(),
+            "wrapper command should resolve to Claude via pane title"
+        );
+        let status = &update.agent_statuses[0];
         assert_eq!(status.kind, AgentKind::ClaudeCode);
         assert_eq!(status.state, AgentState::Waiting);
     }
@@ -529,6 +530,6 @@ mod tests {
         assert_eq!(update.session_name, session);
         assert!(update.session_exists);
         assert_eq!(update.session_activity_ts, Some(456));
-        assert_eq!(update.agent_status, None);
+        assert!(update.agent_statuses.is_empty());
     }
 }

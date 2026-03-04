@@ -144,8 +144,8 @@ struct BranchOutput {
     has_session: bool,
     is_current: bool,
     remote: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    agent_status: Option<kiosk_core::AgentStatus>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    agent_statuses: Vec<kiosk_core::AgentStatus>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -190,8 +190,8 @@ struct SessionOutput {
     last_activity: u64,
     pane_count: usize,
     current_command: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    agent_status: Option<kiosk_core::AgentStatus>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    agent_statuses: Vec<kiosk_core::AgentStatus>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -331,8 +331,11 @@ pub fn cmd_branches(
                 && let Some(ref wt_path) = entry.worktree_path
             {
                 let session_name = repo.tmux_session_name(wt_path);
-                entry.agent_status =
-                    kiosk_core::agent::detect_for_session(tmux, &session_name).map(|r| r.status);
+                entry.agent_statuses =
+                    kiosk_core::agent::detect_all_for_session(tmux, &session_name)
+                        .into_iter()
+                        .map(|r| r.status)
+                        .collect();
             }
         }
     }
@@ -729,10 +732,13 @@ pub fn cmd_sessions(
             let current_command = tmux
                 .pane_current_command(&session, "0")
                 .unwrap_or_else(|_| "unknown".to_string());
-            let agent_status = if config.agent.enabled {
-                kiosk_core::agent::detect_for_session(tmux, &session).map(|r| r.status)
+            let agent_statuses: Vec<kiosk_core::AgentStatus> = if config.agent.enabled {
+                kiosk_core::agent::detect_all_for_session(tmux, &session)
+                    .into_iter()
+                    .map(|r| r.status)
+                    .collect()
             } else {
-                None
+                Vec::new()
             };
 
             output.push(SessionOutput {
@@ -744,7 +750,7 @@ pub fn cmd_sessions(
                 last_activity,
                 pane_count,
                 current_command,
-                agent_status,
+                agent_statuses,
             });
         }
     }
@@ -1010,7 +1016,7 @@ impl From<&BranchEntry> for BranchOutput {
             has_session: entry.has_session,
             is_current: entry.is_current,
             remote: entry.remote.clone(),
-            agent_status: entry.agent_status,
+            agent_statuses: entry.agent_statuses.clone(),
         }
     }
 }
@@ -1140,7 +1146,7 @@ fn format_branch_table(
     entries: &[BranchEntry],
     labels: &kiosk_core::config::AgentLabelsConfig,
 ) -> String {
-    let has_agents = entries.iter().any(|e| e.agent_status.is_some());
+    let has_agents = entries.iter().any(|e| !e.agent_statuses.is_empty());
     let rows: Vec<Vec<String>> = entries
         .iter()
         .map(|entry| {
@@ -1165,8 +1171,15 @@ fn format_branch_table(
     let agent_values: Vec<String> = entries
         .iter()
         .map(|e| {
-            e.agent_status
-                .map_or_else(|| "-".to_string(), |s| agent_state_label(s.state, labels))
+            if e.agent_statuses.is_empty() {
+                "-".to_string()
+            } else {
+                e.agent_statuses
+                    .iter()
+                    .map(|s| agent_state_label(s.state, labels))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            }
         })
         .collect();
     format_table_with_optional_agent(
@@ -1193,7 +1206,7 @@ fn format_session_table(
     rows: &[SessionOutput],
     labels: &kiosk_core::config::AgentLabelsConfig,
 ) -> String {
-    let has_agents = rows.iter().any(|r| r.agent_status.is_some());
+    let has_agents = rows.iter().any(|r| !r.agent_statuses.is_empty());
     let table_rows: Vec<Vec<String>> = rows
         .iter()
         .map(|row| {
@@ -1210,8 +1223,15 @@ fn format_session_table(
     let agent_values: Vec<String> = rows
         .iter()
         .map(|r| {
-            r.agent_status
-                .map_or_else(|| "-".to_string(), |s| agent_state_label(s.state, labels))
+            if r.agent_statuses.is_empty() {
+                "-".to_string()
+            } else {
+                r.agent_statuses
+                    .iter()
+                    .map(|s| agent_state_label(s.state, labels))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            }
         })
         .collect();
     format_table_with_optional_agent(
@@ -2008,7 +2028,7 @@ mod tests {
                 is_default: false,
                 remote: None,
                 session_activity_ts: None,
-                agent_status: None,
+                agent_statuses: Vec::new(),
             },
             BranchEntry {
                 name: "feat/test".to_string(),
@@ -2018,7 +2038,7 @@ mod tests {
                 is_default: false,
                 remote: Some("origin".to_string()),
                 session_activity_ts: None,
-                agent_status: None,
+                agent_statuses: Vec::new(),
             },
         ];
         let rendered =
@@ -2043,7 +2063,7 @@ mod tests {
                 last_activity: 1_234_567_890,
                 pane_count: 1,
                 current_command: "zsh".to_string(),
-                agent_status: None,
+                agent_statuses: Vec::new(),
             },
             SessionOutput {
                 session: "repo".to_string(),
@@ -2054,7 +2074,7 @@ mod tests {
                 last_activity: 1_234_567_891,
                 pane_count: 2,
                 current_command: "bash".to_string(),
-                agent_status: None,
+                agent_statuses: Vec::new(),
             },
         ];
         let rendered =
@@ -2602,7 +2622,7 @@ mod tests {
             is_default: true,
             remote: None,
             session_activity_ts: Some(12345),
-            agent_status: None,
+            agent_statuses: Vec::new(),
         };
 
         let output = BranchOutput::from(&entry);
@@ -2743,10 +2763,10 @@ mod tests {
                 is_default: false,
                 remote: None,
                 session_activity_ts: None,
-                agent_status: Some(AgentStatus {
+                agent_statuses: vec![AgentStatus {
                     kind: AgentKind::ClaudeCode,
                     state: AgentState::Waiting,
-                }),
+                }],
             },
             BranchEntry {
                 name: "feat/test".to_string(),
@@ -2756,10 +2776,10 @@ mod tests {
                 is_default: false,
                 remote: None,
                 session_activity_ts: None,
-                agent_status: Some(AgentStatus {
+                agent_statuses: vec![AgentStatus {
                     kind: AgentKind::Codex,
                     state: AgentState::Running,
-                }),
+                }],
             },
             BranchEntry {
                 name: "develop".to_string(),
@@ -2769,12 +2789,12 @@ mod tests {
                 is_default: false,
                 remote: None,
                 session_activity_ts: None,
-                agent_status: None,
+                agent_statuses: Vec::new(),
             },
         ];
         let rendered =
             format_branch_table(&rows, &kiosk_core::config::AgentLabelsConfig::default());
-        // Agent column should appear since some entries have agent_status
+        // Agent column should appear since some entries have agent_statuses
         assert!(
             rendered.contains("agent"),
             "Should have agent column header: {rendered}"
@@ -2802,10 +2822,10 @@ mod tests {
             is_default: false,
             remote: None,
             session_activity_ts: None,
-            agent_status: Some(AgentStatus {
+            agent_statuses: vec![AgentStatus {
                 kind: AgentKind::ClaudeCode,
                 state: AgentState::Running,
-            }),
+            }],
         }];
         let labels = AgentLabelsConfig {
             running: "RUN".to_string(),
@@ -2839,10 +2859,10 @@ mod tests {
             last_activity: 0,
             pane_count: 1,
             current_command: "zsh".to_string(),
-            agent_status: Some(AgentStatus {
+            agent_statuses: vec![AgentStatus {
                 kind: AgentKind::Codex,
                 state: AgentState::Waiting,
-            }),
+            }],
         }];
         let labels = AgentLabelsConfig {
             running: "R".to_string(),
@@ -3088,7 +3108,7 @@ mod tests {
         tmux.pane_content
             .insert("%0".to_string(), "❯ \n? for shortcuts".to_string());
 
-        // With agent.enabled = false, branches should have no agent_status
+        // With agent.enabled = false, branches should have no agent_statuses
         let result = cmd_branches(&config, &git, &tmux, "demo", true);
         assert!(result.is_ok());
         // The function prints JSON to stdout — we can't easily capture it here,
@@ -3180,7 +3200,7 @@ mod tests {
             is_default: false,
             remote: None,
             session_activity_ts: None,
-            agent_status: None,
+            agent_statuses: Vec::new(),
         }];
         let rendered =
             format_branch_table(&rows, &kiosk_core::config::AgentLabelsConfig::default());
@@ -3204,10 +3224,10 @@ mod tests {
                 last_activity: 0,
                 pane_count: 1,
                 current_command: "zsh".to_string(),
-                agent_status: Some(AgentStatus {
+                agent_statuses: vec![AgentStatus {
                     kind: AgentKind::ClaudeCode,
                     state: AgentState::Idle,
-                }),
+                }],
             },
             SessionOutput {
                 session: "repo".to_string(),
@@ -3218,7 +3238,7 @@ mod tests {
                 last_activity: 0,
                 pane_count: 1,
                 current_command: "zsh".to_string(),
-                agent_status: None,
+                agent_statuses: Vec::new(),
             },
         ];
         let rendered =
@@ -3234,7 +3254,7 @@ mod tests {
     }
 
     #[test]
-    fn branch_output_includes_agent_status_in_json() {
+    fn branch_output_includes_agent_statuses_in_json() {
         use kiosk_core::agent::{AgentKind, AgentState, AgentStatus};
 
         let entry = BranchEntry {
@@ -3245,19 +3265,19 @@ mod tests {
             is_default: false,
             remote: None,
             session_activity_ts: None,
-            agent_status: Some(AgentStatus {
+            agent_statuses: vec![AgentStatus {
                 kind: AgentKind::ClaudeCode,
                 state: AgentState::Waiting,
-            }),
+            }],
         };
         let output = BranchOutput::from(&entry);
         let json = serde_json::to_value(&output).unwrap();
-        assert_eq!(json["agent_status"]["kind"], "ClaudeCode");
-        assert_eq!(json["agent_status"]["state"], "Waiting");
+        assert_eq!(json["agent_statuses"][0]["kind"], "ClaudeCode");
+        assert_eq!(json["agent_statuses"][0]["state"], "Waiting");
     }
 
     #[test]
-    fn branch_output_omits_agent_status_when_none() {
+    fn branch_output_omits_agent_statuses_when_empty() {
         let entry = BranchEntry {
             name: "main".to_string(),
             worktree_path: None,
@@ -3266,13 +3286,13 @@ mod tests {
             is_default: false,
             remote: None,
             session_activity_ts: None,
-            agent_status: None,
+            agent_statuses: Vec::new(),
         };
         let output = BranchOutput::from(&entry);
         let json = serde_json::to_value(&output).unwrap();
         assert!(
-            json.get("agent_status").is_none(),
-            "agent_status should be omitted when None: {json}"
+            json.get("agent_statuses").is_none(),
+            "agent_statuses should be omitted when empty: {json}"
         );
     }
 

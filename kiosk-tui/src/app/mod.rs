@@ -548,7 +548,7 @@ fn seed_session_runtime_from_branches(
                 activity_ts,
                 // Fresh branch snapshots are authoritative for existence/activity,
                 // but not for agent status; let poller refresh it.
-                agent_status: None,
+                agent_statuses: Vec::new(),
             },
         );
     }
@@ -568,7 +568,7 @@ fn apply_session_runtime_updates(state: &mut AppState, updates: Vec<SessionRunti
         let runtime = SessionRuntimeState {
             exists: update.session_exists,
             activity_ts: update.session_activity_ts,
-            agent_status: update.agent_status,
+            agent_statuses: update.agent_statuses,
         };
         state.session_runtime.insert(session_name.clone(), runtime);
         match runtime.activity_ts {
@@ -593,9 +593,9 @@ fn reconcile_branch_runtime_state(state: &mut AppState) {
             continue;
         };
         let session_name = repo.tmux_session_name(worktree_path);
-        if let Some(runtime) = state.session_runtime.get(&session_name).copied() {
+        if let Some(runtime) = state.session_runtime.get(&session_name) {
             branch.has_session = runtime.exists;
-            branch.agent_status = runtime.agent_status;
+            branch.agent_statuses.clone_from(&runtime.agent_statuses);
             branch.session_activity_ts = runtime.activity_ts;
         }
     }
@@ -1238,10 +1238,10 @@ mod tests {
             SessionRuntimeState {
                 exists: true,
                 activity_ts: Some(9999),
-                agent_status: Some(kiosk_core::agent::AgentStatus {
+                agent_statuses: vec![kiosk_core::agent::AgentStatus {
                     kind: kiosk_core::agent::AgentKind::OpenCode,
                     state: kiosk_core::agent::AgentState::Running,
-                }),
+                }],
             },
         );
         state.session_runtime.insert(
@@ -1249,7 +1249,7 @@ mod tests {
             SessionRuntimeState {
                 exists: true,
                 activity_ts: Some(1111),
-                agent_status: None,
+                agent_statuses: Vec::new(),
             },
         );
         state.session_runtime.insert(
@@ -1257,7 +1257,7 @@ mod tests {
             SessionRuntimeState {
                 exists: true,
                 activity_ts: Some(2222),
-                agent_status: None,
+                agent_statuses: Vec::new(),
             },
         );
 
@@ -1269,7 +1269,7 @@ mod tests {
             is_default: false,
             remote: None,
             session_activity_ts: None,
-            agent_status: None,
+            agent_statuses: Vec::new(),
         };
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
@@ -1290,9 +1290,9 @@ mod tests {
         );
 
         assert!(!state.branches[0].has_session);
-        assert_eq!(state.branches[0].agent_status, None);
+        assert!(state.branches[0].agent_statuses.is_empty());
         assert!(!state.session_runtime[&session_name].exists);
-        assert_eq!(state.session_runtime[&session_name].agent_status, None);
+        assert!(state.session_runtime[&session_name].agent_statuses.is_empty());
         assert!(!state.session_runtime.contains_key(&stale_session_name));
         assert_eq!(
             state.session_runtime[&other_repo_session].activity_ts,
@@ -1316,7 +1316,7 @@ mod tests {
             remote: None,
             is_default: false,
             session_activity_ts: None,
-            agent_status: None,
+            agent_statuses: Vec::new(),
         }];
         state.branch_list.reset(1);
 
@@ -1334,7 +1334,7 @@ mod tests {
                 remote: Some("origin".to_string()),
                 is_default: false,
                 session_activity_ts: None,
-                agent_status: None,
+                agent_statuses: Vec::new(),
             },
             BranchEntry {
                 name: "feature-y".to_string(),
@@ -1344,7 +1344,7 @@ mod tests {
                 remote: Some("origin".to_string()),
                 is_default: false,
                 session_activity_ts: None,
-                agent_status: None,
+                agent_statuses: Vec::new(),
             },
         ];
 
@@ -1381,7 +1381,7 @@ mod tests {
             remote: None,
             is_default: false,
             session_activity_ts: None,
-            agent_status: None,
+            agent_statuses: Vec::new(),
         }];
         state.branch_list.reset(1);
         state.branch_list.input.text = "feat".to_string();
@@ -1404,7 +1404,7 @@ mod tests {
                     remote: Some("origin".to_string()),
                     is_default: false,
                     session_activity_ts: None,
-                    agent_status: None,
+                    agent_statuses: Vec::new(),
                 }],
             },
             &mut state,
@@ -1607,7 +1607,7 @@ mod tests {
             remote: None,
             is_default: false,
             session_activity_ts: None,
-            agent_status: None,
+            agent_statuses: Vec::new(),
         }];
         state.branch_list.filtered = vec![(0, 0)];
         state.branch_list.selected = Some(0);
@@ -1646,7 +1646,7 @@ mod tests {
             remote: None,
             is_default: false,
             session_activity_ts: None,
-            agent_status: None,
+            agent_statuses: Vec::new(),
         }];
         state.branch_list.filtered = vec![(0, 0)];
         state.branch_list.selected = Some(0);
@@ -1887,7 +1887,7 @@ mod tests {
             remote: None,
             is_default: true,
             session_activity_ts: None,
-            agent_status: None,
+            agent_statuses: Vec::new(),
         }];
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider {
@@ -1920,7 +1920,7 @@ mod tests {
             remote: None,
             is_default: false,
             session_activity_ts: None,
-            agent_status: None,
+            agent_statuses: Vec::new(),
         }];
         state.branch_list.filtered = vec![(0, 0)];
         state.branch_list.selected = Some(0);
@@ -1952,7 +1952,7 @@ mod tests {
             remote: None,
             is_default: false,
             session_activity_ts: None,
-            agent_status: None,
+            agent_statuses: Vec::new(),
         }];
         state.branch_list.filtered = vec![(0, 0)];
         state.branch_list.selected = Some(0);
@@ -1984,7 +1984,7 @@ mod tests {
             remote: None,
             is_default: false,
             session_activity_ts: None,
-            agent_status: None,
+            agent_statuses: Vec::new(),
         }];
         state.branch_list.filtered = vec![(0, 0)];
         state.branch_list.selected = Some(0);
@@ -2021,7 +2021,7 @@ mod tests {
             remote: None,
             is_default: false,
             session_activity_ts: None,
-            agent_status: None,
+            agent_statuses: Vec::new(),
         }];
         state.branch_list.filtered = vec![(0, 0)];
         state.branch_list.selected = Some(0);
@@ -2066,7 +2066,7 @@ mod tests {
             remote: None,
             is_default: false,
             session_activity_ts: None,
-            agent_status: None,
+            agent_statuses: Vec::new(),
         }];
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
@@ -2112,7 +2112,7 @@ mod tests {
             remote: None,
             is_default: false,
             session_activity_ts: None,
-            agent_status: None,
+            agent_statuses: Vec::new(),
         }];
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
@@ -3835,7 +3835,7 @@ mod tests {
             is_default: false,
             remote: None,
             session_activity_ts: None,
-            agent_status: None,
+            agent_statuses: Vec::new(),
         }];
         state.branch_list.filtered = vec![(0, 0)];
         state.branch_list.selected = Some(0);
@@ -3856,7 +3856,7 @@ mod tests {
                     session_name,
                     session_exists: true,
                     session_activity_ts: Some(123),
-                    agent_status: Some(status),
+                    agent_statuses: vec![status],
                 }],
             },
             &mut state,
@@ -3865,7 +3865,7 @@ mod tests {
             &sender,
         );
 
-        assert_eq!(state.branches[0].agent_status, Some(status));
+        assert_eq!(state.branches[0].agent_statuses, vec![status]);
         assert_eq!(state.branches[0].session_activity_ts, Some(123));
     }
 
@@ -3885,7 +3885,7 @@ mod tests {
             is_default: false,
             remote: None,
             session_activity_ts: None,
-            agent_status: None,
+            agent_statuses: Vec::new(),
         }];
         state.branch_list.filtered = vec![(0, 0)];
 
@@ -3899,10 +3899,10 @@ mod tests {
                     session_name: "nonexistent-session".to_string(),
                     session_exists: true,
                     session_activity_ts: Some(999),
-                    agent_status: Some(AgentStatus {
+                    agent_statuses: vec![AgentStatus {
                         kind: AgentKind::ClaudeCode,
                         state: AgentState::Running,
-                    }),
+                    }],
                 }],
             },
             &mut state,
@@ -3911,7 +3911,7 @@ mod tests {
             &sender,
         );
 
-        assert_eq!(state.branches[0].agent_status, None);
+        assert!(state.branches[0].agent_statuses.is_empty());
     }
 
     #[test]
@@ -3930,7 +3930,7 @@ mod tests {
             is_default: false,
             remote: None,
             session_activity_ts: None,
-            agent_status: None,
+            agent_statuses: Vec::new(),
         }];
         state.branch_list.filtered = vec![(0, 0)];
 
@@ -3950,7 +3950,7 @@ mod tests {
                     session_name,
                     session_exists: true,
                     session_activity_ts: Some(77),
-                    agent_status: Some(status),
+                    agent_statuses: vec![status],
                 }],
             },
             &mut state,
@@ -3960,7 +3960,7 @@ mod tests {
         );
 
         assert!(state.branches[0].has_session);
-        assert_eq!(state.branches[0].agent_status, Some(status));
+        assert_eq!(state.branches[0].agent_statuses, vec![status]);
     }
 
     #[test]
@@ -3980,7 +3980,7 @@ mod tests {
                 is_default: false,
                 remote: None,
                 session_activity_ts: None,
-                agent_status: None,
+                agent_statuses: Vec::new(),
             },
             BranchEntry {
                 name: "feat/beta".to_string(),
@@ -3990,7 +3990,7 @@ mod tests {
                 is_default: false,
                 remote: None,
                 session_activity_ts: None,
-                agent_status: None,
+                agent_statuses: Vec::new(),
             },
         ];
         // Simulate a search filter that only shows feat/beta
@@ -4011,10 +4011,10 @@ mod tests {
                     session_name,
                     session_exists: true,
                     session_activity_ts: Some(42),
-                    agent_status: Some(AgentStatus {
+                    agent_statuses: vec![AgentStatus {
                         kind: AgentKind::ClaudeCode,
                         state: AgentState::Running,
-                    }),
+                    }],
                 }],
             },
             &mut state,
@@ -4028,7 +4028,7 @@ mod tests {
         assert_eq!(state.branch_list.filtered, vec![(1, 100)]);
         assert_eq!(state.branch_list.selected, Some(0));
         // But the agent status was still applied to the underlying branch
-        assert!(state.branches[0].agent_status.is_some());
+        assert!(!state.branches[0].agent_statuses.is_empty());
     }
 
     #[test]
@@ -4047,7 +4047,7 @@ mod tests {
             is_default: false,
             remote: None,
             session_activity_ts: None,
-            agent_status: None,
+            agent_statuses: Vec::new(),
         }];
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
@@ -4060,10 +4060,10 @@ mod tests {
                     session_name: "whatever".to_string(),
                     session_exists: true,
                     session_activity_ts: Some(1),
-                    agent_status: Some(AgentStatus {
+                    agent_statuses: vec![AgentStatus {
                         kind: AgentKind::ClaudeCode,
                         state: AgentState::Waiting,
-                    }),
+                    }],
                 }],
             },
             &mut state,
@@ -4073,7 +4073,7 @@ mod tests {
         );
 
         // Should be ignored when not in BranchSelect
-        assert_eq!(state.branches[0].agent_status, None);
+        assert!(state.branches[0].agent_statuses.is_empty());
     }
 
     #[test]
@@ -4095,7 +4095,7 @@ mod tests {
             is_default: false,
             remote: None,
             session_activity_ts: None,
-            agent_status: None,
+            agent_statuses: Vec::new(),
         }];
         state.branch_list.filtered = vec![(0, 0)];
 
@@ -4115,7 +4115,7 @@ mod tests {
                     session_name,
                     session_exists: true,
                     session_activity_ts: Some(9),
-                    agent_status: Some(status),
+                    agent_statuses: vec![status],
                 }],
             },
             &mut state,
@@ -4125,7 +4125,7 @@ mod tests {
         );
 
         // Agent status should be applied even though Help overlay is active
-        assert_eq!(state.branches[0].agent_status, Some(status));
+        assert_eq!(state.branches[0].agent_statuses, vec![status]);
     }
 
     // ── GitFetchCompleted tests ──
@@ -4139,7 +4139,7 @@ mod tests {
             is_default: false,
             remote: remote.map(String::from),
             session_activity_ts: None,
-            agent_status: None,
+            agent_statuses: Vec::new(),
         }
     }
 
@@ -4895,7 +4895,7 @@ mod tests {
             is_default: false,
             remote: None,
             session_activity_ts: None,
-            agent_status: None,
+            agent_statuses: Vec::new(),
         }];
         state.branch_list.filtered = vec![(0, 0)];
         state.branch_list.selected = Some(0);

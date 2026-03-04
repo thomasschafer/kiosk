@@ -11,7 +11,7 @@ pub struct SessionRuntimeUpdate {
     pub session_name: String,
     pub session_exists: bool,
     pub session_activity_ts: Option<u64>,
-    pub agent_status: Option<AgentStatus>,
+    pub agent_statuses: Vec<AgentStatus>,
 }
 
 /// Events that arrive asynchronously from background tasks.
@@ -82,7 +82,7 @@ pub enum AppEvent {
     },
 
     /// Agent states updated from background detection (full snapshot —
-    /// `None` means no agent detected, allowing stale statuses to be cleared)
+    /// empty vec means no agent detected, allowing stale statuses to be cleared)
     AgentStatesUpdated { states: Vec<SessionRuntimeUpdate> },
 
     /// A background git operation failed

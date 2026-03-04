@@ -377,16 +377,16 @@ pub struct BranchEntry {
     pub remote: Option<String>,
     /// Last activity timestamp for the session (if any)
     pub session_activity_ts: Option<u64>,
-    /// Status of any AI agent running in the session
-    pub agent_status: Option<AgentStatus>,
+    /// Statuses of AI agents running in the session (sorted by attention priority)
+    pub agent_statuses: Vec<AgentStatus>,
 }
 
 /// Snapshot of runtime tmux/session state for a single session name.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SessionRuntimeState {
     pub exists: bool,
     pub activity_ts: Option<u64>,
-    pub agent_status: Option<AgentStatus>,
+    pub agent_statuses: Vec<AgentStatus>,
 }
 
 impl BranchEntry {
@@ -486,7 +486,7 @@ impl BranchEntry {
                     is_default,
                     remote: None,
                     session_activity_ts,
-                    agent_status: None,
+                    agent_statuses: Vec::new(),
                 }
             })
             .collect()
@@ -512,7 +512,7 @@ impl BranchEntry {
                 is_default: false,
                 remote: Some(remote.to_string()),
                 session_activity_ts: None,
-                agent_status: None,
+                agent_statuses: Vec::new(),
             })
             .collect()
     }
@@ -535,7 +535,10 @@ impl BranchEntry {
                 // Branches with sessions (even without activity timestamps) before those without
                 .then(b.has_session.cmp(&a.has_session))
                 // Agent needing attention sorts first (Waiting > Running > Idle/Unknown > None)
-                .then(agent_sort_priority(b.agent_status).cmp(&agent_sort_priority(a.agent_status)))
+                .then(
+                    agent_sort_priority(&b.agent_statuses)
+                        .cmp(&agent_sort_priority(&a.agent_statuses)),
+                )
                 // Branches with worktrees before those without
                 .then(b.worktree_path.is_some().cmp(&a.worktree_path.is_some()))
                 .then(a.name.cmp(&b.name))
@@ -543,17 +546,18 @@ impl BranchEntry {
     }
 }
 
-/// Sort priority for agent status: higher = sorts first.
-/// Waiting (needs user input) is most urgent, then Running, then the rest.
-fn agent_sort_priority(status: Option<crate::agent::AgentStatus>) -> u8 {
-    match status {
-        Some(s) => match s.state {
+/// Sort priority for agent statuses: higher = sorts first.
+/// Uses the highest-priority status from the vec (Waiting > Running > rest).
+fn agent_sort_priority(statuses: &[crate::agent::AgentStatus]) -> u8 {
+    statuses
+        .iter()
+        .map(|s| match s.state {
             crate::AgentState::Waiting => 3,
             crate::AgentState::Running => 2,
             crate::AgentState::Idle | crate::AgentState::Unknown => 1,
-        },
-        None => 0,
-    }
+        })
+        .max()
+        .unwrap_or(0)
 }
 
 /// Compare two optional timestamps for recency-based sorting (most recent first).
@@ -2001,10 +2005,10 @@ mod tests {
                 is_default: false,
                 remote: None,
                 session_activity_ts: Some(100),
-                agent_status: Some(AgentStatus {
+                agent_statuses: vec![AgentStatus {
                     kind: AgentKind::ClaudeCode,
                     state: AgentState::Running,
-                }),
+                }],
             },
             BranchEntry {
                 name: "feat-waiting".to_string(),
@@ -2014,10 +2018,10 @@ mod tests {
                 is_default: false,
                 remote: None,
                 session_activity_ts: Some(100),
-                agent_status: Some(AgentStatus {
+                agent_statuses: vec![AgentStatus {
                     kind: AgentKind::Codex,
                     state: AgentState::Waiting,
-                }),
+                }],
             },
             BranchEntry {
                 name: "feat-idle".to_string(),
@@ -2027,10 +2031,10 @@ mod tests {
                 is_default: false,
                 remote: None,
                 session_activity_ts: Some(100),
-                agent_status: Some(AgentStatus {
+                agent_statuses: vec![AgentStatus {
                     kind: AgentKind::ClaudeCode,
                     state: AgentState::Idle,
-                }),
+                }],
             },
         ];
         BranchEntry::sort_entries(&mut entries);
@@ -2053,7 +2057,7 @@ mod tests {
                 is_default: false,
                 remote: Some("origin".to_string()),
                 session_activity_ts: None,
-                agent_status: None,
+                agent_statuses: Vec::new(),
             },
             BranchEntry {
                 name: "zzz-local".to_string(),
@@ -2063,7 +2067,7 @@ mod tests {
                 is_default: false,
                 remote: None,
                 session_activity_ts: None,
-                agent_status: None,
+                agent_statuses: Vec::new(),
             },
             BranchEntry {
                 name: "mmm-local".to_string(),
@@ -2073,7 +2077,7 @@ mod tests {
                 is_default: false,
                 remote: None,
                 session_activity_ts: None,
-                agent_status: None,
+                agent_statuses: Vec::new(),
             },
         ];
 
@@ -2262,7 +2266,7 @@ mod tests {
             is_default: false,
             remote: None,
             session_activity_ts: Some(12345),
-            agent_status: None,
+            agent_statuses: Vec::new(),
         };
 
         let json = serde_json::to_string(&entry).unwrap();

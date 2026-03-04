@@ -161,21 +161,33 @@ pub fn draw(
                 }
             }
 
-            if let Some(ref agent_status) = branch.agent_status {
-                let (label, color) = match agent_status.state {
-                    AgentState::Running => (&state.agent_labels.running, theme.accent),
-                    AgentState::Waiting => (&state.agent_labels.waiting, theme.warning),
-                    AgentState::Idle => (&state.agent_labels.idle, theme.muted),
-                    AgentState::Unknown => (&state.agent_labels.unknown, theme.hint),
-                };
-                let right = vec![Span::styled(label.clone(), Style::default().fg(color))];
+            if branch.agent_statuses.is_empty() {
+                ListItem::new(Line::from(left_spans))
+            } else {
+                let right: Vec<Span<'_>> = branch
+                    .agent_statuses
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(i, status)| {
+                        let (label, color) = match status.state {
+                            AgentState::Running => (&state.agent_labels.running, theme.accent),
+                            AgentState::Waiting => (&state.agent_labels.waiting, theme.warning),
+                            AgentState::Idle => (&state.agent_labels.idle, theme.muted),
+                            AgentState::Unknown => (&state.agent_labels.unknown, theme.hint),
+                        };
+                        let mut spans = Vec::new();
+                        if i > 0 {
+                            spans.push(Span::raw(" "));
+                        }
+                        spans.push(Span::styled(label.clone(), Style::default().fg(color)));
+                        spans
+                    })
+                    .collect();
                 ListItem::new(Line::from(right_align_suffix(
                     &left_spans,
                     &right,
                     row_width,
                 )))
-            } else {
-                ListItem::new(Line::from(left_spans))
             }
         })
         .collect();

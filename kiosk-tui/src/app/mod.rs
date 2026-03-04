@@ -15,10 +15,10 @@ use fuzzy_matcher::{FuzzyMatcher, skim::SkimMatcherV2};
 use kiosk_core::{
     action::Action,
     config::{KeysConfig, keys::Command},
-    event::AppEvent,
+    event::{AppEvent, SessionRuntimeUpdate},
     git::GitProvider,
     pending_delete::save_pending_worktree_deletes,
-    state::{AppState, BranchEntry, Mode, SearchableList},
+    state::{AppState, BranchEntry, Mode, SearchableList, SessionRuntimeState},
     tmux::TmuxProvider,
 };
 use ratatui::{
@@ -492,6 +492,64 @@ fn extend_branches_deduped(state: &mut AppState, incoming: Vec<BranchEntry>) {
     }
 }
 
+fn branch_session_names(state: &AppState) -> Vec<String> {
+    let Some(repo_idx) = state.selected_repo_idx else {
+        return Vec::new();
+    };
+    let repo = &state.repos[repo_idx];
+    state
+        .branches
+        .iter()
+        .filter_map(|branch| {
+            branch
+                .worktree_path
+                .as_ref()
+                .map(|wt_path| repo.tmux_session_name(wt_path))
+        })
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn apply_session_runtime_updates(state: &mut AppState, updates: Vec<SessionRuntimeUpdate>) {
+    for update in updates {
+        let session_name = update.session_name;
+        let runtime = SessionRuntimeState {
+            exists: update.session_exists,
+            activity_ts: update.session_activity_ts,
+            agent_status: update.agent_status,
+        };
+        state.session_runtime.insert(session_name.clone(), runtime);
+        match runtime.activity_ts {
+            Some(ts) if runtime.exists => {
+                state.session_activity.insert(session_name, ts);
+            }
+            _ => {
+                state.session_activity.remove(&session_name);
+            }
+        }
+    }
+    reconcile_branch_runtime_state(state);
+}
+
+fn reconcile_branch_runtime_state(state: &mut AppState) {
+    let Some(repo_idx) = state.selected_repo_idx else {
+        return;
+    };
+    let repo = &state.repos[repo_idx];
+    for branch in &mut state.branches {
+        let Some(worktree_path) = branch.worktree_path.as_ref() else {
+            continue;
+        };
+        let session_name = repo.tmux_session_name(worktree_path);
+        if let Some(runtime) = state.session_runtime.get(&session_name).copied() {
+            branch.has_session = runtime.exists;
+            branch.agent_status = runtime.agent_status;
+            branch.session_activity_ts = runtime.activity_ts;
+        }
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
     event: AppEvent,
@@ -586,6 +644,14 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
         }
         AppEvent::SessionActivityLoaded { session_activity } => {
             state.session_activity = session_activity;
+            for (session_name, ts) in &state.session_activity {
+                let runtime = state
+                    .session_runtime
+                    .entry(session_name.clone())
+                    .or_default();
+                runtime.exists = true;
+                runtime.activity_ts = Some(*ts);
+            }
 
             // Re-sort with activity data
             sort_repos_preserving_selection(state);
@@ -663,6 +729,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
                 repo.worktrees = worktrees;
             }
             state.branches = branches;
+            reconcile_branch_runtime_state(state);
             state.branch_list.reset(state.branches.len());
             state.loading_branches = false;
             if state.reconcile_pending_worktree_deletes()
@@ -687,22 +754,10 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
                 state.fetching_remotes = true;
                 spawn::spawn_git_fetch(git, sender, repo_path);
 
-                // Kick off agent status polling for sessions in the current
-                // branch view. Only polls sessions that actually exist.
-                let session_names: Vec<String> = state
-                    .branches
-                    .iter()
-                    .filter_map(|b| {
-                        b.worktree_path.as_ref().and_then(|wt_path| {
-                            state
-                                .selected_repo_idx
-                                .and_then(|idx| state.repos.get(idx))
-                                .map(|repo| repo.tmux_session_name(wt_path))
-                        })
-                    })
-                    .collect::<std::collections::HashSet<_>>()
-                    .into_iter()
-                    .collect();
+                // Kick off agent status polling for branch-linked sessions in
+                // the current view. Session existence is resolved live by the
+                // poller from each tmux snapshot.
+                let session_names = branch_session_names(state);
 
                 // Always cancel the previous poller before deciding whether
                 // to spawn a new one — avoids leaking stale pollers when
@@ -748,22 +803,10 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
         }
         AppEvent::AgentStatesUpdated { states } => {
             if *state.mode.effective() == Mode::BranchSelect {
-                // Update agent states in-place — no re-sorting or filter changes.
-                // None values clear stale statuses (agent exited since last poll).
-                for (session_name, has_session, agent_status) in states {
-                    for branch in &mut state.branches {
-                        if branch.worktree_path.as_ref().is_some_and(|path| {
-                            if let Some(repo_idx) = state.selected_repo_idx {
-                                state.repos[repo_idx].tmux_session_name(path) == session_name
-                            } else {
-                                false
-                            }
-                        }) {
-                            branch.has_session = has_session;
-                            branch.agent_status = agent_status;
-                        }
-                    }
-                }
+                // Update runtime state in-place — no re-sorting or filter changes.
+                // Missing agent status clears stale badges and session_activity is
+                // refreshed from the same snapshot.
+                apply_session_runtime_updates(state, states);
             }
         }
         AppEvent::GitError(msg) => {
@@ -3676,7 +3719,12 @@ mod tests {
 
         process_app_event(
             AppEvent::AgentStatesUpdated {
-                states: vec![(session_name, true, Some(status))],
+                states: vec![SessionRuntimeUpdate {
+                    session_name,
+                    session_exists: true,
+                    session_activity_ts: Some(123),
+                    agent_status: Some(status),
+                }],
             },
             &mut state,
             &git,
@@ -3685,6 +3733,7 @@ mod tests {
         );
 
         assert_eq!(state.branches[0].agent_status, Some(status));
+        assert_eq!(state.branches[0].session_activity_ts, Some(123));
     }
 
     #[test]
@@ -3713,14 +3762,15 @@ mod tests {
 
         process_app_event(
             AppEvent::AgentStatesUpdated {
-                states: vec![(
-                    "nonexistent-session".to_string(),
-                    true,
-                    Some(AgentStatus {
+                states: vec![SessionRuntimeUpdate {
+                    session_name: "nonexistent-session".to_string(),
+                    session_exists: true,
+                    session_activity_ts: Some(999),
+                    agent_status: Some(AgentStatus {
                         kind: AgentKind::ClaudeCode,
                         state: AgentState::Running,
                     }),
-                )],
+                }],
             },
             &mut state,
             &git,
@@ -3763,7 +3813,12 @@ mod tests {
 
         process_app_event(
             AppEvent::AgentStatesUpdated {
-                states: vec![(session_name, true, Some(status))],
+                states: vec![SessionRuntimeUpdate {
+                    session_name,
+                    session_exists: true,
+                    session_activity_ts: Some(77),
+                    agent_status: Some(status),
+                }],
             },
             &mut state,
             &git,
@@ -3819,14 +3874,15 @@ mod tests {
 
         process_app_event(
             AppEvent::AgentStatesUpdated {
-                states: vec![(
+                states: vec![SessionRuntimeUpdate {
                     session_name,
-                    true,
-                    Some(AgentStatus {
+                    session_exists: true,
+                    session_activity_ts: Some(42),
+                    agent_status: Some(AgentStatus {
                         kind: AgentKind::ClaudeCode,
                         state: AgentState::Running,
                     }),
-                )],
+                }],
             },
             &mut state,
             &git,
@@ -3867,14 +3923,15 @@ mod tests {
 
         process_app_event(
             AppEvent::AgentStatesUpdated {
-                states: vec![(
-                    "whatever".to_string(),
-                    true,
-                    Some(AgentStatus {
+                states: vec![SessionRuntimeUpdate {
+                    session_name: "whatever".to_string(),
+                    session_exists: true,
+                    session_activity_ts: Some(1),
+                    agent_status: Some(AgentStatus {
                         kind: AgentKind::ClaudeCode,
                         state: AgentState::Waiting,
                     }),
-                )],
+                }],
             },
             &mut state,
             &git,
@@ -3921,7 +3978,12 @@ mod tests {
 
         process_app_event(
             AppEvent::AgentStatesUpdated {
-                states: vec![(session_name, true, Some(status))],
+                states: vec![SessionRuntimeUpdate {
+                    session_name,
+                    session_exists: true,
+                    session_activity_ts: Some(9),
+                    agent_status: Some(status),
+                }],
             },
             &mut state,
             &git,

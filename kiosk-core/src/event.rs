@@ -5,6 +5,15 @@ use crate::{
     git::{Repo, Worktree},
 };
 
+/// Runtime session data from the latest tmux poll.
+#[derive(Debug, Clone)]
+pub struct SessionRuntimeUpdate {
+    pub session_name: String,
+    pub session_exists: bool,
+    pub session_activity_ts: Option<u64>,
+    pub agent_status: Option<AgentStatus>,
+}
+
 /// Events that arrive asynchronously from background tasks.
 /// These get merged into the main event loop alongside keyboard input.
 #[derive(Debug, Clone)]
@@ -74,10 +83,7 @@ pub enum AppEvent {
 
     /// Agent states updated from background detection (full snapshot —
     /// `None` means no agent detected, allowing stale statuses to be cleared)
-    AgentStatesUpdated {
-        /// tuple: (`session_name`, `session_exists`, `detected_agent_status`)
-        states: Vec<(String, bool, Option<AgentStatus>)>,
-    },
+    AgentStatesUpdated { states: Vec<SessionRuntimeUpdate> },
 
     /// A background git operation failed
     GitError(String),

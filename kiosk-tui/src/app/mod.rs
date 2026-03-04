@@ -224,6 +224,8 @@ fn draw(
                 // Loading is handled by the early-return guard; Help cannot nest.
                 Mode::Loading(_) | Mode::Help { .. } => {}
             }
+            // Dim the background behind the overlay
+            components::dim_area(f, main_area);
             // Draw help overlay on top
             components::help::draw(f, state, theme);
         }

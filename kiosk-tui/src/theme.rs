@@ -67,7 +67,7 @@ mod tests {
         assert_eq!(theme.muted, Color::DarkGray);
         assert_eq!(theme.border, Color::DarkGray);
         assert_eq!(theme.hint, Color::Blue);
-        assert_eq!(theme.highlight_fg, Color::Black);
+        assert_eq!(theme.highlight_fg, Color::Rgb(0, 0, 0));
     }
 
     #[test]

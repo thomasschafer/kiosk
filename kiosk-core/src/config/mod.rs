@@ -198,28 +198,30 @@ pub struct ThemeConfig {
 /// Single source of truth for theme defaults. Generates the `Default` impl
 /// so adding a field only requires updating one place (plus the struct above).
 macro_rules! theme_defaults {
-    ($($field:ident => $color:ident),* $(,)?) => {
+    ($($field:ident => $value:expr),* $(,)?) => {
         impl Default for ThemeConfig {
             fn default() -> Self {
                 Self {
-                    $($field: ThemeColor::Named(NamedColor::$color)),*
+                    $($field: $value),*
                 }
             }
         }
     };
 }
 
+use NamedColor as N;
+
 theme_defaults! {
-    accent       => Magenta,
-    secondary    => Cyan,
-    tertiary     => Green,
-    success      => Green,
-    error        => Red,
-    warning      => Yellow,
-    muted        => DarkGray,
-    border       => DarkGray,
-    hint         => Blue,
-    highlight_fg => Black,
+    accent       => ThemeColor::Named(N::Magenta),
+    secondary    => ThemeColor::Named(N::Cyan),
+    tertiary     => ThemeColor::Named(N::Green),
+    success      => ThemeColor::Named(N::Green),
+    error        => ThemeColor::Named(N::Red),
+    warning      => ThemeColor::Named(N::Yellow),
+    muted        => ThemeColor::Named(N::DarkGray),
+    border       => ThemeColor::Named(N::DarkGray),
+    hint         => ThemeColor::Named(N::Blue),
+    highlight_fg => ThemeColor::Rgb(0, 0, 0),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -518,10 +520,7 @@ unknown_field = true
         assert_eq!(config.theme.muted, ThemeColor::Named(NamedColor::DarkGray));
         assert_eq!(config.theme.border, ThemeColor::Named(NamedColor::DarkGray));
         assert_eq!(config.theme.hint, ThemeColor::Named(NamedColor::Blue));
-        assert_eq!(
-            config.theme.highlight_fg,
-            ThemeColor::Named(NamedColor::Black)
-        );
+        assert_eq!(config.theme.highlight_fg, ThemeColor::Rgb(0, 0, 0));
     }
 
     #[test]

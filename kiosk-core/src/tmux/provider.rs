@@ -72,4 +72,7 @@ pub trait TmuxProvider: Send + Sync {
     fn is_inside_tmux(&self) -> bool;
     fn list_panes_detailed(&self, session: &str) -> Vec<PaneInfo>;
     fn capture_pane_content(&self, pane_id: &str, lines: u32) -> Option<String>;
+    /// Get the name of the current tmux session.
+    /// Returns `None` if not inside tmux or if the command fails.
+    fn current_session_name(&self) -> Option<String>;
 }

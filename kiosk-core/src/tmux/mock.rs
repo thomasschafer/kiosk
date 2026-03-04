@@ -27,6 +27,8 @@ pub struct MockTmuxProvider {
     pub pane_content: HashMap<String, String>,
     /// Session activity timestamps keyed by session name
     pub session_activity_ts: HashMap<String, u64>,
+    /// Current session name for `current_session_name()` mock
+    pub current_session: Option<String>,
 }
 
 impl TmuxProvider for MockTmuxProvider {
@@ -200,5 +202,9 @@ impl TmuxProvider for MockTmuxProvider {
 
     fn capture_pane_content(&self, pane_id: &str, _lines: u32) -> Option<String> {
         self.pane_content.get(pane_id).cloned()
+    }
+
+    fn current_session_name(&self) -> Option<String> {
+        self.current_session.clone()
     }
 }

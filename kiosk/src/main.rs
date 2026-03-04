@@ -198,6 +198,12 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Switch to the next agent session needing attention
+    Next {
+        /// Output result as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Show configuration
     Config {
         #[command(subcommand)]
@@ -228,7 +234,8 @@ impl Commands {
             | Self::Send { json, .. }
             | Self::Panes { json, .. }
             | Self::Wait { json, .. }
-            | Self::Log { json, .. } => *json,
+            | Self::Log { json, .. }
+            | Self::Next { json } => *json,
             Self::Config { command } => command.as_ref().is_some_and(ConfigCommands::wants_json),
         }
     }
@@ -366,6 +373,9 @@ fn dispatch_command(
                 json,
             };
             crate::cli::cmd_send(config, git.as_ref(), tmux.as_ref(), &args)
+        }
+        Some(Commands::Next { json }) => {
+            crate::cli::cmd_next(config, git.as_ref(), tmux.as_ref(), json)
         }
         Some(Commands::Sessions { json }) => {
             crate::cli::cmd_sessions(config, git.as_ref(), tmux.as_ref(), json)

@@ -195,6 +195,12 @@ struct SessionOutput {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct NextOutput {
+    switched: bool,
+    session: String,
+    agent_state: String,
+}
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 struct DeleteOutput {
     deleted: bool,
     repo: String,
@@ -752,6 +758,98 @@ pub fn cmd_sessions(
     }
 
     Ok(())
+}
+
+pub fn cmd_next(
+    config: &Config,
+    git: &dyn GitProvider,
+    tmux: &dyn TmuxProvider,
+    json: bool,
+) -> CliResult<()> {
+    if !tmux.is_inside_tmux() {
+        return Err(CliError::user(
+            "not inside tmux. kiosk next must be run from within a tmux session",
+        ));
+    }
+
+    let current_session = tmux.current_session_name();
+    let repos = discover_all_with_worktrees(config, git);
+    let all_pane_data = tmux.list_all_panes_with_activity();
+    let active_sessions: HashSet<String> = tmux.list_session_names().into_iter().collect();
+
+    // Collect all kiosk-managed sessions with their agent status and activity
+    let mut candidates: Vec<(String, kiosk_core::AgentState, u64)> = Vec::new();
+
+    let mut session_names: Vec<String> = Vec::new();
+    let mut session_activities: std::collections::HashMap<String, u64> =
+        std::collections::HashMap::new();
+
+    for repo in &repos {
+        for worktree in &repo.worktrees {
+            let session = repo.tmux_session_name(&worktree.path);
+            if !active_sessions.contains(&session) {
+                continue;
+            }
+            if current_session.as_deref() == Some(session.as_str()) {
+                continue;
+            }
+            let activity = all_pane_data
+                .get(&session)
+                .map_or(0, |d| d.session_activity);
+            session_names.push(session.clone());
+            session_activities.insert(session, activity);
+        }
+    }
+
+    // Batched agent detection
+    let detection_results =
+        kiosk_core::agent::detect_for_sessions_batched(tmux, &session_names, &all_pane_data);
+
+    for (session, detection) in &detection_results {
+        if let Some(det) = detection {
+            match det.status.state {
+                kiosk_core::AgentState::Waiting | kiosk_core::AgentState::Idle => {
+                    let activity = session_activities.get(session).copied().unwrap_or(0);
+                    candidates.push((session.clone(), det.status.state, activity));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Sort: Waiting before Idle, then oldest activity first
+    candidates.sort_by(|a, b| {
+        let priority_a = u8::from(a.1 != kiosk_core::AgentState::Waiting);
+        let priority_b = u8::from(b.1 != kiosk_core::AgentState::Waiting);
+        priority_a.cmp(&priority_b).then(a.2.cmp(&b.2))
+    });
+
+    if let Some((session, state, _)) = candidates.first() {
+        tmux.switch_to_session(session);
+        let state_str = state.to_string();
+        let output = NextOutput {
+            switched: true,
+            session: session.clone(),
+            agent_state: state_str.clone(),
+        };
+        if json {
+            print_json(&output)?;
+        } else {
+            println!("Switched to: {session} ({state_str})");
+        }
+        Ok(())
+    } else {
+        if json {
+            let output = serde_json::json!({
+                "switched": false,
+                "error": "No other agent sessions need attention"
+            });
+            eprintln!("{}", serde_json::to_string(&output).unwrap_or_default());
+        } else {
+            eprintln!("No other agent sessions need attention");
+        }
+        Err(CliError::user("No other agent sessions need attention"))
+    }
 }
 
 pub fn cmd_delete(
@@ -3185,5 +3283,236 @@ mod tests {
             json.get("agent_status").is_none(),
             "agent_status should be omitted when None: {json}"
         );
+    }
+
+    // --- cmd_next tests ---
+
+    fn mock_with_sessions_and_agents(
+        current: &str,
+        sessions: &[(&str, &str, &str, u64)], // (session_name, command, content, activity)
+    ) -> (Config, MockGitProvider, MockTmuxProvider) {
+        let config = test_config();
+        let mut worktrees = vec![main_worktree()];
+        let mut git_worktrees = vec![main_worktree()];
+
+        let mut pane_info = HashMap::new();
+        let mut pane_content = HashMap::new();
+        let mut session_activity_ts = HashMap::new();
+        let mut session_names = vec!["demo".to_string()];
+
+        for (i, (session, command, content, activity)) in sessions.iter().enumerate() {
+            let pane_id = format!("%{}", i + 10);
+            pane_info.insert(
+                session.to_string(),
+                vec![kiosk_core::tmux::provider::PaneInfo {
+                    pane_id: pane_id.clone(),
+                    command: command.to_string(),
+                    pid: 50000 + i as u32,
+                }],
+            );
+            pane_content.insert(pane_id, content.to_string());
+            session_activity_ts.insert(session.to_string(), *activity);
+
+            if *session != "demo" && !session_names.contains(&session.to_string()) {
+                session_names.push(session.to_string());
+                // Create a worktree entry for each non-demo session
+                let branch = session.strip_prefix("demo--").unwrap_or(session);
+                let wt = Worktree {
+                    path: PathBuf::from(format!("/tmp/.kiosk_worktrees/{session}")),
+                    branch: Some(branch.replace('-', "/").to_string()),
+                    is_main: false,
+                };
+                worktrees.push(wt.clone());
+                git_worktrees.push(wt);
+            }
+        }
+
+        let git = MockGitProvider {
+            repos: vec![repo("/tmp/demo", "demo")],
+            worktrees: git_worktrees,
+            ..Default::default()
+        };
+
+        let tmux = MockTmuxProvider {
+            sessions: Mutex::new(session_names),
+            inside_tmux: true,
+            current_session: Some(current.to_string()),
+            pane_info,
+            pane_content,
+            session_activity_ts,
+            ..Default::default()
+        };
+
+        (config, git, tmux)
+    }
+
+    #[test]
+    fn next_switches_to_waiting_session() {
+        let (config, git, tmux) = mock_with_sessions_and_agents(
+            "demo",
+            &[
+                ("demo", "claude", "⠋ Reading file", 1000),
+                (
+                    "demo--feat-a",
+                    "claude",
+                    "Allow write?\n  Yes, allow\n  No, deny",
+                    900,
+                ),
+            ],
+        );
+
+        let result = cmd_next(&config, &git, &tmux, false);
+        assert!(result.is_ok());
+        let switched = tmux.switched_sessions.lock().unwrap();
+        assert_eq!(switched.as_slice(), &["demo--feat-a"]);
+    }
+
+    #[test]
+    fn next_switches_to_idle_when_no_waiting() {
+        let (config, git, tmux) = mock_with_sessions_and_agents(
+            "demo",
+            &[
+                ("demo", "claude", "⠋ Reading file", 1000),
+                ("demo--feat-b", "claude", "❯ \n? for shortcuts", 900),
+            ],
+        );
+
+        let result = cmd_next(&config, &git, &tmux, false);
+        assert!(result.is_ok());
+        let switched = tmux.switched_sessions.lock().unwrap();
+        assert_eq!(switched.as_slice(), &["demo--feat-b"]);
+    }
+
+    #[test]
+    fn next_prefers_waiting_over_idle() {
+        let (config, git, tmux) = mock_with_sessions_and_agents(
+            "demo",
+            &[
+                ("demo", "claude", "⠋ Reading file", 1000),
+                ("demo--feat-idle", "claude", "❯ \n? for shortcuts", 800),
+                (
+                    "demo--feat-wait",
+                    "claude",
+                    "Allow write?\n  Yes, allow\n  No, deny",
+                    900,
+                ),
+            ],
+        );
+
+        let result = cmd_next(&config, &git, &tmux, false);
+        assert!(result.is_ok());
+        let switched = tmux.switched_sessions.lock().unwrap();
+        assert_eq!(
+            switched.as_slice(),
+            &["demo--feat-wait"],
+            "Should prefer waiting over idle even if idle is older"
+        );
+    }
+
+    #[test]
+    fn next_skips_current_session() {
+        let (config, git, tmux) = mock_with_sessions_and_agents(
+            "demo--feat-wait",
+            &[
+                (
+                    "demo--feat-wait",
+                    "claude",
+                    "Allow write?\n  Yes, allow\n  No, deny",
+                    800,
+                ),
+                ("demo--feat-idle", "claude", "❯ \n? for shortcuts", 900),
+            ],
+        );
+
+        let result = cmd_next(&config, &git, &tmux, false);
+        assert!(result.is_ok());
+        let switched = tmux.switched_sessions.lock().unwrap();
+        assert_eq!(
+            switched.as_slice(),
+            &["demo--feat-idle"],
+            "Should skip current session even if it has higher priority"
+        );
+    }
+
+    #[test]
+    fn next_oldest_activity_wins_within_same_tier() {
+        let (config, git, tmux) = mock_with_sessions_and_agents(
+            "demo",
+            &[
+                (
+                    "demo--feat-new",
+                    "claude",
+                    "Allow write?\n  Yes, allow\n  No, deny",
+                    2000,
+                ),
+                (
+                    "demo--feat-old",
+                    "claude",
+                    "Allow write?\n  Yes, allow\n  No, deny",
+                    1000,
+                ),
+            ],
+        );
+
+        let result = cmd_next(&config, &git, &tmux, false);
+        assert!(result.is_ok());
+        let switched = tmux.switched_sessions.lock().unwrap();
+        assert_eq!(
+            switched.as_slice(),
+            &["demo--feat-old"],
+            "Should pick session with oldest activity"
+        );
+    }
+
+    #[test]
+    fn next_no_eligible_sessions_returns_error() {
+        let (config, git, tmux) = mock_with_sessions_and_agents(
+            "demo",
+            &[
+                ("demo", "claude", "⠋ Reading file", 1000),
+                ("demo--feat-run", "claude", "⠋ Reading file", 900),
+            ],
+        );
+
+        let result = cmd_next(&config, &git, &tmux, false);
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert!(
+            error
+                .message()
+                .contains("No other agent sessions need attention")
+        );
+        assert!(tmux.switched_sessions.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn next_not_inside_tmux_returns_error() {
+        let config = test_config();
+        let git = demo_git(vec![main_worktree()], vec![]);
+        let tmux = MockTmuxProvider {
+            inside_tmux: false,
+            ..Default::default()
+        };
+
+        let result = cmd_next(&config, &git, &tmux, false);
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert!(error.message().contains("not inside tmux"));
+    }
+
+    #[test]
+    fn next_json_output_on_success() {
+        let (config, git, tmux) = mock_with_sessions_and_agents(
+            "demo",
+            &[(
+                "demo--feat-a",
+                "claude",
+                "Allow write?\n  Yes, allow\n  No, deny",
+                900,
+            )],
+        );
+
+        let result = cmd_next(&config, &git, &tmux, true);
+        assert!(result.is_ok());
     }
 }

@@ -426,6 +426,21 @@ impl TmuxProvider for CliTmuxProvider {
             None
         }
     }
+
+    fn current_session_name(&self) -> Option<String> {
+        if !self.is_inside_tmux() {
+            return None;
+        }
+        let output = tmux_command()
+            .args(["display-message", "-p", "#S"])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if name.is_empty() { None } else { Some(name) }
+    }
 }
 
 /// Parse a single line of tmux list-panes output in the format:

@@ -9,7 +9,7 @@
       1 file changed, 64 insertions(+), 29 deletions(-)
 
 ● Bash(git -C /home/user/Development/kiosk push)
-  ⎿  To https://github.com/thomasschafer/kiosk.git
+  ⎿  To https://github.com/user/repo.git
         b2d8d7f..2352810  feat/agent-status -> feat/agent-status
 
 ● Committed and pushed. All 688 workspace tests pass, clippy is clean, and formatting is good.

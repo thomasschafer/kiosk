@@ -16,13 +16,13 @@
 
   ### Lock-Free Structures
 Token usage: total=1,475 input=1,219 (+ 7,424 cached) output=256 (reasoning 19)
-To continue this session, run codex resume 7832ca60-97c1-4d1d-832a-bbffa2b9da75
+To continue this session, run codex resume 00000000-0000-0000-0000-000000000000
 0 | nix-server | codex-test $ cd /tmp/claude-test && ~/.local/bin/claude --dangerously-skip-permissi
 ons
 
 ╭─── Claude Code v2.1.63 ──────────────────────────────────────────────────────────────────────────╮
 │                                                    │ Tips for getting started                    │
-│                  Welcome back Tom!                 │ Run /init to create a CLAUDE.md file with … │
+│                  Welcome back!                        │ Run /init to create a CLAUDE.md file with … │
 │                                                    │ ─────────────────────────────────────────── │
 │                                                    │ Recent activity                             │
 │                       ▐▛███▜▌                      │ No recent activity                          │

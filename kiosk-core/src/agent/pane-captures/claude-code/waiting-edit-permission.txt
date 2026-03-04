@@ -1,4 +1,4 @@
-│                  Welcome back Tom!                 │ Run /init to create a CLAUDE.md file with … │
+│                  Welcome back!                        │ Run /init to create a CLAUDE.md file with … │
 │                                                    │ ─────────────────────────────────────────── │
 │                                                    │ Recent activity                             │
 │                       ▐▛███▜▌                      │ No recent activity                          │

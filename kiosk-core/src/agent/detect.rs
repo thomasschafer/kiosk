@@ -284,7 +284,13 @@ static THINKING_SUFFIXED: LazyLock<Vec<String>> = LazyLock::new(|| {
 /// Completed thinking replaces the ellipsis with a duration (`✻ Crunched for 37s`),
 /// so checking for both the glyph AND an ellipsis on the same line distinguishes
 /// active from completed thinking.
-const THINKING_GLYPHS: &[char] = &['✦', '✻', '✽', '✶', '✢', '·'];
+///
+/// Note: `·` (middle dot) was observed as a rare thinking glyph (`· Orbiting…`)
+/// but is excluded because it also appears extensively in normal UI elements
+/// (e.g. `Opus 4.6 · Claude Max ·`). A line starting with `·` that contains
+/// `...` in response text would false-match. When `·` is the thinking glyph,
+/// `esc to interrupt` is always present as a primary running indicator.
+const THINKING_GLYPHS: &[char] = &['✦', '✻', '✽', '✶', '✢'];
 
 // -- Codex --------------------------------------------------------------------
 
@@ -1168,6 +1174,36 @@ mod tests {
         assert_eq!(
             detect_agent_kind_from_content(content),
             Some(AgentKind::Codex)
+        );
+    }
+
+    #[test]
+    fn detect_kind_from_content_gemini() {
+        // Banner text from Gemini CLI startup
+        let content = "Plan: Gemini Code Assist for individuals
+                       ╭──────────────────────────────────────╮
+                       │ ? for shortcuts";
+        assert_eq!(
+            detect_agent_kind_from_content(content),
+            Some(AgentKind::Gemini)
+        );
+        // Footer with model selector
+        let content2 = "/tmp/project (main)  no sandbox (see /docs)  /model Auto (Gemini 3)";
+        assert_eq!(
+            detect_agent_kind_from_content(content2),
+            Some(AgentKind::Gemini)
+        );
+    }
+
+    #[test]
+    fn detect_kind_from_content_cursor() {
+        let content = "  Cursor Agent v2026.02.27-e7d2ef6
+                       
+                       Write tests for the parser module
+                       / commands";
+        assert_eq!(
+            detect_agent_kind_from_content(content),
+            Some(AgentKind::CursorAgent)
         );
     }
 

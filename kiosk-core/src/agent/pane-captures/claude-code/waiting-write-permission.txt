@@ -3,7 +3,7 @@ export PATH="$HOME/.local/bin:$PATH" && claude
 
 ╭─── Claude Code v2.1.63 ──────────────────────────────────────────────────────────────────────────╮
 │                                                    │ Tips for getting started                    │
-│                  Welcome back Tom!                 │ Ask Claude to create a new app or clone a … │
+│                  Welcome back!                        │ Ask Claude to create a new app or clone a … │
 │                                                    │ ─────────────────────────────────────────── │
 │                                                    │ Recent activity                             │
 │                       ▐▛███▜▌                      │ No recent activity                          │

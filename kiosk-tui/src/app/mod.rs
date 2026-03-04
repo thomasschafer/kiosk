@@ -247,9 +247,12 @@ fn draw_mode(
             components::branch_picker::draw(f, main_area, state, theme, keys, false);
             components::new_branch::draw(f, state, theme, show_selection);
         }
-        Mode::ConfirmWorktreeDelete { .. } => {
+        Mode::ConfirmWorktreeDelete {
+            branch_name,
+            has_session,
+        } => {
             components::branch_picker::draw(f, main_area, state, theme, keys, false);
-            draw_confirm_delete_dialog(f, main_area, state, theme, keys);
+            draw_confirm_delete_dialog(f, main_area, branch_name, *has_session, theme, keys);
         }
         Mode::Setup(_) => {
             components::setup::draw(f, state, theme, show_selection);
@@ -388,34 +391,29 @@ fn build_confirm_delete_dialog<'a>(
 fn draw_confirm_delete_dialog(
     f: &mut Frame,
     area: Rect,
-    state: &AppState,
+    branch_name: &str,
+    has_session: bool,
     theme: &crate::theme::Theme,
     keys: &kiosk_core::config::KeysConfig,
 ) {
-    if let Mode::ConfirmWorktreeDelete {
+    let keymap = keys.keymap_for_mode(&Mode::ConfirmWorktreeDelete {
+        branch_name: branch_name.to_string(),
+        has_session,
+    });
+    let confirm_key = KeysConfig::find_key(&keymap, &Command::Confirm)
+        .map_or("enter".to_string(), |k| k.to_string());
+    let cancel_key = KeysConfig::find_key(&keymap, &Command::Cancel)
+        .map_or("esc".to_string(), |k| k.to_string());
+
+    build_confirm_delete_dialog(
         branch_name,
         has_session,
-    } = &state.mode
-    {
-        let keymap = keys.keymap_for_mode(&Mode::ConfirmWorktreeDelete {
-            branch_name: branch_name.clone(),
-            has_session: *has_session,
-        });
-        let confirm_key = KeysConfig::find_key(&keymap, &Command::Confirm)
-            .map_or("enter".to_string(), |k| k.to_string());
-        let cancel_key = KeysConfig::find_key(&keymap, &Command::Cancel)
-            .map_or("esc".to_string(), |k| k.to_string());
-
-        build_confirm_delete_dialog(
-            branch_name,
-            *has_session,
-            &confirm_key,
-            &cancel_key,
-            theme.accent,
-            theme.hint,
-        )
-        .render(f, area);
-    }
+        &confirm_key,
+        &cancel_key,
+        theme.accent,
+        theme.hint,
+    )
+    .render(f, area);
 }
 
 /// Rebuild a `SearchableList`'s filtered entries from new item names while preserving
@@ -3138,6 +3136,43 @@ mod tests {
         assert!(
             cell.modifier.contains(Modifier::DIM),
             "expected DIM modifier on background cell when error toast is visible"
+        );
+    }
+
+    #[test]
+    fn test_draw_mode_confirm_delete_renders_when_state_mode_is_help() {
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+        state.mode = Mode::Help {
+            previous: Box::new(Mode::ConfirmWorktreeDelete {
+                branch_name: "main".to_string(),
+                has_session: true,
+            }),
+        };
+
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let theme = Theme::from_config(&ThemeConfig::default());
+        let keys = KeysConfig::default();
+        let mode = Mode::ConfirmWorktreeDelete {
+            branch_name: "main".to_string(),
+            has_session: true,
+        };
+
+        terminal
+            .draw(|f| {
+                draw_mode(f, f.area(), &mode, &state, &theme, &keys, false);
+            })
+            .unwrap();
+
+        let rendered = buf_to_string(terminal.backend().buffer());
+        assert!(
+            rendered.contains("Confirm delete"),
+            "confirm delete dialog should render from mode argument while state.mode is Help:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("\"main\""),
+            "confirm delete branch name should be visible:\n{rendered}"
         );
     }
 

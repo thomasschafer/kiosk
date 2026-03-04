@@ -221,7 +221,7 @@ theme_defaults! {
     muted        => ThemeColor::Named(N::DarkGray),
     border       => ThemeColor::Named(N::DarkGray),
     hint         => ThemeColor::Named(N::Blue),
-    highlight_fg => ThemeColor::Named(N::Black),
+    highlight_fg => ThemeColor::Rgb(0, 0, 0),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

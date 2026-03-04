@@ -4,7 +4,7 @@ use ratatui::{
     layout::{Constraint, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState},
+    widgets::{Block, Borders, Clear, HighlightSpacing, List, ListItem, ListState},
 };
 
 enum HelpLayoutEntry {
@@ -88,7 +88,8 @@ pub fn draw(f: &mut Frame, state: &AppState, theme: &crate::theme::Theme, show_s
                 .fg(theme.highlight_fg)
                 .add_modifier(Modifier::BOLD),
         )
-        .highlight_symbol("▸ ");
+        .highlight_symbol("▸ ")
+        .highlight_spacing(HighlightSpacing::Always);
 
     let mut list_state = ListState::default();
     list_state.select(selected_item);

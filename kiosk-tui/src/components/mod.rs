@@ -1,4 +1,16 @@
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::{
+    Frame,
+    layout::{Constraint, Layout, Rect},
+    style::{Modifier, Style},
+};
+
+/// Apply `Modifier::DIM` to every cell in the given area without replacing
+/// existing colors or other modifiers. Useful for visually de-emphasising
+/// background content behind an overlay.
+pub fn dim_area(f: &mut Frame, area: Rect) {
+    f.buffer_mut()
+        .set_style(area, Style::default().add_modifier(Modifier::DIM));
+}
 
 pub mod branch_picker;
 pub mod dialog;

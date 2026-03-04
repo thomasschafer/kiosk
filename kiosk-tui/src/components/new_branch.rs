@@ -4,10 +4,10 @@ use ratatui::{
     Frame,
     layout::{Constraint, Layout},
     style::{Modifier, Style},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState},
+    widgets::{Block, Borders, Clear, HighlightSpacing, List, ListItem, ListState},
 };
 
-pub fn draw(f: &mut Frame, state: &AppState, theme: &Theme) {
+pub fn draw(f: &mut Frame, state: &AppState, theme: &Theme, show_selection: bool) {
     let Some(flow) = &state.base_branch_selection else {
         return;
     };
@@ -50,10 +50,11 @@ pub fn draw(f: &mut Frame, state: &AppState, theme: &Theme) {
                 .fg(theme.highlight_fg)
                 .add_modifier(Modifier::BOLD),
         )
-        .highlight_symbol("▸ ");
+        .highlight_symbol("▸ ")
+        .highlight_spacing(HighlightSpacing::Always);
 
     let mut list_state = ListState::default();
-    list_state.select(flow.list.selected);
+    list_state.select(show_selection.then_some(flow.list.selected).flatten());
     *list_state.offset_mut() = flow.list.scroll_offset;
     f.render_stateful_widget(list, chunks[1], &mut list_state);
 }

@@ -187,47 +187,12 @@ fn draw(
     // Determine the effective mode for footer hints
     let effective_mode = state.mode.effective();
 
-    match &state.mode {
-        Mode::RepoSelect => components::repo_list::draw(f, main_area, state, theme, keys),
-        Mode::BranchSelect => components::branch_picker::draw(f, main_area, state, theme, keys),
-        Mode::SelectBaseBranch => {
-            components::branch_picker::draw(f, main_area, state, theme, keys);
-            components::new_branch::draw(f, state, theme);
-        }
-        Mode::ConfirmWorktreeDelete { .. } => {
-            components::branch_picker::draw(f, main_area, state, theme, keys);
-            draw_confirm_delete_dialog(f, main_area, state, theme, keys);
-        }
-        Mode::Setup(_) => {
-            components::setup::draw(f, state, theme);
-        }
-        Mode::Help { previous } => {
-            // Draw the previous mode as background
-            match previous.as_ref() {
-                Mode::RepoSelect => {
-                    components::repo_list::draw(f, main_area, state, theme, keys);
-                }
-                Mode::BranchSelect => {
-                    components::branch_picker::draw(f, main_area, state, theme, keys);
-                }
-                Mode::SelectBaseBranch => {
-                    components::branch_picker::draw(f, main_area, state, theme, keys);
-                    components::new_branch::draw(f, state, theme);
-                }
-                Mode::ConfirmWorktreeDelete { .. } => {
-                    components::branch_picker::draw(f, main_area, state, theme, keys);
-                    draw_confirm_delete_dialog(f, main_area, state, theme, keys);
-                }
-                Mode::Setup(_) => {
-                    components::setup::draw(f, state, theme);
-                }
-                // Loading is handled by the early-return guard; Help cannot nest.
-                Mode::Loading(_) | Mode::Help { .. } => {}
-            }
-            // Draw help overlay on top
-            components::help::draw(f, state, theme);
-        }
-        Mode::Loading(_) => unreachable!(),
+    // Clone mode to avoid borrow conflict with state
+    let mode = state.mode.clone();
+    draw_mode(f, main_area, &mode, state, theme, keys, true);
+
+    if state.error.is_some() {
+        components::dim_area(f, main_area);
     }
 
     // Error toast overlay (rendered on top of everything)
@@ -255,6 +220,51 @@ fn draw(
     ))
     .alignment(Alignment::Center);
     f.render_widget(footer, footer_area);
+}
+
+/// Render a mode's UI into `main_area`. When `active` is false the mode is
+/// being drawn as an inactive background behind an overlay, so list selections
+/// are hidden. An error toast also suppresses selection because it covers the
+/// underlying content.
+fn draw_mode(
+    f: &mut Frame,
+    main_area: Rect,
+    mode: &Mode,
+    state: &AppState,
+    theme: &crate::theme::Theme,
+    keys: &kiosk_core::config::KeysConfig,
+    active: bool,
+) {
+    let show_selection = active && state.error.is_none();
+    match mode {
+        Mode::RepoSelect => {
+            components::repo_list::draw(f, main_area, state, theme, keys, show_selection);
+        }
+        Mode::BranchSelect => {
+            components::branch_picker::draw(f, main_area, state, theme, keys, show_selection);
+        }
+        Mode::SelectBaseBranch => {
+            components::branch_picker::draw(f, main_area, state, theme, keys, false);
+            components::new_branch::draw(f, state, theme, show_selection);
+        }
+        Mode::ConfirmWorktreeDelete {
+            branch_name,
+            has_session,
+        } => {
+            components::branch_picker::draw(f, main_area, state, theme, keys, false);
+            draw_confirm_delete_dialog(f, main_area, branch_name, *has_session, theme, keys);
+        }
+        Mode::Setup(_) => {
+            components::setup::draw(f, state, theme, show_selection);
+        }
+        Mode::Help { previous } => {
+            draw_mode(f, main_area, previous, state, theme, keys, false);
+            components::dim_area(f, main_area);
+            components::help::draw(f, state, theme, show_selection);
+        }
+        // Loading is handled by the early-return guard above.
+        Mode::Loading(_) => unreachable!(),
+    }
 }
 
 fn build_footer_hints(mode: &Mode, keys: &KeysConfig) -> Vec<(String, &'static str)> {
@@ -381,34 +391,29 @@ fn build_confirm_delete_dialog<'a>(
 fn draw_confirm_delete_dialog(
     f: &mut Frame,
     area: Rect,
-    state: &AppState,
+    branch_name: &str,
+    has_session: bool,
     theme: &crate::theme::Theme,
     keys: &kiosk_core::config::KeysConfig,
 ) {
-    if let Mode::ConfirmWorktreeDelete {
+    let keymap = keys.keymap_for_mode(&Mode::ConfirmWorktreeDelete {
+        branch_name: branch_name.to_string(),
+        has_session,
+    });
+    let confirm_key = KeysConfig::find_key(&keymap, &Command::Confirm)
+        .map_or("enter".to_string(), |k| k.to_string());
+    let cancel_key = KeysConfig::find_key(&keymap, &Command::Cancel)
+        .map_or("esc".to_string(), |k| k.to_string());
+
+    build_confirm_delete_dialog(
         branch_name,
         has_session,
-    } = &state.mode
-    {
-        let keymap = keys.keymap_for_mode(&Mode::ConfirmWorktreeDelete {
-            branch_name: branch_name.clone(),
-            has_session: *has_session,
-        });
-        let confirm_key = KeysConfig::find_key(&keymap, &Command::Confirm)
-            .map_or("enter".to_string(), |k| k.to_string());
-        let cancel_key = KeysConfig::find_key(&keymap, &Command::Cancel)
-            .map_or("esc".to_string(), |k| k.to_string());
-
-        build_confirm_delete_dialog(
-            branch_name,
-            *has_session,
-            &confirm_key,
-            &cancel_key,
-            theme.accent,
-            theme.hint,
-        )
-        .render(f, area);
-    }
+        &confirm_key,
+        &cancel_key,
+        theme.accent,
+        theme.hint,
+    )
+    .render(f, area);
 }
 
 /// Rebuild a `SearchableList`'s filtered entries from new item names while preserving
@@ -1040,10 +1045,13 @@ fn process_action<T: TmuxProvider + ?Sized + 'static>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::Theme;
+    use kiosk_core::config::ThemeConfig;
     use kiosk_core::git::mock::MockGitProvider;
     use kiosk_core::git::{Repo, Worktree};
     use kiosk_core::state::{AppState, BranchEntry, Mode, SearchableList};
     use kiosk_core::tmux::{TmuxProvider, mock::MockTmuxProvider};
+    use ratatui::{Terminal, backend::TestBackend};
 
     fn make_sender() -> EventSender {
         let (tx, _rx) = mpsc::channel();
@@ -2869,6 +2877,39 @@ mod tests {
         s
     }
 
+    fn render_app_to_buffer(
+        state: &mut AppState,
+        terminal_width: u16,
+        terminal_height: u16,
+    ) -> ratatui::buffer::Buffer {
+        let backend = TestBackend::new(terminal_width, terminal_height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let theme = Theme::from_config(&ThemeConfig::default());
+        let keys = KeysConfig::default();
+        let spinner_start = Instant::now();
+
+        terminal
+            .draw(|f| {
+                draw(f, state, &theme, &keys, &spinner_start);
+            })
+            .unwrap();
+
+        terminal.backend().buffer().clone()
+    }
+
+    fn count_symbol(buf: &ratatui::buffer::Buffer, symbol: &str) -> usize {
+        let area = buf.area();
+        let mut count = 0;
+        for y in area.y..area.y + area.height {
+            for x in area.x..area.x + area.width {
+                if buf.cell((x, y)).is_some_and(|cell| cell.symbol() == symbol) {
+                    count += 1;
+                }
+            }
+        }
+        count
+    }
+
     fn render_confirm_dialog_to_buffer(
         branch_name: &str,
         has_session: bool,
@@ -3000,6 +3041,139 @@ mod tests {
         assert_eq!(buf.cell((w - 1, 0)).unwrap().symbol(), "┐");
         assert_eq!(buf.cell((0, h - 1)).unwrap().symbol(), "└");
         assert_eq!(buf.cell((w - 1, h - 1)).unwrap().symbol(), "┘");
+    }
+
+    fn show_help(state: &mut AppState) {
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let keys = KeysConfig::default();
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+        let ctx = default_ctx(&git, &tmux, &keys, &matcher, &sender);
+        process_action(Action::ShowHelp, state, &ctx);
+    }
+
+    #[test]
+    fn test_help_overlay_hides_background_selection_but_keeps_help_selection() {
+        let repos = vec![make_repo("alpha"), make_repo("beta")];
+        let mut state = AppState::new(repos, None);
+        state.mode = Mode::RepoSelect;
+        state.repo_list.selected = Some(0);
+        show_help(&mut state);
+
+        let buf = render_app_to_buffer(&mut state, 100, 30);
+        let rendered = buf_to_string(&buf);
+        let marker_count = count_symbol(&buf, "▸");
+
+        assert_eq!(
+            marker_count, 1,
+            "expected only the help list marker while background is inactive:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn test_error_toast_hides_selection_in_repo_list() {
+        let repos = vec![make_repo("alpha"), make_repo("beta")];
+        let mut state = AppState::new(repos, None);
+        state.mode = Mode::RepoSelect;
+        state.repo_list.selected = Some(0);
+        state.error = Some("boom".to_string());
+
+        let buf = render_app_to_buffer(&mut state, 100, 30);
+        let rendered = buf_to_string(&buf);
+        let marker_count = count_symbol(&buf, "▸");
+
+        assert_eq!(
+            marker_count, 0,
+            "expected no selection markers while error toast is visible:\n{rendered}"
+        );
+        assert!(rendered.contains("Error:"), "error toast should be visible");
+    }
+
+    #[test]
+    fn test_error_toast_hides_help_selection() {
+        let repos = vec![make_repo("alpha"), make_repo("beta")];
+        let mut state = AppState::new(repos, None);
+        state.mode = Mode::RepoSelect;
+        show_help(&mut state);
+        state.error = Some("boom".to_string());
+
+        let buf = render_app_to_buffer(&mut state, 100, 30);
+        let rendered = buf_to_string(&buf);
+        let marker_count = count_symbol(&buf, "▸");
+
+        assert_eq!(
+            marker_count, 0,
+            "expected no selection markers in help or background when error toast is visible:\n{rendered}"
+        );
+        assert!(rendered.contains("Error:"), "error toast should be visible");
+    }
+
+    #[test]
+    fn test_help_overlay_dims_background_main_area() {
+        let repos = vec![make_repo("alpha"), make_repo("beta")];
+        let mut state = AppState::new(repos, None);
+        state.mode = Mode::RepoSelect;
+        show_help(&mut state);
+
+        let buf = render_app_to_buffer(&mut state, 100, 30);
+        let cell = buf.cell((1, 1)).expect("cell in main area");
+        assert!(
+            cell.modifier.contains(Modifier::DIM),
+            "expected DIM modifier on background cell when help overlay is visible"
+        );
+    }
+
+    #[test]
+    fn test_error_toast_dims_background_main_area() {
+        let repos = vec![make_repo("alpha"), make_repo("beta")];
+        let mut state = AppState::new(repos, None);
+        state.mode = Mode::RepoSelect;
+        state.error = Some("boom".to_string());
+
+        let buf = render_app_to_buffer(&mut state, 100, 30);
+        let cell = buf.cell((1, 1)).expect("cell in main area");
+        assert!(
+            cell.modifier.contains(Modifier::DIM),
+            "expected DIM modifier on background cell when error toast is visible"
+        );
+    }
+
+    #[test]
+    fn test_draw_mode_confirm_delete_renders_when_state_mode_is_help() {
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+        state.mode = Mode::Help {
+            previous: Box::new(Mode::ConfirmWorktreeDelete {
+                branch_name: "main".to_string(),
+                has_session: true,
+            }),
+        };
+
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let theme = Theme::from_config(&ThemeConfig::default());
+        let keys = KeysConfig::default();
+        let mode = Mode::ConfirmWorktreeDelete {
+            branch_name: "main".to_string(),
+            has_session: true,
+        };
+
+        terminal
+            .draw(|f| {
+                draw_mode(f, f.area(), &mode, &state, &theme, &keys, false);
+            })
+            .unwrap();
+
+        let rendered = buf_to_string(terminal.backend().buffer());
+        assert!(
+            rendered.contains("Confirm delete"),
+            "confirm delete dialog should render from mode argument while state.mode is Help:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("\"main\""),
+            "confirm delete branch name should be visible:\n{rendered}"
+        );
     }
 
     // ── Setup wizard unit tests ──

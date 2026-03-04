@@ -354,6 +354,10 @@ impl TestEnv {
     }
 
     fn launch_kiosk(&self) {
+        self.launch_kiosk_sized(120, 30);
+    }
+
+    fn launch_kiosk_sized(&self, width: u16, height: u16) {
         cleanup_session(&self.tmux_socket, &self.session_name);
         let binary = kiosk_binary();
         Command::new("tmux")
@@ -365,9 +369,9 @@ impl TestEnv {
                 "-s",
                 &self.session_name,
                 "-x",
-                "120",
+                &width.to_string(),
                 "-y",
-                "30",
+                &height.to_string(),
                 &format!(
                     "XDG_CONFIG_HOME={} XDG_STATE_HOME={} KIOSK_NO_ALT_SCREEN=1 PATH={}:$PATH {} ; sleep 2",
                     self.config_dir.to_string_lossy(),
@@ -2471,7 +2475,8 @@ fn test_e2e_setup_wizard_typing_shows_all_matching_completions() {
     fs::create_dir_all(parent.join("Development")).unwrap();
     fs::create_dir_all(parent.join("Documents")).unwrap();
 
-    env.launch_kiosk();
+    // Use a wider viewport so full completion strings fit reliably across OSes.
+    env.launch_kiosk_sized(180, 30);
     wait_for_screen(&env, 3000, |s| s.contains("Welcome to Kiosk"));
     env.send_special("Enter");
     wait_for_screen(&env, 2000, |s| s.contains("Add directory"));
@@ -2481,7 +2486,7 @@ fn test_e2e_setup_wizard_typing_shows_all_matching_completions() {
     // keystrokes before checking completions.
     env.send(&format!("{}/De", parent.display()));
 
-    // Both Desktop and Development match "De" and should be visible
+    // Both Desktop and Development match "De" and should be visible.
     let screen = wait_for_screen(&env, 5000, |s| {
         s.contains("Desktop") && s.contains("Development")
     });

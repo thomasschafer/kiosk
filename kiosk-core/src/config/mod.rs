@@ -163,34 +163,34 @@ pub struct SessionConfig {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(deny_unknown_fields, default)]
 pub struct ThemeConfig {
-    /// Primary accent color (default: "magenta").
+    /// Primary accent color.
     #[serde(deserialize_with = "deserialize_color")]
     pub accent: ThemeColor,
-    /// Secondary accent color (default: "cyan").
+    /// Secondary accent color.
     #[serde(deserialize_with = "deserialize_color")]
     pub secondary: ThemeColor,
-    /// Tertiary accent color (default: "green").
+    /// Tertiary accent color.
     #[serde(deserialize_with = "deserialize_color")]
     pub tertiary: ThemeColor,
-    /// Success/positive color (default: "green").
+    /// Success/positive color.
     #[serde(deserialize_with = "deserialize_color")]
     pub success: ThemeColor,
-    /// Error color (default: "red").
+    /// Error color.
     #[serde(deserialize_with = "deserialize_color")]
     pub error: ThemeColor,
-    /// Warning color (default: "yellow").
+    /// Warning color.
     #[serde(deserialize_with = "deserialize_color")]
     pub warning: ThemeColor,
-    /// Muted/dim text color (default: "`dark_gray`").
+    /// Muted/dim text color.
     #[serde(deserialize_with = "deserialize_color")]
     pub muted: ThemeColor,
-    /// Border color (default: "`dark_gray`").
+    /// Border color.
     #[serde(deserialize_with = "deserialize_color")]
     pub border: ThemeColor,
-    /// Hint/key binding color (default: "blue").
+    /// Hint/key binding color.
     #[serde(deserialize_with = "deserialize_color")]
     pub hint: ThemeColor,
-    /// Foreground color for highlighted/selected items (default: "black").
+    /// Foreground color for highlighted/selected items.
     #[serde(deserialize_with = "deserialize_color")]
     pub highlight_fg: ThemeColor,
 }
@@ -198,28 +198,30 @@ pub struct ThemeConfig {
 /// Single source of truth for theme defaults. Generates the `Default` impl
 /// so adding a field only requires updating one place (plus the struct above).
 macro_rules! theme_defaults {
-    ($($field:ident => $color:ident),* $(,)?) => {
+    ($($field:ident => $value:expr),* $(,)?) => {
         impl Default for ThemeConfig {
             fn default() -> Self {
                 Self {
-                    $($field: ThemeColor::Named(NamedColor::$color)),*
+                    $($field: $value),*
                 }
             }
         }
     };
 }
 
+use NamedColor as N;
+
 theme_defaults! {
-    accent       => Magenta,
-    secondary    => Cyan,
-    tertiary     => Green,
-    success      => Green,
-    error        => Red,
-    warning      => Yellow,
-    muted        => DarkGray,
-    border       => DarkGray,
-    hint         => Blue,
-    highlight_fg => Black,
+    accent       => ThemeColor::Named(N::Magenta),
+    secondary    => ThemeColor::Named(N::Cyan),
+    tertiary     => ThemeColor::Named(N::Green),
+    success      => ThemeColor::Named(N::Green),
+    error        => ThemeColor::Named(N::Red),
+    warning      => ThemeColor::Named(N::Yellow),
+    muted        => ThemeColor::Named(N::DarkGray),
+    border       => ThemeColor::Named(N::DarkGray),
+    hint         => ThemeColor::Named(N::Blue),
+    highlight_fg => ThemeColor::Rgb(0, 0, 0),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -518,10 +520,7 @@ unknown_field = true
         assert_eq!(config.theme.muted, ThemeColor::Named(NamedColor::DarkGray));
         assert_eq!(config.theme.border, ThemeColor::Named(NamedColor::DarkGray));
         assert_eq!(config.theme.hint, ThemeColor::Named(NamedColor::Blue));
-        assert_eq!(
-            config.theme.highlight_fg,
-            ThemeColor::Named(NamedColor::Black)
-        );
+        assert_eq!(config.theme.highlight_fg, ThemeColor::Rgb(0, 0, 0));
     }
 
     #[test]

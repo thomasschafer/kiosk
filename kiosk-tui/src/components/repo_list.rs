@@ -6,10 +6,17 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState},
+    widgets::{Block, Borders, HighlightSpacing, List, ListItem, ListState},
 };
 
-pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, _keys: &KeysConfig) {
+pub fn draw(
+    f: &mut Frame,
+    area: Rect,
+    state: &AppState,
+    theme: &Theme,
+    _keys: &KeysConfig,
+    show_selection: bool,
+) {
     let chunks = Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(area);
 
     // Search bar
@@ -82,10 +89,11 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, _keys: &
                 .fg(theme.highlight_fg)
                 .add_modifier(Modifier::BOLD),
         )
-        .highlight_symbol("▸ ");
+        .highlight_symbol("▸ ")
+        .highlight_spacing(HighlightSpacing::Always);
 
     let mut list_state = ListState::default();
-    list_state.select(state.repo_list.selected);
+    list_state.select(show_selection.then_some(state.repo_list.selected).flatten());
     *list_state.offset_mut() = state.repo_list.scroll_offset;
     f.render_stateful_widget(list, chunks[1], &mut list_state);
 }

@@ -43,7 +43,7 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, _keys: &
             if let Some(branch) = &session.branch {
                 left_spans.push(Span::styled(
                     format!("/{branch}"),
-                    Style::default().fg(theme.muted),
+                    Style::default().fg(theme.secondary),
                 ));
             }
 

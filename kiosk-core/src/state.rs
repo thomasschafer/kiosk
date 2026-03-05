@@ -759,8 +759,7 @@ impl Mode {
                 Command::Quit,
             ],
             Mode::Sessions => &[
-                Command::GoBack,
-                Command::ToggleSessions,
+                Command::SwitchToSession,
                 Command::ShowHelp,
                 Command::Quit,
             ],
@@ -893,6 +892,8 @@ pub struct AppState {
     pub sessions: Vec<SessionEntry>,
     pub sessions_list: SearchableList,
     pub loading_sessions: bool,
+    /// Keep sessions selection pinned to the first item until user interacts.
+    pub sessions_pin_first_selection: bool,
     /// Whether the TUI was launched with --sessions flag
     pub sessions_initial: bool,
     /// Cancel token for the sessions agent poller
@@ -932,6 +933,7 @@ impl AppState {
             sessions: Vec::new(),
             sessions_list: SearchableList::new(0),
             loading_sessions: false,
+            sessions_pin_first_selection: false,
             sessions_initial: false,
             sessions_poller_cancel: None,
         }

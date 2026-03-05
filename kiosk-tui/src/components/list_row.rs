@@ -1,5 +1,7 @@
 use crate::theme::Theme;
-use kiosk_core::{agent::AgentStatus, config::AgentLabelsConfig};
+use kiosk_core::{
+    agent::AgentStatus, config::AgentLabelsConfig, state::sorted_unique_agent_states,
+};
 use ratatui::{style::Style, text::Span};
 use unicode_width::UnicodeWidthChar;
 
@@ -79,14 +81,14 @@ pub fn render_agent_badges(
     labels: &AgentLabelsConfig,
     theme: &Theme,
 ) -> Vec<Span<'static>> {
-    statuses
+    sorted_unique_agent_states(statuses)
         .iter()
         .enumerate()
-        .flat_map(|(i, status)| {
-            let (label, color) = match status.state {
+        .flat_map(|(i, state)| {
+            let (label, color) = match state {
                 kiosk_core::AgentState::Running => (&labels.running, theme.accent),
                 kiosk_core::AgentState::Waiting => (&labels.waiting, theme.warning),
-                kiosk_core::AgentState::Idle => (&labels.idle, theme.muted),
+                kiosk_core::AgentState::Idle => (&labels.idle, theme.secondary),
                 kiosk_core::AgentState::Unknown => (&labels.unknown, theme.hint),
             };
             let mut spans = Vec::new();
@@ -326,5 +328,28 @@ mod tests {
             concat_text(&result),
             concat_text(&right_align_suffix(&left, &right, 20))
         );
+    }
+
+    #[test]
+    fn render_agent_badges_deduplicates_equal_states() {
+        let labels = AgentLabelsConfig::default();
+        let theme = Theme::from_config(&ThemeConfig::default());
+        let statuses = vec![
+            AgentStatus {
+                kind: AgentKind::Codex,
+                state: kiosk_core::AgentState::Idle,
+            },
+            AgentStatus {
+                kind: AgentKind::ClaudeCode,
+                state: kiosk_core::AgentState::Idle,
+            },
+            AgentStatus {
+                kind: AgentKind::CursorAgent,
+                state: kiosk_core::AgentState::Running,
+            },
+        ];
+
+        let badges = render_agent_badges(&statuses, &labels, &theme);
+        assert_eq!(concat_text(&badges), "[IDLE] [RUNNING]");
     }
 }

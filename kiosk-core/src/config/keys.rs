@@ -253,8 +253,8 @@ define_commands! {
     },
     SwitchToSession {
         config_name: "switch_to_session",
-        hint: "switch",
-        description: "Switch to selected session",
+        hint: "open",
+        description: "Open selected session",
     },
 }
 
@@ -668,6 +668,10 @@ impl KeysConfig {
             GeneralCommand::Quit,
         );
         map.insert(
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            GeneralCommand::Quit,
+        );
+        map.insert(
             KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL),
             GeneralCommand::ShowHelp,
         );
@@ -835,10 +839,6 @@ impl KeysConfig {
             KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
             RepoSelectCommand::EnterRepo,
         );
-        map.insert(
-            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-            RepoSelectCommand::Quit,
-        );
         map
     }
 
@@ -867,10 +867,6 @@ impl KeysConfig {
         map.insert(
             KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
             SessionsSelectCommand::SwitchToSession,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-            SessionsSelectCommand::GoBack,
         );
         map
     }
@@ -1451,6 +1447,20 @@ mod tests {
                 .cloned(),
             Some(Command::PageUp)
         );
+    }
+
+    #[test]
+    fn test_default_sessions_bindings() {
+        let config = KeysConfig::default();
+        let keymap = config.keymap_for_mode(&Mode::Sessions);
+
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        let ctrl_s = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL);
+
+        assert_eq!(keymap.get(&enter), Some(&Command::SwitchToSession));
+        assert_eq!(keymap.get(&esc), Some(&Command::Quit));
+        assert_eq!(keymap.get(&ctrl_s), Some(&Command::ToggleSessions));
     }
 
     #[test]

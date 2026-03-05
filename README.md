@@ -240,6 +240,7 @@ Defaults are shown below.
 ```toml
 [keys.general]
 "C-c" = "quit"
+"esc" = "quit"
 "C-h" = "show_help"
 "C-s" = "toggle_sessions"
 
@@ -279,7 +280,6 @@ Defaults are shown below.
 
 [keys.repo_select]
 "enter" = "open_repo"
-"esc" = "quit"
 "tab" = "enter_repo"
 
 [keys.branch_select]
@@ -290,7 +290,6 @@ Defaults are shown below.
 
 [keys.sessions_select]
 "enter" = "switch_to_session"
-"esc" = "go_back"
 
 [keys.modal]
 "enter" = "confirm"

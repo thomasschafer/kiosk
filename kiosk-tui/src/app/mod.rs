@@ -9,6 +9,7 @@ use actions::{
     handle_search_delete_word_forward, handle_search_pop, handle_search_push, handle_setup_add_dir,
     handle_setup_cancel, handle_setup_continue, handle_setup_move_selection,
     handle_setup_tab_complete, handle_show_help, handle_start_new_branch,
+    session_search_items,
 };
 use crossterm::event::{self, Event, KeyEventKind};
 use fuzzy_matcher::{FuzzyMatcher, skim::SkimMatcherV2};
@@ -882,10 +883,19 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             }
         }
         AppEvent::SessionsLoaded { sessions } => {
-            let selected_session_name = selected_session_name(state);
+            let initial_sessions_load = state.loading_sessions;
+            let selected_session_name = if initial_sessions_load {
+                None
+            } else {
+                selected_session_name(state)
+            };
             state.sessions = sessions;
             kiosk_core::state::sort_sessions(&mut state.sessions);
             rebuild_sessions_list(state, selected_session_name);
+            if state.sessions_pin_first_selection && !state.sessions_list.filtered.is_empty() {
+                state.sessions_list.selected = Some(0);
+                state.sessions_list.scroll_offset = 0;
+            }
             state.loading_sessions = false;
         }
 
@@ -901,6 +911,10 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
                 }
                 kiosk_core::state::sort_sessions(&mut state.sessions);
                 rebuild_sessions_list(state, selected_session_name);
+                if state.sessions_pin_first_selection && !state.sessions_list.filtered.is_empty() {
+                    state.sessions_list.selected = Some(0);
+                    state.sessions_list.scroll_offset = 0;
+                }
             }
         }
 
@@ -1054,15 +1068,7 @@ struct ActionContext<'a, T: TmuxProvider + ?Sized + 'static> {
 fn rebuild_sessions_list(state: &mut AppState, selected_session_name: Option<String>) {
     let previous_scroll = state.sessions_list.scroll_offset;
 
-    let search_targets: Vec<String> = state
-        .sessions
-        .iter()
-        .map(|s| {
-            let branch = s.branch.as_deref().unwrap_or("");
-            format!("{} {} {}", s.session_name, s.repo_name, branch)
-        })
-        .collect();
-
+    let search_targets = session_search_items(&state.sessions);
     let names: Vec<&str> = search_targets.iter().map(String::as_str).collect();
     rebuild_filtered_preserving_search(&mut state.sessions_list, &names);
 
@@ -1096,6 +1102,7 @@ fn enter_sessions_view<T: TmuxProvider + ?Sized + 'static>(
 ) {
     state.mode = Mode::Sessions;
     state.loading_sessions = true;
+    state.sessions_pin_first_selection = true;
     state.sessions.clear();
     state.sessions_list = kiosk_core::state::SearchableList::new(0);
     spawn_sessions_discovery(git, tmux, sender, state);
@@ -1108,6 +1115,10 @@ fn process_action<T: TmuxProvider + ?Sized + 'static>(
     state: &mut AppState,
     ctx: &ActionContext<'_, T>,
 ) -> Option<OpenAction> {
+    if state.mode == Mode::Sessions && !matches!(action, Action::ToggleSessions) {
+        state.sessions_pin_first_selection = false;
+    }
+
     // Handle movement and simple actions first
     if handle_movement_actions(&action, state) || handle_simple_actions(&action, state) {
         return None;
@@ -5090,6 +5101,67 @@ mod tests {
     }
 
     #[test]
+    fn test_sessions_loaded_initial_load_selects_first_item() {
+        let mut state = AppState::new(vec![make_repo("alpha")], None);
+        state.mode = Mode::Sessions;
+        state.loading_sessions = true;
+        state.sessions_pin_first_selection = true;
+        state.sessions = vec![make_session("alpha", 10), make_session("beta", 20)];
+        state.sessions_list.filtered = vec![(0, 0), (1, 0)];
+        state.sessions_list.selected = Some(1);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux = Arc::new(MockTmuxProvider::default());
+        let sender = make_sender();
+
+        process_app_event(
+            AppEvent::SessionsLoaded {
+                sessions: vec![make_session("alpha", 50), make_session("beta", 5)],
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+        );
+
+        assert_eq!(state.sessions_list.selected, Some(0));
+        assert_eq!(state.loading_sessions, false);
+    }
+
+    #[test]
+    fn test_session_agent_update_keeps_first_selected_before_user_interaction() {
+        let mut state = AppState::new(vec![make_repo("alpha")], None);
+        state.mode = Mode::Sessions;
+        state.sessions_pin_first_selection = true;
+        state.sessions = vec![make_session("beta", 5), make_session("alpha", 50)];
+        state.sessions_list.filtered = vec![(0, 0), (1, 0)];
+        state.sessions_list.selected = Some(0);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux = Arc::new(MockTmuxProvider::default());
+        let sender = make_sender();
+
+        process_app_event(
+            AppEvent::SessionAgentStatesUpdated {
+                states: vec![(
+                    "alpha".to_string(),
+                    vec![kiosk_core::agent::AgentStatus {
+                        kind: kiosk_core::agent::AgentKind::Codex,
+                        state: kiosk_core::agent::AgentState::Idle,
+                    }],
+                )],
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+        );
+
+        assert_eq!(state.sessions_list.selected, Some(0));
+        assert_eq!(state.sessions[0].session_name, "alpha");
+    }
+
+    #[test]
     fn test_sessions_loaded_preserves_search_query() {
         let mut state = AppState::new(vec![make_repo("alpha")], None);
         state.mode = Mode::Sessions;
@@ -5115,6 +5187,21 @@ mod tests {
 
         assert_eq!(state.sessions_list.input.text, "beta");
         assert_eq!(state.sessions_list.input.cursor, 4);
+    }
+
+    #[test]
+    fn test_sessions_footer_shows_open_help_quit_without_sessions_toggle() {
+        let keys = KeysConfig::default();
+        let hints = build_footer_hints(&Mode::Sessions, &keys);
+
+        assert_eq!(
+            hints,
+            vec![
+                ("enter".to_string(), "open"),
+                ("C-h".to_string(), "help"),
+                ("C-c".to_string(), "quit"),
+            ]
+        );
     }
 
     #[test]

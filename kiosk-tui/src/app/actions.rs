@@ -4,8 +4,8 @@ use kiosk_core::{
     git::GitProvider,
     pending_delete::{PendingWorktreeDelete, save_pending_worktree_deletes},
     state::{
-        AppState, BaseBranchSelection, HelpOverlayState, Mode, SearchableList, SetupStep,
-        worktree_dir,
+        AppState, BaseBranchSelection, HelpOverlayState, Mode, SearchableList, SessionEntry,
+        SetupStep, worktree_dir,
     },
     tmux::TmuxProvider,
 };
@@ -16,6 +16,16 @@ use super::spawn::{
     spawn_worktree_creation, spawn_worktree_removal,
 };
 use super::{EventSender, OpenAction};
+
+pub(super) fn session_search_items(sessions: &[SessionEntry]) -> Vec<String> {
+    sessions
+        .iter()
+        .map(|session| {
+            let branch = session.branch.as_deref().unwrap_or("");
+            format!("{} {} {}", session.session_name, session.repo_name, branch)
+        })
+        .collect()
+}
 
 pub(super) fn handle_go_back(state: &mut AppState) {
     match state.mode.clone() {
@@ -495,6 +505,10 @@ fn update_active_filter(state: &mut AppState, matcher: &SkimMatcherV2) {
             let names: Vec<String> = state.branches.iter().map(|b| b.name.clone()).collect();
             apply_fuzzy_filter(&mut state.branch_list, &names, matcher);
         }
+        Mode::Sessions => {
+            let items = session_search_items(&state.sessions);
+            apply_fuzzy_filter(&mut state.sessions_list, &items, matcher);
+        }
         Mode::SelectBaseBranch => {
             if let Some(flow) = &mut state.base_branch_selection {
                 let bases = flow.bases.clone();
@@ -557,6 +571,7 @@ fn apply_fuzzy_filter(list: &mut SearchableList, items: &[String], matcher: &Ski
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn make_list(search: &str) -> SearchableList {
         SearchableList {
@@ -661,5 +676,50 @@ mod tests {
 
         let names = filtered_names(&list, &items);
         assert_eq!(names, vec!["afoo", "bfoo", "cfoo"]);
+    }
+
+    #[test]
+    fn sessions_mode_search_filters_session_list() {
+        let mut state = AppState::new(Vec::new(), None);
+        state.mode = Mode::Sessions;
+        state.sessions = vec![
+            SessionEntry {
+                session_name: "scooter--add-scoop-to-readme".to_string(),
+                repo_name: "scooter".to_string(),
+                branch: Some("add-scoop-to-readme".to_string()),
+                path: PathBuf::from("/tmp/scooter-add-scoop"),
+                agent_statuses: Vec::new(),
+                session_activity: 10,
+                attached: false,
+            },
+            SessionEntry {
+                session_name: "scooter--main".to_string(),
+                repo_name: "scooter".to_string(),
+                branch: Some("main".to_string()),
+                path: PathBuf::from("/tmp/scooter-main"),
+                agent_statuses: Vec::new(),
+                session_activity: 20,
+                attached: false,
+            },
+            SessionEntry {
+                session_name: "kiosk--feat-agent-session-switcher".to_string(),
+                repo_name: "kiosk".to_string(),
+                branch: Some("feat-agent-session-switcher".to_string()),
+                path: PathBuf::from("/tmp/kiosk-feat"),
+                agent_statuses: Vec::new(),
+                session_activity: 30,
+                attached: false,
+            },
+        ];
+        state.sessions_list = SearchableList::new(state.sessions.len());
+
+        let matcher = SkimMatcherV2::default();
+        for c in "add-scoop".chars() {
+            handle_search_push(&mut state, &matcher, c);
+        }
+
+        assert_eq!(state.sessions_list.filtered.len(), 1);
+        assert_eq!(state.sessions_list.filtered[0].0, 0);
+        assert_eq!(state.sessions_list.selected, Some(0));
     }
 }

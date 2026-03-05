@@ -107,3 +107,45 @@ fn command_to_action(command: &Command, state: &AppState) -> Option<Action> {
         },
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode as CtKeyCode, KeyEvent as CtKeyEvent, KeyModifiers as CtMods};
+
+    #[test]
+    fn ctrl_s_in_sessions_resolves_to_toggle_sessions() {
+        let mut state = AppState::new(Vec::new(), None);
+        state.mode = Mode::Sessions;
+        let keys = KeysConfig::default();
+
+        let action = resolve_action(
+            CtKeyEvent::new(CtKeyCode::Char('s'), CtMods::CONTROL),
+            &state,
+            &keys,
+        );
+
+        assert!(
+            matches!(action, Some(Action::ToggleSessions)),
+            "Expected Ctrl+S in sessions mode to resolve to ToggleSessions, got {action:?}"
+        );
+    }
+
+    #[test]
+    fn esc_in_sessions_resolves_to_quit() {
+        let mut state = AppState::new(Vec::new(), None);
+        state.mode = Mode::Sessions;
+        let keys = KeysConfig::default();
+
+        let action = resolve_action(
+            CtKeyEvent::new(CtKeyCode::Esc, CtMods::NONE),
+            &state,
+            &keys,
+        );
+
+        assert!(
+            matches!(action, Some(Action::Quit)),
+            "Expected Esc in sessions mode to resolve to Quit, got {action:?}"
+        );
+    }
+}

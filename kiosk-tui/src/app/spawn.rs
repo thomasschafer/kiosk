@@ -1,6 +1,6 @@
 use kiosk_core::{
-    agent::{self, AgentStatus},
-    event::AppEvent,
+    agent,
+    event::{AppEvent, SessionRuntimeUpdate},
     git::GitProvider,
     state::BranchEntry,
 };
@@ -412,8 +412,8 @@ pub(super) fn spawn_agent_status_poller<T: TmuxProvider + ?Sized + 'static>(
 
             // Adapt interval: use fast polling when any agent is active,
             // slow polling when all are idle/unknown.
-            let any_active = states.iter().any(|(_, status)| {
-                status.as_ref().is_some_and(|s| {
+            let any_active = states.iter().any(|update| {
+                update.agent_status.as_ref().is_some_and(|s| {
                     matches!(
                         s.state,
                         agent::AgentState::Running | agent::AgentState::Waiting
@@ -445,14 +445,29 @@ pub(super) fn spawn_agent_status_poller<T: TmuxProvider + ?Sized + 'static>(
 fn detect_agent_statuses<T: TmuxProvider + ?Sized>(
     tmux: &T,
     sessions: &[String],
-) -> Vec<(String, Option<AgentStatus>)> {
+) -> Vec<SessionRuntimeUpdate> {
+    let sessions_with_activity: HashMap<String, u64> =
+        tmux.list_sessions_with_activity().into_iter().collect();
+
     // Batch: fetch all pane info + session activity in a single tmux call,
     // then detect agents using the pre-fetched data. Only capture_pane_content
     // still requires per-pane calls.
     let all_pane_data = tmux.list_all_panes_with_activity();
     agent::detect_for_sessions_batched(tmux, sessions, &all_pane_data)
         .into_iter()
-        .map(|(name, result)| (name, result.map(|r| r.status)))
+        .map(|(session_name, result)| {
+            let session_activity_ts = sessions_with_activity
+                .get(&session_name)
+                .copied()
+                .or_else(|| all_pane_data.get(&session_name).map(|d| d.session_activity));
+            SessionRuntimeUpdate {
+                session_exists: sessions_with_activity.contains_key(&session_name)
+                    || all_pane_data.contains_key(&session_name),
+                session_name,
+                session_activity_ts,
+                agent_status: result.map(|r| r.status),
+            }
+        })
         .collect()
 }
 
@@ -469,6 +484,7 @@ mod tests {
     fn poller_detects_wrapper_command_via_pane_title_for_claude_waiting() {
         let mut tmux = MockTmuxProvider::default();
         let session = "kiosk--feat-agent-status".to_string();
+        tmux.sessions_with_activity = vec![(session.clone(), 123)];
 
         tmux.pane_info.insert(
             session.clone(),
@@ -490,11 +506,29 @@ mod tests {
 
         let states = detect_agent_statuses(&tmux, std::slice::from_ref(&session));
         assert_eq!(states.len(), 1);
-        assert_eq!(states[0].0, session);
-        let status = states[0]
-            .1
+        let update = &states[0];
+        assert_eq!(update.session_name, session);
+        assert!(update.session_exists);
+        assert!(update.session_activity_ts.is_some());
+        let status = update
+            .agent_status
             .expect("wrapper command should resolve to Claude via pane title");
         assert_eq!(status.kind, AgentKind::ClaudeCode);
         assert_eq!(status.state, AgentState::Waiting);
+    }
+
+    #[test]
+    fn poller_reports_session_exists_from_session_list_without_panes() {
+        let mut tmux = MockTmuxProvider::default();
+        let session = "kiosk--empty-session".to_string();
+        tmux.sessions_with_activity = vec![(session.clone(), 456)];
+
+        let states = detect_agent_statuses(&tmux, std::slice::from_ref(&session));
+        assert_eq!(states.len(), 1);
+        let update = &states[0];
+        assert_eq!(update.session_name, session);
+        assert!(update.session_exists);
+        assert_eq!(update.session_activity_ts, Some(456));
+        assert_eq!(update.agent_status, None);
     }
 }

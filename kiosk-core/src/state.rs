@@ -381,6 +381,14 @@ pub struct BranchEntry {
     pub agent_status: Option<AgentStatus>,
 }
 
+/// Snapshot of runtime tmux/session state for a single session name.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SessionRuntimeState {
+    pub exists: bool,
+    pub activity_ts: Option<u64>,
+    pub agent_status: Option<AgentStatus>,
+}
+
 impl BranchEntry {
     /// Build branch entries from a repo's branches, worktrees, and active tmux sessions
     /// (unsorted).
@@ -784,6 +792,8 @@ pub struct AppState {
     active_list_page_rows: usize,
     pub pending_worktree_deletes: Vec<PendingWorktreeDelete>,
     pub session_activity: HashMap<String, u64>,
+    /// Latest runtime snapshot keyed by tmux session name.
+    pub session_runtime: HashMap<String, SessionRuntimeState>,
     /// Cancel token for the active agent status poller thread.
     /// Setting this flag stops the current poller; clearing it (via `cancel_agent_poller`)
     /// prepares for a new one.
@@ -823,6 +833,7 @@ impl AppState {
             active_list_page_rows: 10,
             pending_worktree_deletes: Vec::new(),
             session_activity: HashMap::new(),
+            session_runtime: HashMap::new(),
             agent_poller_cancel: None,
             agent_enabled: true,
             agent_poll_interval: std::time::Duration::from_millis(

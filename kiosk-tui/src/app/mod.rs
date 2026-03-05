@@ -513,6 +513,11 @@ fn branch_session_names(state: &AppState) -> Vec<String> {
     sessions
 }
 
+fn session_belongs_to_repo(repo: &kiosk_core::git::Repo, session_name: &str) -> bool {
+    session_name == repo.session_name
+        || session_name.starts_with(&format!("{}--", repo.session_name))
+}
+
 fn seed_session_runtime_from_branches(
     state: &mut AppState,
     branches: &[BranchEntry],
@@ -544,6 +549,10 @@ fn seed_session_runtime_from_branches(
             },
         );
     }
+
+    state.session_runtime.retain(|session_name, _| {
+        !session_belongs_to_repo(repo, session_name) || fresh.contains_key(session_name)
+    });
 
     for (session_name, runtime) in fresh {
         state.session_runtime.insert(session_name, runtime);
@@ -1217,8 +1226,10 @@ mod tests {
         state.selected_repo_idx = Some(0);
         state.mode = Mode::BranchSelect;
 
-        let wt_path = std::path::PathBuf::from("/tmp/wt");
+        let wt_path = std::path::PathBuf::from("/tmp/worktrees/my-repo--feat-test");
         let session_name = state.repos[0].tmux_session_name(&wt_path);
+        let stale_session_name = "my-repo--feat-stale".to_string();
+        let other_repo_session = "other-repo--feat/test".to_string();
         state.session_runtime.insert(
             session_name.clone(),
             SessionRuntimeState {
@@ -1228,6 +1239,22 @@ mod tests {
                     kind: kiosk_core::agent::AgentKind::OpenCode,
                     state: kiosk_core::agent::AgentState::Running,
                 }),
+            },
+        );
+        state.session_runtime.insert(
+            stale_session_name.clone(),
+            SessionRuntimeState {
+                exists: true,
+                activity_ts: Some(1111),
+                agent_status: None,
+            },
+        );
+        state.session_runtime.insert(
+            other_repo_session.clone(),
+            SessionRuntimeState {
+                exists: true,
+                activity_ts: Some(2222),
+                agent_status: None,
             },
         );
 
@@ -1263,6 +1290,11 @@ mod tests {
         assert_eq!(state.branches[0].agent_status, None);
         assert!(!state.session_runtime[&session_name].exists);
         assert_eq!(state.session_runtime[&session_name].agent_status, None);
+        assert!(!state.session_runtime.contains_key(&stale_session_name));
+        assert_eq!(
+            state.session_runtime[&other_repo_session].activity_ts,
+            Some(2222)
+        );
     }
 
     #[test]

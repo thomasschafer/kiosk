@@ -16,50 +16,32 @@ All three parts are **implemented and passing** (38 tests, clippy clean, fmt cle
 
 ### ✅ Part 1: `kiosk next` CLI Command (Done)
 
-Commit: `9c848ed`, refined in `c2334fb`
+- Attemps to choose session (other than current) as follows (essentially round robin with Waiting > Idle, ignore other statuses):
+  - If there is a Waiting session, jump to the oldest by `session_activity`
+  - Else, if there is an Idle session, jump to the oldest by `session_activity`
+  - Else, don't change, show an error or message
+- Never switches to the current session if there is another session that is either Waiting or Idle
+- `--json` output supported
 
-- Lists all kiosk-managed tmux sessions, runs batched agent detection
-- Filters to Waiting/Idle agents, picks oldest `session_activity` (stateless round-robin)
-- Skips current session, `--json` output supported
-- `TmuxProvider::current_session_name()` added
+### ✅ Part 2: Sessions TUI View (Done)
 
-### ✅ Part 2: Multi-Status Detection (Done)
-
-Commit: `bdc0d38`
-
-- `detect_all_for_session` / `detect_all_for_sessions_batched` in `agent/mod.rs`
-- `BranchEntry.agent_statuses: Vec<AgentStatus>` (was `Option<AgentStatus>`)
-- CLI formatters and TUI branch picker updated for multiple badges
-
-### ✅ Part 3: Sessions TUI View (Done)
-
-Commit: `6fd1704`
-
-- New `sessions_view.rs` component (197 lines) with `SearchableList` pattern
-- `Mode::Sessions` variant, toggled via configurable `toggle_sessions` key
-- `kiosk --sessions` / `kiosk -s` flag to open directly into sessions view
-- Cross-repo agent poller (`spawn_sessions_agent_poller`) with cancellation token
-- Sort: Waiting > Idle > Running > No agent, then by oldest activity
+- A full ordered view of all sessions
+- Sort: Waiting > Idle > Running > No agent, then by activity recency within groups (newest first, unlike `kiosk next` which filters for oldest first within groups)
 - Enter to switch, Esc to go back, search/filter supported
 
 ## Still To Do
 
 - [ ] Manual QA with real agent sessions (multiple agents running across worktrees)
 - [ ] Update README with sessions view documentation and keybinding examples
-- [ ] Consider `kiosk next` tmux keybinding recipe in README
-- [ ] Merge `feat/agent-status` into `main` first (this branch depends on it)
-- [ ] Readme generation check (`nix develop -c cargo run -p xtask -- readme --check`)
 
 ## Resolved Decisions
 
-- **Sort order**: Waiting > Idle > Running > No agent (Idle above Running because Idle includes potential questions — see #33)
-- **`kiosk next` includes Idle**: Yes, because Idle includes agents that may have asked questions
+- **Sort order**: Waiting > Idle > Running > No agent (Idle above Running because Idle includes potential questions — see issue #33)
+- **`kiosk next` includes Idle**: Idle includes agents that may have asked questions
 - **Round-robin strategy**: Stateless, using tmux `session_activity` timestamps (oldest first within priority group)
-- **Skip current session**: `kiosk next` only switches to a *different* session
+- **Skip current session**: `kiosk next` only switches to a *different* session, if one exists, otherwise shows message saying no session to jump to
 - **Sessions view architecture**: New standalone component (not branch picker reuse)
-- **`kiosk next` requires tmux**: Yes, like `open` without `--no-switch`
-- **Non-kiosk sessions**: Not shown in sessions view
-- **`Unknown` state**: Not eligible for `kiosk next`
+- **`Running` and `Unknown` states**: Not eligible for `kiosk next`
 
 ## Related
 

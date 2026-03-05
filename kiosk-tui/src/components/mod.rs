@@ -16,6 +16,7 @@ pub mod branch_picker;
 pub mod dialog;
 pub mod error_toast;
 pub mod help;
+pub mod list_row;
 pub mod new_branch;
 pub mod path_input;
 pub mod repo_list;

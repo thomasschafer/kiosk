@@ -702,11 +702,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             }
             // If --sessions flag was set, enter sessions view now
             if state.sessions_initial && state.mode == Mode::RepoSelect {
-                state.mode = Mode::Sessions;
-                state.loading_sessions = true;
-                state.sessions.clear();
-                state.sessions_list = kiosk_core::state::SearchableList::new(0);
-                spawn_sessions_discovery(git, tmux, sender, state);
+                enter_sessions_view(state, git, tmux, sender);
             }
         }
         AppEvent::SessionActivityLoaded { session_activity } => {
@@ -881,17 +877,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
         AppEvent::SessionsLoaded { sessions } => {
             state.sessions = sessions;
             kiosk_core::state::sort_sessions(&mut state.sessions);
-            let search_targets: Vec<String> = state
-                .sessions
-                .iter()
-                .map(|s| {
-                    let branch = s.branch.as_deref().unwrap_or("");
-                    format!("{} {} {}", s.session_name, s.repo_name, branch)
-                })
-                .collect();
-            state.sessions_list.reset(state.sessions.len());
-            let names: Vec<&str> = search_targets.iter().map(String::as_str).collect();
-            rebuild_filtered_preserving_search(&mut state.sessions_list, &names);
+            rebuild_sessions_list(state);
             state.loading_sessions = false;
         }
 
@@ -905,17 +891,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
                     }
                 }
                 kiosk_core::state::sort_sessions(&mut state.sessions);
-                let search_targets: Vec<String> = state
-                    .sessions
-                    .iter()
-                    .map(|s| {
-                        let branch = s.branch.as_deref().unwrap_or("");
-                        format!("{} {} {}", s.session_name, s.repo_name, branch)
-                    })
-                    .collect();
-                state.sessions_list.reset(state.sessions.len());
-                let names: Vec<&str> = search_targets.iter().map(String::as_str).collect();
-                rebuild_filtered_preserving_search(&mut state.sessions_list, &names);
+                rebuild_sessions_list(state);
             }
         }
 
@@ -1068,6 +1044,34 @@ struct ActionContext<'a, T: TmuxProvider + ?Sized + 'static> {
 
 #[allow(clippy::needless_pass_by_value)]
 #[allow(clippy::too_many_lines)]
+fn rebuild_sessions_list(state: &mut AppState) {
+    let search_targets: Vec<String> = state
+        .sessions
+        .iter()
+        .map(|s| {
+            let branch = s.branch.as_deref().unwrap_or("");
+            format!("{} {} {}", s.session_name, s.repo_name, branch)
+        })
+        .collect();
+    state.sessions_list.reset(state.sessions.len());
+    let names: Vec<&str> = search_targets.iter().map(String::as_str).collect();
+    rebuild_filtered_preserving_search(&mut state.sessions_list, &names);
+}
+
+fn enter_sessions_view<T: TmuxProvider + ?Sized + 'static>(
+    state: &mut AppState,
+    git: &Arc<dyn GitProvider>,
+    tmux: &Arc<T>,
+    sender: &EventSender,
+) {
+    state.mode = Mode::Sessions;
+    state.loading_sessions = true;
+    state.sessions.clear();
+    state.sessions_list = kiosk_core::state::SearchableList::new(0);
+    spawn_sessions_discovery(git, tmux, sender, state);
+}
+
+#[allow(clippy::too_many_lines)]
 fn process_action<T: TmuxProvider + ?Sized + 'static>(
     action: Action,
     state: &mut AppState,
@@ -1184,11 +1188,7 @@ fn process_action<T: TmuxProvider + ?Sized + 'static>(
                 state.cancel_sessions_poller();
                 state.mode = Mode::RepoSelect;
             } else {
-                state.mode = Mode::Sessions;
-                state.loading_sessions = true;
-                state.sessions.clear();
-                state.sessions_list = kiosk_core::state::SearchableList::new(0);
-                spawn_sessions_discovery(ctx.git, ctx.tmux, ctx.sender, state);
+                enter_sessions_view(state, ctx.git, ctx.tmux, ctx.sender);
             }
         }
 

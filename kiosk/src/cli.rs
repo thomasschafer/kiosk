@@ -200,6 +200,7 @@ struct NextOutput {
     session: String,
     agent_state: String,
 }
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 struct DeleteOutput {
     deleted: bool,
@@ -1142,6 +1143,21 @@ fn format_table_with_optional_agent(
     out
 }
 
+fn format_agent_badges(
+    statuses: &[kiosk_core::AgentStatus],
+    labels: &kiosk_core::config::AgentLabelsConfig,
+) -> String {
+    if statuses.is_empty() {
+        "-".to_string()
+    } else {
+        statuses
+            .iter()
+            .map(|s| agent_state_label(s.state, labels))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
 fn format_branch_table(
     entries: &[BranchEntry],
     labels: &kiosk_core::config::AgentLabelsConfig,
@@ -1170,17 +1186,7 @@ fn format_branch_table(
         .collect();
     let agent_values: Vec<String> = entries
         .iter()
-        .map(|e| {
-            if e.agent_statuses.is_empty() {
-                "-".to_string()
-            } else {
-                e.agent_statuses
-                    .iter()
-                    .map(|s| agent_state_label(s.state, labels))
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            }
-        })
+        .map(|e| format_agent_badges(&e.agent_statuses, labels))
         .collect();
     format_table_with_optional_agent(
         &[("branch", 0), ("stat", 4), ("worktree", 0)],
@@ -1222,17 +1228,7 @@ fn format_session_table(
         .collect();
     let agent_values: Vec<String> = rows
         .iter()
-        .map(|r| {
-            if r.agent_statuses.is_empty() {
-                "-".to_string()
-            } else {
-                r.agent_statuses
-                    .iter()
-                    .map(|s| agent_state_label(s.state, labels))
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            }
-        })
+        .map(|r| format_agent_badges(&r.agent_statuses, labels))
         .collect();
     format_table_with_optional_agent(
         &[

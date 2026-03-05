@@ -298,12 +298,7 @@ fn detect_all_from_pane_data(
     }
 
     // Sort by attention priority descending (Waiting first)
-    results.sort_by(|a, b| {
-        b.status
-            .state
-            .attention_priority()
-            .cmp(&a.status.state.attention_priority())
-    });
+    results.sort_by_key(|r| std::cmp::Reverse(r.status.state.attention_priority()));
     results
 }
 

@@ -298,7 +298,6 @@ fn main() -> ExitCode {
 #[allow(clippy::too_many_lines)]
 fn dispatch_command(
     sessions: bool,
-
     command: Option<Commands>,
     config: &config::Config,
     git: &Arc<dyn GitProvider>,

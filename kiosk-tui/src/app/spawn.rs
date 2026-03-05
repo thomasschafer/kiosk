@@ -606,8 +606,10 @@ fn spawn_sessions_agent_poller<T: TmuxProvider + ?Sized + 'static>(
     thread::spawn(move || {
         let is_cancelled =
             || cancel.load(Ordering::Relaxed) || sender.cancel.load(Ordering::Relaxed);
+        let mut current_interval = base_interval;
         loop {
             // Sleep first since we already did an initial detection
+<<<<<<< HEAD
             let states_peek = detect_agent_statuses(&*tmux, &session_names);
             let any_active = states_peek.iter().any(|update| {
                 update.agent_statuses.iter().any(|s| {
@@ -625,6 +627,8 @@ fn spawn_sessions_agent_poller<T: TmuxProvider + ?Sized + 'static>(
             };
 
             // Sleep in small increments
+=======
+>>>>>>> 5a3eae0 (Refactor: reduce duplication and small cleanups)
             let mut remaining = current_interval;
             while !remaining.is_zero() {
                 if is_cancelled() {
@@ -639,7 +643,25 @@ fn spawn_sessions_agent_poller<T: TmuxProvider + ?Sized + 'static>(
                 return;
             }
 
+<<<<<<< HEAD
             let states = session_agent_states(detect_agent_statuses(&*tmux, &session_names));
+=======
+            let states = detect_agent_statuses(&*tmux, &session_names);
+            let any_active = states.iter().any(|(_, statuses)| {
+                statuses.iter().any(|s| {
+                    matches!(
+                        s.state,
+                        kiosk_core::agent::AgentState::Running
+                            | kiosk_core::agent::AgentState::Waiting
+                    )
+                })
+            });
+            current_interval = if any_active {
+                base_interval
+            } else {
+                idle_interval
+            };
+>>>>>>> 5a3eae0 (Refactor: reduce duplication and small cleanups)
             sender.send(AppEvent::SessionAgentStatesUpdated { states });
         }
     });

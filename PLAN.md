@@ -19,6 +19,7 @@ All three parts are **implemented and passing** (38 tests, clippy clean, fmt cle
 - Attemps to choose session (other than current) as follows (essentially round robin with Waiting > Idle, ignore other statuses):
   - If there is a Waiting session, jump to the oldest by `session_activity`
   - Else, if there is an Idle session, jump to the oldest by `session_activity`
+  - Else, if there is a Running session, jump to the oldest by `session_activity`
   - Else, don't change, show an error or message
 - Never switches to the current session if there is another session that is either Waiting or Idle
 - `--json` output supported

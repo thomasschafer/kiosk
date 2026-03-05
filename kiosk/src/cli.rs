@@ -3318,7 +3318,7 @@ mod tests {
                 vec![kiosk_core::tmux::provider::PaneInfo {
                     pane_id: pane_id.clone(),
                     command: command.to_string(),
-                    pid: 50000 + i as u32,
+                    pid: 50000 + u32::try_from(i).unwrap(),
                 }],
             );
             pane_content.insert(pane_id, content.to_string());
@@ -3330,7 +3330,7 @@ mod tests {
                 let branch = session.strip_prefix("demo--").unwrap_or(session);
                 let wt = Worktree {
                     path: PathBuf::from(format!("/tmp/.kiosk_worktrees/{session}")),
-                    branch: Some(branch.replace('-', "/").to_string()),
+                    branch: Some(branch.replace('-', "/")),
                     is_main: false,
                 };
                 worktrees.push(wt.clone());

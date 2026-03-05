@@ -470,68 +470,11 @@ fn detect_agent_statuses<T: TmuxProvider + ?Sized>(
         .collect()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::detect_agent_statuses;
-    use kiosk_core::{
-        agent::{AgentKind, AgentState},
-        tmux::{mock::MockTmuxProvider, provider::PaneInfo},
-    };
-
-    #[allow(clippy::similar_names)]
-    #[test]
-    fn poller_detects_wrapper_command_via_pane_title_for_claude_waiting() {
-        let mut tmux = MockTmuxProvider::default();
-        let session = "kiosk--feat-agent-status".to_string();
-        tmux.sessions_with_activity = vec![(session.clone(), 123)];
-
-        tmux.pane_info.insert(
-            session.clone(),
-            vec![PaneInfo {
-                pane_id: "%149".to_string(),
-                command: "2.1.63".to_string(),
-                pid: 82078,
-            }],
-        );
-        tmux.pane_titles
-            .insert("%149".to_string(), "✳ Claude Code".to_string());
-
-        let history = (1..=120)
-            .map(|i| format!("line {i}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let content = format!("{history}\nBash command\nDo you want to proceed?\n❯ 1. Yes\n2. No");
-        tmux.pane_content.insert("%149".to_string(), content);
-
-        let states = detect_agent_statuses(&tmux, std::slice::from_ref(&session));
-        assert_eq!(states.len(), 1);
-        let update = &states[0];
-        assert_eq!(update.session_name, session);
-        assert!(update.session_exists);
-        assert!(update.session_activity_ts.is_some());
-        assert!(
-            !update.agent_statuses.is_empty(),
-            "wrapper command should resolve to Claude via pane title"
-        );
-        let status = &update.agent_statuses[0];
-        assert_eq!(status.kind, AgentKind::ClaudeCode);
-        assert_eq!(status.state, AgentState::Waiting);
-    }
-
-    #[test]
-    fn poller_reports_session_exists_from_session_list_without_panes() {
-        let mut tmux = MockTmuxProvider::default();
-        let session = "kiosk--empty-session".to_string();
-        tmux.sessions_with_activity = vec![(session.clone(), 456)];
-
-        let states = detect_agent_statuses(&tmux, std::slice::from_ref(&session));
-        assert_eq!(states.len(), 1);
-        let update = &states[0];
-        assert_eq!(update.session_name, session);
-        assert!(update.session_exists);
-        assert_eq!(update.session_activity_ts, Some(456));
-        assert!(update.agent_statuses.is_empty());
-    }
+fn session_agent_states(updates: Vec<SessionRuntimeUpdate>) -> Vec<(String, Vec<AgentStatus>)> {
+    updates
+        .into_iter()
+        .map(|update| (update.session_name, update.agent_statuses))
+        .collect()
 }
 
 /// Spawn background session discovery for the sessions view.
@@ -632,7 +575,7 @@ pub(super) fn spawn_sessions_discovery<T: TmuxProvider + ?Sized + 'static>(
 
         // Now do initial agent detection
         if !session_names.is_empty() {
-            let states = detect_agent_statuses(&*tmux_clone, &session_names);
+            let states = session_agent_states(detect_agent_statuses(&*tmux_clone, &session_names));
             sender_clone.send(AppEvent::SessionAgentStatesUpdated { states });
         }
 
@@ -666,8 +609,8 @@ fn spawn_sessions_agent_poller<T: TmuxProvider + ?Sized + 'static>(
         loop {
             // Sleep first since we already did an initial detection
             let states_peek = detect_agent_statuses(&*tmux, &session_names);
-            let any_active = states_peek.iter().any(|(_, statuses)| {
-                statuses.iter().any(|s| {
+            let any_active = states_peek.iter().any(|update| {
+                update.agent_statuses.iter().any(|s| {
                     matches!(
                         s.state,
                         kiosk_core::agent::AgentState::Running
@@ -696,8 +639,72 @@ fn spawn_sessions_agent_poller<T: TmuxProvider + ?Sized + 'static>(
                 return;
             }
 
-            let states = detect_agent_statuses(&*tmux, &session_names);
+            let states = session_agent_states(detect_agent_statuses(&*tmux, &session_names));
             sender.send(AppEvent::SessionAgentStatesUpdated { states });
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::detect_agent_statuses;
+    use kiosk_core::{
+        agent::{AgentKind, AgentState},
+        tmux::{mock::MockTmuxProvider, provider::PaneInfo},
+    };
+
+    #[allow(clippy::similar_names)]
+    #[test]
+    fn poller_detects_wrapper_command_via_pane_title_for_claude_waiting() {
+        let mut tmux = MockTmuxProvider::default();
+        let session = "kiosk--feat-agent-status".to_string();
+        tmux.sessions_with_activity = vec![(session.clone(), 123)];
+
+        tmux.pane_info.insert(
+            session.clone(),
+            vec![PaneInfo {
+                pane_id: "%149".to_string(),
+                command: "2.1.63".to_string(),
+                pid: 82078,
+            }],
+        );
+        tmux.pane_titles
+            .insert("%149".to_string(), "✳ Claude Code".to_string());
+
+        let history = (1..=120)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let content = format!("{history}\nBash command\nDo you want to proceed?\n❯ 1. Yes\n2. No");
+        tmux.pane_content.insert("%149".to_string(), content);
+
+        let states = detect_agent_statuses(&tmux, std::slice::from_ref(&session));
+        assert_eq!(states.len(), 1);
+        let update = &states[0];
+        assert_eq!(update.session_name, session);
+        assert!(update.session_exists);
+        assert!(update.session_activity_ts.is_some());
+        assert!(
+            !update.agent_statuses.is_empty(),
+            "wrapper command should resolve to Claude via pane title"
+        );
+        let status = &update.agent_statuses[0];
+        assert_eq!(status.kind, AgentKind::ClaudeCode);
+        assert_eq!(status.state, AgentState::Waiting);
+    }
+
+    #[test]
+    fn poller_reports_session_exists_from_session_list_without_panes() {
+        let mut tmux = MockTmuxProvider::default();
+        let session = "kiosk--empty-session".to_string();
+        tmux.sessions_with_activity = vec![(session.clone(), 456)];
+
+        let states = detect_agent_statuses(&tmux, std::slice::from_ref(&session));
+        assert_eq!(states.len(), 1);
+        let update = &states[0];
+        assert_eq!(update.session_name, session);
+        assert!(update.session_exists);
+        assert_eq!(update.session_activity_ts, Some(456));
+        assert!(update.agent_statuses.is_empty());
+    }
 }

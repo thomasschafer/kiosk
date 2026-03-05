@@ -173,7 +173,7 @@ pub(super) fn handle_open_branch(
                 if let Some(wt_path) = &branch.worktree_path {
                     let session_name = repo.tmux_session_name(wt_path);
                     return Some(OpenAction::Open {
-                        path: wt_path.clone(),
+                        path: Some(wt_path.clone()),
                         session_name,
                         split_command: state.split_command.clone(),
                     });

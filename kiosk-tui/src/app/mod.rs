@@ -46,15 +46,13 @@ use std::{
 /// What to do after the TUI exits
 pub enum OpenAction {
     Open {
-        path: PathBuf,
+        path: Option<PathBuf>,
         session_name: String,
         split_command: Option<String>,
     },
     /// Setup wizard completed — dirs are stored in `AppState.setup`
     SetupComplete,
     Quit,
-    /// Switch to an existing tmux session
-    SwitchSession(String),
 }
 
 /// Handle for dispatching background work
@@ -738,7 +736,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
         }
         AppEvent::WorktreeCreated { path, session_name } => {
             return Some(OpenAction::Open {
-                path,
+                path: Some(path),
                 session_name,
                 split_command: state.split_command.clone(),
             });
@@ -1092,7 +1090,7 @@ fn process_action<T: TmuxProvider + ?Sized + 'static>(
                 let repo = &state.repos[idx];
                 let session_name = repo.tmux_session_name(&repo.path);
                 return Some(OpenAction::Open {
-                    path: repo.path.clone(),
+                    path: Some(repo.path.clone()),
                     session_name,
                     split_command: state.split_command.clone(),
                 });
@@ -1200,7 +1198,11 @@ fn process_action<T: TmuxProvider + ?Sized + 'static>(
                 let session = &state.sessions[*idx];
                 let session_name = session.session_name.clone();
                 state.cancel_sessions_poller();
-                return Some(OpenAction::SwitchSession(session_name));
+                return Some(OpenAction::Open {
+                    path: None,
+                    session_name,
+                    split_command: None,
+                });
             }
         }
 
@@ -1712,10 +1714,10 @@ mod tests {
             OpenAction::Open {
                 path, session_name, ..
             } => {
-                assert_eq!(path, PathBuf::from("/tmp/alpha"));
+                assert_eq!(path, Some(PathBuf::from("/tmp/alpha")));
                 assert_eq!(session_name, "alpha");
             }
-            OpenAction::Quit | OpenAction::SetupComplete | OpenAction::SwitchSession(_) => {
+            OpenAction::Quit | OpenAction::SetupComplete => {
                 panic!("Expected OpenAction::Open")
             }
         }
@@ -1921,11 +1923,11 @@ mod tests {
                 session_name,
                 split_command,
             } => {
-                assert_eq!(path, PathBuf::from("/tmp/beta"));
+                assert_eq!(path, Some(PathBuf::from("/tmp/beta")));
                 assert_eq!(session_name, "beta");
                 assert_eq!(split_command.as_deref(), Some("hx"));
             }
-            OpenAction::Quit | OpenAction::SetupComplete | OpenAction::SwitchSession(_) => {
+            OpenAction::Quit | OpenAction::SetupComplete => {
                 panic!("Expected OpenAction::Open")
             }
         }

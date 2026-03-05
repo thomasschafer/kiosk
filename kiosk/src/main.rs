@@ -527,16 +527,15 @@ fn run_tui(
             session_name,
             split_command,
         }) => {
-            if !tmux.session_exists(&session_name) {
+            if let Some(path) = path
+                && !tmux.session_exists(&session_name)
+            {
                 tmux.create_session(&session_name, &path, split_command.as_deref())?;
             }
 
             tmux.switch_to_session(&session_name);
         }
         Some(OpenAction::Quit | OpenAction::SetupComplete) | None => {}
-        Some(OpenAction::SwitchSession(session_name)) => {
-            tmux.switch_to_session(&session_name);
-        }
     }
 
     Ok(())
@@ -607,10 +606,6 @@ fn run_setup_then_tui() -> ExitCode {
         Ok(Some(kiosk_tui::OpenAction::Quit) | None) => ExitCode::from(0),
         Ok(Some(kiosk_tui::OpenAction::Open { .. })) => {
             eprintln!("Unexpected OpenAction::Open during setup flow");
-            ExitCode::from(2)
-        }
-        Ok(Some(kiosk_tui::OpenAction::SwitchSession(_))) => {
-            eprintln!("Unexpected OpenAction::SwitchSession during setup flow");
             ExitCode::from(2)
         }
         Err(e) => {

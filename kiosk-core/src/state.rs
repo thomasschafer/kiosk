@@ -534,10 +534,10 @@ impl BranchEntry {
                 ))
                 // Branches with sessions (even without activity timestamps) before those without
                 .then(b.has_session.cmp(&a.has_session))
-                // Agent needing attention sorts first (Waiting > Running > Idle/Unknown > None)
+                // Agent needing attention sorts first (Waiting > Idle > Running > Unknown > None)
                 .then(
-                    agent_sort_priority(&b.agent_statuses)
-                        .cmp(&agent_sort_priority(&a.agent_statuses)),
+                    agent_statuses_sort_priority(&b.agent_statuses)
+                        .cmp(&agent_statuses_sort_priority(&a.agent_statuses)),
                 )
                 // Branches with worktrees before those without
                 .then(b.worktree_path.is_some().cmp(&a.worktree_path.is_some()))
@@ -546,18 +546,55 @@ impl BranchEntry {
     }
 }
 
+/// Sort priority for an individual agent state: higher = sorts first.
+pub fn agent_state_sort_priority(state: crate::AgentState) -> u8 {
+    match state {
+        crate::AgentState::Waiting => 3,
+        crate::AgentState::Idle => 2,
+        crate::AgentState::Running => 1,
+        crate::AgentState::Unknown => 0,
+    }
+}
+
 /// Sort priority for agent statuses: higher = sorts first.
-/// Uses the highest-priority status from the vec (Waiting > Running > rest).
-fn agent_sort_priority(statuses: &[crate::agent::AgentStatus]) -> u8 {
+/// Uses the highest-priority status from the vec.
+pub fn agent_statuses_sort_priority(statuses: &[crate::agent::AgentStatus]) -> u8 {
     statuses
         .iter()
-        .map(|s| match s.state {
-            crate::AgentState::Waiting => 3,
-            crate::AgentState::Running => 2,
-            crate::AgentState::Idle | crate::AgentState::Unknown => 1,
-        })
+        .map(|s| agent_state_sort_priority(s.state))
         .max()
         .unwrap_or(0)
+}
+
+/// Sort and deduplicate agent states by attention priority (highest first).
+pub fn sorted_unique_agent_states(
+    statuses: &[crate::agent::AgentStatus],
+) -> Vec<crate::AgentState> {
+    let mut states: Vec<crate::AgentState> = statuses.iter().map(|status| status.state).collect();
+    states.sort_by_key(|state| std::cmp::Reverse(agent_state_sort_priority(*state)));
+    states.dedup();
+    states
+}
+
+/// Select the highest-priority state from a status list.
+pub fn primary_agent_state(statuses: &[crate::agent::AgentStatus]) -> crate::AgentState {
+    sorted_unique_agent_states(statuses)
+        .first()
+        .copied()
+        .unwrap_or(crate::AgentState::Unknown)
+}
+
+/// Shared ordering for session-like rows: higher-priority agent state first,
+/// then oldest activity first.
+pub fn cmp_by_agent_priority_then_oldest_activity(
+    left_statuses: &[crate::agent::AgentStatus],
+    left_activity: u64,
+    right_statuses: &[crate::agent::AgentStatus],
+    right_activity: u64,
+) -> std::cmp::Ordering {
+    agent_statuses_sort_priority(right_statuses)
+        .cmp(&agent_statuses_sort_priority(left_statuses))
+        .then(left_activity.cmp(&right_activity))
 }
 
 /// Compare two optional timestamps for recency-based sorting (most recent first).
@@ -668,29 +705,16 @@ pub struct SessionEntry {
     pub attached: bool,
 }
 
-/// Sort priority for sessions view: higher = sorts first.
-fn session_sort_priority(statuses: &[AgentStatus]) -> u8 {
-    statuses
-        .iter()
-        .map(|s| match s.state {
-            crate::AgentState::Waiting => 4,
-            crate::AgentState::Idle => 3,
-            crate::AgentState::Running => 2,
-            crate::AgentState::Unknown => 1,
-        })
-        .max()
-        .unwrap_or(0)
-}
-
 /// Sort sessions by: Waiting first, then Idle, then Running, then no agents.
 /// Within same tier: oldest activity first (least recently visited).
 pub fn sort_sessions(sessions: &mut [SessionEntry]) {
     sessions.sort_by(|a, b| {
-        let a_priority = session_sort_priority(&a.agent_statuses);
-        let b_priority = session_sort_priority(&b.agent_statuses);
-        b_priority
-            .cmp(&a_priority)
-            .then(a.session_activity.cmp(&b.session_activity))
+        cmp_by_agent_priority_then_oldest_activity(
+            &a.agent_statuses,
+            a.session_activity,
+            &b.agent_statuses,
+            b.session_activity,
+        )
     });
 }
 
@@ -2064,7 +2088,7 @@ mod tests {
     }
 
     #[test]
-    fn test_branch_sort_agent_waiting_before_running() {
+    fn test_branch_sort_agent_waiting_idle_running_priority() {
         use crate::agent::{AgentKind, AgentState, AgentStatus};
 
         let mut entries = vec![
@@ -2110,11 +2134,8 @@ mod tests {
         ];
         BranchEntry::sort_entries(&mut entries);
         assert_eq!(entries[0].name, "feat-waiting", "Waiting should sort first");
-        assert_eq!(
-            entries[1].name, "feat-running",
-            "Running should sort second"
-        );
-        assert_eq!(entries[2].name, "feat-idle", "Idle should sort last");
+        assert_eq!(entries[1].name, "feat-idle", "Idle should sort second");
+        assert_eq!(entries[2].name, "feat-running", "Running should sort third");
     }
 
     #[test]
@@ -2583,5 +2604,59 @@ mod tests {
             "Oldest activity should be first within same tier"
         );
         assert_eq!(sessions[1].session_name, "recent");
+    }
+
+    #[test]
+    fn test_sorted_unique_agent_states_priority_order() {
+        use crate::agent::{AgentKind, AgentState, AgentStatus};
+
+        let statuses = vec![
+            AgentStatus {
+                kind: AgentKind::ClaudeCode,
+                state: AgentState::Running,
+            },
+            AgentStatus {
+                kind: AgentKind::Codex,
+                state: AgentState::Waiting,
+            },
+            AgentStatus {
+                kind: AgentKind::Codex,
+                state: AgentState::Idle,
+            },
+            AgentStatus {
+                kind: AgentKind::Codex,
+                state: AgentState::Waiting,
+            },
+        ];
+
+        let states = sorted_unique_agent_states(&statuses);
+        assert_eq!(
+            states,
+            vec![AgentState::Waiting, AgentState::Idle, AgentState::Running]
+        );
+        assert_eq!(primary_agent_state(&statuses), AgentState::Waiting);
+    }
+
+    #[test]
+    fn test_cmp_by_agent_priority_then_oldest_activity() {
+        use crate::agent::{AgentKind, AgentState, AgentStatus};
+
+        let waiting = vec![AgentStatus {
+            kind: AgentKind::ClaudeCode,
+            state: AgentState::Waiting,
+        }];
+        let idle = vec![AgentStatus {
+            kind: AgentKind::ClaudeCode,
+            state: AgentState::Idle,
+        }];
+
+        assert!(
+            cmp_by_agent_priority_then_oldest_activity(&waiting, 200, &idle, 100).is_lt(),
+            "waiting should outrank idle"
+        );
+        assert!(
+            cmp_by_agent_priority_then_oldest_activity(&idle, 100, &idle, 200).is_lt(),
+            "older activity should sort first within the same priority"
+        );
     }
 }

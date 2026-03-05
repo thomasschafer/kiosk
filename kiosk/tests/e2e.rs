@@ -1371,7 +1371,10 @@ fn test_e2e_sessions_view_search_filters_sessions() {
     wait_for_screen(&env, 2500, |s| s.contains("kiosk — sessions"));
 
     let screen = wait_for_screen(&env, 4000, |s| s.contains("2 sessions"));
-    assert!(screen.contains("scooter"), "Should include scooter: {screen}");
+    assert!(
+        screen.contains("scooter"),
+        "Should include scooter: {screen}"
+    );
     assert!(screen.contains("falcon"), "Should include falcon: {screen}");
 
     env.send("sco");

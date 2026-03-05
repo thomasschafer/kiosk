@@ -227,7 +227,13 @@ warning = "yellow"
 muted = "dark_gray"
 border = "dark_gray"
 hint = "blue"
-highlight_fg = "#000000"
+highlight_fg = "black"
+
+[theme.status]
+running = "green"
+waiting = "yellow"
+idle = "cyan"
+unknown = "blue"
 ```
 
 ### `[keys]` section
@@ -240,9 +246,9 @@ Defaults are shown below.
 ```toml
 [keys.general]
 "C-c" = "quit"
-"esc" = "quit"
 "C-h" = "show_help"
 "C-s" = "toggle_sessions"
+"esc" = "quit"
 
 [keys.text_edit]
 "A-b" = "move_cursor_word_left"

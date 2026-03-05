@@ -758,11 +758,7 @@ impl Mode {
                 Command::ShowHelp,
                 Command::Quit,
             ],
-            Mode::Sessions => &[
-                Command::SwitchToSession,
-                Command::ShowHelp,
-                Command::Quit,
-            ],
+            Mode::Sessions => &[Command::SwitchToSession, Command::ShowHelp, Command::Quit],
             Mode::BranchSelect => &[
                 Command::GoBack,
                 Command::OpenBranch,

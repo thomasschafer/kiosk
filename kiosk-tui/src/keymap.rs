@@ -137,11 +137,7 @@ mod tests {
         state.mode = Mode::Sessions;
         let keys = KeysConfig::default();
 
-        let action = resolve_action(
-            CtKeyEvent::new(CtKeyCode::Esc, CtMods::NONE),
-            &state,
-            &keys,
-        );
+        let action = resolve_action(CtKeyEvent::new(CtKeyCode::Esc, CtMods::NONE), &state, &keys);
 
         assert!(
             matches!(action, Some(Action::Quit)),

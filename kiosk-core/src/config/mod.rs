@@ -161,6 +161,35 @@ pub struct SessionConfig {
     pub split_command: Option<String>,
 }
 
+/// Agent status color configuration for TUI badges.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(deny_unknown_fields, default)]
+pub struct ThemeStatusConfig {
+    /// Color for Running agent badges.
+    #[serde(deserialize_with = "deserialize_color")]
+    pub running: ThemeColor,
+    /// Color for Waiting agent badges.
+    #[serde(deserialize_with = "deserialize_color")]
+    pub waiting: ThemeColor,
+    /// Color for Idle agent badges.
+    #[serde(deserialize_with = "deserialize_color")]
+    pub idle: ThemeColor,
+    /// Color for Unknown agent badges.
+    #[serde(deserialize_with = "deserialize_color")]
+    pub unknown: ThemeColor,
+}
+
+impl Default for ThemeStatusConfig {
+    fn default() -> Self {
+        Self {
+            running: ThemeColor::Named(NamedColor::Green),
+            waiting: ThemeColor::Named(NamedColor::Yellow),
+            idle: ThemeColor::Named(NamedColor::Cyan),
+            unknown: ThemeColor::Named(NamedColor::Blue),
+        }
+    }
+}
+
 // The struct must be defined outside the macro so that xtask's syn parser
 // can discover it for README doc generation.
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -196,6 +225,9 @@ pub struct ThemeConfig {
     /// Foreground color for highlighted/selected items.
     #[serde(deserialize_with = "deserialize_color")]
     pub highlight_fg: ThemeColor,
+    /// Agent status badge colors.
+    #[serde(default)]
+    pub status: ThemeStatusConfig,
 }
 
 /// Single source of truth for theme defaults. Generates the `Default` impl
@@ -224,7 +256,8 @@ theme_defaults! {
     muted        => ThemeColor::Named(N::DarkGray),
     border       => ThemeColor::Named(N::DarkGray),
     hint         => ThemeColor::Named(N::Blue),
-    highlight_fg => ThemeColor::Rgb(0, 0, 0),
+    highlight_fg => ThemeColor::Named(N::Black),
+    status       => ThemeStatusConfig::default(),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -523,7 +556,26 @@ unknown_field = true
         assert_eq!(config.theme.muted, ThemeColor::Named(NamedColor::DarkGray));
         assert_eq!(config.theme.border, ThemeColor::Named(NamedColor::DarkGray));
         assert_eq!(config.theme.hint, ThemeColor::Named(NamedColor::Blue));
-        assert_eq!(config.theme.highlight_fg, ThemeColor::Rgb(0, 0, 0));
+        assert_eq!(
+            config.theme.highlight_fg,
+            ThemeColor::Named(NamedColor::Black)
+        );
+        assert_eq!(
+            config.theme.status.running,
+            ThemeColor::Named(NamedColor::Magenta)
+        );
+        assert_eq!(
+            config.theme.status.waiting,
+            ThemeColor::Named(NamedColor::Yellow)
+        );
+        assert_eq!(
+            config.theme.status.idle,
+            ThemeColor::Named(NamedColor::Cyan)
+        );
+        assert_eq!(
+            config.theme.status.unknown,
+            ThemeColor::Named(NamedColor::Blue)
+        );
     }
 
     #[test]
@@ -606,6 +658,47 @@ search_dirs = ["~/Development"]
 [theme]
 accent = "blue"
 unknown = "bad"
+"#,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_theme_status_custom() {
+        let config = load_config_from_str(
+            r##"
+search_dirs = ["~/Development"]
+
+[theme.status]
+running = "#ff0000"
+idle = "green"
+"##,
+        )
+        .unwrap();
+        assert_eq!(config.theme.status.running, ThemeColor::Rgb(255, 0, 0));
+        assert_eq!(
+            config.theme.status.waiting,
+            ThemeColor::Named(NamedColor::Yellow)
+        );
+        assert_eq!(
+            config.theme.status.idle,
+            ThemeColor::Named(NamedColor::Green)
+        );
+        assert_eq!(
+            config.theme.status.unknown,
+            ThemeColor::Named(NamedColor::Blue)
+        );
+    }
+
+    #[test]
+    fn test_theme_status_unknown_field_rejected() {
+        let result = load_config_from_str(
+            r#"
+search_dirs = ["~/Development"]
+
+[theme.status]
+running = "blue"
+unknown_field = "bad"
 "#,
         );
         assert!(result.is_err());

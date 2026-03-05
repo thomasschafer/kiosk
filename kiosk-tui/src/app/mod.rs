@@ -8,8 +8,7 @@ use actions::{
     handle_search_delete_to_end, handle_search_delete_to_start, handle_search_delete_word,
     handle_search_delete_word_forward, handle_search_pop, handle_search_push, handle_setup_add_dir,
     handle_setup_cancel, handle_setup_continue, handle_setup_move_selection,
-    handle_setup_tab_complete, handle_show_help, handle_start_new_branch,
-    session_search_items,
+    handle_setup_tab_complete, handle_show_help, handle_start_new_branch, session_search_items,
 };
 use crossterm::event::{self, Event, KeyEventKind};
 use fuzzy_matcher::{FuzzyMatcher, skim::SkimMatcherV2};
@@ -5125,7 +5124,7 @@ mod tests {
         );
 
         assert_eq!(state.sessions_list.selected, Some(0));
-        assert_eq!(state.loading_sessions, false);
+        assert!(!state.loading_sessions);
     }
 
     #[test]

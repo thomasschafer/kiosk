@@ -86,10 +86,10 @@ pub fn render_agent_badges(
         .enumerate()
         .flat_map(|(i, state)| {
             let (label, color) = match state {
-                kiosk_core::AgentState::Running => (&labels.running, theme.accent),
-                kiosk_core::AgentState::Waiting => (&labels.waiting, theme.warning),
-                kiosk_core::AgentState::Idle => (&labels.idle, theme.secondary),
-                kiosk_core::AgentState::Unknown => (&labels.unknown, theme.hint),
+                kiosk_core::AgentState::Running => (&labels.running, theme.status.running),
+                kiosk_core::AgentState::Waiting => (&labels.waiting, theme.status.waiting),
+                kiosk_core::AgentState::Idle => (&labels.idle, theme.status.idle),
+                kiosk_core::AgentState::Unknown => (&labels.unknown, theme.status.unknown),
             };
             let mut spans = Vec::new();
             if i > 0 {
@@ -125,7 +125,7 @@ mod tests {
     use crate::theme::Theme;
     use kiosk_core::{
         agent::{AgentKind, AgentStatus},
-        config::{AgentLabelsConfig, ThemeConfig},
+        config::{AgentLabelsConfig, ThemeColor, ThemeConfig},
     };
     use ratatui::style::{Color, Style};
     use ratatui::text::Span;
@@ -351,5 +351,54 @@ mod tests {
 
         let badges = render_agent_badges(&statuses, &labels, &theme);
         assert_eq!(concat_text(&badges), "[IDLE] [RUNNING]");
+    }
+
+    #[test]
+    fn render_agent_badges_use_theme_status_colors() {
+        let labels = AgentLabelsConfig {
+            running: "R".to_string(),
+            waiting: "W".to_string(),
+            idle: "I".to_string(),
+            unknown: "U".to_string(),
+        };
+        let mut config = ThemeConfig::default();
+        config.status.running = ThemeColor::Rgb(1, 2, 3);
+        config.status.waiting = ThemeColor::Rgb(4, 5, 6);
+        config.status.idle = ThemeColor::Rgb(7, 8, 9);
+        config.status.unknown = ThemeColor::Rgb(10, 11, 12);
+        let theme = Theme::from_config(&config);
+        let statuses = vec![
+            AgentStatus {
+                kind: AgentKind::Codex,
+                state: kiosk_core::AgentState::Running,
+            },
+            AgentStatus {
+                kind: AgentKind::ClaudeCode,
+                state: kiosk_core::AgentState::Waiting,
+            },
+            AgentStatus {
+                kind: AgentKind::CursorAgent,
+                state: kiosk_core::AgentState::Idle,
+            },
+            AgentStatus {
+                kind: AgentKind::OpenCode,
+                state: kiosk_core::AgentState::Unknown,
+            },
+        ];
+
+        let badges = render_agent_badges(&statuses, &labels, &theme);
+        let colored: Vec<_> = badges
+            .iter()
+            .filter(|span| span.content.as_ref() != " ")
+            .collect();
+        assert_eq!(colored.len(), 4);
+        assert_eq!(colored[0].content.as_ref(), "W");
+        assert_eq!(colored[0].style.fg, Some(Color::Rgb(4, 5, 6)));
+        assert_eq!(colored[1].content.as_ref(), "I");
+        assert_eq!(colored[1].style.fg, Some(Color::Rgb(7, 8, 9)));
+        assert_eq!(colored[2].content.as_ref(), "R");
+        assert_eq!(colored[2].style.fg, Some(Color::Rgb(1, 2, 3)));
+        assert_eq!(colored[3].content.as_ref(), "U");
+        assert_eq!(colored[3].style.fg, Some(Color::Rgb(10, 11, 12)));
     }
 }

@@ -199,6 +199,8 @@ struct NextOutput {
     switched: bool,
     session: String,
     agent_state: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    agent_states: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -805,42 +807,54 @@ pub fn cmd_next(
         }
     }
 
-    // Batched agent detection — filter to Waiting/Idle with activity timestamps
+    // Batched agent detection — include Waiting/Idle/Running with shared
+    // priority logic.
     let detection_results =
-        kiosk_core::agent::detect_for_sessions_batched(tmux, &session_names, &all_pane_data);
+        kiosk_core::agent::detect_all_for_sessions_batched(tmux, &session_names, &all_pane_data);
 
-    let mut candidates: Vec<(String, kiosk_core::AgentState, u64)> = detection_results
+    let mut candidates: Vec<(String, Vec<kiosk_core::AgentStatus>, u64)> = detection_results
         .into_iter()
         .filter_map(|(session, detection)| {
-            let det = detection?;
-            match det.status.state {
-                kiosk_core::AgentState::Waiting | kiosk_core::AgentState::Idle => {
-                    let activity = all_pane_data
-                        .get(&session)
-                        .map_or(0, |d| d.session_activity);
-                    Some((session, det.status.state, activity))
-                }
-                _ => None,
+            let statuses: Vec<kiosk_core::AgentStatus> =
+                detection.into_iter().map(|det| det.status).collect();
+            if kiosk_core::state::agent_statuses_sort_priority(&statuses) == 0 {
+                None
+            } else {
+                let activity = all_pane_data
+                    .get(&session)
+                    .map_or(0, |d| d.session_activity);
+                Some((session, statuses, activity))
             }
         })
         .collect();
 
-    // Sort: Waiting before Idle, then oldest activity first
+    // Sort: Waiting > Idle > Running, then oldest activity first.
     candidates.sort_by(|a, b| {
-        let priority_a = u8::from(a.1 != kiosk_core::AgentState::Waiting);
-        let priority_b = u8::from(b.1 != kiosk_core::AgentState::Waiting);
-        priority_a.cmp(&priority_b).then(a.2.cmp(&b.2))
+        kiosk_core::state::cmp_by_agent_priority_then_oldest_activity(&a.1, a.2, &b.1, b.2)
     });
 
-    if let Some((session, state, _)) = candidates.first() {
+    if let Some((session, statuses, _)) = candidates.first() {
+        let primary_state = kiosk_core::state::primary_agent_state(statuses);
+        let agent_states: Vec<String> = kiosk_core::state::sorted_unique_agent_states(statuses)
+            .into_iter()
+            .map(|state| state.to_string())
+            .collect();
+
         tmux.switch_to_session(session);
         let output = NextOutput {
             switched: true,
             session: session.clone(),
-            agent_state: state.to_string(),
+            agent_state: primary_state.to_string(),
+            agent_states,
         };
         if json {
             print_json(&output)?;
+        } else if output.agent_states.len() > 1 {
+            println!(
+                "Switched to: {session} ({}; agents: {})",
+                output.agent_state,
+                output.agent_states.join(", ")
+            );
         } else {
             println!("Switched to: {session} ({})", output.agent_state);
         }
@@ -3477,7 +3491,7 @@ mod tests {
             "demo",
             &[
                 ("demo", "claude", "⠋ Reading file", 1000),
-                ("demo--feat-run", "claude", "⠋ Reading file", 900),
+                ("demo--feat-shell", "bash", "$ ls -la", 900),
             ],
         );
 
@@ -3560,5 +3574,38 @@ mod tests {
             "Should return error when only eligible session is the current one"
         );
         assert!(tmux.switched_sessions.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn next_switches_to_running_when_no_waiting_or_idle() {
+        let (config, git, tmux) = mock_with_sessions_and_agents(
+            "demo",
+            &[("demo--feat-run", "claude", "⠋ Reading file", 900)],
+        );
+
+        let result = cmd_next(&config, &git, &tmux, false);
+        assert!(result.is_ok());
+        let switched = tmux.switched_sessions.lock().unwrap();
+        assert_eq!(switched.as_slice(), &["demo--feat-run"]);
+    }
+
+    #[test]
+    fn next_prefers_idle_over_running() {
+        let (config, git, tmux) = mock_with_sessions_and_agents(
+            "demo",
+            &[
+                ("demo--feat-run", "claude", "⠋ Reading file", 800),
+                ("demo--feat-idle", "claude", "❯ \n? for shortcuts", 900),
+            ],
+        );
+
+        let result = cmd_next(&config, &git, &tmux, false);
+        assert!(result.is_ok());
+        let switched = tmux.switched_sessions.lock().unwrap();
+        assert_eq!(
+            switched.as_slice(),
+            &["demo--feat-idle"],
+            "Idle should outrank running"
+        );
     }
 }

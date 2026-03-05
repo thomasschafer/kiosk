@@ -26,8 +26,8 @@ impl fmt::Display for AgentKind {
 /// Represents the current state of an AI coding agent.
 ///
 /// Variants are ordered by attention priority (highest first): a Waiting agent
-/// needs user action most urgently; a Running agent is actively working and
-/// should be surfaced over Idle; an Idle agent may need a nudge.
+/// needs user action most urgently; an Idle agent may include pending
+/// questions/next actions; a Running agent is still lower urgency.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentState {
     /// Agent is actively working (spinner, processing)
@@ -45,8 +45,8 @@ impl AgentState {
     fn attention_priority(self) -> u8 {
         match self {
             AgentState::Waiting => 3,
-            AgentState::Running => 2,
-            AgentState::Idle => 1,
+            AgentState::Idle => 2,
+            AgentState::Running => 1,
             AgentState::Unknown => 0,
         }
     }
@@ -793,11 +793,9 @@ mod tests {
 
     #[test]
     fn attention_priority_ordering() {
-        // Waiting > Running > Idle > Unknown
-        assert!(
-            AgentState::Waiting.attention_priority() > AgentState::Running.attention_priority()
-        );
-        assert!(AgentState::Running.attention_priority() > AgentState::Idle.attention_priority());
+        // Waiting > Idle > Running > Unknown
+        assert!(AgentState::Waiting.attention_priority() > AgentState::Idle.attention_priority());
+        assert!(AgentState::Idle.attention_priority() > AgentState::Running.attention_priority());
         assert!(AgentState::Idle.attention_priority() > AgentState::Unknown.attention_priority());
     }
 

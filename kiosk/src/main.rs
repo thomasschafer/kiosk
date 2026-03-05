@@ -8,7 +8,7 @@ use kiosk_core::{
     constants::{GIT_DIR_ENTRY, GITDIR_FILE_PREFIX, WORKTREE_DIR_NAME},
     git::{CliGitProvider, GitProvider},
     pending_delete::load_pending_worktree_deletes,
-    state::AppState,
+    state::{AppState, Mode},
     tmux::{CliTmuxProvider, TmuxProvider},
 };
 use kiosk_tui::{OpenAction, Theme};
@@ -498,6 +498,9 @@ fn run_tui(
     state.agent_poll_interval = std::time::Duration::from_millis(config.agent.poll_interval_ms);
     state.agent_labels = config.agent.labels.clone();
     state.sessions_initial = sessions_flag;
+    if sessions_flag {
+        state.mode = Mode::Loading("Discovering sessions...".to_string());
+    }
 
     let theme = Theme::from_config(&config.theme);
 

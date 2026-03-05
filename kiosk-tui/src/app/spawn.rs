@@ -581,14 +581,12 @@ pub(super) fn spawn_sessions_discovery<T: TmuxProvider + ?Sized + 'static>(
         // Re-enrich only repos that are still missing worktrees.
         let repos = enrich_missing_worktrees(&*git, repos);
         let (sessions, session_names) = discover_sessions_from_repos(&*tmux_clone, &repos);
-
-        sender_clone.send(AppEvent::SessionsLoaded { sessions });
-
-        // Now do initial agent detection
-        if !session_names.is_empty() {
-            let states = session_agent_states(detect_agent_statuses(&*tmux_clone, &session_names));
-            sender_clone.send(AppEvent::SessionAgentStatesUpdated { states });
-        }
+        let states = if session_names.is_empty() {
+            Vec::new()
+        } else {
+            session_agent_states(detect_agent_statuses(&*tmux_clone, &session_names))
+        };
+        sender_clone.send(AppEvent::SessionsSnapshot { sessions, states });
 
         // Start the sessions refresh/agent poller.
         spawn_sessions_agent_poller(
@@ -634,9 +632,11 @@ fn spawn_sessions_agent_poller<T: TmuxProvider + ?Sized + 'static>(
             }
 
             let (sessions, session_names) = discover_sessions_from_repos(&*tmux, &repos);
-            sender.send(AppEvent::SessionsLoaded { sessions });
-
             if session_names.is_empty() {
+                sender.send(AppEvent::SessionsSnapshot {
+                    sessions,
+                    states: Vec::new(),
+                });
                 current_interval = idle_interval;
                 continue;
             }
@@ -656,7 +656,7 @@ fn spawn_sessions_agent_poller<T: TmuxProvider + ?Sized + 'static>(
             } else {
                 idle_interval
             };
-            sender.send(AppEvent::SessionAgentStatesUpdated { states });
+            sender.send(AppEvent::SessionsSnapshot { sessions, states });
         }
     });
 }

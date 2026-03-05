@@ -12,8 +12,6 @@ Three features that work together to make kiosk an effective agent session manag
 
 ## Status
 
-All three parts are **implemented and passing** (38 tests, clippy clean, fmt clean).
-
 ### ✅ Part 1: `kiosk next` CLI Command (Done)
 
 - Attemps to choose session (other than current) as follows (essentially round robin with Waiting > Idle, ignore other statuses):
@@ -30,6 +28,28 @@ All three parts are **implemented and passing** (38 tests, clippy clean, fmt cle
 - Sort: Waiting > Idle > Running > No agent, then by activity recency within groups (newest first, unlike `kiosk next` which filters for oldest first within groups)
 - Enter to switch, Esc to go back, search/filter supported
 
+### Part 3: Session preview
+
+#### Part 3.1: Monochrome preview
+
+- Split the sessions view in half:
+  - Left side: existing session list
+  - Right side: preview content for the selected session
+- Preview content source: tmux pane capture (plain text / monochrome)
+- Refresh behavior:
+  - Refresh immediately when selection changes (up/down, search selection change)
+  - Refresh the selected session preview every 1 second while staying on the same row
+- Config:
+  - Add `session_preview.poll_interval_ms` (default `1000`)
+  - Allow any positive value (no clamping)
+  - Treat `0` (or invalid/non-positive values) as config errors
+
+#### Part 3.2: Full-color preview
+
+- Preserve ANSI styling from tmux capture output
+- Render ANSI colors/styles in the TUI preview pane
+- Keep behavior from 3.1 (selection-triggered refresh + periodic polling), adding color support only
+
 ## Still To Do
 
 - [ ] Manual QA with real agent sessions (multiple agents running across worktrees)
@@ -43,6 +63,9 @@ All three parts are **implemented and passing** (38 tests, clippy clean, fmt cle
 - **Skip current session**: `kiosk next` only switches to a *different* session, if one exists, otherwise shows message saying no session to jump to
 - **Sessions view architecture**: New standalone component (not branch picker reuse)
 - **`Running` and `Unknown` states**: Not eligible for `kiosk next`
+- **Session preview rollout**: Ship monochrome first (3.1), then full-color ANSI rendering (3.2)
+- **Session preview polling**: Refresh on selection changes and poll selected session every 1 second by default
+- **Preview poll config policy**: configurable interval in milliseconds; any value `> 0` is accepted; no clamping
 
 ## Related
 

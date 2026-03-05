@@ -497,7 +497,7 @@ fn branch_session_names(state: &AppState) -> Vec<String> {
         return Vec::new();
     };
     let repo = &state.repos[repo_idx];
-    state
+    let mut sessions = state
         .branches
         .iter()
         .filter_map(|branch| {
@@ -508,7 +508,9 @@ fn branch_session_names(state: &AppState) -> Vec<String> {
         })
         .collect::<std::collections::HashSet<_>>()
         .into_iter()
-        .collect()
+        .collect::<Vec<_>>();
+    sessions.sort_unstable();
+    sessions
 }
 
 fn seed_session_runtime_from_branches(
@@ -689,6 +691,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
                 runtime.exists = true;
                 runtime.activity_ts = Some(*ts);
             }
+            reconcile_branch_runtime_state(state);
 
             // Re-sort with activity data
             sort_repos_preserving_selection(state);
@@ -4841,6 +4844,47 @@ mod tests {
         );
 
         assert!(state.repos.is_empty());
+    }
+
+    #[test]
+    fn test_session_activity_loaded_reconciles_branch_runtime_state() {
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+        state.mode = Mode::BranchSelect;
+        state.selected_repo_idx = Some(0);
+        state.branches = vec![BranchEntry {
+            name: "feat/test".to_string(),
+            worktree_path: Some(std::path::PathBuf::from("/tmp/wt")),
+            has_session: false,
+            is_current: false,
+            is_default: false,
+            remote: None,
+            session_activity_ts: None,
+            agent_status: None,
+        }];
+        state.branch_list.filtered = vec![(0, 0)];
+        state.branch_list.selected = Some(0);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux = Arc::new(MockTmuxProvider::default());
+        let sender = make_sender();
+
+        let session_name = state.repos[0].tmux_session_name(&std::path::PathBuf::from("/tmp/wt"));
+        let mut activity = std::collections::HashMap::new();
+        activity.insert(session_name, 1234);
+
+        process_app_event(
+            AppEvent::SessionActivityLoaded {
+                session_activity: activity,
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+        );
+
+        assert!(state.branches[0].has_session);
+        assert_eq!(state.branches[0].session_activity_ts, Some(1234));
     }
 
     #[test]

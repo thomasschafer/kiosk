@@ -6,6 +6,7 @@ pub mod repo;
 pub use cli::CliGitProvider;
 pub use provider::GitProvider;
 pub use repo::{Repo, Worktree};
+use std::path::Path;
 
 /// Parse `git worktree list --porcelain` output into worktrees
 pub fn parse_worktree_porcelain(output: &str) -> Vec<Worktree> {
@@ -42,6 +43,26 @@ pub fn parse_worktree_porcelain(output: &str) -> Vec<Worktree> {
     }
 
     worktrees
+}
+
+/// Build the tmux session name for a repo/worktree pair.
+pub fn tmux_session_name_for_worktree(
+    repo_name: &str,
+    session_name: &str,
+    repo_path: &Path,
+    worktree_path: &Path,
+) -> String {
+    if worktree_path == repo_path {
+        session_name.replace('.', "_")
+    } else {
+        worktree_path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            // Carry session disambiguation through branch worktree names.
+            .replacen(repo_name, session_name, 1)
+            .replace('.', "_")
+    }
 }
 
 #[cfg(test)]

@@ -807,8 +807,8 @@ pub fn cmd_next(
         }
     }
 
-    // Batched agent detection — include Waiting/Idle/Running with shared
-    // priority logic.
+    // Batched agent detection — only include sessions with Waiting/Idle agents.
+    // Running agents don't need human attention, so they're excluded.
     let detection_results =
         kiosk_core::agent::detect_all_for_sessions_batched(tmux, &session_names, &all_pane_data);
 
@@ -817,18 +817,24 @@ pub fn cmd_next(
         .filter_map(|(session, detection)| {
             let statuses: Vec<kiosk_core::AgentStatus> =
                 detection.into_iter().map(|det| det.status).collect();
-            if kiosk_core::state::agent_statuses_sort_priority(&statuses) == 0 {
-                None
-            } else {
+            let needs_attention = statuses.iter().any(|s| {
+                matches!(
+                    s.state,
+                    kiosk_core::AgentState::Waiting | kiosk_core::AgentState::Idle
+                )
+            });
+            if needs_attention {
                 let activity = all_pane_data
                     .get(&session)
                     .map_or(0, |d| d.session_activity);
                 Some((session, statuses, activity))
+            } else {
+                None
             }
         })
         .collect();
 
-    // Sort: Waiting > Idle > Running, then oldest activity first.
+    // Sort eligible candidates by shared state priority and oldest activity first.
     candidates.sort_by(|a, b| {
         kiosk_core::state::cmp_by_agent_priority_then_oldest_activity(&a.1, a.2, &b.1, b.2)
     });
@@ -3577,20 +3583,19 @@ mod tests {
     }
 
     #[test]
-    fn next_switches_to_running_when_no_waiting_or_idle() {
+    fn next_skips_running_sessions() {
         let (config, git, tmux) = mock_with_sessions_and_agents(
             "demo",
             &[("demo--feat-run", "claude", "⠋ Reading file", 900)],
         );
 
         let result = cmd_next(&config, &git, &tmux, false);
-        assert!(result.is_ok());
-        let switched = tmux.switched_sessions.lock().unwrap();
-        assert_eq!(switched.as_slice(), &["demo--feat-run"]);
+        assert!(result.is_err(), "Running sessions should not be eligible");
+        assert!(tmux.switched_sessions.lock().unwrap().is_empty());
     }
 
     #[test]
-    fn next_prefers_idle_over_running() {
+    fn next_picks_idle_ignores_running() {
         let (config, git, tmux) = mock_with_sessions_and_agents(
             "demo",
             &[
@@ -3605,7 +3610,7 @@ mod tests {
         assert_eq!(
             switched.as_slice(),
             &["demo--feat-idle"],
-            "Idle should outrank running"
+            "Should pick idle and skip running"
         );
     }
 }

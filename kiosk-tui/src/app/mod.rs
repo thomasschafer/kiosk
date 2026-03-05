@@ -477,6 +477,15 @@ fn sort_repos_preserving_selection(state: &mut AppState) {
     rebuild_filtered_preserving_search(&mut state.repo_list, &names);
 }
 
+fn selected_session_name(state: &AppState) -> Option<String> {
+    state
+        .sessions_list
+        .selected
+        .and_then(|selected| state.sessions_list.filtered.get(selected))
+        .and_then(|(idx, _)| state.sessions.get(*idx))
+        .map(|session| session.session_name.clone())
+}
+
 /// Handle events from background tasks
 #[allow(clippy::too_many_lines)]
 /// Deduplicate `incoming` branches against `state.branches`, append any new ones,
@@ -873,14 +882,16 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             }
         }
         AppEvent::SessionsLoaded { sessions } => {
+            let selected_session_name = selected_session_name(state);
             state.sessions = sessions;
             kiosk_core::state::sort_sessions(&mut state.sessions);
-            rebuild_sessions_list(state);
+            rebuild_sessions_list(state, selected_session_name);
             state.loading_sessions = false;
         }
 
         AppEvent::SessionAgentStatesUpdated { states } => {
             if *state.mode.effective() == Mode::Sessions {
+                let selected_session_name = selected_session_name(state);
                 for (session_name, agent_statuses) in states {
                     for session in &mut state.sessions {
                         if session.session_name == session_name {
@@ -889,7 +900,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
                     }
                 }
                 kiosk_core::state::sort_sessions(&mut state.sessions);
-                rebuild_sessions_list(state);
+                rebuild_sessions_list(state, selected_session_name);
             }
         }
 
@@ -1040,9 +1051,9 @@ struct ActionContext<'a, T: TmuxProvider + ?Sized + 'static> {
     sender: &'a EventSender,
 }
 
-#[allow(clippy::needless_pass_by_value)]
-#[allow(clippy::too_many_lines)]
-fn rebuild_sessions_list(state: &mut AppState) {
+fn rebuild_sessions_list(state: &mut AppState, selected_session_name: Option<String>) {
+    let previous_scroll = state.sessions_list.scroll_offset;
+
     let search_targets: Vec<String> = state
         .sessions
         .iter()
@@ -1051,9 +1062,30 @@ fn rebuild_sessions_list(state: &mut AppState) {
             format!("{} {} {}", s.session_name, s.repo_name, branch)
         })
         .collect();
-    state.sessions_list.reset(state.sessions.len());
+
     let names: Vec<&str> = search_targets.iter().map(String::as_str).collect();
     rebuild_filtered_preserving_search(&mut state.sessions_list, &names);
+
+    if let Some(selected_session_name) = selected_session_name
+        && let Some(session_idx) = state
+            .sessions
+            .iter()
+            .position(|session| session.session_name == selected_session_name)
+        && let Some(filtered_idx) = state
+            .sessions_list
+            .filtered
+            .iter()
+            .position(|(idx, _)| *idx == session_idx)
+    {
+        state.sessions_list.selected = Some(filtered_idx);
+    }
+
+    if state.sessions_list.filtered.is_empty() {
+        state.sessions_list.scroll_offset = 0;
+    } else {
+        let max_scroll = state.sessions_list.filtered.len() - 1;
+        state.sessions_list.scroll_offset = previous_scroll.min(max_scroll);
+    }
 }
 
 fn enter_sessions_view<T: TmuxProvider + ?Sized + 'static>(
@@ -1069,6 +1101,7 @@ fn enter_sessions_view<T: TmuxProvider + ?Sized + 'static>(
     spawn_sessions_discovery(git, tmux, sender, state);
 }
 
+#[allow(clippy::needless_pass_by_value)]
 #[allow(clippy::too_many_lines)]
 fn process_action<T: TmuxProvider + ?Sized + 'static>(
     action: Action,
@@ -1256,6 +1289,18 @@ mod tests {
                 branch: Some("main".to_string()),
                 is_main: true,
             }],
+        }
+    }
+
+    fn make_session(session_name: &str, ts: u64) -> kiosk_core::state::SessionEntry {
+        kiosk_core::state::SessionEntry {
+            session_name: session_name.to_string(),
+            repo_name: session_name.to_string(),
+            branch: Some("main".to_string()),
+            path: PathBuf::from(format!("/tmp/{session_name}")),
+            agent_statuses: Vec::new(),
+            session_activity: ts,
+            attached: false,
         }
     }
 
@@ -4992,7 +5037,7 @@ mod tests {
         }];
         state.branch_list.filtered = vec![(0, 0)];
         state.branch_list.selected = Some(0);
-
+ 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux = Arc::new(MockTmuxProvider::default());
         let sender = make_sender();
@@ -5013,6 +5058,63 @@ mod tests {
 
         assert!(state.branches[0].has_session);
         assert_eq!(state.branches[0].session_activity_ts, Some(1234));
+    }
+
+    #[test]
+    fn test_sessions_loaded_preserves_selected_session_when_order_changes() {
+        let mut state = AppState::new(vec![make_repo("alpha")], None);
+        state.mode = Mode::Sessions;
+        state.sessions = vec![make_session("alpha", 10), make_session("beta", 20)];
+        state.sessions_list.filtered = vec![(0, 0), (1, 0)];
+        state.sessions_list.selected = Some(1); // beta
+        state.sessions_list.scroll_offset = 1;
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux = Arc::new(MockTmuxProvider::default());
+        let sender = make_sender();
+
+        process_app_event(
+            AppEvent::SessionsLoaded {
+                sessions: vec![make_session("alpha", 50), make_session("beta", 5)],
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+        );
+
+        let selected_filtered_idx = state.sessions_list.selected.expect("selected row");
+        let selected_session_idx = state.sessions_list.filtered[selected_filtered_idx].0;
+        assert_eq!(state.sessions[selected_session_idx].session_name, "beta");
+        assert_eq!(state.sessions_list.scroll_offset, 1);
+    }
+
+    #[test]
+    fn test_sessions_loaded_preserves_search_query() {
+        let mut state = AppState::new(vec![make_repo("alpha")], None);
+        state.mode = Mode::Sessions;
+        state.sessions = vec![make_session("alpha", 10), make_session("beta", 20)];
+        state.sessions_list.input.text = "beta".to_string();
+        state.sessions_list.input.cursor = 4;
+        state.sessions_list.filtered = vec![(1, 100)];
+        state.sessions_list.selected = Some(0);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux = Arc::new(MockTmuxProvider::default());
+        let sender = make_sender();
+
+        process_app_event(
+            AppEvent::SessionsLoaded {
+                sessions: vec![make_session("beta", 5), make_session("alpha", 50)],
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+        );
+
+        assert_eq!(state.sessions_list.input.text, "beta");
+        assert_eq!(state.sessions_list.input.cursor, 4);
     }
 
     #[test]

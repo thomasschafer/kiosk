@@ -117,7 +117,14 @@ pub fn render_with_optional_agent_badges<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::{right_align_suffix, truncate_spans};
+    use super::{
+        render_agent_badges, render_with_optional_agent_badges, right_align_suffix, truncate_spans,
+    };
+    use crate::theme::Theme;
+    use kiosk_core::{
+        agent::{AgentKind, AgentStatus},
+        config::{AgentLabelsConfig, ThemeConfig},
+    };
     use ratatui::style::{Color, Style};
     use ratatui::text::Span;
 
@@ -291,5 +298,33 @@ mod tests {
         let right = vec![Span::styled("W", Style::default().fg(Color::Yellow))];
         let result = right_align_suffix(&left, &right, 8);
         assert_eq!(concat_text(&result), "main   W");
+    }
+
+    #[test]
+    fn render_with_optional_agent_badges_returns_left_for_empty_statuses() {
+        let left = vec![Span::raw("main")];
+        let labels = AgentLabelsConfig::default();
+        let theme = Theme::from_config(&ThemeConfig::default());
+
+        let result = render_with_optional_agent_badges(&left, &[], &labels, &theme, 30);
+        assert_eq!(concat_text(&result), "main");
+    }
+
+    #[test]
+    fn render_with_optional_agent_badges_right_aligns_non_empty_statuses() {
+        let left = vec![Span::raw("feature")];
+        let statuses = vec![AgentStatus {
+            kind: AgentKind::ClaudeCode,
+            state: kiosk_core::AgentState::Waiting,
+        }];
+        let labels = AgentLabelsConfig::default();
+        let theme = Theme::from_config(&ThemeConfig::default());
+        let right = render_agent_badges(&statuses, &labels, &theme);
+
+        let result = render_with_optional_agent_badges(&left, &statuses, &labels, &theme, 20);
+        assert_eq!(
+            concat_text(&result),
+            concat_text(&right_align_suffix(&left, &right, 20))
+        );
     }
 }

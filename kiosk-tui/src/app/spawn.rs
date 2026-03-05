@@ -481,15 +481,15 @@ fn session_agent_states(
 
 fn enrich_missing_worktrees(
     git: &dyn GitProvider,
-    repos: Vec<(String, PathBuf, Vec<kiosk_core::git::Worktree>)>,
-) -> Vec<(String, PathBuf, Vec<kiosk_core::git::Worktree>)> {
+    repos: Vec<(String, String, PathBuf, Vec<kiosk_core::git::Worktree>)>,
+) -> Vec<(String, String, PathBuf, Vec<kiosk_core::git::Worktree>)> {
     repos
         .into_iter()
-        .map(|(name, path, worktrees)| {
+        .map(|(name, session_name, path, worktrees)| {
             if worktrees.is_empty() {
-                (name, path.clone(), git.list_worktrees(&path))
+                (name, session_name, path.clone(), git.list_worktrees(&path))
             } else {
-                (name, path, worktrees)
+                (name, session_name, path, worktrees)
             }
         })
         .collect()
@@ -497,7 +497,7 @@ fn enrich_missing_worktrees(
 
 fn discover_sessions_from_repos<T: TmuxProvider + ?Sized>(
     tmux: &T,
-    repos: &[(String, PathBuf, Vec<kiosk_core::git::Worktree>)],
+    repos: &[(String, String, PathBuf, Vec<kiosk_core::git::Worktree>)],
 ) -> (Vec<kiosk_core::state::SessionEntry>, Vec<String>) {
     let sessions_with_activity = tmux.list_sessions_with_activity();
     let active_sessions: HashMap<String, u64> = sessions_with_activity.into_iter().collect();
@@ -510,17 +510,14 @@ fn discover_sessions_from_repos<T: TmuxProvider + ?Sized>(
     let mut sessions = Vec::new();
     let mut session_names = Vec::new();
 
-    for (repo_name, repo_path, worktrees) in repos {
+    for (repo_name, repo_session_name, repo_path, worktrees) in repos {
         for wt in worktrees {
-            let session_name = {
-                let repo = kiosk_core::git::Repo {
-                    session_name: repo_name.clone(),
-                    name: repo_name.clone(),
-                    path: repo_path.clone(),
-                    worktrees: vec![wt.clone()],
-                };
-                repo.tmux_session_name(&wt.path)
-            };
+            let session_name = kiosk_core::git::tmux_session_name_for_worktree(
+                repo_name,
+                repo_session_name,
+                repo_path,
+                &wt.path,
+            );
 
             if let Some(&activity) = active_sessions.get(&session_name) {
                 sessions.push(kiosk_core::state::SessionEntry {
@@ -549,10 +546,17 @@ pub(super) fn spawn_sessions_discovery<T: TmuxProvider + ?Sized + 'static>(
     state: &mut kiosk_core::state::AppState,
 ) {
     // Collect repo data while we have access to state
-    let repos: Vec<(String, PathBuf, Vec<kiosk_core::git::Worktree>)> = state
+    let repos: Vec<(String, String, PathBuf, Vec<kiosk_core::git::Worktree>)> = state
         .repos
         .iter()
-        .map(|r| (r.name.clone(), r.path.clone(), r.worktrees.clone()))
+        .map(|r| {
+            (
+                r.name.clone(),
+                r.session_name.clone(),
+                r.path.clone(),
+                r.worktrees.clone(),
+            )
+        })
         .collect();
 
     let git = Arc::clone(git);
@@ -604,7 +608,7 @@ fn spawn_sessions_agent_poller<T: TmuxProvider + ?Sized + 'static>(
     sender: &EventSender,
     cancel: Arc<AtomicBool>,
     base_interval: std::time::Duration,
-    repos: Vec<(String, PathBuf, Vec<kiosk_core::git::Worktree>)>,
+    repos: Vec<(String, String, PathBuf, Vec<kiosk_core::git::Worktree>)>,
 ) {
     let tmux = Arc::clone(tmux);
     let sender = sender.clone();
@@ -735,6 +739,7 @@ mod tests {
         let repos = vec![
             (
                 "alpha".to_string(),
+                "alpha".to_string(),
                 PathBuf::from("/tmp/alpha"),
                 vec![Worktree {
                     path: PathBuf::from("/tmp/alpha"),
@@ -744,6 +749,7 @@ mod tests {
             ),
             (
                 "beta".to_string(),
+                "beta".to_string(),
                 PathBuf::from("/tmp/beta"),
                 vec![Worktree {
                     path: PathBuf::from("/tmp/beta--feat"),
@@ -752,6 +758,7 @@ mod tests {
                 }],
             ),
             (
+                "gamma".to_string(),
                 "gamma".to_string(),
                 PathBuf::from("/tmp/gamma"),
                 vec![Worktree {
@@ -773,6 +780,30 @@ mod tests {
     }
 
     #[test]
+    fn discover_sessions_uses_repo_session_name_for_disambiguation() {
+        let tmux = MockTmuxProvider {
+            sessions_with_activity: vec![("api--(work)--feat".into(), 123)],
+            ..Default::default()
+        };
+
+        let repos = vec![(
+            "api".to_string(),
+            "api--(work)".to_string(),
+            PathBuf::from("/tmp/work/api"),
+            vec![Worktree {
+                path: PathBuf::from("/tmp/worktrees/api--feat"),
+                branch: Some("feat".to_string()),
+                is_main: false,
+            }],
+        )];
+
+        let (sessions, session_names) = discover_sessions_from_repos(&tmux, &repos);
+        assert_eq!(session_names, vec!["api--(work)--feat".to_string()]);
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].session_name, "api--(work)--feat");
+    }
+
+    #[test]
     fn enrich_missing_worktrees_only_fills_empty_repos() {
         let git = MockGitProvider {
             worktrees: vec![Worktree {
@@ -786,6 +817,7 @@ mod tests {
         let repos = vec![
             (
                 "already".to_string(),
+                "already".to_string(),
                 PathBuf::from("/tmp/already"),
                 vec![Worktree {
                     path: PathBuf::from("/tmp/already"),
@@ -793,11 +825,16 @@ mod tests {
                     is_main: true,
                 }],
             ),
-            ("empty".to_string(), PathBuf::from("/tmp/empty"), Vec::new()),
+            (
+                "empty".to_string(),
+                "empty".to_string(),
+                PathBuf::from("/tmp/empty"),
+                Vec::new(),
+            ),
         ];
 
         let enriched = enrich_missing_worktrees(&git, repos);
-        assert_eq!(enriched[0].2[0].path, PathBuf::from("/tmp/already"));
-        assert_eq!(enriched[1].2[0].path, PathBuf::from("/tmp/enriched"));
+        assert_eq!(enriched[0].3[0].path, PathBuf::from("/tmp/already"));
+        assert_eq!(enriched[1].3[0].path, PathBuf::from("/tmp/enriched"));
     }
 }

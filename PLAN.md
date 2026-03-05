@@ -10,130 +10,45 @@ Three features that work together to make kiosk an effective agent session manag
 2. **Multi-status detection** — show all agent statuses per session, not just the highest
 3. **Sessions view** — TUI mode showing all active sessions sorted by agent status
 
-## Implementation Order
+## Status
 
-1. `kiosk next` — immediately useful, self-contained
-2. Multi-status detection — core change needed for sessions view display
-3. Sessions TUI view — largest piece, builds on the above
+All three parts are **implemented and passing** (38 tests, clippy clean, fmt clean).
 
----
+### ✅ Part 1: `kiosk next` CLI Command (Done)
 
-## Part 1: `kiosk next` CLI Command
+Commit: `9c848ed`, refined in `c2334fb`
 
-A subcommand that finds the next session needing attention and switches to it.
+- Lists all kiosk-managed tmux sessions, runs batched agent detection
+- Filters to Waiting/Idle agents, picks oldest `session_activity` (stateless round-robin)
+- Skips current session, `--json` output supported
+- `TmuxProvider::current_session_name()` added
 
-### Behaviour
+### ✅ Part 2: Multi-Status Detection (Done)
 
-1. List all tmux sessions that kiosk manages (same logic as `cmd_sessions`)
-2. Run batched agent detection on all of them
-3. Filter to sessions with at least one agent in **Waiting** or **Idle** state (Idle includes agents that may have asked a question — see #33)
-4. Group by priority: Waiting first, then Idle
-5. Within each group, pick the session with the **oldest `session_activity` timestamp** (least recently visited — avoids bouncing between the same sessions)
-6. Skip the current tmux session — only switch to a *different* eligible session
-7. If no other eligible session exists: show a message and exit code 1
-8. If eligible: `tmux switch-client -t <session>`
+Commit: `bdc0d38`
 
-### Why Oldest Activity Works
+- `detect_all_for_session` / `detect_all_for_sessions_batched` in `agent/mod.rs`
+- `BranchEntry.agent_statuses: Vec<AgentStatus>` (was `Option<AgentStatus>`)
+- CLI formatters and TUI branch picker updated for multiple badges
 
-Tmux updates `session_activity` when you interact with a session. By always picking the least-recently-active session in the highest priority group, you get natural round-robin without any state file. Switch to A → A's timestamp updates → next call picks B → etc.
+### ✅ Part 3: Sessions TUI View (Done)
 
-### Prerequisite
+Commit: `6fd1704`
 
-Add `TmuxProvider::current_session_name() -> Option<String>` to the trait (needed to know what to skip).
+- New `sessions_view.rs` component (197 lines) with `SearchableList` pattern
+- `Mode::Sessions` variant, toggled via configurable `toggle_sessions` key
+- `kiosk --sessions` / `kiosk -s` flag to open directly into sessions view
+- Cross-repo agent poller (`spawn_sessions_agent_poller`) with cancellation token
+- Sort: Waiting > Idle > Running > No agent, then by oldest activity
+- Enter to switch, Esc to go back, search/filter supported
 
-### CLI Interface
+## Still To Do
 
-```
-kiosk next [--json]
-```
-
-Output (non-JSON): `Switched to: kiosk--feat-agent-status (Waiting)`
-Output (no match): `No other agent sessions need attention` (exit 1)
-Must be inside tmux (same requirement as `open` without `--no-switch`).
-
-JSON output:
-```json
-{
-  "switched": true,
-  "session": "kiosk--feat-agent-status",
-  "agent_state": "Waiting"
-}
-```
-
-### tmux Keybinding Usage
-
-For instant switching (background, no visible output):
-```
-bind-key N run-shell "kiosk next 2>/dev/null"
-```
-
-With a brief popup showing the result:
-```
-bind-key N display-popup -w 60 -h 3 -E 'kiosk next 2>&1 || true; sleep 0.8'
-```
-
-The popup approach is nice because it shows "Switched to: ..." or "No other agent sessions need attention" for ~1 second then disappears. The background approach is faster but silent.
-
----
-
-## Part 2: Multi-Status Detection
-
-Currently `detect_for_session` returns only the highest-priority agent status per session. We need all detected agents so the TUI and CLI can show e.g. `[WAITING] [IDLE]` on a single row.
-
-### Changes
-
-- **`kiosk-core/src/agent/mod.rs`**:
-  - Add `detect_all_for_session` returning `Vec<DetectionResult>` (collect all instead of keeping only `best`)
-  - Add `detect_all_for_sessions_batched` counterpart
-  - Keep existing `detect_for_session` as convenience wrapper (`.first()` by priority) for code that only needs the top status (e.g. `kiosk next`, `wait`)
-- **`kiosk-core/src/state.rs`**: Change `BranchEntry.agent_status: Option<AgentStatus>` → `agent_statuses: Vec<AgentStatus>`
-- **TUI branch picker**: Render multiple badges when present
-- **CLI formatters**: Show all statuses in table output
-
-### Display Format
-
-Multiple agents: `[WAITING] [RUNNING]`
-Single agent: `[IDLE]` (identical to today)
-No agents: no badge (identical to today)
-
----
-
-## Part 3: Sessions View in TUI
-
-A new view mode showing all active sessions as a flat list, sorted by agent status.
-
-### Sort Order
-
-1. **Waiting** agents first
-2. **Idle** agents (includes agents that may have asked a question)
-3. **Running** agents
-4. Sessions without agents (existing repo ordering)
-
-Within the same status tier, sort by oldest `session_activity` (least recently visited first — consistent with `kiosk next` philosophy).
-
-### Display
-
-Each row shows:
-```
-repo-name/branch-name    [WAITING] [RUNNING]    /path/to/worktree
-```
-
-### Architecture
-
-- **New component**: `kiosk-tui/src/components/sessions_view.rs` — new standalone component using the same `SearchableList` pattern as repo_list/branch_picker (not shoehorned into branch picker, which is inherently single-repo scoped)
-- **New `Mode` variant**: Add `Sessions` to the `Mode` enum
-- **Toggle keybinding**: Configurable key (e.g. `Ctrl+S`) to switch between repo view and sessions view, added to `[keys]` config
-- **CLI flag**: `kiosk --sessions` or `kiosk -s` to open directly into sessions view
-- **Data**: Fetched similarly to `cmd_sessions` using batched detection
-- **Polling**: Cross-repo agent poller (current poller is scoped to single repo's branches — sessions view needs broader scope). Cancel branch-scoped poller when entering sessions view, start session-scoped one.
-
-### Navigation
-
-- **Enter**: Switch to the selected session
-- **Search**: Filter by repo name, branch name, or session name
-- **Esc**: Back to repo view (or quit if opened with `--sessions`)
-
----
+- [ ] Manual QA with real agent sessions (multiple agents running across worktrees)
+- [ ] Update README with sessions view documentation and keybinding examples
+- [ ] Consider `kiosk next` tmux keybinding recipe in README
+- [ ] Merge `feat/agent-status` into `main` first (this branch depends on it)
+- [ ] Readme generation check (`nix develop -c cargo run -p xtask -- readme --check`)
 
 ## Resolved Decisions
 
@@ -145,8 +60,6 @@ repo-name/branch-name    [WAITING] [RUNNING]    /path/to/worktree
 - **`kiosk next` requires tmux**: Yes, like `open` without `--no-switch`
 - **Non-kiosk sessions**: Not shown in sessions view
 - **`Unknown` state**: Not eligible for `kiosk next`
-
----
 
 ## Related
 

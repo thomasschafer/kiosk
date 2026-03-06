@@ -729,7 +729,7 @@ mod tests {
     #[test]
     fn discover_sessions_includes_only_active_kiosk_sessions() {
         let mut tmux = MockTmuxProvider {
-            sessions_with_activity: vec![("alpha--main".into(), 100), ("beta--feat".into(), 200)],
+            sessions_with_activity: vec![("alpha".into(), 100), ("beta--feat".into(), 200)],
             ..Default::default()
         };
         tmux.clients.insert("beta--feat".into(), vec!["1".into()]);
@@ -768,10 +768,7 @@ mod tests {
         ];
 
         let (sessions, session_names) = discover_sessions_from_repos(&tmux, &repos);
-        assert_eq!(
-            session_names,
-            vec!["alpha--main".to_string(), "beta--feat".to_string()]
-        );
+        assert_eq!(session_names, vec!["alpha".to_string(), "beta--feat".to_string()]);
         assert_eq!(sessions.len(), 2);
         assert!(!sessions[0].attached);
         assert!(sessions[1].attached);

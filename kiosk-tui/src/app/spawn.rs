@@ -5,7 +5,7 @@ use kiosk_core::{
         GitProvider, Repo, apply_repo_name_collision_resolution, repo_matches_active_session,
         tmux_session_name_for_worktree,
     },
-    state::BranchEntry,
+    state::{BranchEntry, PollerHandle},
 };
 use rayon::ThreadPoolBuilder;
 use std::{
@@ -563,8 +563,9 @@ pub(super) fn spawn_sessions_discovery<T: TmuxProvider + ?Sized + 'static>(
     // Cancel any existing sessions poller
     state.cancel_all_agent_pollers();
 
-    let poller_cancel = Arc::new(AtomicBool::new(false));
-    state.install_sessions_poller(Arc::clone(&poller_cancel));
+    let poller_handle = PollerHandle::new();
+    state.install_sessions_poller(poller_handle.clone());
+    let poller_cancel = poller_handle.cancel_token();
 
     let poller_cancel_for_poller = Arc::clone(&poller_cancel);
     let tmux_for_poller = Arc::clone(tmux);

@@ -726,6 +726,50 @@ pub enum SessionsLoadState {
 }
 
 #[derive(Debug, Clone)]
+pub struct PollerHandle {
+    cancel: Arc<AtomicBool>,
+}
+
+impl Default for PollerHandle {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PollerHandle {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            cancel: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    #[must_use]
+    pub fn from_cancel(cancel: Arc<AtomicBool>) -> Self {
+        Self { cancel }
+    }
+
+    pub fn cancel(&self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        self.cancel.load(Ordering::Relaxed)
+    }
+
+    #[must_use]
+    pub fn cancel_token(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.cancel)
+    }
+
+    #[must_use]
+    pub fn ptr_eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.cancel, &other.cancel)
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct SessionsViewState {
     pub sessions: Vec<SessionEntry>,
     pub list: SearchableList,
@@ -771,8 +815,8 @@ impl SessionsViewState {
 #[derive(Debug, Clone)]
 pub enum ActiveAgentPoller {
     None,
-    Branch(Arc<AtomicBool>),
-    Sessions(Arc<AtomicBool>),
+    Branch(PollerHandle),
+    Sessions(PollerHandle),
 }
 
 impl Default for ActiveAgentPoller {
@@ -1042,15 +1086,15 @@ impl AppState {
 
     /// Signal the current agent poller thread to stop and clear the cancel token.
     pub fn cancel_agent_poller(&mut self) {
-        if let ActiveAgentPoller::Branch(token) = &self.active_agent_poller {
-            token.store(true, Ordering::Relaxed);
+        if let ActiveAgentPoller::Branch(handle) = &self.active_agent_poller {
+            handle.cancel();
             self.active_agent_poller = ActiveAgentPoller::None;
         }
     }
     /// Signal the current sessions agent poller thread to stop.
     pub fn cancel_sessions_poller(&mut self) {
-        if let ActiveAgentPoller::Sessions(token) = &self.active_agent_poller {
-            token.store(true, Ordering::Relaxed);
+        if let ActiveAgentPoller::Sessions(handle) = &self.active_agent_poller {
+            handle.cancel();
             self.active_agent_poller = ActiveAgentPoller::None;
         }
     }
@@ -1059,23 +1103,23 @@ impl AppState {
     pub fn cancel_all_agent_pollers(&mut self) {
         match &self.active_agent_poller {
             ActiveAgentPoller::None => {}
-            ActiveAgentPoller::Branch(token) | ActiveAgentPoller::Sessions(token) => {
-                token.store(true, Ordering::Relaxed);
+            ActiveAgentPoller::Branch(handle) | ActiveAgentPoller::Sessions(handle) => {
+                handle.cancel();
             }
         }
         self.active_agent_poller = ActiveAgentPoller::None;
     }
 
     /// Install a branch poller as the active poller, cancelling any existing poller.
-    pub fn install_branch_poller(&mut self, cancel: Arc<AtomicBool>) {
+    pub fn install_branch_poller(&mut self, handle: PollerHandle) {
         self.cancel_all_agent_pollers();
-        self.active_agent_poller = ActiveAgentPoller::Branch(cancel);
+        self.active_agent_poller = ActiveAgentPoller::Branch(handle);
     }
 
     /// Install a sessions poller as the active poller, cancelling any existing poller.
-    pub fn install_sessions_poller(&mut self, cancel: Arc<AtomicBool>) {
+    pub fn install_sessions_poller(&mut self, handle: PollerHandle) {
         self.cancel_all_agent_pollers();
-        self.active_agent_poller = ActiveAgentPoller::Sessions(cancel);
+        self.active_agent_poller = ActiveAgentPoller::Sessions(handle);
     }
 
     /// Get the active text input for the current mode (mutable).
@@ -2596,14 +2640,14 @@ mod tests {
     #[test]
     fn test_install_sessions_poller_replaces_branch_poller() {
         let mut state = AppState::new(vec![], None);
-        let branch = Arc::new(AtomicBool::new(false));
-        let sessions = Arc::new(AtomicBool::new(false));
+        let branch = PollerHandle::new();
+        let sessions = PollerHandle::new();
 
-        state.install_branch_poller(Arc::clone(&branch));
-        state.install_sessions_poller(Arc::clone(&sessions));
+        state.install_branch_poller(branch.clone());
+        state.install_sessions_poller(sessions);
 
         assert!(
-            branch.load(Ordering::Relaxed),
+            branch.is_cancelled(),
             "Replacing branch poller should cancel it"
         );
         assert!(matches!(
@@ -2615,13 +2659,13 @@ mod tests {
     #[test]
     fn test_cancel_agent_poller_does_not_cancel_sessions_poller() {
         let mut state = AppState::new(vec![], None);
-        let sessions = Arc::new(AtomicBool::new(false));
-        state.install_sessions_poller(Arc::clone(&sessions));
+        let sessions = PollerHandle::new();
+        state.install_sessions_poller(sessions.clone());
 
         state.cancel_agent_poller();
 
         assert!(
-            !sessions.load(Ordering::Relaxed),
+            !sessions.is_cancelled(),
             "cancel_agent_poller should only affect branch pollers"
         );
         assert!(matches!(
@@ -2633,13 +2677,13 @@ mod tests {
     #[test]
     fn test_cancel_all_agent_pollers_cancels_active_poller() {
         let mut state = AppState::new(vec![], None);
-        let sessions = Arc::new(AtomicBool::new(false));
-        state.install_sessions_poller(Arc::clone(&sessions));
+        let sessions = PollerHandle::new();
+        state.install_sessions_poller(sessions.clone());
 
         state.cancel_all_agent_pollers();
 
         assert!(
-            sessions.load(Ordering::Relaxed),
+            sessions.is_cancelled(),
             "cancel_all_agent_pollers should cancel active sessions poller"
         );
         assert!(matches!(state.active_agent_poller, ActiveAgentPoller::None));

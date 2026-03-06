@@ -22,7 +22,7 @@ use kiosk_core::{
     event::{AppEvent, SessionRuntimeUpdate},
     git::{GitProvider, apply_repo_name_collision_resolution},
     pending_delete::save_pending_worktree_deletes,
-    state::{AppState, BranchEntry, Mode, SearchableList, SessionRuntimeState},
+    state::{AppState, BranchEntry, Mode, PollerHandle, SearchableList, SessionRuntimeState},
     tmux::TmuxProvider,
 };
 use ratatui::{
@@ -839,15 +839,15 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
                 // navigating to repos with no sessions or agent disabled.
                 state.cancel_all_agent_pollers();
                 if !session_names.is_empty() && state.agent_enabled {
-                    let cancel = Arc::new(AtomicBool::new(false));
+                    let handle = PollerHandle::new();
                     spawn_agent_status_poller(
                         tmux,
                         sender,
-                        Arc::clone(&cancel),
+                        handle.cancel_token(),
                         state.agent_poll_interval,
                         session_names,
                     );
-                    state.install_branch_poller(cancel);
+                    state.install_branch_poller(handle);
                 }
             }
         }
@@ -5259,8 +5259,8 @@ mod tests {
         let mut state = AppState::new(repos, None);
         state.mode = Mode::RepoSelect;
 
-        let branch_poller = Arc::new(AtomicBool::new(false));
-        state.install_branch_poller(Arc::clone(&branch_poller));
+        let branch_poller = PollerHandle::new();
+        state.install_branch_poller(branch_poller.clone());
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux = Arc::new(MockTmuxProvider::default());
@@ -5273,7 +5273,7 @@ mod tests {
 
         assert_eq!(state.mode, Mode::Sessions);
         assert!(
-            branch_poller.load(std::sync::atomic::Ordering::Relaxed),
+            branch_poller.is_cancelled(),
             "Entering sessions mode should stop branch poller"
         );
         assert!(matches!(
@@ -5288,8 +5288,8 @@ mod tests {
         state.mode = Mode::Sessions;
         state.sessions_view.load_state = kiosk_core::state::SessionsLoadState::Ready;
 
-        let sessions_poller = Arc::new(AtomicBool::new(false));
-        state.install_sessions_poller(Arc::clone(&sessions_poller));
+        let sessions_poller = PollerHandle::new();
+        state.install_sessions_poller(sessions_poller.clone());
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux = Arc::new(MockTmuxProvider::default());
@@ -5311,15 +5311,15 @@ mod tests {
         );
 
         assert!(
-            !sessions_poller.load(std::sync::atomic::Ordering::Relaxed),
+            !sessions_poller.is_cancelled(),
             "repo enrichment should not restart sessions discovery in sessions mode"
         );
-        let active_token = match &state.active_agent_poller {
-            kiosk_core::state::ActiveAgentPoller::Sessions(token) => token,
+        let active_handle = match &state.active_agent_poller {
+            kiosk_core::state::ActiveAgentPoller::Sessions(handle) => handle,
             _ => panic!("sessions poller token should remain active"),
         };
         assert!(
-            Arc::ptr_eq(active_token, &sessions_poller),
+            active_handle.ptr_eq(&sessions_poller),
             "sessions poller token should not be replaced by repo enrichment"
         );
     }

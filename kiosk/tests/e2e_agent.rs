@@ -561,8 +561,10 @@ impl AgentTestEnvDefault {
                 ])
                 .output()
                 .ok()
-                .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-                .unwrap_or_else(|| "<failed to capture tmux pane>".to_string());
+                .map_or_else(
+                    || "<failed to capture tmux pane>".to_string(),
+                    |o| String::from_utf8_lossy(&o.stdout).to_string(),
+                );
             panic!("Real {bin} did not reach ready state within 90s.\nPane:\n{pane_dump}");
         }
     }
@@ -2034,10 +2036,10 @@ fn poll_for_any_startup_state(
 ) -> Option<String> {
     let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
     while std::time::Instant::now() < deadline {
-        if let Some(state) = current_agent_state(env) {
-            if accepted.iter().any(|v| *v == state) {
-                return Some(state);
-            }
+        if let Some(state) = current_agent_state(env)
+            && accepted.iter().any(|v| *v == state)
+        {
+            return Some(state);
         }
         wait_ms(200);
     }
@@ -2055,6 +2057,7 @@ fn poll_for_any_startup_state(
 /// - All agents show a Running phase while the API processes.
 /// - All agents in their default/test configurations ask for approval
 ///   before deleting files, producing a Waiting state.
+#[allow(clippy::too_many_lines)]
 fn run_real_agent_all_states(agent: AgentKind) {
     let label = match agent {
         AgentKind::ClaudeCode => "real-claude",

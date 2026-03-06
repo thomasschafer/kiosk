@@ -142,7 +142,7 @@ pub fn run(
                     state.clear_error();
                 } else if keys.general.get(&our_key) == Some(&GeneralCommand::Quit) {
                     cancel.store(true, Ordering::Relaxed);
-                    return Ok(Some(OpenAction::Quit));
+                    break OpenAction::Quit;
                 }
                 continue;
             }
@@ -162,8 +162,9 @@ pub fn run(
         }
     };
 
-    // Ensure background agent poller is cancelled before exiting
-    state.cancel_agent_poller();
+    // Ensure all background pollers are cancelled before exiting.
+    cancel.store(true, Ordering::Relaxed);
+    state.cancel_all_agent_pollers();
     Ok(Some(result))
 }
 
@@ -627,6 +628,13 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
     tmux: &Arc<T>,
     sender: &EventSender,
 ) -> Option<OpenAction> {
+    let refresh_sessions_if_active =
+        |state: &mut AppState, git: &Arc<dyn GitProvider>, tmux: &Arc<T>, sender: &EventSender| {
+            if *state.mode.effective() == Mode::Sessions {
+                spawn_sessions_discovery(git, tmux, sender, state);
+            }
+        };
+
     match event {
         AppEvent::ReposDiscovered {
             mut repos,
@@ -658,6 +666,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             if !state.sessions_initial && matches!(state.mode, Mode::Loading(_)) {
                 state.mode = Mode::RepoSelect;
             }
+            refresh_sessions_if_active(state, git, tmux, sender);
         }
         AppEvent::ReposFound { repo } => {
             // O(1) dedup via HashSet
@@ -673,6 +682,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             if !state.sessions_initial && matches!(state.mode, Mode::Loading(_)) {
                 state.mode = Mode::RepoSelect;
             }
+            refresh_sessions_if_active(state, git, tmux, sender);
         }
         AppEvent::ScanComplete { search_dirs } => {
             // Scan is done — clear dedup set (no longer needed until next scan)
@@ -711,8 +721,11 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
 
             if state.sessions_initial {
                 enter_sessions_view(state, git, tmux, sender);
-            } else if matches!(state.mode, Mode::Loading(_)) {
-                state.mode = Mode::RepoSelect;
+            } else {
+                if matches!(state.mode, Mode::Loading(_)) {
+                    state.mode = Mode::RepoSelect;
+                }
+                refresh_sessions_if_active(state, git, tmux, sender);
             }
         }
         AppEvent::SessionActivityLoaded { session_activity } => {
@@ -745,6 +758,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             {
                 state.set_error(&format!("Failed to persist pending deletes: {e}"));
             }
+            refresh_sessions_if_active(state, git, tmux, sender);
         }
         AppEvent::WorktreeCreated { path, session_name } => {
             return Some(OpenAction::Open {
@@ -837,7 +851,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
                 // Always cancel the previous poller before deciding whether
                 // to spawn a new one — avoids leaking stale pollers when
                 // navigating to repos with no sessions or agent disabled.
-                state.cancel_agent_poller();
+                state.cancel_all_agent_pollers();
                 if !session_names.is_empty() && state.agent_enabled {
                     let cancel = Arc::new(AtomicBool::new(false));
                     spawn_agent_status_poller(
@@ -847,7 +861,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
                         state.agent_poll_interval,
                         session_names,
                     );
-                    state.agent_poller_cancel = Some(cancel);
+                    state.install_branch_poller(cancel);
                 }
             }
         }
@@ -1402,13 +1416,13 @@ mod tests {
             .collect()
     }
 
-    fn default_ctx<'a>(
+    fn default_ctx<'a, T: TmuxProvider + ?Sized + 'static>(
         git: &'a Arc<dyn GitProvider>,
-        tmux: &'a Arc<dyn TmuxProvider>,
+        tmux: &'a Arc<T>,
         keys: &'a KeysConfig,
         matcher: &'a SkimMatcherV2,
         sender: &'a EventSender,
-    ) -> ActionContext<'a, dyn TmuxProvider> {
+    ) -> ActionContext<'a, T> {
         ActionContext {
             git,
             tmux,
@@ -1428,7 +1442,7 @@ mod tests {
             branches: vec!["main".into(), "dev".into()],
             ..Default::default()
         });
-        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let tmux = Arc::new(MockTmuxProvider::default());
         let keys = KeysConfig::default();
         let matcher = SkimMatcherV2::default();
         let (tx, rx) = std::sync::mpsc::channel();
@@ -1505,7 +1519,7 @@ mod tests {
         };
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
-        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let tmux = Arc::new(MockTmuxProvider::default());
         let sender = make_sender();
 
         process_app_event(
@@ -1659,7 +1673,7 @@ mod tests {
         state.mode = Mode::BranchSelect;
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
-        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let tmux = Arc::new(MockTmuxProvider::default());
         let keys = KeysConfig::default();
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
@@ -1681,7 +1695,7 @@ mod tests {
         });
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
-        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let tmux = Arc::new(MockTmuxProvider::default());
         let keys = KeysConfig::default();
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
@@ -1698,7 +1712,7 @@ mod tests {
         let mut state = AppState::new(repos, None);
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
-        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let tmux = Arc::new(MockTmuxProvider::default());
         let keys = KeysConfig::default();
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
@@ -1723,7 +1737,7 @@ mod tests {
         let mut state = AppState::new(repos, None);
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
-        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let tmux = Arc::new(MockTmuxProvider::default());
         let keys = KeysConfig::default();
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
@@ -1766,7 +1780,7 @@ mod tests {
         state.set_active_list_page_rows(20);
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
-        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let tmux = Arc::new(MockTmuxProvider::default());
         let keys = KeysConfig::default();
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
@@ -5208,6 +5222,77 @@ mod tests {
         let selected_session_idx = state.sessions_list.filtered[selected_filtered_idx].0;
         assert_eq!(state.sessions[selected_session_idx].session_name, "beta");
         assert_eq!(state.sessions_list.scroll_offset, 1);
+    }
+
+    #[test]
+    fn test_toggle_sessions_cancels_branch_poller() {
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+        state.mode = Mode::RepoSelect;
+
+        let branch_poller = Arc::new(AtomicBool::new(false));
+        state.install_branch_poller(Arc::clone(&branch_poller));
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux = Arc::new(MockTmuxProvider::default());
+        let keys = KeysConfig::default();
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+        let ctx = default_ctx(&git, &tmux, &keys, &matcher, &sender);
+
+        process_action(Action::ToggleSessions, &mut state, &ctx);
+
+        assert_eq!(state.mode, Mode::Sessions);
+        assert!(
+            branch_poller.load(std::sync::atomic::Ordering::Relaxed),
+            "Entering sessions mode should stop branch poller"
+        );
+        assert!(matches!(
+            state.active_agent_poller,
+            kiosk_core::state::ActiveAgentPoller::Sessions(_)
+        ));
+    }
+
+    #[test]
+    fn test_repo_enriched_restarts_sessions_discovery_when_in_sessions_mode() {
+        let mut state = AppState::new(vec![make_repo("alpha")], None);
+        state.mode = Mode::Sessions;
+        state.loading_sessions = false;
+
+        let old_sessions_poller = Arc::new(AtomicBool::new(false));
+        state.install_sessions_poller(Arc::clone(&old_sessions_poller));
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux = Arc::new(MockTmuxProvider::default());
+        let sender = make_sender();
+
+        process_app_event(
+            AppEvent::RepoEnriched {
+                repo_path: PathBuf::from("/tmp/alpha"),
+                worktrees: vec![Worktree {
+                    path: PathBuf::from("/tmp/alpha"),
+                    branch: Some("main".to_string()),
+                    is_main: true,
+                }],
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+        );
+
+        assert!(
+            old_sessions_poller.load(std::sync::atomic::Ordering::Relaxed),
+            "repo enrichment should restart sessions discovery while in sessions mode"
+        );
+        let new_token = match &state.active_agent_poller {
+            kiosk_core::state::ActiveAgentPoller::Sessions(token) => token,
+            _ => panic!("sessions poller token should be replaced"),
+        };
+        assert!(
+            !Arc::ptr_eq(new_token, &old_sessions_poller),
+            "sessions poller token should be replaced on restart"
+        );
     }
 
     #[test]

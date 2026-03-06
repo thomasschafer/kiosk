@@ -8,7 +8,7 @@ use kiosk_core::{
     constants::{GIT_DIR_ENTRY, GITDIR_FILE_PREFIX, WORKTREE_DIR_NAME},
     git::{CliGitProvider, GitProvider},
     pending_delete::load_pending_worktree_deletes,
-    state::{AppState, Mode},
+    state::{AppState, Mode, SearchableList},
     tmux::{CliTmuxProvider, TmuxProvider},
 };
 use kiosk_tui::{OpenAction, Theme};
@@ -498,6 +498,7 @@ fn run_tui(
     state.agent_poll_interval = std::time::Duration::from_millis(config.agent.poll_interval_ms);
     state.agent_labels = config.agent.labels.clone();
     state.sessions_initial = sessions_flag;
+    apply_sessions_startup_mode(&mut state);
 
     let theme = Theme::from_config(&config.theme);
 
@@ -539,6 +540,16 @@ fn run_tui(
     }
 
     Ok(())
+}
+
+fn apply_sessions_startup_mode(state: &mut AppState) {
+    if state.sessions_initial {
+        state.mode = Mode::Sessions;
+        state.loading_sessions = true;
+        state.sessions_pin_first_selection = true;
+        state.sessions.clear();
+        state.sessions_list = SearchableList::new(0);
+    }
 }
 
 fn run_setup_then_tui() -> ExitCode {
@@ -856,6 +867,35 @@ fn find_main_repo_path(gitdir: &Path) -> Option<std::path::PathBuf> {
         .parent()? // /repo/.git/worktrees -> /repo/.git
         .parent() // /repo/.git -> /repo
         .map(std::path::Path::to_path_buf)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::apply_sessions_startup_mode;
+    use kiosk_core::state::{AppState, Mode};
+
+    #[test]
+    fn sessions_startup_enters_sessions_mode_without_loading_screen() {
+        let mut state = AppState::new(vec![], None);
+        state.sessions_initial = true;
+        assert_eq!(state.mode, Mode::RepoSelect);
+
+        apply_sessions_startup_mode(&mut state);
+
+        assert_eq!(state.mode, Mode::Sessions);
+        assert!(state.loading_sessions);
+    }
+
+    #[test]
+    fn non_sessions_startup_keeps_existing_mode() {
+        let mut state = AppState::new(vec![], None);
+        state.sessions_initial = false;
+        assert_eq!(state.mode, Mode::RepoSelect);
+
+        apply_sessions_startup_mode(&mut state);
+
+        assert_eq!(state.mode, Mode::RepoSelect);
+    }
 }
 
 /// Check if a worktree path is known to git in the main repository.

@@ -597,6 +597,19 @@ pub fn cmp_by_agent_priority_then_oldest_activity(
         .then(left_activity.cmp(&right_activity))
 }
 
+/// Shared ordering for session-like rows: higher-priority agent state first,
+/// then newest activity first.
+pub fn cmp_by_agent_priority_then_newest_activity(
+    left_statuses: &[crate::agent::AgentStatus],
+    left_activity: u64,
+    right_statuses: &[crate::agent::AgentStatus],
+    right_activity: u64,
+) -> std::cmp::Ordering {
+    agent_statuses_sort_priority(right_statuses)
+        .cmp(&agent_statuses_sort_priority(left_statuses))
+        .then(right_activity.cmp(&left_activity))
+}
+
 /// Compare two optional timestamps for recency-based sorting (most recent first).
 /// `Some` sorts before `None`; when both are `Some`, the higher timestamp sorts first.
 fn cmp_optional_recency(a: Option<u64>, b: Option<u64>) -> std::cmp::Ordering {
@@ -705,11 +718,24 @@ pub struct SessionEntry {
     pub attached: bool,
 }
 
+#[derive(Debug, Clone)]
+pub enum ActiveAgentPoller {
+    None,
+    Branch(Arc<AtomicBool>),
+    Sessions(Arc<AtomicBool>),
+}
+
+impl Default for ActiveAgentPoller {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
 /// Sort sessions by: Waiting first, then Idle, then Running, then no agents.
-/// Within same tier: oldest activity first (least recently visited).
+/// Within same tier: newest activity first (most recently visited).
 pub fn sort_sessions(sessions: &mut [SessionEntry]) {
     sessions.sort_by(|a, b| {
-        cmp_by_agent_priority_then_oldest_activity(
+        cmp_by_agent_priority_then_newest_activity(
             &a.agent_statuses,
             a.session_activity,
             &b.agent_statuses,
@@ -867,10 +893,9 @@ pub struct AppState {
     pub session_activity: HashMap<String, u64>,
     /// Latest runtime snapshot keyed by tmux session name.
     pub session_runtime: HashMap<String, SessionRuntimeState>,
-    /// Cancel token for the active agent status poller thread.
-    /// Setting this flag stops the current poller; clearing it (via `cancel_agent_poller`)
-    /// prepares for a new one.
-    pub agent_poller_cancel: Option<Arc<AtomicBool>>,
+    /// Active agent poller token, scoped by mode.
+    /// At most one poller (branch or sessions) is active at a time.
+    pub active_agent_poller: ActiveAgentPoller,
     /// Whether agent status detection is enabled (configurable via `[agent] enabled`).
     pub agent_enabled: bool,
     /// Agent poll interval (configurable via `[agent] poll_interval_ms`).
@@ -892,8 +917,6 @@ pub struct AppState {
     pub sessions_pin_first_selection: bool,
     /// Whether the TUI was launched with --sessions flag
     pub sessions_initial: bool,
-    /// Cancel token for the sessions agent poller
-    pub sessions_poller_cancel: Option<Arc<AtomicBool>>,
 }
 
 impl AppState {
@@ -917,7 +940,7 @@ impl AppState {
             pending_worktree_deletes: Vec::new(),
             session_activity: HashMap::new(),
             session_runtime: HashMap::new(),
-            agent_poller_cancel: None,
+            active_agent_poller: ActiveAgentPoller::None,
             agent_enabled: true,
             agent_poll_interval: std::time::Duration::from_millis(
                 AgentConfig::default().poll_interval_ms,
@@ -931,7 +954,6 @@ impl AppState {
             loading_sessions: false,
             sessions_pin_first_selection: false,
             sessions_initial: false,
-            sessions_poller_cancel: None,
         }
     }
 
@@ -974,15 +996,40 @@ impl AppState {
 
     /// Signal the current agent poller thread to stop and clear the cancel token.
     pub fn cancel_agent_poller(&mut self) {
-        if let Some(token) = self.agent_poller_cancel.take() {
+        if let ActiveAgentPoller::Branch(token) = &self.active_agent_poller {
             token.store(true, Ordering::Relaxed);
+            self.active_agent_poller = ActiveAgentPoller::None;
         }
     }
     /// Signal the current sessions agent poller thread to stop.
     pub fn cancel_sessions_poller(&mut self) {
-        if let Some(token) = self.sessions_poller_cancel.take() {
+        if let ActiveAgentPoller::Sessions(token) = &self.active_agent_poller {
             token.store(true, Ordering::Relaxed);
+            self.active_agent_poller = ActiveAgentPoller::None;
         }
+    }
+
+    /// Signal any active poller thread to stop and clear poller state.
+    pub fn cancel_all_agent_pollers(&mut self) {
+        match &self.active_agent_poller {
+            ActiveAgentPoller::None => {}
+            ActiveAgentPoller::Branch(token) | ActiveAgentPoller::Sessions(token) => {
+                token.store(true, Ordering::Relaxed);
+            }
+        }
+        self.active_agent_poller = ActiveAgentPoller::None;
+    }
+
+    /// Install a branch poller as the active poller, cancelling any existing poller.
+    pub fn install_branch_poller(&mut self, cancel: Arc<AtomicBool>) {
+        self.cancel_all_agent_pollers();
+        self.active_agent_poller = ActiveAgentPoller::Branch(cancel);
+    }
+
+    /// Install a sessions poller as the active poller, cancelling any existing poller.
+    pub fn install_sessions_poller(&mut self, cancel: Arc<AtomicBool>) {
+        self.cancel_all_agent_pollers();
+        self.active_agent_poller = ActiveAgentPoller::Sessions(cancel);
     }
 
     /// Get the active text input for the current mode (mutable).
@@ -1115,6 +1162,10 @@ mod tests {
     use crate::git::{Repo, Worktree};
     use crate::pending_delete::PendingWorktreeDelete;
     use std::fs;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
     use tempfile::tempdir;
 
     fn make_repo(dir: &std::path::Path, name: &str) -> Repo {
@@ -2495,6 +2546,58 @@ mod tests {
         assert_eq!(state.agent_labels.running, "GO");
         assert_eq!(state.agent_labels.waiting, "PEND");
     }
+
+    #[test]
+    fn test_install_sessions_poller_replaces_branch_poller() {
+        let mut state = AppState::new(vec![], None);
+        let branch = Arc::new(AtomicBool::new(false));
+        let sessions = Arc::new(AtomicBool::new(false));
+
+        state.install_branch_poller(Arc::clone(&branch));
+        state.install_sessions_poller(Arc::clone(&sessions));
+
+        assert!(
+            branch.load(Ordering::Relaxed),
+            "Replacing branch poller should cancel it"
+        );
+        assert!(matches!(
+            state.active_agent_poller,
+            ActiveAgentPoller::Sessions(_)
+        ));
+    }
+
+    #[test]
+    fn test_cancel_agent_poller_does_not_cancel_sessions_poller() {
+        let mut state = AppState::new(vec![], None);
+        let sessions = Arc::new(AtomicBool::new(false));
+        state.install_sessions_poller(Arc::clone(&sessions));
+
+        state.cancel_agent_poller();
+
+        assert!(
+            !sessions.load(Ordering::Relaxed),
+            "cancel_agent_poller should only affect branch pollers"
+        );
+        assert!(matches!(
+            state.active_agent_poller,
+            ActiveAgentPoller::Sessions(_)
+        ));
+    }
+
+    #[test]
+    fn test_cancel_all_agent_pollers_cancels_active_poller() {
+        let mut state = AppState::new(vec![], None);
+        let sessions = Arc::new(AtomicBool::new(false));
+        state.install_sessions_poller(Arc::clone(&sessions));
+
+        state.cancel_all_agent_pollers();
+
+        assert!(
+            sessions.load(Ordering::Relaxed),
+            "cancel_all_agent_pollers should cancel active sessions poller"
+        );
+        assert!(matches!(state.active_agent_poller, ActiveAgentPoller::None));
+    }
     #[test]
     fn test_sort_sessions_waiting_first() {
         use crate::agent::{AgentKind, AgentState, AgentStatus};
@@ -2565,7 +2668,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sort_sessions_same_tier_oldest_first() {
+    fn test_sort_sessions_same_tier_newest_first() {
         use crate::agent::{AgentKind, AgentState, AgentStatus};
 
         let mut sessions = vec![
@@ -2598,10 +2701,10 @@ mod tests {
         sort_sessions(&mut sessions);
 
         assert_eq!(
-            sessions[0].session_name, "old",
-            "Oldest activity should be first within same tier"
+            sessions[0].session_name, "recent",
+            "Newest activity should be first within same tier"
         );
-        assert_eq!(sessions[1].session_name, "recent");
+        assert_eq!(sessions[1].session_name, "old");
     }
 
     #[test]

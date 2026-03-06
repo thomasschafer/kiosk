@@ -27,6 +27,49 @@ pub(super) fn session_search_items(sessions: &[SessionEntry]) -> Vec<String> {
         .collect()
 }
 
+fn fuzzy_matches_in_source_order(
+    query: &str,
+    items: &[String],
+    matcher: &SkimMatcherV2,
+) -> Vec<(usize, i64)> {
+    items.iter()
+        .enumerate()
+        .filter_map(|(i, item)| matcher.fuzzy_match(item, query).map(|score| (i, score)))
+        .collect()
+}
+
+pub(super) fn rebuild_session_filter_preserving_search(
+    list: &mut SearchableList,
+    sessions: &[SessionEntry],
+) {
+    if list.input.text.is_empty() {
+        list.filtered = (0..sessions.len()).map(|i| (i, 0)).collect();
+    } else {
+        let matcher = SkimMatcherV2::default();
+        let items = session_search_items(sessions);
+        list.filtered = fuzzy_matches_in_source_order(&list.input.text, &items, &matcher);
+    }
+}
+
+fn apply_session_filter(
+    list: &mut SearchableList,
+    sessions: &[SessionEntry],
+    matcher: &SkimMatcherV2,
+) {
+    if list.input.text.is_empty() {
+        list.filtered = (0..sessions.len()).map(|i| (i, 0)).collect();
+    } else {
+        let items = session_search_items(sessions);
+        list.filtered = fuzzy_matches_in_source_order(&list.input.text, &items, matcher);
+    }
+    list.selected = if list.filtered.is_empty() {
+        None
+    } else {
+        Some(0)
+    };
+    list.scroll_offset = 0;
+}
+
 pub(super) fn handle_go_back(state: &mut AppState) {
     match state.mode.clone() {
         Mode::BranchSelect => {
@@ -506,8 +549,7 @@ fn update_active_filter(state: &mut AppState, matcher: &SkimMatcherV2) {
             apply_fuzzy_filter(&mut state.branch_list, &names, matcher);
         }
         Mode::Sessions => {
-            let items = session_search_items(&state.sessions);
-            apply_fuzzy_filter(&mut state.sessions_list, &items, matcher);
+            apply_session_filter(&mut state.sessions_list, &state.sessions, matcher);
         }
         Mode::SelectBaseBranch => {
             if let Some(flow) = &mut state.base_branch_selection {
@@ -720,6 +762,62 @@ mod tests {
 
         assert_eq!(state.sessions_list.filtered.len(), 1);
         assert_eq!(state.sessions_list.filtered[0].0, 0);
+        assert_eq!(state.sessions_list.selected, Some(0));
+    }
+
+    #[test]
+    fn sessions_mode_search_preserves_canonical_session_order() {
+        let mut state = AppState::new(Vec::new(), None);
+        state.mode = Mode::Sessions;
+        state.sessions = vec![
+            SessionEntry {
+                session_name: "kiosk--feat-agent-session-switcher".to_string(),
+                repo_name: "kiosk".to_string(),
+                branch: Some("feat-agent-session-switcher".to_string()),
+                path: PathBuf::from("/tmp/kiosk-feat"),
+                agent_statuses: Vec::new(),
+                session_activity: 30,
+                attached: true,
+            },
+            SessionEntry {
+                session_name: "scooter--main".to_string(),
+                repo_name: "scooter".to_string(),
+                branch: Some("main".to_string()),
+                path: PathBuf::from("/tmp/scooter-main"),
+                agent_statuses: Vec::new(),
+                session_activity: 20,
+                attached: false,
+            },
+            SessionEntry {
+                session_name: "dotfiles--main".to_string(),
+                repo_name: "dotfiles".to_string(),
+                branch: Some("main".to_string()),
+                path: PathBuf::from("/tmp/dotfiles-main"),
+                agent_statuses: Vec::new(),
+                session_activity: 10,
+                attached: false,
+            },
+        ];
+        state.sessions_list = SearchableList::new(state.sessions.len());
+
+        let matcher = SkimMatcherV2::default();
+        handle_search_push(&mut state, &matcher, 'o');
+
+        let filtered_names = state
+            .sessions_list
+            .filtered
+            .iter()
+            .map(|(idx, _)| state.sessions[*idx].session_name.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            filtered_names,
+            vec![
+                "kiosk--feat-agent-session-switcher",
+                "scooter--main",
+                "dotfiles--main",
+            ]
+        );
         assert_eq!(state.sessions_list.selected, Some(0));
     }
 }

@@ -8,7 +8,8 @@ use actions::{
     handle_search_delete_to_end, handle_search_delete_to_start, handle_search_delete_word,
     handle_search_delete_word_forward, handle_search_pop, handle_search_push, handle_setup_add_dir,
     handle_setup_cancel, handle_setup_continue, handle_setup_move_selection,
-    handle_setup_tab_complete, handle_show_help, handle_start_new_branch, session_search_items,
+    handle_setup_tab_complete, handle_show_help, handle_start_new_branch,
+    rebuild_session_filter_preserving_search,
 };
 use crossterm::event::{self, Event, KeyEventKind};
 use fuzzy_matcher::{FuzzyMatcher, skim::SkimMatcherV2};
@@ -1060,9 +1061,7 @@ struct ActionContext<'a, T: TmuxProvider + ?Sized + 'static> {
 fn rebuild_sessions_list(state: &mut AppState, selected_session_name: Option<String>) {
     let previous_scroll = state.sessions_list.scroll_offset;
 
-    let search_targets = session_search_items(&state.sessions);
-    let names: Vec<&str> = search_targets.iter().map(String::as_str).collect();
-    rebuild_filtered_preserving_search(&mut state.sessions_list, &names);
+    rebuild_session_filter_preserving_search(&mut state.sessions_list, &state.sessions);
 
     if let Some(selected_session_name) = selected_session_name
         && let Some(session_idx) = state
@@ -1392,6 +1391,15 @@ mod tests {
             session_activity: ts,
             attached: false,
         }
+    }
+
+    fn filtered_session_names(state: &AppState) -> Vec<&str> {
+        state
+            .sessions_list
+            .filtered
+            .iter()
+            .map(|(idx, _)| state.sessions[*idx].session_name.as_str())
+            .collect()
     }
 
     fn default_ctx<'a>(
@@ -5348,6 +5356,67 @@ mod tests {
 
         assert_eq!(state.sessions_list.input.text, "beta");
         assert_eq!(state.sessions_list.input.cursor, 4);
+    }
+
+    #[test]
+    fn test_sessions_snapshot_preserves_filtered_order_with_active_search() {
+        let mut state = AppState::new(vec![make_repo("alpha")], None);
+        state.mode = Mode::Sessions;
+        state.cwd_worktree_path = Some(PathBuf::from("/tmp/kiosk--feat-agent-session-switcher"));
+        state.sessions_list.input.text = "o".to_string();
+        state.sessions_list.input.cursor = 1;
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux = Arc::new(MockTmuxProvider::default());
+        let sender = make_sender();
+
+        process_app_event(
+            AppEvent::SessionsSnapshot {
+                sessions: vec![
+                    make_session("scooter--main", 20),
+                    make_session("kiosk--feat-agent-session-switcher", 50),
+                    make_session("dotfiles--main", 10),
+                ],
+                states: vec![],
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+        );
+
+        assert_eq!(
+            filtered_session_names(&state),
+            vec![
+                "kiosk--feat-agent-session-switcher",
+                "dotfiles--main",
+                "scooter--main",
+            ]
+        );
+
+        process_app_event(
+            AppEvent::SessionsSnapshot {
+                sessions: vec![
+                    make_session("dotfiles--main", 5),
+                    make_session("scooter--main", 25),
+                    make_session("kiosk--feat-agent-session-switcher", 60),
+                ],
+                states: vec![],
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+        );
+
+        assert_eq!(
+            filtered_session_names(&state),
+            vec![
+                "kiosk--feat-agent-session-switcher",
+                "dotfiles--main",
+                "scooter--main",
+            ]
+        );
     }
 
     #[test]

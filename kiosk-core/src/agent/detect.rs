@@ -26,6 +26,12 @@ pub fn detect_agent_kind(
     child_process_args: Option<&str>,
 ) -> Option<AgentKind> {
     let cmd_lower = pane_command.to_lowercase();
+    let first_token = cmd_lower.split_whitespace().next().unwrap_or_default();
+
+    // Cursor CLI often appears as bare `agent` in pane command.
+    if first_token == "agent" {
+        return Some(AgentKind::CursorAgent);
+    }
 
     for &(pattern, kind) in AGENT_PATTERNS {
         if cmd_lower.contains(pattern) {
@@ -1071,7 +1077,14 @@ mod tests {
             detect_agent_kind("cursor-agent", None),
             Some(AgentKind::CursorAgent),
         );
-        assert_eq!(detect_agent_kind("agent", None), None);
+        assert_eq!(
+            detect_agent_kind("agent", None),
+            Some(AgentKind::CursorAgent)
+        );
+        assert_eq!(
+            detect_agent_kind("agent --version", None),
+            Some(AgentKind::CursorAgent)
+        );
         assert_eq!(detect_agent_kind("cursor", None), None);
     }
 

@@ -498,9 +498,6 @@ fn run_tui(
     state.agent_poll_interval = std::time::Duration::from_millis(config.agent.poll_interval_ms);
     state.agent_labels = config.agent.labels.clone();
     state.sessions_initial = sessions_flag;
-    if sessions_flag {
-        state.mode = Mode::Loading("Discovering sessions...".to_string());
-    }
 
     let theme = Theme::from_config(&config.theme);
 

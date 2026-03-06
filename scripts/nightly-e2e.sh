@@ -98,10 +98,10 @@ if [[ "$UPDATE_AGENTS" == true ]]; then
 
   if command -v npm &>/dev/null; then
     log "Updating Codex..."
-    npm update -g @openai/codex 2>&1 | tee -a "$LOG_FILE" || log "WARNING: Codex update failed"
+    npm install -g @openai/codex@latest 2>&1 | tee -a "$LOG_FILE" || log "WARNING: Codex update failed"
 
     log "Updating OpenCode..."
-    npm update -g opencode-ai 2>&1 | tee -a "$LOG_FILE" || log "WARNING: OpenCode update failed"
+    npm install -g opencode-ai@latest 2>&1 | tee -a "$LOG_FILE" || log "WARNING: OpenCode update failed"
   fi
 
   if command -v claude &>/dev/null; then
@@ -109,9 +109,9 @@ if [[ "$UPDATE_AGENTS" == true ]]; then
     claude update --yes 2>&1 | tee -a "$LOG_FILE" || log "WARNING: Claude Code update failed"
   fi
 
-  if command -v gemini &>/dev/null; then
+  if command -v npm &>/dev/null && command -v gemini &>/dev/null; then
     log "Updating Gemini CLI..."
-    npm update -g @google/gemini-cli 2>&1 | tee -a "$LOG_FILE" || log "WARNING: Gemini CLI update failed"
+    npm install -g @google/gemini-cli@latest 2>&1 | tee -a "$LOG_FILE" || log "WARNING: Gemini CLI update failed"
   fi
 
   # Cursor CLI: re-run install script to get latest

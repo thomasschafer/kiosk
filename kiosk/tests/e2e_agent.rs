@@ -512,15 +512,17 @@ impl AgentTestEnvDefault {
         assert!(status.success(), "Failed to create tmux session");
 
         let path = agent_path();
+        let config_export = if agent == AgentKind::OpenCode {
+            format!(" XDG_CONFIG_HOME='{}'", self.config_dir.to_string_lossy())
+        } else {
+            String::new()
+        };
         self.tmux_cmd()
             .args([
                 "send-keys",
                 "-t",
                 &self.kiosk_session,
-                &format!(
-                    "export PATH='{path}' XDG_CONFIG_HOME='{}'",
-                    self.config_dir.to_string_lossy()
-                ),
+                &format!("export PATH='{path}'{config_export}"),
                 "Enter",
             ])
             .status()

@@ -6,13 +6,14 @@ use kiosk_core::{
 };
 use rayon::ThreadPoolBuilder;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
     thread,
+    time::Duration,
 };
 
 use kiosk_core::git::Repo;
@@ -25,6 +26,10 @@ const ENRICHMENT_POOL_SIZE: usize = 8;
 
 /// Maximum number of concurrent per-remote `git fetch` calls.
 const FETCH_POOL_SIZE: usize = 4;
+/// Sessions membership updates can be slower than agent status updates.
+const SESSIONS_MEMBERSHIP_POLL_INTERVAL: Duration = Duration::from_secs(3);
+
+type SessionRepoData = (String, String, PathBuf, Vec<kiosk_core::git::Worktree>);
 
 pub(super) fn spawn_repo_discovery<T: TmuxProvider + ?Sized + 'static>(
     git: &Arc<dyn GitProvider>,
@@ -479,25 +484,73 @@ fn session_agent_states(
         .collect()
 }
 
-fn enrich_missing_worktrees(
+fn sanitize_session_base(session_name: &str) -> String {
+    session_name.replace('.', "_")
+}
+
+fn apply_repo_name_collision_resolution(repos: &mut [Repo], search_dirs: &[(PathBuf, u16)]) {
+    let mut name_counts = std::collections::HashMap::<String, usize>::new();
+    for repo in repos.iter() {
+        *name_counts.entry(repo.name.clone()).or_insert(0) += 1;
+    }
+    if !name_counts.values().any(|&count| count > 1) {
+        return;
+    }
+
+    for repo in repos {
+        if name_counts[&repo.name] > 1 {
+            let search_dir_name = search_dirs
+                .iter()
+                .filter(|(dir, _)| repo.path.starts_with(dir))
+                .max_by_key(|(dir, _)| dir.components().count())
+                .and_then(|(dir, _)| dir.file_name())
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            repo.session_name = format!("{}--({search_dir_name})", repo.name);
+        }
+    }
+}
+
+fn repo_has_matching_active_session(repo: &Repo, active_sessions: &HashSet<String>) -> bool {
+    let base = sanitize_session_base(&repo.session_name);
+    let prefix = format!("{base}--");
+    active_sessions
+        .iter()
+        .any(|session| session == &base || session.starts_with(&prefix))
+}
+
+fn discover_sessions_tmux_first<T: TmuxProvider + ?Sized>(
     git: &dyn GitProvider,
-    repos: Vec<(String, String, PathBuf, Vec<kiosk_core::git::Worktree>)>,
-) -> Vec<(String, String, PathBuf, Vec<kiosk_core::git::Worktree>)> {
-    repos
+    tmux: &T,
+    search_dirs: &[(PathBuf, u16)],
+) -> (Vec<kiosk_core::state::SessionEntry>, Vec<String>) {
+    let sessions_with_activity = tmux.list_sessions_with_activity();
+    let active_session_names: HashSet<String> = sessions_with_activity
+        .iter()
+        .map(|(name, _)| name.clone())
+        .collect();
+    if active_session_names.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+
+    let mut repos = git.scan_repos(search_dirs);
+    apply_repo_name_collision_resolution(&mut repos, search_dirs);
+
+    let repos: Vec<SessionRepoData> = repos
         .into_iter()
-        .map(|(name, session_name, path, worktrees)| {
-            if worktrees.is_empty() {
-                (name, session_name, path.clone(), git.list_worktrees(&path))
-            } else {
-                (name, session_name, path, worktrees)
-            }
+        .filter(|repo| repo_has_matching_active_session(repo, &active_session_names))
+        .map(|repo| {
+            let worktrees = git.list_worktrees(&repo.path);
+            (repo.name, repo.session_name, repo.path, worktrees)
         })
-        .collect()
+        .collect();
+
+    discover_sessions_from_repos(tmux, &repos)
 }
 
 fn discover_sessions_from_repos<T: TmuxProvider + ?Sized>(
     tmux: &T,
-    repos: &[(String, String, PathBuf, Vec<kiosk_core::git::Worktree>)],
+    repos: &[SessionRepoData],
 ) -> (Vec<kiosk_core::state::SessionEntry>, Vec<String>) {
     let sessions_with_activity = tmux.list_sessions_with_activity();
     let active_sessions: HashMap<String, u64> = sessions_with_activity.into_iter().collect();
@@ -545,20 +598,8 @@ pub(super) fn spawn_sessions_discovery<T: TmuxProvider + ?Sized + 'static>(
     sender: &EventSender,
     state: &mut kiosk_core::state::AppState,
 ) {
-    // Collect repo data while we have access to state
-    let repos: Vec<(String, String, PathBuf, Vec<kiosk_core::git::Worktree>)> = state
-        .repos
-        .iter()
-        .map(|r| {
-            (
-                r.name.clone(),
-                r.session_name.clone(),
-                r.path.clone(),
-                r.worktrees.clone(),
-            )
-        })
-        .collect();
-
+    let search_dirs = state.search_dirs.clone();
+    let status_interval = state.agent_poll_interval;
     let git = Arc::clone(git);
     let tmux_clone = Arc::clone(tmux);
     let sender_clone = sender.clone();
@@ -572,15 +613,16 @@ pub(super) fn spawn_sessions_discovery<T: TmuxProvider + ?Sized + 'static>(
     let poller_cancel_for_poller = Arc::clone(&poller_cancel);
     let tmux_for_poller = Arc::clone(tmux);
     let sender_for_poller = sender.clone();
+    let git_for_poller = Arc::clone(&git);
+    let search_dirs_for_poller = search_dirs.clone();
 
     thread::spawn(move || {
         if sender_clone.cancel.load(Ordering::Relaxed) {
             return;
         }
 
-        // Re-enrich only repos that are still missing worktrees.
-        let repos = enrich_missing_worktrees(&*git, repos);
-        let (sessions, session_names) = discover_sessions_from_repos(&*tmux_clone, &repos);
+        let (sessions, session_names) =
+            discover_sessions_tmux_first(&*git, &*tmux_clone, &search_dirs);
         let states = if session_names.is_empty() {
             Vec::new()
         } else {
@@ -588,88 +630,88 @@ pub(super) fn spawn_sessions_discovery<T: TmuxProvider + ?Sized + 'static>(
         };
         sender_clone.send(AppEvent::SessionsSnapshot { sessions, states });
 
-        // Start the sessions refresh/agent poller.
+        // Start sessions pollers: fast status updates + slower membership diffs.
         spawn_sessions_agent_poller(
+            &git_for_poller,
             &tmux_for_poller,
             &sender_for_poller,
             poller_cancel_for_poller,
-            std::time::Duration::from_secs(3),
-            repos,
+            status_interval,
+            SESSIONS_MEMBERSHIP_POLL_INTERVAL,
+            search_dirs_for_poller,
         );
     });
 }
 
-/// Sessions poller for the sessions view — refreshes session membership and
-/// agent statuses on each cycle.
+/// Sessions poller for sessions mode.
+/// Statuses update at `status_interval`; membership diffs run at the slower
+/// `membership_interval`.
 fn spawn_sessions_agent_poller<T: TmuxProvider + ?Sized + 'static>(
+    git: &Arc<dyn GitProvider>,
     tmux: &Arc<T>,
     sender: &EventSender,
     cancel: Arc<AtomicBool>,
-    base_interval: std::time::Duration,
-    repos: Vec<(String, String, PathBuf, Vec<kiosk_core::git::Worktree>)>,
+    status_interval: Duration,
+    membership_interval: Duration,
+    search_dirs: Vec<(PathBuf, u16)>,
 ) {
+    let git = Arc::clone(git);
     let tmux = Arc::clone(tmux);
     let sender = sender.clone();
-    let idle_interval = base_interval.saturating_mul(3);
     thread::spawn(move || {
         let is_cancelled =
             || cancel.load(Ordering::Relaxed) || sender.cancel.load(Ordering::Relaxed);
-        let mut current_interval = base_interval;
-        loop {
-            // Sleep first since we already did an initial detection
-            let mut remaining = current_interval;
-            while !remaining.is_zero() {
-                if is_cancelled() {
-                    return;
-                }
-                let sleep = remaining.min(std::time::Duration::from_millis(200));
-                thread::sleep(sleep);
-                remaining = remaining.saturating_sub(sleep);
-            }
+        let mut known_session_names: Vec<String> = Vec::new();
+        let mut last_status_tick = std::time::Instant::now();
+        let mut last_membership_tick = std::time::Instant::now();
 
+        loop {
             if is_cancelled() {
                 return;
             }
 
-            let (sessions, session_names) = discover_sessions_from_repos(&*tmux, &repos);
-            if session_names.is_empty() {
-                sender.send(AppEvent::SessionsSnapshot {
-                    sessions,
-                    states: Vec::new(),
-                });
-                current_interval = idle_interval;
-                continue;
+            let now = std::time::Instant::now();
+
+            if now.duration_since(last_membership_tick) >= membership_interval {
+                let (sessions, session_names) =
+                    discover_sessions_tmux_first(&*git, &*tmux, &search_dirs);
+                let states = if session_names.is_empty() {
+                    Vec::new()
+                } else {
+                    session_agent_states(detect_agent_statuses(&*tmux, &session_names))
+                };
+                known_session_names = session_names;
+                sender.send(AppEvent::SessionsSnapshot { sessions, states });
+                last_membership_tick = now;
+                last_status_tick = now;
             }
 
-            let states = session_agent_states(detect_agent_statuses(&*tmux, &session_names));
-            let any_active = states.iter().any(|(_, statuses)| {
-                statuses.iter().any(|s| {
-                    matches!(
-                        s.state,
-                        kiosk_core::agent::AgentState::Running
-                            | kiosk_core::agent::AgentState::Waiting
-                    )
-                })
-            });
-            current_interval = if any_active {
-                base_interval
-            } else {
-                idle_interval
-            };
-            sender.send(AppEvent::SessionsSnapshot { sessions, states });
+            if now.duration_since(last_status_tick) >= status_interval
+                && !known_session_names.is_empty()
+            {
+                let states =
+                    session_agent_states(detect_agent_statuses(&*tmux, &known_session_names));
+                sender.send(AppEvent::SessionAgentStatesUpdated { states });
+                last_status_tick = now;
+            }
+
+            thread::sleep(Duration::from_millis(150));
         }
     });
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{detect_agent_statuses, discover_sessions_from_repos, enrich_missing_worktrees};
+    use super::{
+        detect_agent_statuses, discover_sessions_from_repos, discover_sessions_tmux_first,
+        repo_has_matching_active_session,
+    };
     use kiosk_core::{
         agent::{AgentKind, AgentState},
-        git::{Worktree, mock::MockGitProvider},
+        git::{Repo, Worktree, mock::MockGitProvider},
         tmux::{mock::MockTmuxProvider, provider::PaneInfo},
     };
-    use std::path::PathBuf;
+    use std::{collections::HashSet, path::PathBuf};
 
     #[allow(clippy::similar_names)]
     #[test]
@@ -799,37 +841,55 @@ mod tests {
     }
 
     #[test]
-    fn enrich_missing_worktrees_only_fills_empty_repos() {
+    fn repo_matching_checks_main_and_branch_prefix() {
+        let repo = Repo {
+            name: "my.repo".to_string(),
+            session_name: "my.repo".to_string(),
+            path: PathBuf::from("/tmp/my.repo"),
+            worktrees: Vec::new(),
+        };
+        let active: HashSet<String> = ["my_repo".to_string(), "my_repo--feat".to_string()]
+            .into_iter()
+            .collect();
+        assert!(repo_has_matching_active_session(&repo, &active));
+    }
+
+    #[test]
+    fn discover_sessions_tmux_first_applies_collision_resolution() {
         let git = MockGitProvider {
+            repos: vec![
+                Repo {
+                    name: "api".to_string(),
+                    session_name: "api".to_string(),
+                    path: PathBuf::from("/tmp/work/api"),
+                    worktrees: Vec::new(),
+                },
+                Repo {
+                    name: "api".to_string(),
+                    session_name: "api".to_string(),
+                    path: PathBuf::from("/tmp/personal/api"),
+                    worktrees: Vec::new(),
+                },
+            ],
             worktrees: vec![Worktree {
-                path: PathBuf::from("/tmp/enriched"),
-                branch: Some("feature".to_string()),
+                path: PathBuf::from("/tmp/worktrees/api--feat"),
+                branch: Some("feat".to_string()),
                 is_main: false,
             }],
             ..Default::default()
         };
-
-        let repos = vec![
-            (
-                "already".to_string(),
-                "already".to_string(),
-                PathBuf::from("/tmp/already"),
-                vec![Worktree {
-                    path: PathBuf::from("/tmp/already"),
-                    branch: Some("main".to_string()),
-                    is_main: true,
-                }],
-            ),
-            (
-                "empty".to_string(),
-                "empty".to_string(),
-                PathBuf::from("/tmp/empty"),
-                Vec::new(),
-            ),
+        let tmux = MockTmuxProvider {
+            sessions_with_activity: vec![("api--(work)--feat".into(), 77)],
+            ..Default::default()
+        };
+        let search_dirs = vec![
+            (PathBuf::from("/tmp/work"), 2),
+            (PathBuf::from("/tmp/personal"), 2),
         ];
 
-        let enriched = enrich_missing_worktrees(&git, repos);
-        assert_eq!(enriched[0].3[0].path, PathBuf::from("/tmp/already"));
-        assert_eq!(enriched[1].3[0].path, PathBuf::from("/tmp/enriched"));
+        let (sessions, session_names) = discover_sessions_tmux_first(&git, &tmux, &search_dirs);
+        assert_eq!(session_names, vec!["api--(work)--feat".to_string()]);
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].repo_name, "api");
     }
 }

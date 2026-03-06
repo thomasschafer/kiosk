@@ -94,11 +94,18 @@ pub fn run(
         cancel: Arc::clone(&cancel),
     };
     let spinner_start = Instant::now();
+    state.search_dirs = search_dirs.clone();
 
     // Start repo discovery in background
     if state.loading_repos || state.repos.is_empty() {
         initialize_repo_scan(state);
-        spawn_repo_discovery(git, tmux, &event_sender, search_dirs);
+        spawn_repo_discovery(git, tmux, &event_sender, search_dirs.clone());
+    }
+
+    // Sessions mode runs its own tmux-first discovery path and should not wait
+    // for repo scan completion.
+    if state.mode == Mode::Sessions && state.loading_sessions {
+        spawn_sessions_discovery(git, tmux, &event_sender, state);
     }
 
     let result = loop {
@@ -628,13 +635,6 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
     tmux: &Arc<T>,
     sender: &EventSender,
 ) -> Option<OpenAction> {
-    let refresh_sessions_if_active =
-        |state: &mut AppState, git: &Arc<dyn GitProvider>, tmux: &Arc<T>, sender: &EventSender| {
-            if *state.mode.effective() == Mode::Sessions {
-                spawn_sessions_discovery(git, tmux, sender, state);
-            }
-        };
-
     match event {
         AppEvent::ReposDiscovered {
             mut repos,
@@ -666,7 +666,6 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             if !state.sessions_initial && matches!(state.mode, Mode::Loading(_)) {
                 state.mode = Mode::RepoSelect;
             }
-            refresh_sessions_if_active(state, git, tmux, sender);
         }
         AppEvent::ReposFound { repo } => {
             // O(1) dedup via HashSet
@@ -682,7 +681,6 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             if !state.sessions_initial && matches!(state.mode, Mode::Loading(_)) {
                 state.mode = Mode::RepoSelect;
             }
-            refresh_sessions_if_active(state, git, tmux, sender);
         }
         AppEvent::ScanComplete { search_dirs } => {
             // Scan is done — clear dedup set (no longer needed until next scan)
@@ -719,13 +717,12 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
 
             state.loading_repos = false;
 
-            if state.sessions_initial {
+            if state.sessions_initial && state.mode != Mode::Sessions {
                 enter_sessions_view(state, git, tmux, sender);
             } else {
                 if matches!(state.mode, Mode::Loading(_)) {
                     state.mode = Mode::RepoSelect;
                 }
-                refresh_sessions_if_active(state, git, tmux, sender);
             }
         }
         AppEvent::SessionActivityLoaded { session_activity } => {
@@ -758,7 +755,6 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             {
                 state.set_error(&format!("Failed to persist pending deletes: {e}"));
             }
-            refresh_sessions_if_active(state, git, tmux, sender);
         }
         AppEvent::WorktreeCreated { path, session_name } => {
             return Some(OpenAction::Open {
@@ -908,7 +904,6 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
 
         AppEvent::SessionAgentStatesUpdated { states } => {
             if *state.mode.effective() == Mode::Sessions {
-                let selected_session_name = selected_session_name(state);
                 for (session_name, agent_statuses) in states {
                     for session in &mut state.sessions {
                         if session.session_name == session_name {
@@ -916,8 +911,6 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
                         }
                     }
                 }
-                sort_sessions_for_view(state);
-                rebuild_sessions_list(state, selected_session_name);
                 if state.sessions_pin_first_selection && !state.sessions_list.filtered.is_empty() {
                     state.sessions_list.selected = Some(0);
                     state.sessions_list.scroll_offset = 0;
@@ -1160,12 +1153,40 @@ fn sort_sessions_for_view(state: &mut AppState) {
     pin_current_session_first(state);
 }
 
+fn merge_sessions_preserving_existing_order(
+    existing: &[kiosk_core::state::SessionEntry],
+    mut incoming: Vec<kiosk_core::state::SessionEntry>,
+) -> Vec<kiosk_core::state::SessionEntry> {
+    let incoming_index: std::collections::HashMap<&str, usize> = incoming
+        .iter()
+        .enumerate()
+        .map(|(idx, session)| (session.session_name.as_str(), idx))
+        .collect();
+    let mut consumed = vec![false; incoming.len()];
+    let mut merged = Vec::with_capacity(incoming.len());
+
+    for session in existing {
+        if let Some(idx) = incoming_index.get(session.session_name.as_str()).copied() {
+            consumed[idx] = true;
+            merged.push(incoming[idx].clone());
+        }
+    }
+
+    for (idx, session) in incoming.drain(..).enumerate() {
+        if !consumed[idx] {
+            merged.push(session);
+        }
+    }
+
+    merged
+}
+
 fn apply_sessions_update(
     state: &mut AppState,
     mut sessions: Vec<kiosk_core::state::SessionEntry>,
     states: Vec<(String, Vec<kiosk_core::agent::AgentStatus>)>,
 ) {
-    let initial_sessions_load = state.loading_sessions;
+    let initial_sessions_load = state.loading_sessions || state.sessions.is_empty();
     let selected_session_name = if initial_sessions_load {
         None
     } else {
@@ -1174,9 +1195,14 @@ fn apply_sessions_update(
 
     preserve_existing_session_agent_states(&state.sessions, &mut sessions);
     merge_session_agent_states(&mut sessions, &states);
-
-    state.sessions = sessions;
-    sort_sessions_for_view(state);
+    state.sessions = if initial_sessions_load {
+        sessions
+    } else {
+        merge_sessions_preserving_existing_order(&state.sessions, sessions)
+    };
+    if initial_sessions_load {
+        sort_sessions_for_view(state);
+    }
     rebuild_sessions_list(state, selected_session_name);
 
     if state.sessions_pin_first_selection && !state.sessions_list.filtered.is_empty() {
@@ -5254,13 +5280,13 @@ mod tests {
     }
 
     #[test]
-    fn test_repo_enriched_restarts_sessions_discovery_when_in_sessions_mode() {
+    fn test_repo_enriched_does_not_restart_sessions_discovery_when_in_sessions_mode() {
         let mut state = AppState::new(vec![make_repo("alpha")], None);
         state.mode = Mode::Sessions;
         state.loading_sessions = false;
 
-        let old_sessions_poller = Arc::new(AtomicBool::new(false));
-        state.install_sessions_poller(Arc::clone(&old_sessions_poller));
+        let sessions_poller = Arc::new(AtomicBool::new(false));
+        state.install_sessions_poller(Arc::clone(&sessions_poller));
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux = Arc::new(MockTmuxProvider::default());
@@ -5282,16 +5308,16 @@ mod tests {
         );
 
         assert!(
-            old_sessions_poller.load(std::sync::atomic::Ordering::Relaxed),
-            "repo enrichment should restart sessions discovery while in sessions mode"
+            !sessions_poller.load(std::sync::atomic::Ordering::Relaxed),
+            "repo enrichment should not restart sessions discovery in sessions mode"
         );
-        let new_token = match &state.active_agent_poller {
+        let active_token = match &state.active_agent_poller {
             kiosk_core::state::ActiveAgentPoller::Sessions(token) => token,
-            _ => panic!("sessions poller token should be replaced"),
+            _ => panic!("sessions poller token should remain active"),
         };
         assert!(
-            !Arc::ptr_eq(new_token, &old_sessions_poller),
-            "sessions poller token should be replaced on restart"
+            Arc::ptr_eq(active_token, &sessions_poller),
+            "sessions poller token should not be replaced by repo enrichment"
         );
     }
 
@@ -5412,7 +5438,48 @@ mod tests {
         );
 
         assert_eq!(state.sessions_list.selected, Some(0));
-        assert_eq!(state.sessions[0].session_name, "alpha");
+        assert_eq!(state.sessions[0].session_name, "beta");
+    }
+
+    #[test]
+    fn test_sessions_snapshot_updates_membership_without_reordering_existing_rows() {
+        let mut state = AppState::new(vec![make_repo("alpha")], None);
+        state.mode = Mode::Sessions;
+        state.loading_sessions = false;
+        state.sessions = vec![
+            make_session("alpha--main", 100),
+            make_session("beta--feat", 90),
+            make_session("gamma--dev", 80),
+        ];
+        state.sessions_list.filtered = vec![(0, 0), (1, 0), (2, 0)];
+        state.sessions_list.selected = Some(1);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux = Arc::new(MockTmuxProvider::default());
+        let sender = make_sender();
+
+        process_app_event(
+            AppEvent::SessionsSnapshot {
+                sessions: vec![
+                    make_session("beta--feat", 95),
+                    make_session("alpha--main", 110),
+                    make_session("delta--new", 70),
+                ],
+                states: vec![],
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+        );
+
+        let names: Vec<&str> = state
+            .sessions
+            .iter()
+            .map(|session| session.session_name.as_str())
+            .collect();
+        assert_eq!(names, vec!["alpha--main", "beta--feat", "delta--new"]);
+        assert_eq!(state.sessions_list.selected, Some(1));
     }
 
     #[test]
@@ -5474,8 +5541,8 @@ mod tests {
             filtered_session_names(&state),
             vec![
                 "kiosk--feat-agent-session-switcher",
-                "dotfiles--main",
                 "scooter--main",
+                "dotfiles--main",
             ]
         );
 
@@ -5498,8 +5565,8 @@ mod tests {
             filtered_session_names(&state),
             vec![
                 "kiosk--feat-agent-session-switcher",
-                "dotfiles--main",
                 "scooter--main",
+                "dotfiles--main",
             ]
         );
     }

@@ -909,6 +909,8 @@ pub struct AppState {
     /// Tracks repo paths already seen during streaming discovery (O(1) dedup).
     /// Cleared when a new scan starts.
     pub seen_repo_paths: HashSet<PathBuf>,
+    /// Configured search directories for repo/worktree discovery.
+    pub search_dirs: Vec<(PathBuf, u16)>,
     /// Sessions view data
     pub sessions: Vec<SessionEntry>,
     pub sessions_list: SearchableList,
@@ -949,6 +951,7 @@ impl AppState {
             current_repo_path: None,
             cwd_worktree_path: None,
             seen_repo_paths: HashSet::new(),
+            search_dirs: Vec::new(),
             sessions: Vec::new(),
             sessions_list: SearchableList::new(0),
             loading_sessions: false,

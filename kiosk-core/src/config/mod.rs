@@ -562,7 +562,7 @@ unknown_field = true
         );
         assert_eq!(
             config.theme.status.running,
-            ThemeColor::Named(NamedColor::Magenta)
+            ThemeColor::Named(NamedColor::Green)
         );
         assert_eq!(
             config.theme.status.waiting,

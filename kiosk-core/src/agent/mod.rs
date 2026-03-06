@@ -722,7 +722,7 @@ mod tests {
             ],
         );
         let status = detect_for_session(&tmux, "multi").unwrap().status;
-        assert_eq!(status.state, AgentState::Running);
+        assert_eq!(status.state, AgentState::Idle);
     }
 
     #[test]
@@ -1059,7 +1059,7 @@ mod tests {
 
         let status = detect_for_session(&tmux, session).unwrap().status;
         assert_eq!(status.kind, AgentKind::Codex);
-        assert_eq!(status.state, AgentState::Running);
+        assert_eq!(status.state, AgentState::Idle);
     }
     #[test]
     fn unknown_upgrades_to_running_with_recent_activity() {
@@ -1589,9 +1589,9 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].0, "multi");
         assert_eq!(results[0].1.len(), 2);
-        // Sorted: Running > Idle
-        assert_eq!(results[0].1[0].status.state, AgentState::Running);
-        assert_eq!(results[0].1[1].status.state, AgentState::Idle);
+        // Sorted: Idle > Running
+        assert_eq!(results[0].1[0].status.state, AgentState::Idle);
+        assert_eq!(results[0].1[1].status.state, AgentState::Running);
     }
 
     #[test]

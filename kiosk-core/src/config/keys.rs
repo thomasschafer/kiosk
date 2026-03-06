@@ -1232,6 +1232,8 @@ mod tests {
                 let mut map = HashMap::new();
                 map.insert("C-c".to_string(), "noop".to_string());
                 map.insert("C-h".to_string(), "show_help".to_string());
+                map.insert("C-s".to_string(), "noop".to_string());
+                map.insert("esc".to_string(), "noop".to_string());
                 map
             },
             text_edit: HashMap::new(),
@@ -1249,7 +1251,7 @@ mod tests {
             .find(|section| section.name == "general")
             .unwrap();
 
-        assert_eq!(general.entries.len(), 2);
+        assert_eq!(general.entries.len(), 1);
         assert_eq!(general.entries[0].command, Command::ShowHelp);
     }
 
@@ -1306,6 +1308,7 @@ mod tests {
                 map.insert("C-c".to_string(), "noop".to_string());
                 map.insert("C-h".to_string(), "noop".to_string());
                 map.insert("C-s".to_string(), "noop".to_string());
+                map.insert("esc".to_string(), "noop".to_string());
                 map
             },
             text_edit: HashMap::new(),

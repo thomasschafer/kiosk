@@ -83,7 +83,7 @@ mod tests {
         assert_eq!(theme.border, Color::DarkGray);
         assert_eq!(theme.hint, Color::Blue);
         assert_eq!(theme.highlight_fg, Color::Black);
-        assert_eq!(theme.status.running, Color::Magenta);
+        assert_eq!(theme.status.running, Color::Green);
         assert_eq!(theme.status.waiting, Color::Yellow);
         assert_eq!(theme.status.idle, Color::Cyan);
         assert_eq!(theme.status.unknown, Color::Blue);
@@ -104,7 +104,7 @@ mod tests {
         assert_eq!(theme.success, Color::Green); // default
         assert_eq!(theme.error, Color::Magenta);
         assert_eq!(theme.highlight_fg, Color::Yellow);
-        assert_eq!(theme.status.running, Color::Magenta); // default
+        assert_eq!(theme.status.running, Color::Green); // default
         assert_eq!(theme.status.waiting, Color::Yellow); // default
         assert_eq!(theme.status.idle, Color::Cyan); // default
         assert_eq!(theme.status.unknown, Color::Blue); // default

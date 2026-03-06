@@ -729,11 +729,9 @@ mod tests {
     #[test]
     fn discover_sessions_includes_only_active_kiosk_sessions() {
         let mut tmux = MockTmuxProvider {
-            sessions: std::sync::Mutex::new(vec!["alpha--main".into(), "beta--feat".into()]),
+            sessions_with_activity: vec![("alpha--main".into(), 100), ("beta--feat".into(), 200)],
             ..Default::default()
         };
-        tmux.session_activity_ts.insert("alpha--main".into(), 100);
-        tmux.session_activity_ts.insert("beta--feat".into(), 200);
         tmux.clients.insert("beta--feat".into(), vec!["1".into()]);
 
         let repos = vec![

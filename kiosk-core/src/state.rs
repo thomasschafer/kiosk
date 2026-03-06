@@ -718,6 +718,56 @@ pub struct SessionEntry {
     pub attached: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SessionsLoadState {
+    #[default]
+    Loading,
+    Ready,
+}
+
+#[derive(Debug, Clone)]
+pub struct SessionsViewState {
+    pub sessions: Vec<SessionEntry>,
+    pub list: SearchableList,
+    pub load_state: SessionsLoadState,
+    /// Keep sessions selection pinned to the first item until user interacts.
+    pub pin_first_selection: bool,
+}
+
+impl Default for SessionsViewState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SessionsViewState {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            sessions: Vec::new(),
+            list: SearchableList::new(0),
+            load_state: SessionsLoadState::Loading,
+            pin_first_selection: false,
+        }
+    }
+
+    pub fn begin_loading(&mut self) {
+        self.sessions.clear();
+        self.list = SearchableList::new(0);
+        self.load_state = SessionsLoadState::Loading;
+        self.pin_first_selection = true;
+    }
+
+    #[must_use]
+    pub fn is_loading(&self) -> bool {
+        self.load_state == SessionsLoadState::Loading
+    }
+
+    pub fn mark_ready(&mut self) {
+        self.load_state = SessionsLoadState::Ready;
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum ActiveAgentPoller {
     None,
@@ -911,12 +961,8 @@ pub struct AppState {
     pub seen_repo_paths: HashSet<PathBuf>,
     /// Configured search directories for repo/worktree discovery.
     pub search_dirs: Vec<(PathBuf, u16)>,
-    /// Sessions view data
-    pub sessions: Vec<SessionEntry>,
-    pub sessions_list: SearchableList,
-    pub loading_sessions: bool,
-    /// Keep sessions selection pinned to the first item until user interacts.
-    pub sessions_pin_first_selection: bool,
+    /// Sessions view state. Grouped to reduce invalid cross-mode combinations.
+    pub sessions_view: SessionsViewState,
     /// Whether the TUI was launched with --sessions flag
     pub sessions_initial: bool,
 }
@@ -952,10 +998,7 @@ impl AppState {
             cwd_worktree_path: None,
             seen_repo_paths: HashSet::new(),
             search_dirs: Vec::new(),
-            sessions: Vec::new(),
-            sessions_list: SearchableList::new(0),
-            loading_sessions: false,
-            sessions_pin_first_selection: false,
+            sessions_view: SessionsViewState::new(),
             sessions_initial: false,
         }
     }
@@ -1048,7 +1091,7 @@ impl AppState {
     pub fn active_list_mut(&mut self) -> Option<&mut SearchableList> {
         match self.mode {
             Mode::RepoSelect => Some(&mut self.repo_list),
-            Mode::Sessions => Some(&mut self.sessions_list),
+            Mode::Sessions => Some(&mut self.sessions_view.list),
             Mode::BranchSelect => Some(&mut self.branch_list),
             Mode::SelectBaseBranch => self.base_branch_selection.as_mut().map(|f| &mut f.list),
             Mode::Help { .. } => self.active_help_list_mut(),
@@ -1060,7 +1103,7 @@ impl AppState {
     pub fn active_list(&self) -> Option<&SearchableList> {
         match self.mode {
             Mode::RepoSelect => Some(&self.repo_list),
-            Mode::Sessions => Some(&self.sessions_list),
+            Mode::Sessions => Some(&self.sessions_view.list),
             Mode::BranchSelect => Some(&self.branch_list),
             Mode::SelectBaseBranch => self.base_branch_selection.as_ref().map(|f| &f.list),
             Mode::Help { .. } => self.active_help_list(),

@@ -550,7 +550,11 @@ fn update_active_filter(state: &mut AppState, matcher: &SkimMatcherV2) {
             apply_fuzzy_filter(&mut state.branch_list, &names, matcher);
         }
         Mode::Sessions => {
-            apply_session_filter(&mut state.sessions_list, &state.sessions, matcher);
+            apply_session_filter(
+                &mut state.sessions_view.list,
+                &state.sessions_view.sessions,
+                matcher,
+            );
         }
         Mode::SelectBaseBranch => {
             if let Some(flow) = &mut state.base_branch_selection {
@@ -725,7 +729,7 @@ mod tests {
     fn sessions_mode_search_filters_session_list() {
         let mut state = AppState::new(Vec::new(), None);
         state.mode = Mode::Sessions;
-        state.sessions = vec![
+        state.sessions_view.sessions = vec![
             SessionEntry {
                 session_name: "scooter--add-scoop-to-readme".to_string(),
                 repo_name: "scooter".to_string(),
@@ -754,23 +758,23 @@ mod tests {
                 attached: false,
             },
         ];
-        state.sessions_list = SearchableList::new(state.sessions.len());
+        state.sessions_view.list = SearchableList::new(state.sessions_view.sessions.len());
 
         let matcher = SkimMatcherV2::default();
         for c in "add-scoop".chars() {
             handle_search_push(&mut state, &matcher, c);
         }
 
-        assert_eq!(state.sessions_list.filtered.len(), 1);
-        assert_eq!(state.sessions_list.filtered[0].0, 0);
-        assert_eq!(state.sessions_list.selected, Some(0));
+        assert_eq!(state.sessions_view.list.filtered.len(), 1);
+        assert_eq!(state.sessions_view.list.filtered[0].0, 0);
+        assert_eq!(state.sessions_view.list.selected, Some(0));
     }
 
     #[test]
     fn sessions_mode_search_preserves_canonical_session_order() {
         let mut state = AppState::new(Vec::new(), None);
         state.mode = Mode::Sessions;
-        state.sessions = vec![
+        state.sessions_view.sessions = vec![
             SessionEntry {
                 session_name: "kiosk--feat-agent-session-switcher".to_string(),
                 repo_name: "kiosk".to_string(),
@@ -799,16 +803,17 @@ mod tests {
                 attached: false,
             },
         ];
-        state.sessions_list = SearchableList::new(state.sessions.len());
+        state.sessions_view.list = SearchableList::new(state.sessions_view.sessions.len());
 
         let matcher = SkimMatcherV2::default();
         handle_search_push(&mut state, &matcher, 'o');
 
         let filtered_names = state
-            .sessions_list
+            .sessions_view
+            .list
             .filtered
             .iter()
-            .map(|(idx, _)| state.sessions[*idx].session_name.as_str())
+            .map(|(idx, _)| state.sessions_view.sessions[*idx].session_name.as_str())
             .collect::<Vec<_>>();
 
         assert_eq!(
@@ -819,6 +824,6 @@ mod tests {
                 "dotfiles--main",
             ]
         );
-        assert_eq!(state.sessions_list.selected, Some(0));
+        assert_eq!(state.sessions_view.list.selected, Some(0));
     }
 }

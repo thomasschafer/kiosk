@@ -22,8 +22,8 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, _keys: &
             border_color: theme.accent,
             muted_color: theme.muted,
         },
-        &state.sessions_list.input.text,
-        state.sessions_list.input.cursor,
+        &state.sessions_view.list.input.text,
+        state.sessions_view.list.input.cursor,
     );
 
     // Row width available for content (list area minus borders minus highlight symbol)
@@ -31,11 +31,12 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, _keys: &
 
     // Session list
     let mut items: Vec<ListItem> = state
-        .sessions_list
+        .sessions_view
+        .list
         .filtered
         .iter()
         .map(|(idx, _)| {
-            let session = &state.sessions[*idx];
+            let session = &state.sessions_view.sessions[*idx];
             let mut left_spans: Vec<Span<'_>> = Vec::new();
 
             // repo/branch
@@ -66,20 +67,20 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, _keys: &
         })
         .collect();
 
-    if state.loading_sessions && state.sessions_list.filtered.is_empty() {
+    if state.sessions_view.is_loading() && state.sessions_view.list.filtered.is_empty() {
         items.push(ListItem::new(Line::from(Span::styled(
             "Loading sessions...",
             Style::default().fg(theme.muted),
         ))));
-    } else if state.sessions.is_empty() && !state.loading_sessions {
+    } else if state.sessions_view.sessions.is_empty() && !state.sessions_view.is_loading() {
         items.push(ListItem::new(Line::from(Span::styled(
             "No active sessions",
             Style::default().fg(theme.muted),
         ))));
     }
 
-    let count = state.sessions_list.filtered.len();
-    let loading_suffix = if state.loading_sessions {
+    let count = state.sessions_view.list.filtered.len();
+    let loading_suffix = if state.sessions_view.is_loading() {
         " | loading..."
     } else {
         ""
@@ -100,7 +101,7 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, _keys: &
         .highlight_symbol("▸ ");
 
     let mut list_state = ListState::default();
-    list_state.select(state.sessions_list.selected);
-    *list_state.offset_mut() = state.sessions_list.scroll_offset;
+    list_state.select(state.sessions_view.list.selected);
+    *list_state.offset_mut() = state.sessions_view.list.scroll_offset;
     f.render_stateful_widget(list, chunks[1], &mut list_state);
 }

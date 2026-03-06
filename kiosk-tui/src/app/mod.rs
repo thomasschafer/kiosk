@@ -100,7 +100,7 @@ pub fn run(
     // Start repo discovery in background unless startup is explicitly sessions-first.
     // In that case we defer repo scanning until the user leaves sessions mode.
     let sessions_first_startup =
-        state.sessions_initial && state.mode == Mode::Sessions && state.loading_sessions;
+        state.sessions_initial && state.mode == Mode::Sessions && state.sessions_view.is_loading();
     if !sessions_first_startup && (state.loading_repos || state.repos.is_empty()) {
         initialize_repo_scan(state);
         spawn_repo_discovery(git, tmux, &event_sender, search_dirs.clone());
@@ -109,7 +109,7 @@ pub fn run(
 
     // Sessions mode runs its own tmux-first discovery path and should not wait
     // for repo scan completion.
-    if state.mode == Mode::Sessions && state.loading_sessions {
+    if state.mode == Mode::Sessions && state.sessions_view.is_loading() {
         spawn_sessions_discovery(git, tmux, &event_sender, state);
     }
 
@@ -502,10 +502,11 @@ fn sort_repos_preserving_selection(state: &mut AppState) {
 
 fn selected_session_name(state: &AppState) -> Option<String> {
     state
-        .sessions_list
+        .sessions_view
+        .list
         .selected
-        .and_then(|selected| state.sessions_list.filtered.get(selected))
-        .and_then(|(idx, _)| state.sessions.get(*idx))
+        .and_then(|selected| state.sessions_view.list.filtered.get(selected))
+        .and_then(|(idx, _)| state.sessions_view.sessions.get(*idx))
         .map(|session| session.session_name.clone())
 }
 
@@ -894,15 +895,17 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
         AppEvent::SessionAgentStatesUpdated { states } => {
             if *state.mode.effective() == Mode::Sessions {
                 for (session_name, agent_statuses) in states {
-                    for session in &mut state.sessions {
+                    for session in &mut state.sessions_view.sessions {
                         if session.session_name == session_name {
                             session.agent_statuses.clone_from(&agent_statuses);
                         }
                     }
                 }
-                if state.sessions_pin_first_selection && !state.sessions_list.filtered.is_empty() {
-                    state.sessions_list.selected = Some(0);
-                    state.sessions_list.scroll_offset = 0;
+                if state.sessions_view.pin_first_selection
+                    && !state.sessions_view.list.filtered.is_empty()
+                {
+                    state.sessions_view.list.selected = Some(0);
+                    state.sessions_view.list.scroll_offset = 0;
                 }
             }
         }
@@ -1055,29 +1058,34 @@ struct ActionContext<'a, T: TmuxProvider + ?Sized + 'static> {
 }
 
 fn rebuild_sessions_list(state: &mut AppState, selected_session_name: Option<String>) {
-    let previous_scroll = state.sessions_list.scroll_offset;
+    let previous_scroll = state.sessions_view.list.scroll_offset;
 
-    rebuild_session_filter_preserving_search(&mut state.sessions_list, &state.sessions);
+    rebuild_session_filter_preserving_search(
+        &mut state.sessions_view.list,
+        &state.sessions_view.sessions,
+    );
 
     if let Some(selected_session_name) = selected_session_name
         && let Some(session_idx) = state
+            .sessions_view
             .sessions
             .iter()
             .position(|session| session.session_name == selected_session_name)
         && let Some(filtered_idx) = state
-            .sessions_list
+            .sessions_view
+            .list
             .filtered
             .iter()
             .position(|(idx, _)| *idx == session_idx)
     {
-        state.sessions_list.selected = Some(filtered_idx);
+        state.sessions_view.list.selected = Some(filtered_idx);
     }
 
-    if state.sessions_list.filtered.is_empty() {
-        state.sessions_list.scroll_offset = 0;
+    if state.sessions_view.list.filtered.is_empty() {
+        state.sessions_view.list.scroll_offset = 0;
     } else {
-        let max_scroll = state.sessions_list.filtered.len() - 1;
-        state.sessions_list.scroll_offset = previous_scroll.min(max_scroll);
+        let max_scroll = state.sessions_view.list.filtered.len() - 1;
+        state.sessions_view.list.scroll_offset = previous_scroll.min(max_scroll);
     }
 }
 
@@ -1126,19 +1134,19 @@ fn pin_current_session_first(state: &mut AppState) {
     };
     let cwd_canonical =
         std::fs::canonicalize(cwd_worktree_path).unwrap_or_else(|_| cwd_worktree_path.clone());
-    if let Some(idx) = state.sessions.iter().position(|session| {
+    if let Some(idx) = state.sessions_view.sessions.iter().position(|session| {
         session.path == *cwd_worktree_path
             || session.path == cwd_canonical
             || std::fs::canonicalize(&session.path).is_ok_and(|p| p == cwd_canonical)
     }) && idx > 0
     {
-        let current = state.sessions.remove(idx);
-        state.sessions.insert(0, current);
+        let current = state.sessions_view.sessions.remove(idx);
+        state.sessions_view.sessions.insert(0, current);
     }
 }
 
 fn sort_sessions_for_view(state: &mut AppState) {
-    kiosk_core::state::sort_sessions(&mut state.sessions);
+    kiosk_core::state::sort_sessions(&mut state.sessions_view.sessions);
     pin_current_session_first(state);
 }
 
@@ -1175,30 +1183,31 @@ fn apply_sessions_update(
     mut sessions: Vec<kiosk_core::state::SessionEntry>,
     states: Vec<(String, Vec<kiosk_core::agent::AgentStatus>)>,
 ) {
-    let initial_sessions_load = state.loading_sessions || state.sessions.is_empty();
+    let initial_sessions_load =
+        state.sessions_view.is_loading() || state.sessions_view.sessions.is_empty();
     let selected_session_name = if initial_sessions_load {
         None
     } else {
         selected_session_name(state)
     };
 
-    preserve_existing_session_agent_states(&state.sessions, &mut sessions);
+    preserve_existing_session_agent_states(&state.sessions_view.sessions, &mut sessions);
     merge_session_agent_states(&mut sessions, &states);
-    state.sessions = if initial_sessions_load {
+    state.sessions_view.sessions = if initial_sessions_load {
         sessions
     } else {
-        merge_sessions_preserving_existing_order(&state.sessions, sessions)
+        merge_sessions_preserving_existing_order(&state.sessions_view.sessions, sessions)
     };
     if initial_sessions_load {
         sort_sessions_for_view(state);
     }
     rebuild_sessions_list(state, selected_session_name);
 
-    if state.sessions_pin_first_selection && !state.sessions_list.filtered.is_empty() {
-        state.sessions_list.selected = Some(0);
-        state.sessions_list.scroll_offset = 0;
+    if state.sessions_view.pin_first_selection && !state.sessions_view.list.filtered.is_empty() {
+        state.sessions_view.list.selected = Some(0);
+        state.sessions_view.list.scroll_offset = 0;
     }
-    state.loading_sessions = false;
+    state.sessions_view.mark_ready();
 }
 
 fn enter_sessions_view<T: TmuxProvider + ?Sized + 'static>(
@@ -1208,10 +1217,7 @@ fn enter_sessions_view<T: TmuxProvider + ?Sized + 'static>(
     sender: &EventSender,
 ) {
     state.mode = Mode::Sessions;
-    state.loading_sessions = true;
-    state.sessions_pin_first_selection = true;
-    state.sessions.clear();
-    state.sessions_list = kiosk_core::state::SearchableList::new(0);
+    state.sessions_view.begin_loading();
     spawn_sessions_discovery(git, tmux, sender, state);
 }
 
@@ -1223,7 +1229,7 @@ fn process_action<T: TmuxProvider + ?Sized + 'static>(
     ctx: &ActionContext<'_, T>,
 ) -> Option<OpenAction> {
     if state.mode == Mode::Sessions && !matches!(action, Action::ToggleSessions) {
-        state.sessions_pin_first_selection = false;
+        state.sessions_view.pin_first_selection = false;
     }
 
     // Handle movement and simple actions first
@@ -1343,10 +1349,10 @@ fn process_action<T: TmuxProvider + ?Sized + 'static>(
 
         Action::SwitchToSession => {
             if state.mode == Mode::Sessions
-                && let Some(selected) = state.sessions_list.selected
-                && let Some((idx, _)) = state.sessions_list.filtered.get(selected)
+                && let Some(selected) = state.sessions_view.list.selected
+                && let Some((idx, _)) = state.sessions_view.list.filtered.get(selected)
             {
-                let session = &state.sessions[*idx];
+                let session = &state.sessions_view.sessions[*idx];
                 let session_name = session.session_name.clone();
                 state.cancel_sessions_poller();
                 return Some(OpenAction::Open {
@@ -1424,10 +1430,11 @@ mod tests {
 
     fn filtered_session_names(state: &AppState) -> Vec<&str> {
         state
-            .sessions_list
+            .sessions_view
+            .list
             .filtered
             .iter()
-            .map(|(idx, _)| state.sessions[*idx].session_name.as_str())
+            .map(|(idx, _)| state.sessions_view.sessions[*idx].session_name.as_str())
             .collect()
     }
 
@@ -5218,10 +5225,10 @@ mod tests {
     fn test_sessions_loaded_preserves_selected_session_when_order_changes() {
         let mut state = AppState::new(vec![make_repo("alpha")], None);
         state.mode = Mode::Sessions;
-        state.sessions = vec![make_session("alpha", 10), make_session("beta", 20)];
-        state.sessions_list.filtered = vec![(0, 0), (1, 0)];
-        state.sessions_list.selected = Some(1); // beta
-        state.sessions_list.scroll_offset = 1;
+        state.sessions_view.sessions = vec![make_session("alpha", 10), make_session("beta", 20)];
+        state.sessions_view.list.filtered = vec![(0, 0), (1, 0)];
+        state.sessions_view.list.selected = Some(1); // beta
+        state.sessions_view.list.scroll_offset = 1;
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux = Arc::new(MockTmuxProvider::default());
@@ -5237,10 +5244,13 @@ mod tests {
             &sender,
         );
 
-        let selected_filtered_idx = state.sessions_list.selected.expect("selected row");
-        let selected_session_idx = state.sessions_list.filtered[selected_filtered_idx].0;
-        assert_eq!(state.sessions[selected_session_idx].session_name, "beta");
-        assert_eq!(state.sessions_list.scroll_offset, 1);
+        let selected_filtered_idx = state.sessions_view.list.selected.expect("selected row");
+        let selected_session_idx = state.sessions_view.list.filtered[selected_filtered_idx].0;
+        assert_eq!(
+            state.sessions_view.sessions[selected_session_idx].session_name,
+            "beta"
+        );
+        assert_eq!(state.sessions_view.list.scroll_offset, 1);
     }
 
     #[test]
@@ -5276,7 +5286,7 @@ mod tests {
     fn test_repo_enriched_does_not_restart_sessions_discovery_when_in_sessions_mode() {
         let mut state = AppState::new(vec![make_repo("alpha")], None);
         state.mode = Mode::Sessions;
-        state.loading_sessions = false;
+        state.sessions_view.load_state = kiosk_core::state::SessionsLoadState::Ready;
 
         let sessions_poller = Arc::new(AtomicBool::new(false));
         state.install_sessions_poller(Arc::clone(&sessions_poller));
@@ -5341,6 +5351,7 @@ mod tests {
         );
 
         let beta = state
+            .sessions_view
             .sessions
             .iter()
             .find(|s| s.session_name == "beta")
@@ -5373,18 +5384,18 @@ mod tests {
             &sender,
         );
 
-        assert_eq!(state.sessions[0].session_name, "alpha");
+        assert_eq!(state.sessions_view.sessions[0].session_name, "alpha");
     }
 
     #[test]
     fn test_sessions_loaded_initial_load_selects_first_item() {
         let mut state = AppState::new(vec![make_repo("alpha")], None);
         state.mode = Mode::Sessions;
-        state.loading_sessions = true;
-        state.sessions_pin_first_selection = true;
-        state.sessions = vec![make_session("alpha", 10), make_session("beta", 20)];
-        state.sessions_list.filtered = vec![(0, 0), (1, 0)];
-        state.sessions_list.selected = Some(1);
+        state.sessions_view.load_state = kiosk_core::state::SessionsLoadState::Loading;
+        state.sessions_view.pin_first_selection = true;
+        state.sessions_view.sessions = vec![make_session("alpha", 10), make_session("beta", 20)];
+        state.sessions_view.list.filtered = vec![(0, 0), (1, 0)];
+        state.sessions_view.list.selected = Some(1);
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux = Arc::new(MockTmuxProvider::default());
@@ -5400,18 +5411,18 @@ mod tests {
             &sender,
         );
 
-        assert_eq!(state.sessions_list.selected, Some(0));
-        assert!(!state.loading_sessions);
+        assert_eq!(state.sessions_view.list.selected, Some(0));
+        assert!(!state.sessions_view.is_loading());
     }
 
     #[test]
     fn test_session_agent_update_keeps_first_selected_before_user_interaction() {
         let mut state = AppState::new(vec![make_repo("alpha")], None);
         state.mode = Mode::Sessions;
-        state.sessions_pin_first_selection = true;
-        state.sessions = vec![make_session("beta", 5), make_session("alpha", 50)];
-        state.sessions_list.filtered = vec![(0, 0), (1, 0)];
-        state.sessions_list.selected = Some(0);
+        state.sessions_view.pin_first_selection = true;
+        state.sessions_view.sessions = vec![make_session("beta", 5), make_session("alpha", 50)];
+        state.sessions_view.list.filtered = vec![(0, 0), (1, 0)];
+        state.sessions_view.list.selected = Some(0);
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux = Arc::new(MockTmuxProvider::default());
@@ -5433,22 +5444,22 @@ mod tests {
             &sender,
         );
 
-        assert_eq!(state.sessions_list.selected, Some(0));
-        assert_eq!(state.sessions[0].session_name, "beta");
+        assert_eq!(state.sessions_view.list.selected, Some(0));
+        assert_eq!(state.sessions_view.sessions[0].session_name, "beta");
     }
 
     #[test]
     fn test_sessions_snapshot_updates_membership_without_reordering_existing_rows() {
         let mut state = AppState::new(vec![make_repo("alpha")], None);
         state.mode = Mode::Sessions;
-        state.loading_sessions = false;
-        state.sessions = vec![
+        state.sessions_view.load_state = kiosk_core::state::SessionsLoadState::Ready;
+        state.sessions_view.sessions = vec![
             make_session("alpha--main", 100),
             make_session("beta--feat", 90),
             make_session("gamma--dev", 80),
         ];
-        state.sessions_list.filtered = vec![(0, 0), (1, 0), (2, 0)];
-        state.sessions_list.selected = Some(1);
+        state.sessions_view.list.filtered = vec![(0, 0), (1, 0), (2, 0)];
+        state.sessions_view.list.selected = Some(1);
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux = Arc::new(MockTmuxProvider::default());
@@ -5470,23 +5481,24 @@ mod tests {
         );
 
         let names: Vec<&str> = state
+            .sessions_view
             .sessions
             .iter()
             .map(|session| session.session_name.as_str())
             .collect();
         assert_eq!(names, vec!["alpha--main", "beta--feat", "delta--new"]);
-        assert_eq!(state.sessions_list.selected, Some(1));
+        assert_eq!(state.sessions_view.list.selected, Some(1));
     }
 
     #[test]
     fn test_sessions_loaded_preserves_search_query() {
         let mut state = AppState::new(vec![make_repo("alpha")], None);
         state.mode = Mode::Sessions;
-        state.sessions = vec![make_session("alpha", 10), make_session("beta", 20)];
-        state.sessions_list.input.text = "beta".to_string();
-        state.sessions_list.input.cursor = 4;
-        state.sessions_list.filtered = vec![(1, 100)];
-        state.sessions_list.selected = Some(0);
+        state.sessions_view.sessions = vec![make_session("alpha", 10), make_session("beta", 20)];
+        state.sessions_view.list.input.text = "beta".to_string();
+        state.sessions_view.list.input.cursor = 4;
+        state.sessions_view.list.filtered = vec![(1, 100)];
+        state.sessions_view.list.selected = Some(0);
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux = Arc::new(MockTmuxProvider::default());
@@ -5502,8 +5514,8 @@ mod tests {
             &sender,
         );
 
-        assert_eq!(state.sessions_list.input.text, "beta");
-        assert_eq!(state.sessions_list.input.cursor, 4);
+        assert_eq!(state.sessions_view.list.input.text, "beta");
+        assert_eq!(state.sessions_view.list.input.cursor, 4);
     }
 
     #[test]
@@ -5511,8 +5523,8 @@ mod tests {
         let mut state = AppState::new(vec![make_repo("alpha")], None);
         state.mode = Mode::Sessions;
         state.cwd_worktree_path = Some(PathBuf::from("/tmp/kiosk--feat-agent-session-switcher"));
-        state.sessions_list.input.text = "o".to_string();
-        state.sessions_list.input.cursor = 1;
+        state.sessions_view.list.input.text = "o".to_string();
+        state.sessions_view.list.input.cursor = 1;
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux = Arc::new(MockTmuxProvider::default());

@@ -8,7 +8,7 @@ use kiosk_core::{
     constants::{GIT_DIR_ENTRY, GITDIR_FILE_PREFIX, WORKTREE_DIR_NAME},
     git::{CliGitProvider, GitProvider},
     pending_delete::load_pending_worktree_deletes,
-    state::{AppState, Mode, SearchableList},
+    state::{AppState, Mode, SessionsLoadState},
     tmux::{CliTmuxProvider, TmuxProvider},
 };
 use kiosk_tui::{OpenAction, Theme};
@@ -545,10 +545,10 @@ fn run_tui(
 fn apply_sessions_startup_mode(state: &mut AppState) {
     if state.sessions_initial {
         state.mode = Mode::Sessions;
-        state.loading_sessions = true;
-        state.sessions_pin_first_selection = true;
-        state.sessions.clear();
-        state.sessions_list = SearchableList::new(0);
+        state.sessions_view.load_state = SessionsLoadState::Loading;
+        state.sessions_view.pin_first_selection = true;
+        state.sessions_view.sessions.clear();
+        state.sessions_view.list = kiosk_core::state::SearchableList::new(0);
     }
 }
 
@@ -883,7 +883,7 @@ mod tests {
         apply_sessions_startup_mode(&mut state);
 
         assert_eq!(state.mode, Mode::Sessions);
-        assert!(state.loading_sessions);
+        assert!(state.sessions_view.is_loading());
     }
 
     #[test]

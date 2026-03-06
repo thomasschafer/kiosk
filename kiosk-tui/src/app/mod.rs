@@ -585,9 +585,11 @@ fn apply_session_runtime_updates(state: &mut AppState, updates: Vec<SessionRunti
             activity_ts: update.session_activity_ts,
             agent_statuses: update.agent_statuses,
         };
+        let runtime_exists = runtime.exists;
+        let runtime_activity_ts = runtime.activity_ts;
         state.session_runtime.insert(session_name.clone(), runtime);
-        match runtime.activity_ts {
-            Some(ts) if runtime.exists => {
+        match runtime_activity_ts {
+            Some(ts) if runtime_exists => {
                 state.session_activity.insert(session_name, ts);
             }
             _ => {

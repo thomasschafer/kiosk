@@ -32,7 +32,8 @@ fn fuzzy_matches_in_source_order(
     items: &[String],
     matcher: &SkimMatcherV2,
 ) -> Vec<(usize, i64)> {
-    items.iter()
+    items
+        .iter()
         .enumerate()
         .filter_map(|(i, item)| matcher.fuzzy_match(item, query).map(|score| (i, score)))
         .collect()

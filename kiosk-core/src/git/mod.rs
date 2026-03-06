@@ -6,7 +6,10 @@ pub mod repo;
 pub use cli::CliGitProvider;
 pub use provider::GitProvider;
 pub use repo::{Repo, Worktree};
-use std::path::Path;
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+};
 
 /// Parse `git worktree list --porcelain` output into worktrees
 pub fn parse_worktree_porcelain(output: &str) -> Vec<Worktree> {
@@ -65,10 +68,48 @@ pub fn tmux_session_name_for_worktree(
     }
 }
 
+/// Apply deterministic session-name disambiguation for repos with name collisions.
+pub fn apply_repo_name_collision_resolution(repos: &mut [Repo], search_dirs: &[(PathBuf, u16)]) {
+    let mut name_counts = std::collections::HashMap::<String, usize>::new();
+    for repo in repos.iter() {
+        *name_counts.entry(repo.name.clone()).or_insert(0) += 1;
+    }
+    if !name_counts.values().any(|&count| count > 1) {
+        return;
+    }
+
+    for repo in repos {
+        if name_counts[&repo.name] > 1 {
+            let search_dir_name = search_dirs
+                .iter()
+                .filter(|(dir, _)| repo.path.starts_with(dir))
+                .max_by_key(|(dir, _)| dir.components().count())
+                .and_then(|(dir, _)| dir.file_name())
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            repo.session_name = format!("{}--({search_dir_name})", repo.name);
+        }
+    }
+}
+
+/// Normalize a tmux session base name for matching.
+pub fn normalize_session_base(session_name: &str) -> String {
+    session_name.replace('.', "_")
+}
+
+/// Return true when an active tmux session belongs to the repo's session namespace.
+pub fn repo_matches_active_session(repo: &Repo, active_sessions: &HashSet<String>) -> bool {
+    let base = normalize_session_base(&repo.session_name);
+    let prefix = format!("{base}--");
+    active_sessions
+        .iter()
+        .any(|session| session == &base || session.starts_with(&prefix))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+    use std::{collections::HashSet, path::PathBuf};
 
     #[test]
     fn test_parse_worktree_porcelain_single() {
@@ -119,5 +160,46 @@ branch refs/heads/feat/thing
     fn test_parse_worktree_porcelain_empty() {
         let wts = parse_worktree_porcelain("");
         assert!(wts.is_empty());
+    }
+
+    #[test]
+    fn test_apply_repo_name_collision_resolution_disambiguates() {
+        let mut repos = vec![
+            Repo {
+                name: "api".to_string(),
+                session_name: "api".to_string(),
+                path: PathBuf::from("/tmp/work/api"),
+                worktrees: vec![],
+            },
+            Repo {
+                name: "api".to_string(),
+                session_name: "api".to_string(),
+                path: PathBuf::from("/tmp/personal/api"),
+                worktrees: vec![],
+            },
+        ];
+        let search_dirs = vec![
+            (PathBuf::from("/tmp/work"), 2),
+            (PathBuf::from("/tmp/personal"), 2),
+        ];
+
+        apply_repo_name_collision_resolution(&mut repos, &search_dirs);
+
+        assert_eq!(repos[0].session_name, "api--(work)");
+        assert_eq!(repos[1].session_name, "api--(personal)");
+    }
+
+    #[test]
+    fn test_repo_matches_active_session_main_and_branch() {
+        let repo = Repo {
+            name: "my.repo".to_string(),
+            session_name: "my.repo".to_string(),
+            path: PathBuf::from("/tmp/my.repo"),
+            worktrees: vec![],
+        };
+        let active: HashSet<String> = ["my_repo".to_string(), "my_repo--feat".to_string()]
+            .into_iter()
+            .collect();
+        assert!(repo_matches_active_session(&repo, &active));
     }
 }

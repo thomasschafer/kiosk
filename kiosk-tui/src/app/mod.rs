@@ -20,7 +20,7 @@ use kiosk_core::{
         keys::{Command, GeneralCommand, ModalCommand},
     },
     event::{AppEvent, SessionRuntimeUpdate},
-    git::GitProvider,
+    git::{GitProvider, apply_repo_name_collision_resolution},
     pending_delete::save_pending_worktree_deletes,
     state::{AppState, BranchEntry, Mode, SearchableList, SessionRuntimeState},
     tmux::TmuxProvider,
@@ -95,11 +95,16 @@ pub fn run(
     };
     let spinner_start = Instant::now();
     state.search_dirs = search_dirs.clone();
+    let mut repo_scan_started = false;
 
-    // Start repo discovery in background
-    if state.loading_repos || state.repos.is_empty() {
+    // Start repo discovery in background unless startup is explicitly sessions-first.
+    // In that case we defer repo scanning until the user leaves sessions mode.
+    let sessions_first_startup =
+        state.sessions_initial && state.mode == Mode::Sessions && state.loading_sessions;
+    if !sessions_first_startup && (state.loading_repos || state.repos.is_empty()) {
         initialize_repo_scan(state);
         spawn_repo_discovery(git, tmux, &event_sender, search_dirs.clone());
+        repo_scan_started = true;
     }
 
     // Sessions mode runs its own tmux-first discovery path and should not wait
@@ -109,6 +114,15 @@ pub fn run(
     }
 
     let result = loop {
+        if !repo_scan_started
+            && state.mode != Mode::Sessions
+            && (state.loading_repos || state.repos.is_empty())
+        {
+            initialize_repo_scan(state);
+            spawn_repo_discovery(git, tmux, &event_sender, search_dirs.clone());
+            repo_scan_started = true;
+        }
+
         terminal.draw(|f| draw(f, state, theme, keys, &spinner_start))?;
 
         // Check background channel (non-blocking)
@@ -685,32 +699,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
         AppEvent::ScanComplete { search_dirs } => {
             // Scan is done — clear dedup set (no longer needed until next scan)
             state.seen_repo_paths.clear();
-
-            // Run collision resolution: disambiguate repos with the same name
-            // by appending the search dir name to session_name.
-            // Uses `path.starts_with(dir)` with longest-prefix matching, which
-            // is equivalent to the batch-mode `apply_collision_resolution` that
-            // pairs each repo with its direct search dir — a repo found under
-            // `dir` always has `path.starts_with(dir)` true, and the longest
-            // matching dir is the one that discovered it.
-            let mut name_counts = std::collections::HashMap::<String, usize>::new();
-            for repo in &state.repos {
-                *name_counts.entry(repo.name.clone()).or_insert(0) += 1;
-            }
-            if name_counts.values().any(|&count| count > 1) {
-                for repo in &mut state.repos {
-                    if name_counts[&repo.name] > 1 {
-                        let search_dir_name = search_dirs
-                            .iter()
-                            .filter(|(dir, _)| repo.path.starts_with(dir))
-                            .max_by_key(|(dir, _)| dir.components().count())
-                            .and_then(|(dir, _)| dir.file_name())
-                            .map(|n| n.to_string_lossy().into_owned())
-                            .unwrap_or_default();
-                        repo.session_name = format!("{}--({search_dir_name})", repo.name);
-                    }
-                }
-            }
+            apply_repo_name_collision_resolution(&mut state.repos, &search_dirs);
 
             // Sort repos now that all have been discovered
             sort_repos_preserving_selection(state);
@@ -1564,7 +1553,11 @@ mod tests {
         assert!(!state.branches[0].has_session);
         assert!(state.branches[0].agent_statuses.is_empty());
         assert!(!state.session_runtime[&session_name].exists);
-        assert!(state.session_runtime[&session_name].agent_statuses.is_empty());
+        assert!(
+            state.session_runtime[&session_name]
+                .agent_statuses
+                .is_empty()
+        );
         assert!(!state.session_runtime.contains_key(&stale_session_name));
         assert_eq!(
             state.session_runtime[&other_repo_session].activity_ts,
@@ -5198,7 +5191,7 @@ mod tests {
         }];
         state.branch_list.filtered = vec![(0, 0)];
         state.branch_list.selected = Some(0);
- 
+
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux = Arc::new(MockTmuxProvider::default());
         let sender = make_sender();
@@ -5353,7 +5346,10 @@ mod tests {
             .find(|s| s.session_name == "beta")
             .expect("beta session should exist");
         assert_eq!(beta.agent_statuses.len(), 1);
-        assert_eq!(beta.agent_statuses[0].state, kiosk_core::agent::AgentState::Running);
+        assert_eq!(
+            beta.agent_statuses[0].state,
+            kiosk_core::agent::AgentState::Running
+        );
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use anyhow::Context;
 use kiosk_core::{
     config::Config,
-    git::{GitProvider, Repo},
+    git::{GitProvider, Repo, apply_repo_name_collision_resolution, repo_matches_active_session},
     pending_delete::{
         PendingWorktreeDelete, load_pending_worktree_deletes, save_pending_worktree_deletes,
     },
@@ -286,6 +286,24 @@ fn discover_all_with_worktrees(config: &Config, git: &dyn GitProvider) -> Vec<Re
         repo.worktrees = git.list_worktrees(&repo.path);
     }
     repos
+}
+
+fn discover_active_repos_with_worktrees(
+    config: &Config,
+    git: &dyn GitProvider,
+    active_sessions: &HashSet<String>,
+) -> Vec<Repo> {
+    let search_dirs = config.resolved_search_dirs();
+    let mut repos = git.scan_repos(&search_dirs);
+    apply_repo_name_collision_resolution(&mut repos, &search_dirs);
+    repos
+        .into_iter()
+        .filter(|repo| repo_matches_active_session(repo, active_sessions))
+        .map(|mut repo| {
+            repo.worktrees = git.list_worktrees(&repo.path);
+            repo
+        })
+        .collect()
 }
 
 pub fn cmd_list(config: &Config, git: &dyn GitProvider, json: bool) -> CliResult<()> {
@@ -721,16 +739,17 @@ pub fn cmd_sessions(
     json: bool,
 ) -> CliResult<()> {
     let repos = discover_all_with_worktrees(config, git);
-    let active_sessions: HashSet<String> = tmux.list_session_names().into_iter().collect();
+    let session_activity: std::collections::HashMap<String, u64> =
+        tmux.list_sessions_with_activity().into_iter().collect();
+    let attached_sessions = tmux.list_attached_sessions();
     let mut output = Vec::new();
 
     for repo in &repos {
         for worktree in &repo.worktrees {
             let session = repo.tmux_session_name(&worktree.path);
-            if !active_sessions.contains(&session) {
+            let Some(&last_activity) = session_activity.get(&session) else {
                 continue;
-            }
-            let last_activity = tmux.session_activity(&session).unwrap_or(0);
+            };
             let pane_count = tmux.pane_count(&session).unwrap_or(1);
             let current_command = tmux
                 .pane_current_command(&session, "0")
@@ -749,7 +768,7 @@ pub fn cmd_sessions(
                 repo: repo.name.clone(),
                 branch: worktree.branch.clone(),
                 path: worktree.path.clone(),
-                attached: !tmux.list_clients(&session).is_empty(),
+                attached: attached_sessions.contains(&session),
                 last_activity,
                 pane_count,
                 current_command,
@@ -787,9 +806,9 @@ pub fn cmd_next(
     }
 
     let current_session = tmux.current_session_name();
-    let repos = discover_all_with_worktrees(config, git);
     let all_pane_data = tmux.list_all_panes_with_activity();
     let active_sessions: HashSet<String> = tmux.list_session_names().into_iter().collect();
+    let repos = discover_active_repos_with_worktrees(config, git, &active_sessions);
 
     // Collect non-current kiosk-managed sessions for agent detection
     let mut session_names: Vec<String> = Vec::new();
@@ -3592,7 +3611,10 @@ mod tests {
         );
 
         let result = cmd_next(&config, &git, &tmux, false);
-        assert!(result.is_ok(), "Running sessions should now be eligible fallback");
+        assert!(
+            result.is_ok(),
+            "Running sessions should now be eligible fallback"
+        );
         let switched = tmux.switched_sessions.lock().unwrap();
         assert_eq!(switched.as_slice(), &["demo--feat-run"]);
     }

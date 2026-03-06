@@ -140,6 +140,13 @@ impl TmuxProvider for MockTmuxProvider {
         self.clients.get(session).cloned().unwrap_or_default()
     }
 
+    fn list_attached_sessions(&self) -> std::collections::HashSet<String> {
+        self.clients
+            .iter()
+            .filter_map(|(session, clients)| (!clients.is_empty()).then_some(session.clone()))
+            .collect()
+    }
+
     fn switch_to_session(&self, name: &str) {
         self.switched_sessions
             .lock()

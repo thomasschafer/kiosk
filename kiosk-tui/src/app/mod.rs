@@ -22,7 +22,10 @@ use kiosk_core::{
     event::{AppEvent, SessionRuntimeUpdate},
     git::{GitProvider, apply_repo_name_collision_resolution},
     pending_delete::save_pending_worktree_deletes,
-    state::{AppState, BranchEntry, Mode, PollerHandle, SearchableList, SessionRuntimeState},
+    state::{
+        ActiveAgentPoller, AppState, BranchEntry, Mode, PollerHandle, SearchableList,
+        SessionRuntimeState,
+    },
     tmux::TmuxProvider,
 };
 use ratatui::{
@@ -77,6 +80,20 @@ fn initialize_repo_scan(state: &mut AppState) {
     state.seen_repo_paths = state.repos.iter().map(|repo| repo.path.clone()).collect();
 }
 
+/// Keep active poller scope aligned with the effective UI mode.
+/// This is a global safety net to avoid cross-view poller leaks.
+fn reconcile_agent_poller_mode_invariant(state: &mut AppState) {
+    let should_cancel = match (&state.active_agent_poller, state.mode.effective()) {
+        (ActiveAgentPoller::None, _) => false,
+        (ActiveAgentPoller::Branch(_), Mode::BranchSelect) => false,
+        (ActiveAgentPoller::Sessions(_), Mode::Sessions) => false,
+        _ => true,
+    };
+    if should_cancel {
+        state.cancel_all_agent_pollers();
+    }
+}
+
 pub fn run(
     terminal: &mut DefaultTerminal,
     state: &mut AppState,
@@ -114,6 +131,8 @@ pub fn run(
     }
 
     let result = loop {
+        reconcile_agent_poller_mode_invariant(state);
+
         if !repo_scan_started
             && state.mode != Mode::Sessions
             && (state.loading_repos || state.repos.is_empty())
@@ -127,7 +146,9 @@ pub fn run(
 
         // Check background channel (non-blocking)
         if let Ok(app_event) = rx.try_recv() {
-            if let Some(result) = process_app_event(app_event, state, git, tmux, &event_sender) {
+            let result = process_app_event(app_event, state, git, tmux, &event_sender);
+            reconcile_agent_poller_mode_invariant(state);
+            if let Some(result) = result {
                 break result;
             }
             continue;
@@ -175,10 +196,12 @@ pub fn run(
                 matcher: &matcher,
                 sender: &event_sender,
             };
-            if let Some(action) = keymap::resolve_action(key, state, keys)
-                && let Some(result) = process_action(action, state, &ctx)
-            {
-                break result;
+            if let Some(action) = keymap::resolve_action(key, state, keys) {
+                let result = process_action(action, state, &ctx);
+                reconcile_agent_poller_mode_invariant(state);
+                if let Some(result) = result {
+                    break result;
+                }
             }
         }
     };
@@ -5280,6 +5303,50 @@ mod tests {
             state.active_agent_poller,
             kiosk_core::state::ActiveAgentPoller::Sessions(_)
         ));
+    }
+
+    #[test]
+    fn test_reconcile_poller_mode_invariant_cancels_mismatched_branch_poller() {
+        let mut state = AppState::new(vec![make_repo("alpha")], None);
+        state.mode = Mode::RepoSelect;
+        let branch_poller = PollerHandle::new();
+        state.install_branch_poller(branch_poller.clone());
+
+        reconcile_agent_poller_mode_invariant(&mut state);
+
+        assert!(branch_poller.is_cancelled());
+        assert!(matches!(state.active_agent_poller, ActiveAgentPoller::None));
+    }
+
+    #[test]
+    fn test_reconcile_poller_mode_invariant_keeps_sessions_poller_in_help_overlay() {
+        let mut state = AppState::new(vec![make_repo("alpha")], None);
+        state.mode = Mode::Help {
+            previous: Box::new(Mode::Sessions),
+        };
+        let sessions_poller = PollerHandle::new();
+        state.install_sessions_poller(sessions_poller.clone());
+
+        reconcile_agent_poller_mode_invariant(&mut state);
+
+        assert!(!sessions_poller.is_cancelled());
+        assert!(matches!(
+            state.active_agent_poller,
+            ActiveAgentPoller::Sessions(_)
+        ));
+    }
+
+    #[test]
+    fn test_reconcile_poller_mode_invariant_cancels_mismatched_sessions_poller() {
+        let mut state = AppState::new(vec![make_repo("alpha")], None);
+        state.mode = Mode::BranchSelect;
+        let sessions_poller = PollerHandle::new();
+        state.install_sessions_poller(sessions_poller.clone());
+
+        reconcile_agent_poller_mode_invariant(&mut state);
+
+        assert!(sessions_poller.is_cancelled());
+        assert!(matches!(state.active_agent_poller, ActiveAgentPoller::None));
     }
 
     #[test]

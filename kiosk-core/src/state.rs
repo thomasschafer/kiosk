@@ -1251,45 +1251,6 @@ impl AppState {
         }
     }
 
-    pub fn enter_repo_select_mode(&mut self) {
-        self.apply_transition_with_fallback(&ModeTransition::RepoSelect);
-    }
-
-    pub fn enter_branch_select_mode(&mut self) {
-        self.apply_transition_with_fallback(&ModeTransition::BranchSelect);
-    }
-
-    pub fn enter_sessions_mode(&mut self) {
-        self.apply_transition_with_fallback(&ModeTransition::Sessions);
-    }
-
-    pub fn enter_select_base_branch_mode(&mut self) {
-        self.apply_transition_with_fallback(&ModeTransition::SelectBaseBranch);
-    }
-
-    pub fn enter_confirm_worktree_delete_mode(&mut self, branch_name: String, has_session: bool) {
-        self.apply_transition_with_fallback(&ModeTransition::ConfirmWorktreeDelete {
-            branch_name,
-            has_session,
-        });
-    }
-
-    pub fn enter_loading_mode(&mut self, message: String) {
-        self.apply_transition_with_fallback(&ModeTransition::Loading { message });
-    }
-
-    pub fn enter_help_mode(&mut self, previous: Mode) {
-        self.apply_transition_with_fallback(&ModeTransition::Help { previous });
-    }
-
-    pub fn enter_setup_mode(&mut self, step: SetupStep) {
-        self.apply_transition_with_fallback(&ModeTransition::Setup { step });
-    }
-
-    pub fn restore_mode(&mut self, mode: Mode) {
-        self.apply_transition_with_fallback(&ModeTransition::Restore { mode });
-    }
-
     /// Signal the current agent poller thread to stop and clear the cancel token.
     pub fn cancel_agent_poller(&mut self) {
         if let ActiveAgentPoller::Branch(handle) = &self.active_agent_poller {
@@ -2865,20 +2826,22 @@ mod tests {
     fn test_mode_transition_helpers_set_expected_modes() {
         let mut state = AppState::new(vec![], None);
 
-        state.enter_repo_select_mode();
+        state.apply_transition(&ModeTransition::RepoSelect);
         assert_eq!(state.mode, Mode::RepoSelect);
 
-        state.enter_branch_select_mode();
+        state.apply_transition(&ModeTransition::BranchSelect);
         assert_eq!(state.mode, Mode::BranchSelect);
 
-        state.enter_sessions_mode();
+        state.apply_transition(&ModeTransition::Sessions);
         assert_eq!(state.mode, Mode::Sessions);
 
-        state.enter_branch_select_mode();
-        state.enter_select_base_branch_mode();
+        state.apply_transition(&ModeTransition::BranchSelect);
+        state.apply_transition(&ModeTransition::SelectBaseBranch);
         assert_eq!(state.mode, Mode::SelectBaseBranch);
 
-        state.enter_loading_mode("Loading...".to_string());
+        state.apply_transition(&ModeTransition::Loading {
+            message: "Loading...".to_string(),
+        });
         assert_eq!(state.mode, Mode::Loading("Loading...".to_string()));
     }
 
@@ -2886,8 +2849,11 @@ mod tests {
     fn test_mode_transition_helpers_set_parameterized_modes() {
         let mut state = AppState::new(vec![], None);
 
-        state.enter_branch_select_mode();
-        state.enter_confirm_worktree_delete_mode("feat-x".to_string(), true);
+        state.apply_transition(&ModeTransition::BranchSelect);
+        state.apply_transition(&ModeTransition::ConfirmWorktreeDelete {
+            branch_name: "feat-x".to_string(),
+            has_session: true,
+        });
         assert_eq!(
             state.mode,
             Mode::ConfirmWorktreeDelete {
@@ -2896,7 +2862,9 @@ mod tests {
             }
         );
 
-        state.enter_help_mode(Mode::RepoSelect);
+        state.apply_transition(&ModeTransition::Help {
+            previous: Mode::RepoSelect,
+        });
         assert_eq!(
             state.mode,
             Mode::Help {
@@ -2904,17 +2872,21 @@ mod tests {
             }
         );
 
-        state.enter_setup_mode(SetupStep::SearchDirs);
+        state.apply_transition(&ModeTransition::Setup {
+            step: SetupStep::SearchDirs,
+        });
         assert_eq!(state.mode, Mode::Setup(SetupStep::SearchDirs));
 
-        state.restore_mode(Mode::BranchSelect);
+        state.apply_transition(&ModeTransition::Restore {
+            mode: Mode::BranchSelect,
+        });
         assert_eq!(state.mode, Mode::BranchSelect);
     }
 
     #[test]
     fn test_transition_rejects_invalid_target_modes() {
         let mut state = AppState::new(vec![], None);
-        state.enter_repo_select_mode();
+        state.apply_transition(&ModeTransition::RepoSelect);
 
         let result = state.transition(&ModeTransition::SelectBaseBranch);
         assert!(matches!(
@@ -2966,7 +2938,7 @@ mod tests {
     #[test]
     fn test_transition_with_intent_respects_mode_policy() {
         let mut state = AppState::new(vec![], None);
-        state.enter_repo_select_mode();
+        state.apply_transition(&ModeTransition::RepoSelect);
 
         let result = state.transition(&ModeTransition::SelectBaseBranch);
         assert!(
@@ -2974,7 +2946,7 @@ mod tests {
             "RepoSelect -> SelectBaseBranch should fail"
         );
 
-        state.enter_branch_select_mode();
+        state.apply_transition(&ModeTransition::BranchSelect);
         let result = state.transition(&ModeTransition::SelectBaseBranch);
         assert!(
             result.is_ok(),
@@ -2985,12 +2957,12 @@ mod tests {
     #[test]
     fn test_transition_allows_branch_select_flow_modes() {
         let mut state = AppState::new(vec![], None);
-        state.enter_branch_select_mode();
+        state.apply_transition(&ModeTransition::BranchSelect);
 
         assert!(state.transition(&ModeTransition::SelectBaseBranch).is_ok());
         assert_eq!(state.mode, Mode::SelectBaseBranch);
 
-        state.enter_branch_select_mode();
+        state.apply_transition(&ModeTransition::BranchSelect);
         assert!(
             state
                 .transition(&ModeTransition::ConfirmWorktreeDelete {
@@ -3104,11 +3076,11 @@ mod tests {
     #[test]
     fn test_install_sessions_poller_replaces_branch_poller() {
         let mut state = AppState::new(vec![], None);
-        state.enter_branch_select_mode();
+        state.apply_transition(&ModeTransition::BranchSelect);
         let branch = PollerHandle::new();
         assert!(state.install_branch_poller(branch.clone()).is_ok());
 
-        state.enter_sessions_mode();
+        state.apply_transition(&ModeTransition::Sessions);
         let sessions = PollerHandle::new();
         assert!(state.install_sessions_poller(sessions).is_ok());
 
@@ -3125,7 +3097,7 @@ mod tests {
     #[test]
     fn test_cancel_agent_poller_does_not_cancel_sessions_poller() {
         let mut state = AppState::new(vec![], None);
-        state.enter_sessions_mode();
+        state.apply_transition(&ModeTransition::Sessions);
         let sessions = PollerHandle::new();
         assert!(state.install_sessions_poller(sessions.clone()).is_ok());
 
@@ -3144,7 +3116,7 @@ mod tests {
     #[test]
     fn test_cancel_all_agent_pollers_cancels_active_poller() {
         let mut state = AppState::new(vec![], None);
-        state.enter_sessions_mode();
+        state.apply_transition(&ModeTransition::Sessions);
         let sessions = PollerHandle::new();
         assert!(state.install_sessions_poller(sessions.clone()).is_ok());
 
@@ -3160,11 +3132,11 @@ mod tests {
     #[test]
     fn test_transition_cancels_mismatched_branch_poller() {
         let mut state = AppState::new(vec![], None);
-        state.enter_branch_select_mode();
+        state.apply_transition(&ModeTransition::BranchSelect);
         let branch = PollerHandle::new();
         assert!(state.install_branch_poller(branch.clone()).is_ok());
 
-        state.enter_repo_select_mode();
+        state.apply_transition(&ModeTransition::RepoSelect);
 
         assert!(branch.is_cancelled());
         assert!(matches!(state.active_agent_poller, ActiveAgentPoller::None));
@@ -3173,11 +3145,13 @@ mod tests {
     #[test]
     fn test_transition_keeps_sessions_poller_for_help_overlay() {
         let mut state = AppState::new(vec![], None);
-        state.enter_sessions_mode();
+        state.apply_transition(&ModeTransition::Sessions);
         let sessions = PollerHandle::new();
         assert!(state.install_sessions_poller(sessions.clone()).is_ok());
 
-        state.enter_help_mode(Mode::Sessions);
+        state.apply_transition(&ModeTransition::Help {
+            previous: Mode::Sessions,
+        });
 
         assert!(!sessions.is_cancelled());
         assert!(matches!(

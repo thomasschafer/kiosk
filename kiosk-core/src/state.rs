@@ -1167,7 +1167,7 @@ impl AppState {
     }
 
     #[must_use]
-    pub fn can_transition_to(&self, to: &Mode) -> bool {
+    fn can_transition_to(&self, to: &Mode) -> bool {
         use ModeKind::{BranchSelect, ConfirmWorktreeDelete, SelectBaseBranch};
         let from_kind = self.mode.kind();
         let to_kind = to.kind();
@@ -1180,7 +1180,7 @@ impl AppState {
         }
     }
 
-    pub fn transition_to(&mut self, to: Mode) -> Result<(), TransitionError> {
+    fn transition_to(&mut self, to: Mode) -> Result<(), TransitionError> {
         if self.can_transition_to(&to) {
             self.mode = to;
             Ok(())
@@ -2835,11 +2835,11 @@ mod tests {
     }
 
     #[test]
-    fn test_transition_to_rejects_invalid_target_modes() {
+    fn test_transition_rejects_invalid_target_modes() {
         let mut state = AppState::new(vec![], None);
         state.enter_repo_select_mode();
 
-        let result = state.transition_to(Mode::SelectBaseBranch);
+        let result = state.transition(&ModeTransition::SelectBaseBranch);
         assert!(matches!(
             result,
             Err(TransitionError::Invalid {
@@ -2848,7 +2848,7 @@ mod tests {
             })
         ));
 
-        let result = state.transition_to(Mode::ConfirmWorktreeDelete {
+        let result = state.transition(&ModeTransition::ConfirmWorktreeDelete {
             branch_name: "feat-x".to_string(),
             has_session: false,
         });
@@ -2906,17 +2906,17 @@ mod tests {
     }
 
     #[test]
-    fn test_transition_to_allows_branch_select_flow_modes() {
+    fn test_transition_allows_branch_select_flow_modes() {
         let mut state = AppState::new(vec![], None);
         state.enter_branch_select_mode();
 
-        assert!(state.transition_to(Mode::SelectBaseBranch).is_ok());
+        assert!(state.transition(&ModeTransition::SelectBaseBranch).is_ok());
         assert_eq!(state.mode, Mode::SelectBaseBranch);
 
         state.enter_branch_select_mode();
         assert!(
             state
-                .transition_to(Mode::ConfirmWorktreeDelete {
+                .transition(&ModeTransition::ConfirmWorktreeDelete {
                     branch_name: "feat-y".to_string(),
                     has_session: true,
                 })
@@ -2956,13 +2956,28 @@ mod tests {
                 .then_some(matches!(from, Mode::BranchSelect) || from_help_overlay)
                 .unwrap_or(true);
 
-                assert_eq!(
-                    state.can_transition_to(to),
-                    expected,
-                    "from {from:?} to {to:?}",
-                );
+                let transition = match to {
+                    Mode::RepoSelect => ModeTransition::RepoSelect,
+                    Mode::BranchSelect => ModeTransition::BranchSelect,
+                    Mode::Sessions => ModeTransition::Sessions,
+                    Mode::SelectBaseBranch => ModeTransition::SelectBaseBranch,
+                    Mode::Loading(message) => ModeTransition::Loading {
+                        message: message.clone(),
+                    },
+                    Mode::ConfirmWorktreeDelete {
+                        branch_name,
+                        has_session,
+                    } => ModeTransition::ConfirmWorktreeDelete {
+                        branch_name: branch_name.clone(),
+                        has_session: *has_session,
+                    },
+                    Mode::Help { previous } => ModeTransition::Help {
+                        previous: (**previous).clone(),
+                    },
+                    Mode::Setup(step) => ModeTransition::Setup { step: step.clone() },
+                };
 
-                let result = state.transition_to(to.clone());
+                let result = state.transition(&transition);
                 assert_eq!(
                     result.is_ok(),
                     expected,

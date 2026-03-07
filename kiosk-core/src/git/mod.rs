@@ -98,7 +98,10 @@ pub fn normalize_session_base(session_name: &str) -> String {
 }
 
 /// Return true when an active tmux session belongs to the repo's session namespace.
-pub fn repo_matches_active_session(repo: &Repo, active_sessions: &HashSet<String>) -> bool {
+pub fn repo_matches_active_session<S: std::hash::BuildHasher>(
+    repo: &Repo,
+    active_sessions: &HashSet<String, S>,
+) -> bool {
     let base = normalize_session_base(&repo.session_name);
     let prefix = format!("{base}--");
     active_sessions

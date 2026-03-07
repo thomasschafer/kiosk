@@ -518,7 +518,7 @@ fn run_tui(
         tmux,
         &theme,
         &config.keys,
-        search_dirs,
+        &search_dirs,
     );
     ratatui::restore();
 
@@ -568,15 +568,7 @@ fn run_setup_then_tui() -> ExitCode {
         ratatui::init()
     };
 
-    let result = kiosk_tui::run(
-        &mut terminal,
-        &mut state,
-        &git,
-        &tmux,
-        &theme,
-        &keys,
-        vec![],
-    );
+    let result = kiosk_tui::run(&mut terminal, &mut state, &git, &tmux, &theme, &keys, &[]);
     ratatui::restore();
 
     match result {
@@ -869,35 +861,6 @@ fn find_main_repo_path(gitdir: &Path) -> Option<std::path::PathBuf> {
         .map(std::path::Path::to_path_buf)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::apply_sessions_startup_mode;
-    use kiosk_core::state::{AppState, Mode};
-
-    #[test]
-    fn sessions_startup_enters_sessions_mode_without_loading_screen() {
-        let mut state = AppState::new(vec![], None);
-        state.sessions_initial = true;
-        assert_eq!(state.mode, Mode::RepoSelect);
-
-        apply_sessions_startup_mode(&mut state);
-
-        assert_eq!(state.mode, Mode::Sessions);
-        assert!(state.sessions_view.is_loading());
-    }
-
-    #[test]
-    fn non_sessions_startup_keeps_existing_mode() {
-        let mut state = AppState::new(vec![], None);
-        state.sessions_initial = false;
-        assert_eq!(state.mode, Mode::RepoSelect);
-
-        apply_sessions_startup_mode(&mut state);
-
-        assert_eq!(state.mode, Mode::RepoSelect);
-    }
-}
-
 /// Check if a worktree path is known to git in the main repository.
 /// Returns `Some(true)` if found, `Some(false)` if not found, `None` if git failed.
 fn is_worktree_known_to_git(main_repo_path: &Path, worktree_path: &Path) -> Option<bool> {
@@ -948,4 +911,33 @@ fn remove_worktree(path: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::apply_sessions_startup_mode;
+    use kiosk_core::state::{AppState, Mode};
+
+    #[test]
+    fn sessions_startup_enters_sessions_mode_without_loading_screen() {
+        let mut state = AppState::new(vec![], None);
+        state.sessions_initial = true;
+        assert_eq!(state.mode, Mode::RepoSelect);
+
+        apply_sessions_startup_mode(&mut state);
+
+        assert_eq!(state.mode, Mode::Sessions);
+        assert!(state.sessions_view.is_loading());
+    }
+
+    #[test]
+    fn non_sessions_startup_keeps_existing_mode() {
+        let mut state = AppState::new(vec![], None);
+        state.sessions_initial = false;
+        assert_eq!(state.mode, Mode::RepoSelect);
+
+        apply_sessions_startup_mode(&mut state);
+
+        assert_eq!(state.mode, Mode::RepoSelect);
+    }
 }

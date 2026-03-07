@@ -83,12 +83,12 @@ fn initialize_repo_scan(state: &mut AppState) {
 /// Keep active poller scope aligned with the effective UI mode.
 /// This is a global safety net to avoid cross-view poller leaks.
 fn reconcile_agent_poller_mode_invariant(state: &mut AppState) {
-    let should_cancel = match (&state.active_agent_poller, state.mode.effective()) {
-        (ActiveAgentPoller::None, _) => false,
-        (ActiveAgentPoller::Branch(_), Mode::BranchSelect) => false,
-        (ActiveAgentPoller::Sessions(_), Mode::Sessions) => false,
-        _ => true,
-    };
+    let should_cancel = !matches!(
+        (&state.active_agent_poller, state.mode.effective()),
+        (ActiveAgentPoller::None, _)
+            | (ActiveAgentPoller::Branch(_), Mode::BranchSelect)
+            | (ActiveAgentPoller::Sessions(_), Mode::Sessions)
+    );
     if should_cancel {
         state.cancel_all_agent_pollers();
     }
@@ -101,7 +101,7 @@ pub fn run(
     tmux: &Arc<dyn TmuxProvider>,
     theme: &crate::theme::Theme,
     keys: &kiosk_core::config::KeysConfig,
-    search_dirs: Vec<(std::path::PathBuf, u16)>,
+    search_dirs: &[(std::path::PathBuf, u16)],
 ) -> anyhow::Result<Option<OpenAction>> {
     let matcher = SkimMatcherV2::default();
     let (tx, rx) = mpsc::channel::<AppEvent>();
@@ -111,7 +111,7 @@ pub fn run(
         cancel: Arc::clone(&cancel),
     };
     let spinner_start = Instant::now();
-    state.search_dirs = search_dirs.clone();
+    state.search_dirs.clone_from(&search_dirs.to_owned());
     let mut repo_scan_started = false;
 
     // Start repo discovery in background unless startup is explicitly sessions-first.
@@ -120,7 +120,7 @@ pub fn run(
         state.sessions_initial && state.mode == Mode::Sessions && state.sessions_view.is_loading();
     if !sessions_first_startup && (state.loading_repos || state.repos.is_empty()) {
         initialize_repo_scan(state);
-        spawn_repo_discovery(git, tmux, &event_sender, search_dirs.clone());
+        spawn_repo_discovery(git, tmux, &event_sender, search_dirs.to_owned());
         repo_scan_started = true;
     }
 
@@ -138,7 +138,7 @@ pub fn run(
             && (state.loading_repos || state.repos.is_empty())
         {
             initialize_repo_scan(state);
-            spawn_repo_discovery(git, tmux, &event_sender, search_dirs.clone());
+            spawn_repo_discovery(git, tmux, &event_sender, search_dirs.to_owned());
             repo_scan_started = true;
         }
 
@@ -732,10 +732,8 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
 
             if state.sessions_initial && state.mode != Mode::Sessions {
                 enter_sessions_view(state, git, tmux, sender);
-            } else {
-                if matches!(state.mode, Mode::Loading(_)) {
-                    state.enter_repo_select_mode();
-                }
+            } else if matches!(state.mode, Mode::Loading(_)) {
+                state.enter_repo_select_mode();
             }
         }
         AppEvent::SessionActivityLoaded { session_activity } => {
@@ -908,11 +906,11 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             }
         }
         AppEvent::SessionsLoaded { sessions } => {
-            apply_sessions_update(state, sessions, Vec::new());
+            apply_sessions_update(state, sessions, &[]);
         }
 
         AppEvent::SessionsSnapshot { sessions, states } => {
-            apply_sessions_update(state, sessions, states);
+            apply_sessions_update(state, sessions, &states);
         }
 
         AppEvent::SessionAgentStatesUpdated { states } => {
@@ -1204,7 +1202,7 @@ fn merge_sessions_preserving_existing_order(
 fn apply_sessions_update(
     state: &mut AppState,
     mut sessions: Vec<kiosk_core::state::SessionEntry>,
-    states: Vec<(String, Vec<kiosk_core::agent::AgentStatus>)>,
+    states: &[(String, Vec<kiosk_core::agent::AgentStatus>)],
 ) {
     let initial_sessions_load =
         state.sessions_view.is_loading() || state.sessions_view.sessions.is_empty();
@@ -1215,7 +1213,7 @@ fn apply_sessions_update(
     };
 
     preserve_existing_session_agent_states(&state.sessions_view.sessions, &mut sessions);
-    merge_session_agent_states(&mut sessions, &states);
+    merge_session_agent_states(&mut sessions, states);
     state.sessions_view.sessions = if initial_sessions_load {
         sessions
     } else {
@@ -5381,9 +5379,10 @@ mod tests {
             !sessions_poller.is_cancelled(),
             "repo enrichment should not restart sessions discovery in sessions mode"
         );
-        let active_handle = match &state.active_agent_poller {
-            kiosk_core::state::ActiveAgentPoller::Sessions(handle) => handle,
-            _ => panic!("sessions poller token should remain active"),
+        let kiosk_core::state::ActiveAgentPoller::Sessions(active_handle) =
+            &state.active_agent_poller
+        else {
+            panic!("sessions poller token should remain active");
         };
         assert!(
             active_handle.ptr_eq(&sessions_poller),

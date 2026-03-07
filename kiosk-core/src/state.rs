@@ -812,17 +812,12 @@ impl SessionsViewState {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum ActiveAgentPoller {
+    #[default]
     None,
     Branch(PollerHandle),
     Sessions(PollerHandle),
-}
-
-impl Default for ActiveAgentPoller {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 /// Sort sessions by: Waiting first, then Idle, then Running, then no agents.
@@ -860,7 +855,37 @@ pub enum Mode {
     Setup(SetupStep),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ModeKind {
+    RepoSelect,
+    BranchSelect,
+    Sessions,
+    SelectBaseBranch,
+    Loading,
+    ConfirmWorktreeDelete,
+    Help,
+    Setup,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TransitionError {
+    Invalid { from: Mode, to: Mode },
+}
+
 impl Mode {
+    fn kind(&self) -> ModeKind {
+        match self {
+            Mode::RepoSelect => ModeKind::RepoSelect,
+            Mode::BranchSelect => ModeKind::BranchSelect,
+            Mode::Sessions => ModeKind::Sessions,
+            Mode::SelectBaseBranch => ModeKind::SelectBaseBranch,
+            Mode::Loading(_) => ModeKind::Loading,
+            Mode::ConfirmWorktreeDelete { .. } => ModeKind::ConfirmWorktreeDelete,
+            Mode::Help { .. } => ModeKind::Help,
+            Mode::Setup(_) => ModeKind::Setup,
+        }
+    }
+
     /// The effective mode, looking through overlays like Help.
     pub fn effective(&self) -> &Mode {
         match self {
@@ -1084,6 +1109,29 @@ impl AppState {
         }
     }
 
+    #[must_use]
+    pub fn can_transition_to(&self, to: &Mode) -> bool {
+        use ModeKind::{BranchSelect, ConfirmWorktreeDelete, SelectBaseBranch};
+        let from_kind = self.mode.kind();
+        let to_kind = to.kind();
+        match to_kind {
+            SelectBaseBranch | ConfirmWorktreeDelete => from_kind == BranchSelect,
+            _ => true,
+        }
+    }
+
+    pub fn transition_to(&mut self, to: Mode) -> Result<(), TransitionError> {
+        if self.can_transition_to(&to) {
+            self.mode = to;
+            Ok(())
+        } else {
+            Err(TransitionError::Invalid {
+                from: self.mode.clone(),
+                to,
+            })
+        }
+    }
+
     pub fn enter_repo_select_mode(&mut self) {
         self.mode = Mode::RepoSelect;
     }
@@ -1097,14 +1145,21 @@ impl AppState {
     }
 
     pub fn enter_select_base_branch_mode(&mut self) {
-        self.mode = Mode::SelectBaseBranch;
+        if let Err(error) = self.transition_to(Mode::SelectBaseBranch) {
+            debug_assert!(false, "invalid mode transition: {error:?}");
+            self.mode = Mode::SelectBaseBranch;
+        }
     }
 
     pub fn enter_confirm_worktree_delete_mode(&mut self, branch_name: String, has_session: bool) {
-        self.mode = Mode::ConfirmWorktreeDelete {
+        let next_mode = Mode::ConfirmWorktreeDelete {
             branch_name,
             has_session,
         };
+        if let Err(error) = self.transition_to(next_mode.clone()) {
+            debug_assert!(false, "invalid mode transition: {error:?}");
+            self.mode = next_mode;
+        }
     }
 
     pub fn enter_loading_mode(&mut self, message: String) {
@@ -1293,10 +1348,6 @@ mod tests {
     use crate::git::{Repo, Worktree};
     use crate::pending_delete::PendingWorktreeDelete;
     use std::fs;
-    use std::sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    };
     use tempfile::tempdir;
 
     fn make_repo(dir: &std::path::Path, name: &str) -> Repo {
@@ -2691,6 +2742,7 @@ mod tests {
         state.enter_sessions_mode();
         assert_eq!(state.mode, Mode::Sessions);
 
+        state.enter_branch_select_mode();
         state.enter_select_base_branch_mode();
         assert_eq!(state.mode, Mode::SelectBaseBranch);
 
@@ -2702,6 +2754,7 @@ mod tests {
     fn test_mode_transition_helpers_set_parameterized_modes() {
         let mut state = AppState::new(vec![], None);
 
+        state.enter_branch_select_mode();
         state.enter_confirm_worktree_delete_mode("feat-x".to_string(), true);
         assert_eq!(
             state.mode,
@@ -2724,6 +2777,53 @@ mod tests {
 
         state.restore_mode(Mode::BranchSelect);
         assert_eq!(state.mode, Mode::BranchSelect);
+    }
+
+    #[test]
+    fn test_transition_to_rejects_invalid_target_modes() {
+        let mut state = AppState::new(vec![], None);
+        state.enter_repo_select_mode();
+
+        let result = state.transition_to(Mode::SelectBaseBranch);
+        assert!(matches!(
+            result,
+            Err(TransitionError::Invalid {
+                from: Mode::RepoSelect,
+                to: Mode::SelectBaseBranch
+            })
+        ));
+
+        let result = state.transition_to(Mode::ConfirmWorktreeDelete {
+            branch_name: "feat-x".to_string(),
+            has_session: false,
+        });
+        assert!(matches!(
+            result,
+            Err(TransitionError::Invalid {
+                from: Mode::RepoSelect,
+                to: Mode::ConfirmWorktreeDelete { .. }
+            })
+        ));
+    }
+
+    #[test]
+    fn test_transition_to_allows_branch_select_flow_modes() {
+        let mut state = AppState::new(vec![], None);
+        state.enter_branch_select_mode();
+
+        assert!(state.transition_to(Mode::SelectBaseBranch).is_ok());
+        assert_eq!(state.mode, Mode::SelectBaseBranch);
+
+        state.enter_branch_select_mode();
+        assert!(
+            state
+                .transition_to(Mode::ConfirmWorktreeDelete {
+                    branch_name: "feat-y".to_string(),
+                    has_session: true,
+                })
+                .is_ok()
+        );
+        assert!(matches!(state.mode, Mode::ConfirmWorktreeDelete { .. }));
     }
 
     #[test]

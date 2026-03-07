@@ -35,6 +35,14 @@ const SESSIONS_INDEX_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 
 type SessionRepoData = (String, String, PathBuf, Vec<kiosk_core::git::Worktree>);
 
+struct SessionsPollerConfig {
+    status_interval: Duration,
+    membership_interval: Duration,
+    index_refresh_interval: Duration,
+    search_dirs: Vec<(PathBuf, u16)>,
+    repo_index: Vec<SessionRepoData>,
+}
+
 pub(super) fn spawn_repo_discovery<T: TmuxProvider + ?Sized + 'static>(
     git: &Arc<dyn GitProvider>,
     tmux: &Arc<T>,
@@ -594,16 +602,19 @@ pub(super) fn spawn_sessions_discovery<T: TmuxProvider + ?Sized + 'static>(
         sender_clone.send(AppEvent::SessionsSnapshot { sessions, states });
 
         // Start sessions pollers: fast status updates + slower membership diffs.
+        let config = SessionsPollerConfig {
+            status_interval,
+            membership_interval: SESSIONS_MEMBERSHIP_POLL_INTERVAL,
+            index_refresh_interval: SESSIONS_INDEX_REFRESH_INTERVAL,
+            search_dirs: search_dirs_for_poller,
+            repo_index,
+        };
         spawn_sessions_agent_poller(
             &git_for_poller,
             &tmux_for_poller,
             &sender_for_poller,
             poller_cancel_for_poller,
-            status_interval,
-            SESSIONS_MEMBERSHIP_POLL_INTERVAL,
-            SESSIONS_INDEX_REFRESH_INTERVAL,
-            search_dirs_for_poller,
-            repo_index,
+            config,
         );
     });
 }
@@ -616,12 +627,15 @@ fn spawn_sessions_agent_poller<T: TmuxProvider + ?Sized + 'static>(
     tmux: &Arc<T>,
     sender: &EventSender,
     cancel: Arc<AtomicBool>,
-    status_interval: Duration,
-    membership_interval: Duration,
-    index_refresh_interval: Duration,
-    search_dirs: Vec<(PathBuf, u16)>,
-    mut repo_index: Vec<SessionRepoData>,
+    config: SessionsPollerConfig,
 ) {
+    let SessionsPollerConfig {
+        status_interval,
+        membership_interval,
+        index_refresh_interval,
+        search_dirs,
+        mut repo_index,
+    } = config;
     let git = Arc::clone(git);
     let tmux = Arc::clone(tmux);
     let sender = sender.clone();

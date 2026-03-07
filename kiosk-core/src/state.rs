@@ -872,6 +872,55 @@ pub enum TransitionError {
     Invalid { from: Mode, to: Mode },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModeTransition {
+    RepoSelect,
+    BranchSelect,
+    Sessions,
+    SelectBaseBranch,
+    ConfirmWorktreeDelete {
+        branch_name: String,
+        has_session: bool,
+    },
+    Loading {
+        message: String,
+    },
+    Help {
+        previous: Mode,
+    },
+    Setup {
+        step: SetupStep,
+    },
+    Restore {
+        mode: Mode,
+    },
+}
+
+impl ModeTransition {
+    #[must_use]
+    pub fn target_mode(&self) -> Mode {
+        match self {
+            ModeTransition::RepoSelect => Mode::RepoSelect,
+            ModeTransition::BranchSelect => Mode::BranchSelect,
+            ModeTransition::Sessions => Mode::Sessions,
+            ModeTransition::SelectBaseBranch => Mode::SelectBaseBranch,
+            ModeTransition::ConfirmWorktreeDelete {
+                branch_name,
+                has_session,
+            } => Mode::ConfirmWorktreeDelete {
+                branch_name: branch_name.clone(),
+                has_session: *has_session,
+            },
+            ModeTransition::Loading { message } => Mode::Loading(message.clone()),
+            ModeTransition::Help { previous } => Mode::Help {
+                previous: Box::new(previous.clone()),
+            },
+            ModeTransition::Setup { step } => Mode::Setup(step.clone()),
+            ModeTransition::Restore { mode } => mode.clone(),
+        }
+    }
+}
+
 impl Mode {
     fn kind(&self) -> ModeKind {
         match self {
@@ -1037,6 +1086,14 @@ pub struct AppState {
 }
 
 impl AppState {
+    fn apply_transition_with_fallback(&mut self, transition: &ModeTransition) {
+        let fallback_mode = transition.target_mode();
+        if let Err(error) = self.transition(transition) {
+            debug_assert!(false, "invalid mode transition: {error:?}");
+            self.mode = fallback_mode;
+        }
+    }
+
     fn base(mode: Mode) -> Self {
         Self {
             repos: Vec::new(),
@@ -1135,79 +1192,47 @@ impl AppState {
         }
     }
 
+    pub fn transition(&mut self, transition: &ModeTransition) -> Result<(), TransitionError> {
+        self.transition_to(transition.target_mode())
+    }
+
     pub fn enter_repo_select_mode(&mut self) {
-        let next_mode = Mode::RepoSelect;
-        if let Err(error) = self.transition_to(next_mode.clone()) {
-            debug_assert!(false, "invalid mode transition: {error:?}");
-            self.mode = next_mode;
-        }
+        self.apply_transition_with_fallback(&ModeTransition::RepoSelect);
     }
 
     pub fn enter_branch_select_mode(&mut self) {
-        let next_mode = Mode::BranchSelect;
-        if let Err(error) = self.transition_to(next_mode.clone()) {
-            debug_assert!(false, "invalid mode transition: {error:?}");
-            self.mode = next_mode;
-        }
+        self.apply_transition_with_fallback(&ModeTransition::BranchSelect);
     }
 
     pub fn enter_sessions_mode(&mut self) {
-        let next_mode = Mode::Sessions;
-        if let Err(error) = self.transition_to(next_mode.clone()) {
-            debug_assert!(false, "invalid mode transition: {error:?}");
-            self.mode = next_mode;
-        }
+        self.apply_transition_with_fallback(&ModeTransition::Sessions);
     }
 
     pub fn enter_select_base_branch_mode(&mut self) {
-        if let Err(error) = self.transition_to(Mode::SelectBaseBranch) {
-            debug_assert!(false, "invalid mode transition: {error:?}");
-            self.mode = Mode::SelectBaseBranch;
-        }
+        self.apply_transition_with_fallback(&ModeTransition::SelectBaseBranch);
     }
 
     pub fn enter_confirm_worktree_delete_mode(&mut self, branch_name: String, has_session: bool) {
-        let next_mode = Mode::ConfirmWorktreeDelete {
+        self.apply_transition_with_fallback(&ModeTransition::ConfirmWorktreeDelete {
             branch_name,
             has_session,
-        };
-        if let Err(error) = self.transition_to(next_mode.clone()) {
-            debug_assert!(false, "invalid mode transition: {error:?}");
-            self.mode = next_mode;
-        }
+        });
     }
 
     pub fn enter_loading_mode(&mut self, message: String) {
-        let next_mode = Mode::Loading(message);
-        if let Err(error) = self.transition_to(next_mode.clone()) {
-            debug_assert!(false, "invalid mode transition: {error:?}");
-            self.mode = next_mode;
-        }
+        self.apply_transition_with_fallback(&ModeTransition::Loading { message });
     }
 
     pub fn enter_help_mode(&mut self, previous: Mode) {
-        let next_mode = Mode::Help {
-            previous: Box::new(previous),
-        };
-        if let Err(error) = self.transition_to(next_mode.clone()) {
-            debug_assert!(false, "invalid mode transition: {error:?}");
-            self.mode = next_mode;
-        }
+        self.apply_transition_with_fallback(&ModeTransition::Help { previous });
     }
 
     pub fn enter_setup_mode(&mut self, step: SetupStep) {
-        let next_mode = Mode::Setup(step);
-        if let Err(error) = self.transition_to(next_mode.clone()) {
-            debug_assert!(false, "invalid mode transition: {error:?}");
-            self.mode = next_mode;
-        }
+        self.apply_transition_with_fallback(&ModeTransition::Setup { step });
     }
 
     pub fn restore_mode(&mut self, mode: Mode) {
-        if let Err(error) = self.transition_to(mode.clone()) {
-            debug_assert!(false, "invalid mode transition: {error:?}");
-            self.mode = mode;
-        }
+        self.apply_transition_with_fallback(&ModeTransition::Restore { mode });
     }
 
     /// Signal the current agent poller thread to stop and clear the cancel token.
@@ -2834,6 +2859,50 @@ mod tests {
                 to: Mode::ConfirmWorktreeDelete { .. }
             })
         ));
+    }
+
+    #[test]
+    fn test_mode_transition_intents_map_to_expected_modes() {
+        assert_eq!(ModeTransition::RepoSelect.target_mode(), Mode::RepoSelect);
+        assert_eq!(
+            ModeTransition::BranchSelect.target_mode(),
+            Mode::BranchSelect
+        );
+        assert_eq!(ModeTransition::Sessions.target_mode(), Mode::Sessions);
+        assert_eq!(
+            ModeTransition::SelectBaseBranch.target_mode(),
+            Mode::SelectBaseBranch
+        );
+        assert_eq!(
+            ModeTransition::ConfirmWorktreeDelete {
+                branch_name: "feat-a".to_string(),
+                has_session: true,
+            }
+            .target_mode(),
+            Mode::ConfirmWorktreeDelete {
+                branch_name: "feat-a".to_string(),
+                has_session: true,
+            }
+        );
+    }
+
+    #[test]
+    fn test_transition_with_intent_respects_mode_policy() {
+        let mut state = AppState::new(vec![], None);
+        state.enter_repo_select_mode();
+
+        let result = state.transition(&ModeTransition::SelectBaseBranch);
+        assert!(
+            result.is_err(),
+            "RepoSelect -> SelectBaseBranch should fail"
+        );
+
+        state.enter_branch_select_mode();
+        let result = state.transition(&ModeTransition::SelectBaseBranch);
+        assert!(
+            result.is_ok(),
+            "BranchSelect -> SelectBaseBranch should succeed"
+        );
     }
 
     #[test]

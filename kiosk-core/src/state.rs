@@ -1231,6 +1231,10 @@ impl AppState {
         self.transition_to(transition.target_mode())
     }
 
+    pub fn apply_transition(&mut self, transition: &ModeTransition) {
+        self.apply_transition_with_fallback(transition);
+    }
+
     #[must_use]
     pub fn mode(&self) -> &Mode {
         &self.mode

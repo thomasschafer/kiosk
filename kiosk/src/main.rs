@@ -8,7 +8,7 @@ use kiosk_core::{
     constants::{GIT_DIR_ENTRY, GITDIR_FILE_PREFIX, WORKTREE_DIR_NAME},
     git::{CliGitProvider, GitProvider},
     pending_delete::load_pending_worktree_deletes,
-    state::{AppState, SessionsLoadState},
+    state::{AppState, ModeTransition, SessionsLoadState},
     tmux::{CliTmuxProvider, TmuxProvider},
 };
 use kiosk_tui::{OpenAction, Theme};
@@ -544,7 +544,7 @@ fn run_tui(
 
 fn apply_sessions_startup_mode(state: &mut AppState) {
     if state.sessions_initial {
-        state.enter_sessions_mode();
+        state.apply_transition(&ModeTransition::Sessions);
         state.sessions_view.load_state = SessionsLoadState::Loading;
         state.sessions_view.pin_first_selection = true;
         state.sessions_view.sessions.clear();

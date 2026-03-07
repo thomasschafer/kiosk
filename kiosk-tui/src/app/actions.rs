@@ -4,8 +4,8 @@ use kiosk_core::{
     git::GitProvider,
     pending_delete::{PendingWorktreeDelete, save_pending_worktree_deletes},
     state::{
-        AppState, BaseBranchSelection, HelpOverlayState, Mode, SearchableList, SessionEntry,
-        SetupStep, worktree_dir,
+        AppState, BaseBranchSelection, HelpOverlayState, Mode, ModeTransition, SearchableList,
+        SessionEntry, SetupStep, worktree_dir,
     },
     tmux::TmuxProvider,
 };
@@ -74,22 +74,22 @@ fn apply_session_filter(
 pub(super) fn handle_go_back(state: &mut AppState) {
     match state.mode().clone() {
         Mode::BranchSelect => {
-            state.enter_repo_select_mode();
+            state.apply_transition(&ModeTransition::RepoSelect);
             state.branch_list.input.clear();
         }
         Mode::SelectBaseBranch => {
             state.base_branch_selection = None;
-            state.enter_branch_select_mode();
+            state.apply_transition(&ModeTransition::BranchSelect);
         }
         Mode::ConfirmWorktreeDelete { .. } => {
-            state.enter_branch_select_mode();
+            state.apply_transition(&ModeTransition::BranchSelect);
         }
         Mode::Help { previous } => {
             state.help_overlay = None;
-            state.restore_mode(*previous);
+            state.apply_transition(&ModeTransition::Restore { mode: *previous });
         }
         Mode::Sessions => {
-            state.enter_repo_select_mode();
+            state.apply_transition(&ModeTransition::RepoSelect);
         }
         Mode::Setup(_) | Mode::RepoSelect | Mode::Loading(_) => {}
     }
@@ -98,14 +98,16 @@ pub(super) fn handle_go_back(state: &mut AppState) {
 pub(super) fn handle_show_help(state: &mut AppState, keys: &KeysConfig) {
     if let Mode::Help { previous } = state.mode().clone() {
         state.help_overlay = None;
-        state.restore_mode(*previous);
+        state.apply_transition(&ModeTransition::Restore { mode: *previous });
     } else {
         let catalog = keys.catalog_for_mode(state.mode());
         state.help_overlay = Some(HelpOverlayState {
             list: SearchableList::new(catalog.flattened.len()),
             rows: catalog.flattened,
         });
-        state.enter_help_mode(state.mode().clone());
+        state.apply_transition(&ModeTransition::Help {
+            previous: state.mode().clone(),
+        });
     }
 }
 
@@ -136,7 +138,7 @@ pub(super) fn handle_start_new_branch(state: &mut AppState) {
         bases,
         list,
     });
-    state.enter_select_base_branch_mode();
+    state.apply_transition(&ModeTransition::SelectBaseBranch);
 }
 
 pub(super) fn handle_delete_worktree(state: &mut AppState) {
@@ -156,7 +158,10 @@ pub(super) fn handle_delete_worktree(state: &mut AppState) {
         } else if branch.is_current {
             state.set_error("Cannot delete the current branch's worktree");
         } else {
-            state.enter_confirm_worktree_delete_mode(branch.name.clone(), branch.has_session);
+            state.apply_transition(&ModeTransition::ConfirmWorktreeDelete {
+                branch_name: branch.name.clone(),
+                has_session: branch.has_session,
+            });
         }
     }
 }
@@ -197,7 +202,7 @@ pub(super) fn handle_confirm_delete<T: TmuxProvider + ?Sized>(
                     state.set_error(&format!("Failed to persist pending deletes: {e}"));
                 }
             }
-            state.enter_branch_select_mode();
+            state.apply_transition(&ModeTransition::BranchSelect);
             spawn_worktree_removal(git, sender, worktree_path, branch_name);
         }
     }
@@ -232,9 +237,9 @@ pub(super) fn handle_open_branch(
                         let repo_path = repo.path.clone();
                         let session_name = repo.tmux_session_name(&wt_path);
                         if is_remote {
-                            state.enter_loading_mode(format!(
-                                "Checking out remote branch {branch_name}..."
-                            ));
+                            state.apply_transition(&ModeTransition::Loading {
+                                message: format!("Checking out remote branch {branch_name}..."),
+                            });
                             spawn_tracking_worktree_creation(
                                 git,
                                 sender,
@@ -244,9 +249,9 @@ pub(super) fn handle_open_branch(
                                 session_name,
                             );
                         } else {
-                            state.enter_loading_mode(format!(
-                                "Creating worktree for {branch_name}..."
-                            ));
+                            state.apply_transition(&ModeTransition::Loading {
+                                message: format!("Creating worktree for {branch_name}..."),
+                            });
                             spawn_worktree_creation(
                                 git,
                                 sender,
@@ -277,9 +282,9 @@ pub(super) fn handle_open_branch(
                     Ok(wt_path) => {
                         let repo_path = repo.path.clone();
                         let session_name = repo.tmux_session_name(&wt_path);
-                        state.enter_loading_mode(format!(
-                            "Creating branch {new_name} from {base}..."
-                        ));
+                        state.apply_transition(&ModeTransition::Loading {
+                            message: format!("Creating branch {new_name} from {base}..."),
+                        });
                         spawn_branch_and_worktree_creation(
                             git,
                             sender,
@@ -329,7 +334,7 @@ pub(super) fn enter_branch_select_with_loading<T: TmuxProvider + ?Sized + 'stati
     let repo = state.repos[repo_idx].clone();
     let cwd = state.cwd_worktree_path.clone();
     if show_loading {
-        state.enter_branch_select_mode();
+        state.apply_transition(&ModeTransition::BranchSelect);
         state.branches.clear();
         state.branch_list.reset(0);
     }
@@ -399,7 +404,9 @@ fn post_text_edit(state: &mut AppState, matcher: &SkimMatcherV2) {
 // ── Setup action handlers ──
 
 pub(super) fn handle_setup_continue(state: &mut AppState) {
-    state.enter_setup_mode(SetupStep::SearchDirs);
+    state.apply_transition(&ModeTransition::Setup {
+        step: SetupStep::SearchDirs,
+    });
     if state.setup.is_none() {
         state.setup = Some(kiosk_core::state::SetupState::new());
     }
@@ -725,7 +732,7 @@ mod tests {
     #[test]
     fn sessions_mode_search_filters_session_list() {
         let mut state = AppState::new(Vec::new(), None);
-        state.enter_sessions_mode();
+        state.apply_transition(&ModeTransition::Sessions);
         state.sessions_view.sessions = vec![
             SessionEntry {
                 session_name: "scooter--add-scoop-to-readme".to_string(),
@@ -770,7 +777,7 @@ mod tests {
     #[test]
     fn sessions_mode_search_preserves_canonical_session_order() {
         let mut state = AppState::new(Vec::new(), None);
-        state.enter_sessions_mode();
+        state.apply_transition(&ModeTransition::Sessions);
         state.sessions_view.sessions = vec![
             SessionEntry {
                 session_name: "kiosk--feat-agent-session-switcher".to_string(),

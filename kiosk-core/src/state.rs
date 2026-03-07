@@ -1084,6 +1084,47 @@ impl AppState {
         }
     }
 
+    pub fn enter_repo_select_mode(&mut self) {
+        self.mode = Mode::RepoSelect;
+    }
+
+    pub fn enter_branch_select_mode(&mut self) {
+        self.mode = Mode::BranchSelect;
+    }
+
+    pub fn enter_sessions_mode(&mut self) {
+        self.mode = Mode::Sessions;
+    }
+
+    pub fn enter_select_base_branch_mode(&mut self) {
+        self.mode = Mode::SelectBaseBranch;
+    }
+
+    pub fn enter_confirm_worktree_delete_mode(&mut self, branch_name: String, has_session: bool) {
+        self.mode = Mode::ConfirmWorktreeDelete {
+            branch_name,
+            has_session,
+        };
+    }
+
+    pub fn enter_loading_mode(&mut self, message: String) {
+        self.mode = Mode::Loading(message);
+    }
+
+    pub fn enter_help_mode(&mut self, previous: Mode) {
+        self.mode = Mode::Help {
+            previous: Box::new(previous),
+        };
+    }
+
+    pub fn enter_setup_mode(&mut self, step: SetupStep) {
+        self.mode = Mode::Setup(step);
+    }
+
+    pub fn restore_mode(&mut self, mode: Mode) {
+        self.mode = mode;
+    }
+
     /// Signal the current agent poller thread to stop and clear the cancel token.
     pub fn cancel_agent_poller(&mut self) {
         if let ActiveAgentPoller::Branch(handle) = &self.active_agent_poller {
@@ -2635,6 +2676,54 @@ mod tests {
         };
         assert_eq!(state.agent_labels.running, "GO");
         assert_eq!(state.agent_labels.waiting, "PEND");
+    }
+
+    #[test]
+    fn test_mode_transition_helpers_set_expected_modes() {
+        let mut state = AppState::new(vec![], None);
+
+        state.enter_repo_select_mode();
+        assert_eq!(state.mode, Mode::RepoSelect);
+
+        state.enter_branch_select_mode();
+        assert_eq!(state.mode, Mode::BranchSelect);
+
+        state.enter_sessions_mode();
+        assert_eq!(state.mode, Mode::Sessions);
+
+        state.enter_select_base_branch_mode();
+        assert_eq!(state.mode, Mode::SelectBaseBranch);
+
+        state.enter_loading_mode("Loading...".to_string());
+        assert_eq!(state.mode, Mode::Loading("Loading...".to_string()));
+    }
+
+    #[test]
+    fn test_mode_transition_helpers_set_parameterized_modes() {
+        let mut state = AppState::new(vec![], None);
+
+        state.enter_confirm_worktree_delete_mode("feat-x".to_string(), true);
+        assert_eq!(
+            state.mode,
+            Mode::ConfirmWorktreeDelete {
+                branch_name: "feat-x".to_string(),
+                has_session: true,
+            }
+        );
+
+        state.enter_help_mode(Mode::RepoSelect);
+        assert_eq!(
+            state.mode,
+            Mode::Help {
+                previous: Box::new(Mode::RepoSelect),
+            }
+        );
+
+        state.enter_setup_mode(SetupStep::SearchDirs);
+        assert_eq!(state.mode, Mode::Setup(SetupStep::SearchDirs));
+
+        state.restore_mode(Mode::BranchSelect);
+        assert_eq!(state.mode, Mode::BranchSelect);
     }
 
     #[test]

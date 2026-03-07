@@ -702,7 +702,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             // Only switch to RepoSelect from Loading — don't kick users out of BranchSelect.
             // In --sessions mode, keep loading UI until we can enter sessions view directly.
             if !state.sessions_initial && matches!(state.mode, Mode::Loading(_)) {
-                state.mode = Mode::RepoSelect;
+                state.enter_repo_select_mode();
             }
         }
         AppEvent::ReposFound { repo } => {
@@ -717,7 +717,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             // Switch to RepoSelect from Loading (so user sees repos appearing),
             // except in --sessions mode where we keep a stable loading screen.
             if !state.sessions_initial && matches!(state.mode, Mode::Loading(_)) {
-                state.mode = Mode::RepoSelect;
+                state.enter_repo_select_mode();
             }
         }
         AppEvent::ScanComplete { search_dirs } => {
@@ -734,7 +734,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
                 enter_sessions_view(state, git, tmux, sender);
             } else {
                 if matches!(state.mode, Mode::Loading(_)) {
-                    state.mode = Mode::RepoSelect;
+                    state.enter_repo_select_mode();
                 }
             }
         }
@@ -788,7 +788,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             if let Some(repo_idx) = state.selected_repo_idx {
                 enter_branch_select_with_loading(state, repo_idx, git, tmux, sender, false);
             } else {
-                state.mode = Mode::BranchSelect;
+                state.enter_branch_select_mode();
             }
         }
         AppEvent::WorktreeRemoveFailed {
@@ -810,7 +810,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             }
             state.set_error(&error_message);
             state.loading_branches = false;
-            state.mode = Mode::BranchSelect;
+            state.enter_branch_select_mode();
         }
         AppEvent::BranchesLoaded {
             branches,
@@ -835,7 +835,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             {
                 state.set_error(&format!("Failed to persist pending deletes: {e}"));
             }
-            state.mode = Mode::BranchSelect;
+            state.enter_branch_select_mode();
 
             // Kick off remote branch loading and background fetch
             if let Some(repo_path) = state
@@ -937,9 +937,9 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             // Return to the appropriate mode
             if state.base_branch_selection.is_some() {
                 state.base_branch_selection = None;
-                state.mode = Mode::BranchSelect;
+                state.enter_branch_select_mode();
             } else {
-                state.mode = Mode::BranchSelect;
+                state.enter_branch_select_mode();
             }
             state.loading_branches = false;
             state.set_error(&msg);
@@ -1065,7 +1065,7 @@ fn handle_simple_actions(action: &Action, state: &mut AppState) -> bool {
             true
         }
         Action::CancelDeleteWorktree => {
-            state.mode = Mode::BranchSelect;
+            state.enter_branch_select_mode();
             true
         }
         _ => false,
@@ -1239,7 +1239,7 @@ fn enter_sessions_view<T: TmuxProvider + ?Sized + 'static>(
     tmux: &Arc<T>,
     sender: &EventSender,
 ) {
-    state.mode = Mode::Sessions;
+    state.enter_sessions_mode();
     state.sessions_view.begin_loading();
     spawn_sessions_discovery(git, tmux, sender, state);
 }
@@ -1364,7 +1364,7 @@ fn process_action<T: TmuxProvider + ?Sized + 'static>(
         Action::ToggleSessions => {
             if state.mode == Mode::Sessions {
                 state.cancel_sessions_poller();
-                state.mode = Mode::RepoSelect;
+                state.enter_repo_select_mode();
             } else {
                 enter_sessions_view(state, ctx.git, ctx.tmux, ctx.sender);
             }

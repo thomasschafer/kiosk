@@ -568,11 +568,13 @@ pub(super) fn spawn_sessions_discovery<T: TmuxProvider + ?Sized + 'static>(
     let tmux_clone = Arc::clone(tmux);
     let sender_clone = sender.clone();
 
-    // Cancel any existing sessions poller
-    state.cancel_all_agent_pollers();
-
     let poller_handle = PollerHandle::new();
-    state.install_sessions_poller(poller_handle.clone());
+    if state
+        .install_sessions_poller(poller_handle.clone())
+        .is_err()
+    {
+        return;
+    }
     let poller_cancel = poller_handle.cancel_token();
 
     let poller_cancel_for_poller = Arc::clone(&poller_cancel);

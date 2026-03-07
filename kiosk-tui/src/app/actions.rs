@@ -76,7 +76,6 @@ pub(super) fn handle_go_back(state: &mut AppState) {
         Mode::BranchSelect => {
             state.enter_repo_select_mode();
             state.branch_list.input.clear();
-            state.cancel_agent_poller();
         }
         Mode::SelectBaseBranch => {
             state.base_branch_selection = None;
@@ -90,7 +89,6 @@ pub(super) fn handle_go_back(state: &mut AppState) {
             state.restore_mode(*previous);
         }
         Mode::Sessions => {
-            state.cancel_sessions_poller();
             state.enter_repo_select_mode();
         }
         Mode::Setup(_) | Mode::RepoSelect | Mode::Loading(_) => {}

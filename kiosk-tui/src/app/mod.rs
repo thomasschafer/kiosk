@@ -22,10 +22,7 @@ use kiosk_core::{
     event::{AppEvent, SessionRuntimeUpdate},
     git::{GitProvider, apply_repo_name_collision_resolution},
     pending_delete::save_pending_worktree_deletes,
-    state::{
-        ActiveAgentPoller, AppState, BranchEntry, Mode, PollerHandle, SearchableList,
-        SessionRuntimeState,
-    },
+    state::{AppState, BranchEntry, Mode, PollerHandle, SearchableList, SessionRuntimeState},
     tmux::TmuxProvider,
 };
 use ratatui::{
@@ -80,20 +77,6 @@ fn initialize_repo_scan(state: &mut AppState) {
     state.seen_repo_paths = state.repos.iter().map(|repo| repo.path.clone()).collect();
 }
 
-/// Keep active poller scope aligned with the effective UI mode.
-/// This is a global safety net to avoid cross-view poller leaks.
-fn reconcile_agent_poller_mode_invariant(state: &mut AppState) {
-    let should_cancel = !matches!(
-        (&state.active_agent_poller, state.mode.effective()),
-        (ActiveAgentPoller::None, _)
-            | (ActiveAgentPoller::Branch(_), Mode::BranchSelect)
-            | (ActiveAgentPoller::Sessions(_), Mode::Sessions)
-    );
-    if should_cancel {
-        state.cancel_all_agent_pollers();
-    }
-}
-
 pub fn run(
     terminal: &mut DefaultTerminal,
     state: &mut AppState,
@@ -131,8 +114,6 @@ pub fn run(
     }
 
     let result = loop {
-        reconcile_agent_poller_mode_invariant(state);
-
         if !repo_scan_started
             && state.mode != Mode::Sessions
             && (state.loading_repos || state.repos.is_empty())
@@ -147,7 +128,6 @@ pub fn run(
         // Check background channel (non-blocking)
         if let Ok(app_event) = rx.try_recv() {
             let result = process_app_event(app_event, state, git, tmux, &event_sender);
-            reconcile_agent_poller_mode_invariant(state);
             if let Some(result) = result {
                 break result;
             }
@@ -198,7 +178,6 @@ pub fn run(
             };
             if let Some(action) = keymap::resolve_action(key, state, keys) {
                 let result = process_action(action, state, &ctx);
-                reconcile_agent_poller_mode_invariant(state);
                 if let Some(result) = result {
                     break result;
                 }
@@ -861,14 +840,15 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
                 state.cancel_all_agent_pollers();
                 if !session_names.is_empty() && state.agent_enabled {
                     let handle = PollerHandle::new();
-                    spawn_agent_status_poller(
-                        tmux,
-                        sender,
-                        handle.cancel_token(),
-                        state.agent_poll_interval,
-                        session_names,
-                    );
-                    state.install_branch_poller(handle);
+                    if state.install_branch_poller(handle.clone()).is_ok() {
+                        spawn_agent_status_poller(
+                            tmux,
+                            sender,
+                            handle.cancel_token(),
+                            state.agent_poll_interval,
+                            session_names,
+                        );
+                    }
                 }
             }
         }
@@ -1361,7 +1341,6 @@ fn process_action<T: TmuxProvider + ?Sized + 'static>(
         }
         Action::ToggleSessions => {
             if state.mode == Mode::Sessions {
-                state.cancel_sessions_poller();
                 state.enter_repo_select_mode();
             } else {
                 enter_sessions_view(state, ctx.git, ctx.tmux, ctx.sender);
@@ -5278,10 +5257,10 @@ mod tests {
     fn test_toggle_sessions_cancels_branch_poller() {
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
-        state.mode = Mode::RepoSelect;
+        state.mode = Mode::BranchSelect;
 
         let branch_poller = PollerHandle::new();
-        state.install_branch_poller(branch_poller.clone());
+        assert!(state.install_branch_poller(branch_poller.clone()).is_ok());
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux = Arc::new(MockTmuxProvider::default());
@@ -5304,57 +5283,17 @@ mod tests {
     }
 
     #[test]
-    fn test_reconcile_poller_mode_invariant_cancels_mismatched_branch_poller() {
-        let mut state = AppState::new(vec![make_repo("alpha")], None);
-        state.mode = Mode::RepoSelect;
-        let branch_poller = PollerHandle::new();
-        state.install_branch_poller(branch_poller.clone());
-
-        reconcile_agent_poller_mode_invariant(&mut state);
-
-        assert!(branch_poller.is_cancelled());
-        assert!(matches!(state.active_agent_poller, ActiveAgentPoller::None));
-    }
-
-    #[test]
-    fn test_reconcile_poller_mode_invariant_keeps_sessions_poller_in_help_overlay() {
-        let mut state = AppState::new(vec![make_repo("alpha")], None);
-        state.mode = Mode::Help {
-            previous: Box::new(Mode::Sessions),
-        };
-        let sessions_poller = PollerHandle::new();
-        state.install_sessions_poller(sessions_poller.clone());
-
-        reconcile_agent_poller_mode_invariant(&mut state);
-
-        assert!(!sessions_poller.is_cancelled());
-        assert!(matches!(
-            state.active_agent_poller,
-            ActiveAgentPoller::Sessions(_)
-        ));
-    }
-
-    #[test]
-    fn test_reconcile_poller_mode_invariant_cancels_mismatched_sessions_poller() {
-        let mut state = AppState::new(vec![make_repo("alpha")], None);
-        state.mode = Mode::BranchSelect;
-        let sessions_poller = PollerHandle::new();
-        state.install_sessions_poller(sessions_poller.clone());
-
-        reconcile_agent_poller_mode_invariant(&mut state);
-
-        assert!(sessions_poller.is_cancelled());
-        assert!(matches!(state.active_agent_poller, ActiveAgentPoller::None));
-    }
-
-    #[test]
     fn test_repo_enriched_does_not_restart_sessions_discovery_when_in_sessions_mode() {
         let mut state = AppState::new(vec![make_repo("alpha")], None);
         state.mode = Mode::Sessions;
         state.sessions_view.load_state = kiosk_core::state::SessionsLoadState::Ready;
 
         let sessions_poller = PollerHandle::new();
-        state.install_sessions_poller(sessions_poller.clone());
+        assert!(
+            state
+                .install_sessions_poller(sessions_poller.clone())
+                .is_ok()
+        );
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux = Arc::new(MockTmuxProvider::default());

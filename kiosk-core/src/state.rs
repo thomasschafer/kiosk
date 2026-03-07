@@ -820,6 +820,31 @@ pub enum ActiveAgentPoller {
     Sessions(PollerHandle),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgentPollerScope {
+    None,
+    Branch,
+    Sessions,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PollerInstallError {
+    InvalidMode {
+        mode: Mode,
+        expected_scope: &'static str,
+    },
+}
+
+impl ActiveAgentPoller {
+    fn scope(&self) -> AgentPollerScope {
+        match self {
+            ActiveAgentPoller::None => AgentPollerScope::None,
+            ActiveAgentPoller::Branch(_) => AgentPollerScope::Branch,
+            ActiveAgentPoller::Sessions(_) => AgentPollerScope::Sessions,
+        }
+    }
+}
+
 /// Sort sessions by: Waiting first, then Idle, then Running, then no agents.
 /// Within same tier: newest activity first (most recently visited).
 pub fn sort_sessions(sessions: &mut [SessionEntry]) {
@@ -922,6 +947,14 @@ impl ModeTransition {
 }
 
 impl Mode {
+    fn expected_agent_poller_scope(&self) -> AgentPollerScope {
+        match self.effective() {
+            Mode::BranchSelect => AgentPollerScope::Branch,
+            Mode::Sessions => AgentPollerScope::Sessions,
+            _ => AgentPollerScope::None,
+        }
+    }
+
     fn kind(&self) -> ModeKind {
         match self {
             Mode::RepoSelect => ModeKind::RepoSelect,
@@ -1091,6 +1124,7 @@ impl AppState {
         if let Err(error) = self.transition(transition) {
             debug_assert!(false, "invalid mode transition: {error:?}");
             self.mode = fallback_mode;
+            self.reconcile_agent_poller_mode_invariant();
         }
     }
 
@@ -1183,6 +1217,7 @@ impl AppState {
     fn transition_to(&mut self, to: Mode) -> Result<(), TransitionError> {
         if self.can_transition_to(&to) {
             self.mode = to;
+            self.reconcile_agent_poller_mode_invariant();
             Ok(())
         } else {
             Err(TransitionError::Invalid {
@@ -1194,6 +1229,12 @@ impl AppState {
 
     pub fn transition(&mut self, transition: &ModeTransition) -> Result<(), TransitionError> {
         self.transition_to(transition.target_mode())
+    }
+
+    pub fn reconcile_agent_poller_mode_invariant(&mut self) {
+        if self.active_agent_poller.scope() != self.mode.expected_agent_poller_scope() {
+            self.cancel_all_agent_pollers();
+        }
     }
 
     pub fn enter_repo_select_mode(&mut self) {
@@ -1262,15 +1303,37 @@ impl AppState {
     }
 
     /// Install a branch poller as the active poller, cancelling any existing poller.
-    pub fn install_branch_poller(&mut self, handle: PollerHandle) {
+    pub fn install_branch_poller(
+        &mut self,
+        handle: PollerHandle,
+    ) -> Result<(), PollerInstallError> {
+        if self.mode.expected_agent_poller_scope() != AgentPollerScope::Branch {
+            handle.cancel();
+            return Err(PollerInstallError::InvalidMode {
+                mode: self.mode.clone(),
+                expected_scope: "BranchSelect",
+            });
+        }
         self.cancel_all_agent_pollers();
         self.active_agent_poller = ActiveAgentPoller::Branch(handle);
+        Ok(())
     }
 
     /// Install a sessions poller as the active poller, cancelling any existing poller.
-    pub fn install_sessions_poller(&mut self, handle: PollerHandle) {
+    pub fn install_sessions_poller(
+        &mut self,
+        handle: PollerHandle,
+    ) -> Result<(), PollerInstallError> {
+        if self.mode.expected_agent_poller_scope() != AgentPollerScope::Sessions {
+            handle.cancel();
+            return Err(PollerInstallError::InvalidMode {
+                mode: self.mode.clone(),
+                expected_scope: "Sessions",
+            });
+        }
         self.cancel_all_agent_pollers();
         self.active_agent_poller = ActiveAgentPoller::Sessions(handle);
+        Ok(())
     }
 
     /// Get the active text input for the current mode (mutable).
@@ -2988,17 +3051,56 @@ mod tests {
     }
 
     #[test]
-    fn test_install_sessions_poller_replaces_branch_poller() {
+    fn test_install_sessions_poller_rejected_outside_sessions_mode() {
+        let mut state = AppState::new(vec![], None);
+        let sessions = PollerHandle::new();
+        let result = state.install_sessions_poller(sessions.clone());
+
+        assert!(matches!(
+            result,
+            Err(PollerInstallError::InvalidMode {
+                expected_scope: "Sessions",
+                ..
+            })
+        ));
+        assert!(sessions.is_cancelled());
+        assert!(matches!(state.active_agent_poller, ActiveAgentPoller::None));
+    }
+
+    #[test]
+    fn test_install_branch_poller_rejected_outside_branch_mode() {
         let mut state = AppState::new(vec![], None);
         let branch = PollerHandle::new();
-        let sessions = PollerHandle::new();
-
-        state.install_branch_poller(branch.clone());
-        state.install_sessions_poller(sessions);
+        let result = state.install_branch_poller(branch.clone());
 
         assert!(
             branch.is_cancelled(),
-            "Replacing branch poller should cancel it"
+            "Invalid branch poller installs should cancel the handle"
+        );
+        assert!(matches!(
+            result,
+            Err(PollerInstallError::InvalidMode {
+                expected_scope: "BranchSelect",
+                ..
+            })
+        ));
+        assert!(matches!(state.active_agent_poller, ActiveAgentPoller::None));
+    }
+
+    #[test]
+    fn test_install_sessions_poller_replaces_branch_poller() {
+        let mut state = AppState::new(vec![], None);
+        state.enter_branch_select_mode();
+        let branch = PollerHandle::new();
+        assert!(state.install_branch_poller(branch.clone()).is_ok());
+
+        state.enter_sessions_mode();
+        let sessions = PollerHandle::new();
+        assert!(state.install_sessions_poller(sessions).is_ok());
+
+        assert!(
+            branch.is_cancelled(),
+            "Switching poller scopes should cancel previous branch poller"
         );
         assert!(matches!(
             state.active_agent_poller,
@@ -3009,8 +3111,9 @@ mod tests {
     #[test]
     fn test_cancel_agent_poller_does_not_cancel_sessions_poller() {
         let mut state = AppState::new(vec![], None);
+        state.enter_sessions_mode();
         let sessions = PollerHandle::new();
-        state.install_sessions_poller(sessions.clone());
+        assert!(state.install_sessions_poller(sessions.clone()).is_ok());
 
         state.cancel_agent_poller();
 
@@ -3027,8 +3130,9 @@ mod tests {
     #[test]
     fn test_cancel_all_agent_pollers_cancels_active_poller() {
         let mut state = AppState::new(vec![], None);
+        state.enter_sessions_mode();
         let sessions = PollerHandle::new();
-        state.install_sessions_poller(sessions.clone());
+        assert!(state.install_sessions_poller(sessions.clone()).is_ok());
 
         state.cancel_all_agent_pollers();
 
@@ -3037,6 +3141,35 @@ mod tests {
             "cancel_all_agent_pollers should cancel active sessions poller"
         );
         assert!(matches!(state.active_agent_poller, ActiveAgentPoller::None));
+    }
+
+    #[test]
+    fn test_transition_cancels_mismatched_branch_poller() {
+        let mut state = AppState::new(vec![], None);
+        state.enter_branch_select_mode();
+        let branch = PollerHandle::new();
+        assert!(state.install_branch_poller(branch.clone()).is_ok());
+
+        state.enter_repo_select_mode();
+
+        assert!(branch.is_cancelled());
+        assert!(matches!(state.active_agent_poller, ActiveAgentPoller::None));
+    }
+
+    #[test]
+    fn test_transition_keeps_sessions_poller_for_help_overlay() {
+        let mut state = AppState::new(vec![], None);
+        state.enter_sessions_mode();
+        let sessions = PollerHandle::new();
+        assert!(state.install_sessions_poller(sessions.clone()).is_ok());
+
+        state.enter_help_mode(Mode::Sessions);
+
+        assert!(!sessions.is_cancelled());
+        assert!(matches!(
+            state.active_agent_poller,
+            ActiveAgentPoller::Sessions(_)
+        ));
     }
     #[test]
     fn test_sort_sessions_waiting_first() {

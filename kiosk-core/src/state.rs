@@ -1114,6 +1114,9 @@ impl AppState {
         use ModeKind::{BranchSelect, ConfirmWorktreeDelete, SelectBaseBranch};
         let from_kind = self.mode.kind();
         let to_kind = to.kind();
+        if from_kind == ModeKind::Help {
+            return true;
+        }
         match to_kind {
             SelectBaseBranch | ConfirmWorktreeDelete => from_kind == BranchSelect,
             _ => true,
@@ -1133,15 +1136,27 @@ impl AppState {
     }
 
     pub fn enter_repo_select_mode(&mut self) {
-        self.mode = Mode::RepoSelect;
+        let next_mode = Mode::RepoSelect;
+        if let Err(error) = self.transition_to(next_mode.clone()) {
+            debug_assert!(false, "invalid mode transition: {error:?}");
+            self.mode = next_mode;
+        }
     }
 
     pub fn enter_branch_select_mode(&mut self) {
-        self.mode = Mode::BranchSelect;
+        let next_mode = Mode::BranchSelect;
+        if let Err(error) = self.transition_to(next_mode.clone()) {
+            debug_assert!(false, "invalid mode transition: {error:?}");
+            self.mode = next_mode;
+        }
     }
 
     pub fn enter_sessions_mode(&mut self) {
-        self.mode = Mode::Sessions;
+        let next_mode = Mode::Sessions;
+        if let Err(error) = self.transition_to(next_mode.clone()) {
+            debug_assert!(false, "invalid mode transition: {error:?}");
+            self.mode = next_mode;
+        }
     }
 
     pub fn enter_select_base_branch_mode(&mut self) {
@@ -1163,21 +1178,36 @@ impl AppState {
     }
 
     pub fn enter_loading_mode(&mut self, message: String) {
-        self.mode = Mode::Loading(message);
+        let next_mode = Mode::Loading(message);
+        if let Err(error) = self.transition_to(next_mode.clone()) {
+            debug_assert!(false, "invalid mode transition: {error:?}");
+            self.mode = next_mode;
+        }
     }
 
     pub fn enter_help_mode(&mut self, previous: Mode) {
-        self.mode = Mode::Help {
+        let next_mode = Mode::Help {
             previous: Box::new(previous),
         };
+        if let Err(error) = self.transition_to(next_mode.clone()) {
+            debug_assert!(false, "invalid mode transition: {error:?}");
+            self.mode = next_mode;
+        }
     }
 
     pub fn enter_setup_mode(&mut self, step: SetupStep) {
-        self.mode = Mode::Setup(step);
+        let next_mode = Mode::Setup(step);
+        if let Err(error) = self.transition_to(next_mode.clone()) {
+            debug_assert!(false, "invalid mode transition: {error:?}");
+            self.mode = next_mode;
+        }
     }
 
     pub fn restore_mode(&mut self, mode: Mode) {
-        self.mode = mode;
+        if let Err(error) = self.transition_to(mode.clone()) {
+            debug_assert!(false, "invalid mode transition: {error:?}");
+            self.mode = mode;
+        }
     }
 
     /// Signal the current agent poller thread to stop and clear the cancel token.
@@ -2824,6 +2854,53 @@ mod tests {
                 .is_ok()
         );
         assert!(matches!(state.mode, Mode::ConfirmWorktreeDelete { .. }));
+    }
+
+    #[test]
+    fn test_transition_table_matches_policy_for_all_mode_pairs() {
+        let all_modes = vec![
+            Mode::RepoSelect,
+            Mode::BranchSelect,
+            Mode::Sessions,
+            Mode::SelectBaseBranch,
+            Mode::Loading("loading".to_string()),
+            Mode::ConfirmWorktreeDelete {
+                branch_name: "feat-z".to_string(),
+                has_session: false,
+            },
+            Mode::Help {
+                previous: Box::new(Mode::RepoSelect),
+            },
+            Mode::Setup(SetupStep::Welcome),
+        ];
+
+        for from in &all_modes {
+            for to in &all_modes {
+                let mut state = AppState::new(vec![], None);
+                state.mode = from.clone();
+
+                let from_help_overlay = matches!(from, Mode::Help { .. });
+                let expected = matches!(
+                    to,
+                    Mode::SelectBaseBranch | Mode::ConfirmWorktreeDelete { .. }
+                )
+                .then_some(matches!(from, Mode::BranchSelect) || from_help_overlay)
+                .unwrap_or(true);
+
+                assert_eq!(
+                    state.can_transition_to(to),
+                    expected,
+                    "from {from:?} to {to:?}",
+                );
+
+                let result = state.transition_to(to.clone());
+                assert_eq!(
+                    result.is_ok(),
+                    expected,
+                    "transition result mismatch from {from:?} to {to:?}",
+                );
+            }
+        }
     }
 
     #[test]

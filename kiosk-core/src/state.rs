@@ -821,6 +821,13 @@ pub enum ActiveAgentPoller {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActiveAgentPollerKind {
+    None,
+    Branch,
+    Sessions,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AgentPollerScope {
     None,
     Branch,
@@ -1096,7 +1103,7 @@ pub struct AppState {
     pub session_runtime: HashMap<String, SessionRuntimeState>,
     /// Active agent poller token, scoped by mode.
     /// At most one poller (branch or sessions) is active at a time.
-    pub active_agent_poller: ActiveAgentPoller,
+    active_agent_poller: ActiveAgentPoller,
     /// Whether agent status detection is enabled (configurable via `[agent] enabled`).
     pub agent_enabled: bool,
     /// Agent poll interval (configurable via `[agent] poll_interval_ms`).
@@ -1251,18 +1258,22 @@ impl AppState {
         }
     }
 
-    /// Signal the current agent poller thread to stop and clear the cancel token.
-    pub fn cancel_agent_poller(&mut self) {
-        if let ActiveAgentPoller::Branch(handle) = &self.active_agent_poller {
-            handle.cancel();
-            self.active_agent_poller = ActiveAgentPoller::None;
+    #[must_use]
+    pub fn active_agent_poller_kind(&self) -> ActiveAgentPollerKind {
+        match &self.active_agent_poller {
+            ActiveAgentPoller::None => ActiveAgentPollerKind::None,
+            ActiveAgentPoller::Branch(_) => ActiveAgentPollerKind::Branch,
+            ActiveAgentPoller::Sessions(_) => ActiveAgentPollerKind::Sessions,
         }
     }
-    /// Signal the current sessions agent poller thread to stop.
-    pub fn cancel_sessions_poller(&mut self) {
-        if let ActiveAgentPoller::Sessions(handle) = &self.active_agent_poller {
-            handle.cancel();
-            self.active_agent_poller = ActiveAgentPoller::None;
+
+    #[must_use]
+    pub fn active_agent_poller_matches(&self, handle: &PollerHandle) -> bool {
+        match &self.active_agent_poller {
+            ActiveAgentPoller::Branch(active) | ActiveAgentPoller::Sessions(active) => {
+                active.ptr_eq(handle)
+            }
+            ActiveAgentPoller::None => false,
         }
     }
 
@@ -3050,7 +3061,10 @@ mod tests {
             })
         ));
         assert!(sessions.is_cancelled());
-        assert!(matches!(state.active_agent_poller, ActiveAgentPoller::None));
+        assert_eq!(
+            state.active_agent_poller_kind(),
+            ActiveAgentPollerKind::None
+        );
     }
 
     #[test]
@@ -3070,7 +3084,10 @@ mod tests {
                 ..
             })
         ));
-        assert!(matches!(state.active_agent_poller, ActiveAgentPoller::None));
+        assert_eq!(
+            state.active_agent_poller_kind(),
+            ActiveAgentPollerKind::None
+        );
     }
 
     #[test]
@@ -3088,29 +3105,10 @@ mod tests {
             branch.is_cancelled(),
             "Switching poller scopes should cancel previous branch poller"
         );
-        assert!(matches!(
-            state.active_agent_poller,
-            ActiveAgentPoller::Sessions(_)
-        ));
-    }
-
-    #[test]
-    fn test_cancel_agent_poller_does_not_cancel_sessions_poller() {
-        let mut state = AppState::new(vec![], None);
-        state.apply_transition(&ModeTransition::Sessions);
-        let sessions = PollerHandle::new();
-        assert!(state.install_sessions_poller(sessions.clone()).is_ok());
-
-        state.cancel_agent_poller();
-
-        assert!(
-            !sessions.is_cancelled(),
-            "cancel_agent_poller should only affect branch pollers"
+        assert_eq!(
+            state.active_agent_poller_kind(),
+            ActiveAgentPollerKind::Sessions
         );
-        assert!(matches!(
-            state.active_agent_poller,
-            ActiveAgentPoller::Sessions(_)
-        ));
     }
 
     #[test]
@@ -3126,7 +3124,10 @@ mod tests {
             sessions.is_cancelled(),
             "cancel_all_agent_pollers should cancel active sessions poller"
         );
-        assert!(matches!(state.active_agent_poller, ActiveAgentPoller::None));
+        assert_eq!(
+            state.active_agent_poller_kind(),
+            ActiveAgentPollerKind::None
+        );
     }
 
     #[test]
@@ -3139,7 +3140,10 @@ mod tests {
         state.apply_transition(&ModeTransition::RepoSelect);
 
         assert!(branch.is_cancelled());
-        assert!(matches!(state.active_agent_poller, ActiveAgentPoller::None));
+        assert_eq!(
+            state.active_agent_poller_kind(),
+            ActiveAgentPollerKind::None
+        );
     }
 
     #[test]
@@ -3154,10 +3158,10 @@ mod tests {
         });
 
         assert!(!sessions.is_cancelled());
-        assert!(matches!(
-            state.active_agent_poller,
-            ActiveAgentPoller::Sessions(_)
-        ));
+        assert_eq!(
+            state.active_agent_poller_kind(),
+            ActiveAgentPollerKind::Sessions
+        );
     }
     #[test]
     fn test_sort_sessions_waiting_first() {

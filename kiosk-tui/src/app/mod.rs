@@ -1269,7 +1269,7 @@ fn process_action<T: TmuxProvider + ?Sized + 'static>(
 
         Action::GoBack => {
             if matches!(state.mode(), Mode::Sessions) && state.sessions_initial {
-                state.cancel_sessions_poller();
+                state.cancel_all_agent_pollers();
                 return Some(OpenAction::Quit);
             }
             handle_go_back(state);
@@ -1358,7 +1358,7 @@ fn process_action<T: TmuxProvider + ?Sized + 'static>(
             {
                 let session = &state.sessions_view.sessions[*idx];
                 let session_name = session.session_name.clone();
-                state.cancel_sessions_poller();
+                state.cancel_all_agent_pollers();
                 return Some(OpenAction::Open {
                     path: None,
                     session_name,
@@ -5291,10 +5291,10 @@ mod tests {
             branch_poller.is_cancelled(),
             "Entering sessions mode should stop branch poller"
         );
-        assert!(matches!(
-            state.active_agent_poller,
-            kiosk_core::state::ActiveAgentPoller::Sessions(_)
-        ));
+        assert_eq!(
+            state.active_agent_poller_kind(),
+            kiosk_core::state::ActiveAgentPollerKind::Sessions
+        );
     }
 
     #[test]
@@ -5333,13 +5333,12 @@ mod tests {
             !sessions_poller.is_cancelled(),
             "repo enrichment should not restart sessions discovery in sessions mode"
         );
-        let kiosk_core::state::ActiveAgentPoller::Sessions(active_handle) =
-            &state.active_agent_poller
-        else {
-            panic!("sessions poller token should remain active");
-        };
+        assert_eq!(
+            state.active_agent_poller_kind(),
+            kiosk_core::state::ActiveAgentPollerKind::Sessions
+        );
         assert!(
-            active_handle.ptr_eq(&sessions_poller),
+            state.active_agent_poller_matches(&sessions_poller),
             "sessions poller token should not be replaced by repo enrichment"
         );
     }

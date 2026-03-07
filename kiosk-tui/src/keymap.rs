@@ -14,13 +14,13 @@ pub fn resolve_action(
     our_key.canonicalize();
 
     // Help can always be dismissed with Esc
-    if matches!(state.mode, Mode::Help { .. })
+    if matches!(state.mode(), Mode::Help { .. })
         && our_key == KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)
     {
         return Some(Action::ShowHelp);
     }
 
-    let mode_keymap = keys.keymap_for_mode(&state.mode);
+    let mode_keymap = keys.keymap_for_mode(state.mode());
     if let Some(command) = mode_keymap.get(&our_key)
         && let Some(action) = command_to_action(command, state)
     {
@@ -28,7 +28,7 @@ pub fn resolve_action(
     }
 
     // Handle printable characters for search in search-enabled modes
-    if state.mode.supports_text_edit()
+    if state.mode().supports_text_edit()
         && let KeyCode::Char(c) = our_key.code
         && (our_key.modifiers == KeyModifiers::NONE && c.is_ascii_graphic() || c == ' ')
     {
@@ -48,7 +48,7 @@ fn command_to_action(command: &Command, state: &AppState) -> Option<Action> {
         Command::EnterRepo => Some(Action::EnterRepo),
         Command::OpenBranch => {
             // In branch-select mode, Enter with non-empty search and no matches starts new branch flow.
-            if let Mode::BranchSelect = state.mode
+            if let Mode::BranchSelect = state.mode()
                 && !state.branch_list.input.text.is_empty()
                 && state.branch_list.filtered.is_empty()
             {
@@ -59,7 +59,7 @@ fn command_to_action(command: &Command, state: &AppState) -> Option<Action> {
         Command::GoBack => Some(Action::GoBack),
         Command::NewBranch => Some(Action::StartNewBranchFlow),
         Command::DeleteWorktree => {
-            if let Mode::BranchSelect = state.mode {
+            if let Mode::BranchSelect = state.mode() {
                 Some(Action::DeleteWorktree)
             } else {
                 None
@@ -85,14 +85,14 @@ fn command_to_action(command: &Command, state: &AppState) -> Option<Action> {
         Command::MoveCursorWordRight => Some(Action::CursorWordRight),
         Command::MoveCursorStart => Some(Action::CursorStart),
         Command::MoveCursorEnd => Some(Action::CursorEnd),
-        Command::Confirm => match state.mode {
+        Command::Confirm => match state.mode() {
             Mode::ConfirmWorktreeDelete { .. } => Some(Action::ConfirmDeleteWorktree),
             Mode::SelectBaseBranch => Some(Action::OpenBranch),
             Mode::Setup(SetupStep::Welcome) => Some(Action::SetupContinue),
             Mode::Setup(SetupStep::SearchDirs) => Some(Action::SetupAddDir),
             _ => None,
         },
-        Command::Cancel => match state.mode {
+        Command::Cancel => match state.mode() {
             Mode::ConfirmWorktreeDelete { .. } => Some(Action::CancelDeleteWorktree),
             Mode::SelectBaseBranch => Some(Action::GoBack),
             Mode::Setup(SetupStep::Welcome) => Some(Action::Quit),
@@ -101,7 +101,7 @@ fn command_to_action(command: &Command, state: &AppState) -> Option<Action> {
         },
         Command::ToggleSessions => Some(Action::ToggleSessions),
         Command::SwitchToSession => Some(Action::SwitchToSession),
-        Command::TabComplete => match state.mode {
+        Command::TabComplete => match state.mode() {
             Mode::Setup(SetupStep::SearchDirs) => Some(Action::SetupTabComplete),
             _ => None,
         },
@@ -116,7 +116,7 @@ mod tests {
     #[test]
     fn ctrl_s_in_sessions_resolves_to_toggle_sessions() {
         let mut state = AppState::new(Vec::new(), None);
-        state.mode = Mode::Sessions;
+        state.enter_sessions_mode();
         let keys = KeysConfig::default();
 
         let action = resolve_action(
@@ -134,7 +134,7 @@ mod tests {
     #[test]
     fn esc_in_sessions_resolves_to_quit() {
         let mut state = AppState::new(Vec::new(), None);
-        state.mode = Mode::Sessions;
+        state.enter_sessions_mode();
         let keys = KeysConfig::default();
 
         let action = resolve_action(CtKeyEvent::new(CtKeyCode::Esc, CtMods::NONE), &state, &keys);

@@ -211,7 +211,7 @@ fn draw_search_dirs(f: &mut Frame, state: &AppState, theme: &Theme, show_selecti
 }
 
 pub fn draw(f: &mut Frame, state: &AppState, theme: &Theme, show_selection: bool) {
-    match &state.mode {
+    match state.mode() {
         Mode::Setup(SetupStep::Welcome) => draw_welcome(f, theme),
         Mode::Setup(SetupStep::SearchDirs) => draw_search_dirs(f, state, theme, show_selection),
         _ => {}

@@ -72,7 +72,7 @@ fn apply_session_filter(
 }
 
 pub(super) fn handle_go_back(state: &mut AppState) {
-    match state.mode.clone() {
+    match state.mode().clone() {
         Mode::BranchSelect => {
             state.enter_repo_select_mode();
             state.branch_list.input.clear();
@@ -96,16 +96,16 @@ pub(super) fn handle_go_back(state: &mut AppState) {
 }
 
 pub(super) fn handle_show_help(state: &mut AppState, keys: &KeysConfig) {
-    if let Mode::Help { previous } = state.mode.clone() {
+    if let Mode::Help { previous } = state.mode().clone() {
         state.help_overlay = None;
         state.restore_mode(*previous);
     } else {
-        let catalog = keys.catalog_for_mode(&state.mode);
+        let catalog = keys.catalog_for_mode(state.mode());
         state.help_overlay = Some(HelpOverlayState {
             list: SearchableList::new(catalog.flattened.len()),
             rows: catalog.flattened,
         });
-        state.enter_help_mode(state.mode.clone());
+        state.enter_help_mode(state.mode().clone());
     }
 }
 
@@ -170,7 +170,7 @@ pub(super) fn handle_confirm_delete<T: TmuxProvider + ?Sized>(
     if let Mode::ConfirmWorktreeDelete {
         branch_name,
         has_session,
-    } = &state.mode
+    } = state.mode()
     {
         let branch_name = branch_name.clone();
         let has_session = *has_session;
@@ -208,7 +208,7 @@ pub(super) fn handle_open_branch(
     git: &Arc<dyn GitProvider>,
     sender: &EventSender,
 ) -> Option<OpenAction> {
-    match state.mode {
+    match state.mode() {
         Mode::BranchSelect => {
             if let Some(sel) = state.branch_list.selected
                 && let Some(&(idx, _)) = state.branch_list.filtered.get(sel)
@@ -389,7 +389,7 @@ pub(super) fn handle_search_delete_to_end(state: &mut AppState, matcher: &SkimMa
 
 /// Dispatch post-edit updates: setup completions or fuzzy filter.
 fn post_text_edit(state: &mut AppState, matcher: &SkimMatcherV2) {
-    if matches!(state.mode, Mode::Setup(SetupStep::SearchDirs)) {
+    if matches!(state.mode(), Mode::Setup(SetupStep::SearchDirs)) {
         update_setup_completions(state);
     } else {
         update_active_filter(state, matcher);
@@ -537,7 +537,7 @@ fn update_setup_completions(state: &mut AppState) {
 }
 
 fn update_active_filter(state: &mut AppState, matcher: &SkimMatcherV2) {
-    match state.mode {
+    match state.mode() {
         Mode::RepoSelect => {
             let names: Vec<String> = state.repos.iter().map(|r| r.name.clone()).collect();
             apply_fuzzy_filter(&mut state.repo_list, &names, matcher);
@@ -725,7 +725,7 @@ mod tests {
     #[test]
     fn sessions_mode_search_filters_session_list() {
         let mut state = AppState::new(Vec::new(), None);
-        state.mode = Mode::Sessions;
+        state.enter_sessions_mode();
         state.sessions_view.sessions = vec![
             SessionEntry {
                 session_name: "scooter--add-scoop-to-readme".to_string(),
@@ -770,7 +770,7 @@ mod tests {
     #[test]
     fn sessions_mode_search_preserves_canonical_session_order() {
         let mut state = AppState::new(Vec::new(), None);
-        state.mode = Mode::Sessions;
+        state.enter_sessions_mode();
         state.sessions_view.sessions = vec![
             SessionEntry {
                 session_name: "kiosk--feat-agent-session-switcher".to_string(),

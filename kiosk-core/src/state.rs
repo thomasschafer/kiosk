@@ -1085,7 +1085,7 @@ pub struct AppState {
     pub setup: Option<SetupState>,
 
     pub split_command: Option<String>,
-    pub mode: Mode,
+    mode: Mode,
     pub loading_branches: bool,
     pub fetching_remotes: bool,
     pub error: Option<String>,
@@ -1229,6 +1229,16 @@ impl AppState {
 
     pub fn transition(&mut self, transition: &ModeTransition) -> Result<(), TransitionError> {
         self.transition_to(transition.target_mode())
+    }
+
+    #[must_use]
+    pub fn mode(&self) -> &Mode {
+        &self.mode
+    }
+
+    #[must_use]
+    pub fn effective_mode(&self) -> &Mode {
+        self.mode.effective()
     }
 
     pub fn reconcile_agent_poller_mode_invariant(&mut self) {

@@ -922,11 +922,11 @@ mod tests {
     fn sessions_startup_enters_sessions_mode_without_loading_screen() {
         let mut state = AppState::new(vec![], None);
         state.sessions_initial = true;
-        assert_eq!(state.mode, Mode::RepoSelect);
+        assert_eq!(state.mode(), &Mode::RepoSelect);
 
         apply_sessions_startup_mode(&mut state);
 
-        assert_eq!(state.mode, Mode::Sessions);
+        assert_eq!(state.mode(), &Mode::Sessions);
         assert!(state.sessions_view.is_loading());
     }
 
@@ -934,10 +934,10 @@ mod tests {
     fn non_sessions_startup_keeps_existing_mode() {
         let mut state = AppState::new(vec![], None);
         state.sessions_initial = false;
-        assert_eq!(state.mode, Mode::RepoSelect);
+        assert_eq!(state.mode(), &Mode::RepoSelect);
 
         apply_sessions_startup_mode(&mut state);
 
-        assert_eq!(state.mode, Mode::RepoSelect);
+        assert_eq!(state.mode(), &Mode::RepoSelect);
     }
 }

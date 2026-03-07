@@ -1075,6 +1075,17 @@ pub struct HelpOverlayState {
     pub rows: Vec<FlattenedKeybindingRow>,
 }
 
+#[derive(Debug, Clone)]
+enum ModeContextState {
+    None,
+    BaseBranchSelection(BaseBranchSelection),
+    HelpOverlay {
+        overlay: HelpOverlayState,
+        previous: Box<ModeContextState>,
+    },
+    Setup(SetupState),
+}
+
 /// Central application state. Components read from this, actions modify it.
 #[derive(Debug, Clone)]
 #[allow(clippy::struct_excessive_bools)]
@@ -1086,10 +1097,7 @@ pub struct AppState {
     pub selected_repo_idx: Option<usize>,
     pub branches: Vec<BranchEntry>,
     pub branch_list: SearchableList,
-
-    pub base_branch_selection: Option<BaseBranchSelection>,
-    pub help_overlay: Option<HelpOverlayState>,
-    pub setup: Option<SetupState>,
+    mode_context: ModeContextState,
 
     pub split_command: Option<String>,
     mode: Mode,
@@ -1143,9 +1151,7 @@ impl AppState {
             selected_repo_idx: None,
             branches: Vec::new(),
             branch_list: SearchableList::new(0),
-            base_branch_selection: None,
-            help_overlay: None,
-            setup: None,
+            mode_context: ModeContextState::None,
             split_command: None,
             mode,
             loading_branches: false,
@@ -1202,7 +1208,7 @@ impl AppState {
 
     pub fn new_setup() -> Self {
         Self {
-            setup: Some(SetupState::new()),
+            mode_context: ModeContextState::Setup(SetupState::new()),
             ..Self::base(Mode::Setup(SetupStep::Welcome))
         }
     }
@@ -1326,7 +1332,7 @@ impl AppState {
     /// Works for both `SearchableList` modes and Setup mode.
     pub fn active_text_input(&mut self) -> Option<&mut TextInput> {
         match self.mode {
-            Mode::Setup(SetupStep::SearchDirs) => self.setup.as_mut().map(|s| &mut s.input),
+            Mode::Setup(SetupStep::SearchDirs) => self.setup_mut().map(|s| &mut s.input),
             _ => self.active_list_mut().map(|list| &mut list.input),
         }
     }
@@ -1337,7 +1343,7 @@ impl AppState {
             Mode::RepoSelect => Some(&mut self.repo_list),
             Mode::Sessions => Some(&mut self.sessions_view.list),
             Mode::BranchSelect => Some(&mut self.branch_list),
-            Mode::SelectBaseBranch => self.base_branch_selection.as_mut().map(|f| &mut f.list),
+            Mode::SelectBaseBranch => self.base_branch_selection_mut().map(|f| &mut f.list),
             Mode::Help { .. } => self.active_help_list_mut(),
             _ => None,
         }
@@ -1349,18 +1355,144 @@ impl AppState {
             Mode::RepoSelect => Some(&self.repo_list),
             Mode::Sessions => Some(&self.sessions_view.list),
             Mode::BranchSelect => Some(&self.branch_list),
-            Mode::SelectBaseBranch => self.base_branch_selection.as_ref().map(|f| &f.list),
+            Mode::SelectBaseBranch => self.base_branch_selection().map(|f| &f.list),
             Mode::Help { .. } => self.active_help_list(),
             _ => None,
         }
     }
 
     pub fn active_help_list_mut(&mut self) -> Option<&mut SearchableList> {
-        self.help_overlay.as_mut().map(|overlay| &mut overlay.list)
+        self.help_overlay_mut().map(|overlay| &mut overlay.list)
     }
 
     pub fn active_help_list(&self) -> Option<&SearchableList> {
-        self.help_overlay.as_ref().map(|overlay| &overlay.list)
+        self.help_overlay().map(|overlay| &overlay.list)
+    }
+
+    #[must_use]
+    pub fn base_branch_selection(&self) -> Option<&BaseBranchSelection> {
+        match &self.mode_context {
+            ModeContextState::BaseBranchSelection(flow) => Some(flow),
+            ModeContextState::HelpOverlay { previous, .. } => match previous.as_ref() {
+                ModeContextState::BaseBranchSelection(flow) => Some(flow),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    pub fn base_branch_selection_mut(&mut self) -> Option<&mut BaseBranchSelection> {
+        match &mut self.mode_context {
+            ModeContextState::BaseBranchSelection(flow) => Some(flow),
+            ModeContextState::HelpOverlay { previous, .. } => match previous.as_mut() {
+                ModeContextState::BaseBranchSelection(flow) => Some(flow),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    pub fn set_base_branch_selection(&mut self, flow: BaseBranchSelection) {
+        match &mut self.mode_context {
+            ModeContextState::HelpOverlay { previous, .. } => {
+                **previous = ModeContextState::BaseBranchSelection(flow);
+            }
+            _ => {
+                self.mode_context = ModeContextState::BaseBranchSelection(flow);
+            }
+        }
+    }
+
+    pub fn clear_base_branch_selection(&mut self) {
+        match &mut self.mode_context {
+            ModeContextState::BaseBranchSelection(_) => {
+                self.mode_context = ModeContextState::None;
+            }
+            ModeContextState::HelpOverlay { previous, .. } => {
+                if matches!(previous.as_ref(), ModeContextState::BaseBranchSelection(_)) {
+                    **previous = ModeContextState::None;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[must_use]
+    pub fn help_overlay(&self) -> Option<&HelpOverlayState> {
+        if let ModeContextState::HelpOverlay { overlay, .. } = &self.mode_context {
+            Some(overlay)
+        } else {
+            None
+        }
+    }
+
+    pub fn help_overlay_mut(&mut self) -> Option<&mut HelpOverlayState> {
+        if let ModeContextState::HelpOverlay { overlay, .. } = &mut self.mode_context {
+            Some(overlay)
+        } else {
+            None
+        }
+    }
+
+    pub fn set_help_overlay(&mut self, overlay: HelpOverlayState) {
+        let previous = std::mem::replace(&mut self.mode_context, ModeContextState::None);
+        self.mode_context = ModeContextState::HelpOverlay {
+            overlay,
+            previous: Box::new(previous),
+        };
+    }
+
+    pub fn clear_help_overlay(&mut self) {
+        if let ModeContextState::HelpOverlay { previous, .. } = &mut self.mode_context {
+            self.mode_context = std::mem::replace(previous.as_mut(), ModeContextState::None);
+        }
+    }
+
+    #[must_use]
+    pub fn setup(&self) -> Option<&SetupState> {
+        match &self.mode_context {
+            ModeContextState::Setup(setup) => Some(setup),
+            ModeContextState::HelpOverlay { previous, .. } => match previous.as_ref() {
+                ModeContextState::Setup(setup) => Some(setup),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    pub fn setup_mut(&mut self) -> Option<&mut SetupState> {
+        match &mut self.mode_context {
+            ModeContextState::Setup(setup) => Some(setup),
+            ModeContextState::HelpOverlay { previous, .. } => match previous.as_mut() {
+                ModeContextState::Setup(setup) => Some(setup),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    pub fn ensure_setup(&mut self) -> &mut SetupState {
+        let needs_setup = match &self.mode_context {
+            ModeContextState::Setup(_) => false,
+            ModeContextState::HelpOverlay { previous, .. } => {
+                !matches!(previous.as_ref(), ModeContextState::Setup(_))
+            }
+            _ => true,
+        };
+
+        if needs_setup {
+            match &mut self.mode_context {
+                ModeContextState::HelpOverlay { previous, .. } => {
+                    **previous = ModeContextState::Setup(SetupState::new());
+                }
+                _ => {
+                    self.mode_context = ModeContextState::Setup(SetupState::new());
+                }
+            }
+        }
+
+        self.setup_mut()
+            .expect("setup context should exist after ensure_setup")
     }
 
     pub fn is_branch_pending_delete(&self, repo_path: &Path, branch_name: &str) -> bool {
@@ -2660,7 +2792,7 @@ mod tests {
     #[test]
     fn test_active_list_points_to_help_overlay_in_help_mode() {
         let mut state = AppState::new(vec![make_repo(std::path::Path::new("/tmp"), "repo")], None);
-        state.help_overlay = Some(HelpOverlayState {
+        state.set_help_overlay(HelpOverlayState {
             list: SearchableList::new(3),
             rows: Vec::new(),
         });
@@ -2676,8 +2808,7 @@ mod tests {
         }
         assert_eq!(
             state
-                .help_overlay
-                .as_ref()
+                .help_overlay()
                 .and_then(|overlay| overlay.list.selected),
             Some(1)
         );
@@ -2714,9 +2845,64 @@ mod tests {
     #[test]
     fn test_app_state_new_setup() {
         let state = AppState::new_setup();
-        assert!(state.setup.is_some());
+        assert!(state.setup().is_some());
         assert_eq!(state.mode, Mode::Setup(SetupStep::Welcome));
         assert!(state.repos.is_empty());
+    }
+
+    #[test]
+    fn test_mode_context_help_overlay_preserves_previous_variant() {
+        let mut state = AppState::new(vec![], None);
+        let _ = state.ensure_setup();
+        assert!(state.setup().is_some());
+        assert!(state.help_overlay().is_none());
+        assert!(state.base_branch_selection().is_none());
+
+        state.set_help_overlay(HelpOverlayState {
+            list: SearchableList::new(1),
+            rows: Vec::new(),
+        });
+        assert!(state.setup().is_some());
+        assert!(state.help_overlay().is_some());
+        assert!(state.base_branch_selection().is_none());
+        state.clear_help_overlay();
+        assert!(state.setup().is_some());
+        assert!(state.help_overlay().is_none());
+
+        state.set_base_branch_selection(BaseBranchSelection {
+            new_name: "feat/new".to_string(),
+            bases: vec!["main".to_string()],
+            list: SearchableList::new(1),
+        });
+        assert!(state.setup().is_none());
+        assert!(state.help_overlay().is_none());
+        assert!(state.base_branch_selection().is_some());
+
+        state.set_help_overlay(HelpOverlayState {
+            list: SearchableList::new(1),
+            rows: Vec::new(),
+        });
+        assert!(state.help_overlay().is_some());
+        assert!(state.base_branch_selection().is_some());
+        state.clear_help_overlay();
+        assert!(state.help_overlay().is_none());
+        assert!(state.base_branch_selection().is_some());
+    }
+
+    #[test]
+    fn test_mode_context_clear_is_scoped_to_active_variant() {
+        let mut state = AppState::new(vec![], None);
+        state.set_base_branch_selection(BaseBranchSelection {
+            new_name: "feat/new".to_string(),
+            bases: vec!["main".to_string()],
+            list: SearchableList::new(1),
+        });
+
+        state.clear_help_overlay();
+        assert!(state.base_branch_selection().is_some());
+
+        state.clear_base_branch_selection();
+        assert!(state.base_branch_selection().is_none());
     }
 
     #[test]

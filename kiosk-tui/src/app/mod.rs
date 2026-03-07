@@ -54,7 +54,7 @@ pub enum OpenAction {
         session_name: String,
         split_command: Option<String>,
     },
-    /// Setup wizard completed — dirs are stored in `AppState.setup`
+    /// Setup wizard completed — dirs are stored in `AppState` setup state
     SetupComplete,
     Quit,
 }
@@ -917,8 +917,8 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
 
         AppEvent::GitError(msg) => {
             // Return to the appropriate mode
-            if state.base_branch_selection.is_some() {
-                state.base_branch_selection = None;
+            if state.base_branch_selection().is_some() {
+                state.clear_base_branch_selection();
                 state.apply_transition(&ModeTransition::BranchSelect);
             } else {
                 state.apply_transition(&ModeTransition::BranchSelect);
@@ -966,7 +966,7 @@ fn handle_movement_actions(action: &Action, state: &mut AppState) -> bool {
 
 fn update_active_list_scroll_offset(state: &mut AppState, viewport_rows: usize) {
     if let Mode::Help { .. } = state.mode() {
-        if let Some(overlay) = &mut state.help_overlay {
+        if let Some(overlay) = state.help_overlay_mut() {
             update_help_scroll_offset(overlay, viewport_rows);
         }
     } else if let Some(list) = state.active_list_mut() {
@@ -1719,7 +1719,7 @@ mod tests {
         let mut state = AppState::new(repos, None);
         state.apply_transition(&ModeTransition::BranchSelect);
         state.apply_transition(&ModeTransition::SelectBaseBranch);
-        state.base_branch_selection = Some(kiosk_core::state::BaseBranchSelection {
+        state.set_base_branch_selection(kiosk_core::state::BaseBranchSelection {
             new_name: "feat".into(),
             bases: vec!["main".into()],
             list: SearchableList::new(1),
@@ -1734,7 +1734,7 @@ mod tests {
 
         process_action(Action::GoBack, &mut state, &ctx);
         assert_eq!(state.mode(), &Mode::BranchSelect);
-        assert!(state.base_branch_selection.is_none());
+        assert!(state.base_branch_selection().is_none());
     }
 
     #[test]
@@ -1752,14 +1752,14 @@ mod tests {
         process_action(Action::ShowHelp, &mut state, &ctx);
 
         assert!(matches!(state.mode(), Mode::Help { .. }));
-        let overlay = state.help_overlay.as_ref().unwrap();
+        let overlay = state.help_overlay().unwrap();
         assert!(!overlay.rows.is_empty());
         assert_eq!(overlay.list.filtered.len(), overlay.rows.len());
 
         process_action(Action::ShowHelp, &mut state, &ctx);
 
         assert_eq!(state.mode(), &Mode::RepoSelect);
-        assert!(state.help_overlay.is_none());
+        assert!(state.help_overlay().is_none());
     }
 
     #[test]
@@ -1777,28 +1777,24 @@ mod tests {
         process_action(Action::ShowHelp, &mut state, &ctx);
 
         let initial_count = state
-            .help_overlay
-            .as_ref()
+            .help_overlay()
             .map_or(0, |overlay| overlay.list.filtered.len());
         process_action(Action::SearchPush('d'), &mut state, &ctx);
         process_action(Action::SearchPush('e'), &mut state, &ctx);
 
         let filtered_count = state
-            .help_overlay
-            .as_ref()
+            .help_overlay()
             .map_or(0, |overlay| overlay.list.filtered.len());
         assert!(filtered_count > 0);
         assert!(filtered_count <= initial_count);
 
         let before = state
-            .help_overlay
-            .as_ref()
+            .help_overlay()
             .and_then(|overlay| overlay.list.selected)
             .unwrap_or(0);
         process_action(Action::MoveSelection(1), &mut state, &ctx);
         let after = state
-            .help_overlay
-            .as_ref()
+            .help_overlay()
             .and_then(|overlay| overlay.list.selected)
             .unwrap_or(0);
         assert!(after >= before);
@@ -1823,14 +1819,12 @@ mod tests {
             process_action(Action::MoveSelection(1), &mut state, &ctx);
         }
         let offset_before = state
-            .help_overlay
-            .as_ref()
+            .help_overlay()
             .map_or(0, |overlay| overlay.list.scroll_offset);
 
         process_action(Action::MoveSelection(-1), &mut state, &ctx);
         let offset_after = state
-            .help_overlay
-            .as_ref()
+            .help_overlay()
             .map_or(0, |overlay| overlay.list.scroll_offset);
 
         assert_eq!(offset_before, offset_after);
@@ -1855,7 +1849,7 @@ mod tests {
             process_action(Action::MoveSelection(1), &mut state, &ctx);
         }
 
-        let overlay = state.help_overlay.as_ref().expect("help overlay");
+        let overlay = state.help_overlay().expect("help overlay");
         let (indices, _total) = components::help::help_visual_metrics(overlay);
         let selected_logical = overlay.list.selected.expect("selected logical");
         let selected_visual = indices
@@ -2184,8 +2178,8 @@ mod tests {
         process_action(Action::StartNewBranchFlow, &mut state, &ctx);
 
         assert_eq!(state.mode(), &Mode::SelectBaseBranch);
-        assert!(state.base_branch_selection.is_some());
-        assert_eq!(state.base_branch_selection.unwrap().new_name, "feat/new");
+        assert!(state.base_branch_selection().is_some());
+        assert_eq!(state.base_branch_selection().unwrap().new_name, "feat/new");
     }
 
     #[test]
@@ -2718,16 +2712,14 @@ mod tests {
         process_action(Action::ShowHelp, &mut state, &ctx);
 
         let initial_selected = state
-            .help_overlay
-            .as_ref()
+            .help_overlay()
             .and_then(|o| o.list.selected)
             .unwrap_or(0);
 
         process_action(Action::PageDown, &mut state, &ctx);
 
         let after = state
-            .help_overlay
-            .as_ref()
+            .help_overlay()
             .and_then(|o| o.list.selected)
             .unwrap_or(0);
         assert!(
@@ -2757,16 +2749,14 @@ mod tests {
             process_action(Action::MoveSelection(1), &mut state, &ctx);
         }
         let before = state
-            .help_overlay
-            .as_ref()
+            .help_overlay()
             .and_then(|o| o.list.selected)
             .unwrap_or(0);
 
         process_action(Action::PageUp, &mut state, &ctx);
 
         let after = state
-            .help_overlay
-            .as_ref()
+            .help_overlay()
             .and_then(|o| o.list.selected)
             .unwrap_or(0);
         assert!(
@@ -2793,8 +2783,7 @@ mod tests {
         process_action(Action::HalfPageDown, &mut state, &ctx);
 
         let after = state
-            .help_overlay
-            .as_ref()
+            .help_overlay()
             .and_then(|o| o.list.selected)
             .unwrap_or(0);
         assert_eq!(after, 10, "HalfPageDown should move by half the viewport");
@@ -2815,31 +2804,25 @@ mod tests {
 
         process_action(Action::ShowHelp, &mut state, &ctx);
 
-        let total = state
-            .help_overlay
-            .as_ref()
-            .map_or(0, |o| o.list.filtered.len());
+        let total = state.help_overlay().map_or(0, |o| o.list.filtered.len());
         assert!(total > 1, "Help overlay should have multiple rows");
 
         process_action(Action::MoveBottom, &mut state, &ctx);
         let after_bottom = state
-            .help_overlay
-            .as_ref()
+            .help_overlay()
             .and_then(|o| o.list.selected)
             .unwrap_or(0);
         assert_eq!(after_bottom, total - 1, "MoveBottom should go to last item");
 
         process_action(Action::MoveTop, &mut state, &ctx);
         let after_top = state
-            .help_overlay
-            .as_ref()
+            .help_overlay()
             .and_then(|o| o.list.selected)
             .unwrap_or(usize::MAX);
         assert_eq!(after_top, 0, "MoveTop should go to first item");
         assert_eq!(
             state
-                .help_overlay
-                .as_ref()
+                .help_overlay()
                 .map_or(usize::MAX, |o| o.list.scroll_offset),
             0,
             "MoveTop should reset scroll offset to 0"
@@ -2863,12 +2846,12 @@ mod tests {
 
         process_action(Action::ShowHelp, &mut state, &ctx);
         assert!(matches!(state.mode(), Mode::Help { .. }));
-        assert!(state.help_overlay.is_some());
+        assert!(state.help_overlay().is_some());
 
         process_action(Action::ShowHelp, &mut state, &ctx);
         assert_eq!(state.mode(), &Mode::BranchSelect);
         assert!(
-            state.help_overlay.is_none(),
+            state.help_overlay().is_none(),
             "Toggle off should clear help_overlay"
         );
     }
@@ -2879,7 +2862,7 @@ mod tests {
         let mut state = AppState::new(repos, None);
         state.apply_transition(&ModeTransition::BranchSelect);
         state.apply_transition(&ModeTransition::SelectBaseBranch);
-        state.base_branch_selection = Some(kiosk_core::state::BaseBranchSelection {
+        state.set_base_branch_selection(kiosk_core::state::BaseBranchSelection {
             new_name: "feat".into(),
             bases: vec!["main".into()],
             list: SearchableList::new(1),
@@ -2897,9 +2880,9 @@ mod tests {
 
         process_action(Action::ShowHelp, &mut state, &ctx);
         assert_eq!(state.mode(), &Mode::SelectBaseBranch);
-        assert!(state.help_overlay.is_none());
+        assert!(state.help_overlay().is_none());
         assert!(
-            state.base_branch_selection.is_some(),
+            state.base_branch_selection().is_some(),
             "Base branch selection should survive help round-trip"
         );
     }
@@ -2932,7 +2915,7 @@ mod tests {
                 has_session: true,
             }
         );
-        assert!(state.help_overlay.is_none());
+        assert!(state.help_overlay().is_none());
     }
 
     // ── Help search filtering tests ──
@@ -2956,7 +2939,7 @@ mod tests {
             process_action(Action::SearchPush(c), &mut state, &ctx);
         }
 
-        let overlay = state.help_overlay.as_ref().expect("overlay");
+        let overlay = state.help_overlay().expect("overlay");
         assert!(
             overlay.list.filtered.is_empty(),
             "Nonsense search should yield zero results"
@@ -2986,15 +2969,12 @@ mod tests {
         for _ in 0..30 {
             process_action(Action::MoveSelection(1), &mut state, &ctx);
         }
-        let offset_before_search = state
-            .help_overlay
-            .as_ref()
-            .map_or(0, |o| o.list.scroll_offset);
+        let offset_before_search = state.help_overlay().map_or(0, |o| o.list.scroll_offset);
         assert!(offset_before_search > 0, "Should have scrolled down");
 
         // Type a search query — scroll_offset and selection should reset
         process_action(Action::SearchPush('q'), &mut state, &ctx);
-        let overlay = state.help_overlay.as_ref().expect("overlay");
+        let overlay = state.help_overlay().expect("overlay");
         assert_eq!(
             overlay.list.scroll_offset, 0,
             "Search should reset scroll offset"
@@ -3007,13 +2987,13 @@ mod tests {
 
         // Clear search — should restore full list with offset reset
         process_action(Action::SearchPop, &mut state, &ctx);
-        let overlay = state.help_overlay.as_ref().expect("overlay");
+        let overlay = state.help_overlay().expect("overlay");
         assert_eq!(
             overlay.list.scroll_offset, 0,
             "Clearing search should keep offset at 0"
         );
         assert_eq!(overlay.list.selected, Some(0));
-        let initial_count = state.help_overlay.as_ref().map_or(0, |o| o.rows.len());
+        let initial_count = state.help_overlay().map_or(0, |o| o.rows.len());
         assert_eq!(
             overlay.list.filtered.len(),
             initial_count,
@@ -3042,7 +3022,7 @@ mod tests {
             process_action(Action::SearchPush(c), &mut state, &ctx);
         }
 
-        let help_cursor = |s: &AppState| s.help_overlay.as_ref().map_or(0, |o| o.list.input.cursor);
+        let help_cursor = |s: &AppState| s.help_overlay().map_or(0, |o| o.list.input.cursor);
         assert_eq!(help_cursor(&state), 11); // at end
 
         // Cursor left
@@ -3094,33 +3074,27 @@ mod tests {
             process_action(Action::SearchPush(c), &mut state, &ctx);
         }
 
-        let overlay = state.help_overlay.as_ref().expect("overlay");
+        let overlay = state.help_overlay().expect("overlay");
         assert_eq!(overlay.list.input.text, "café");
         assert_eq!(overlay.list.input.cursor, "café".len()); // 5 bytes
 
         // Backspace should remove 'é' (2 bytes)
         process_action(Action::SearchPop, &mut state, &ctx);
-        let overlay = state.help_overlay.as_ref().expect("overlay");
+        let overlay = state.help_overlay().expect("overlay");
         assert_eq!(overlay.list.input.text, "caf");
         assert_eq!(overlay.list.input.cursor, 3);
 
         // Cursor left and right should handle multibyte correctly
         process_action(Action::SearchPush('ñ'), &mut state, &ctx);
-        let overlay = state.help_overlay.as_ref().expect("overlay");
+        let overlay = state.help_overlay().expect("overlay");
         assert_eq!(overlay.list.input.text, "cafñ");
 
         process_action(Action::CursorLeft, &mut state, &ctx);
-        let cursor = state
-            .help_overlay
-            .as_ref()
-            .map_or(0, |o| o.list.input.cursor);
+        let cursor = state.help_overlay().map_or(0, |o| o.list.input.cursor);
         assert_eq!(cursor, 3, "Cursor should be before 'ñ'");
 
         process_action(Action::CursorRight, &mut state, &ctx);
-        let cursor = state
-            .help_overlay
-            .as_ref()
-            .map_or(0, |o| o.list.input.cursor);
+        let cursor = state.help_overlay().map_or(0, |o| o.list.input.cursor);
         assert_eq!(cursor, "cafñ".len(), "Cursor should be after 'ñ'");
     }
 
@@ -3665,13 +3639,13 @@ mod tests {
         let (_tmp, base) = setup_temp_dirs(&["alpha", "beta"]);
 
         let mut state = make_setup_state();
-        let setup = state.setup.as_mut().unwrap();
+        let setup = state.setup_mut().unwrap();
         setup.input.text = base;
         setup.input.cursor = setup.input.text.len();
 
         handle_setup_tab_complete(&mut state);
 
-        let setup = state.setup.as_ref().unwrap();
+        let setup = state.setup().unwrap();
         assert_eq!(setup.completions.len(), 2);
         assert_eq!(setup.selected_completion, None);
     }
@@ -3681,18 +3655,18 @@ mod tests {
         let (_tmp, base) = setup_temp_dirs(&["only_dir"]);
 
         let mut state = make_setup_state();
-        let setup = state.setup.as_mut().unwrap();
+        let setup = state.setup_mut().unwrap();
         setup.input.text = format!("{base}on");
         setup.input.cursor = setup.input.text.len();
 
         // First Tab generates completions
         handle_setup_tab_complete(&mut state);
-        assert_eq!(state.setup.as_ref().unwrap().completions.len(), 1);
+        assert_eq!(state.setup().unwrap().completions.len(), 1);
 
         // Second Tab fills in the single completion
         handle_setup_tab_complete(&mut state);
 
-        let setup = state.setup.as_ref().unwrap();
+        let setup = state.setup().unwrap();
         assert_eq!(setup.input.text, format!("{base}only_dir/"));
     }
 
@@ -3701,18 +3675,18 @@ mod tests {
         let (_tmp, base) = setup_temp_dirs(&["Desktop", "Development"]);
 
         let mut state = make_setup_state();
-        let setup = state.setup.as_mut().unwrap();
+        let setup = state.setup_mut().unwrap();
         setup.input.text = format!("{base}D");
         setup.input.cursor = setup.input.text.len();
 
         // First Tab generates completions
         handle_setup_tab_complete(&mut state);
-        assert_eq!(state.setup.as_ref().unwrap().completions.len(), 2);
+        assert_eq!(state.setup().unwrap().completions.len(), 2);
 
         // Second Tab fills to common prefix
         handle_setup_tab_complete(&mut state);
 
-        let setup = state.setup.as_ref().unwrap();
+        let setup = state.setup().unwrap();
         assert_eq!(setup.input.text, format!("{base}De"));
         assert_eq!(setup.completions.len(), 2);
         assert_eq!(setup.selected_completion, None);
@@ -3723,7 +3697,7 @@ mod tests {
         let (_tmp, base) = setup_temp_dirs(&["Desktop", "Development"]);
 
         let mut state = make_setup_state();
-        let setup = state.setup.as_mut().unwrap();
+        let setup = state.setup_mut().unwrap();
         setup.input.text = format!("{base}De");
         setup.input.cursor = setup.input.text.len();
         setup.completions = vec![format!("{base}Desktop"), format!("{base}Development")];
@@ -3731,7 +3705,7 @@ mod tests {
 
         handle_setup_tab_complete(&mut state);
 
-        let setup = state.setup.as_ref().unwrap();
+        let setup = state.setup().unwrap();
         assert_eq!(setup.input.text, format!("{base}Development/"));
     }
 
@@ -3740,7 +3714,7 @@ mod tests {
         let (_tmp, base) = setup_temp_dirs(&["Desktop", "Development"]);
 
         let mut state = make_setup_state();
-        let setup = state.setup.as_mut().unwrap();
+        let setup = state.setup_mut().unwrap();
         setup.input.text = format!("{base}De");
         setup.input.cursor = setup.input.text.len();
         setup.completions = vec![format!("{base}Desktop"), format!("{base}Development")];
@@ -3748,7 +3722,7 @@ mod tests {
 
         handle_setup_tab_complete(&mut state);
 
-        let setup = state.setup.as_ref().unwrap();
+        let setup = state.setup().unwrap();
         assert_eq!(setup.input.text, format!("{base}Desktop/"));
     }
 
@@ -3757,67 +3731,67 @@ mod tests {
     #[test]
     fn setup_move_down_from_none_selects_first() {
         let mut state = make_setup_state();
-        let setup = state.setup.as_mut().unwrap();
+        let setup = state.setup_mut().unwrap();
         setup.completions = vec!["a".into(), "b".into()];
         setup.selected_completion = None;
 
         handle_setup_move_selection(&mut state, 1);
-        assert_eq!(state.setup.as_ref().unwrap().selected_completion, Some(0));
+        assert_eq!(state.setup().unwrap().selected_completion, Some(0));
     }
 
     #[test]
     fn setup_move_up_from_none_selects_last() {
         let mut state = make_setup_state();
-        let setup = state.setup.as_mut().unwrap();
+        let setup = state.setup_mut().unwrap();
         setup.completions = vec!["a".into(), "b".into(), "c".into()];
         setup.selected_completion = None;
 
         handle_setup_move_selection(&mut state, -1);
-        assert_eq!(state.setup.as_ref().unwrap().selected_completion, Some(2));
+        assert_eq!(state.setup().unwrap().selected_completion, Some(2));
     }
 
     #[test]
     fn setup_move_down_increments_selection() {
         let mut state = make_setup_state();
-        let setup = state.setup.as_mut().unwrap();
+        let setup = state.setup_mut().unwrap();
         setup.completions = vec!["a".into(), "b".into(), "c".into()];
         setup.selected_completion = Some(0);
 
         handle_setup_move_selection(&mut state, 1);
-        assert_eq!(state.setup.as_ref().unwrap().selected_completion, Some(1));
+        assert_eq!(state.setup().unwrap().selected_completion, Some(1));
     }
 
     #[test]
     fn setup_move_down_past_last_deselects() {
         let mut state = make_setup_state();
-        let setup = state.setup.as_mut().unwrap();
+        let setup = state.setup_mut().unwrap();
         setup.completions = vec!["a".into(), "b".into()];
         setup.selected_completion = Some(1);
 
         handle_setup_move_selection(&mut state, 1);
-        assert_eq!(state.setup.as_ref().unwrap().selected_completion, None);
+        assert_eq!(state.setup().unwrap().selected_completion, None);
     }
 
     #[test]
     fn setup_move_up_from_first_deselects() {
         let mut state = make_setup_state();
-        let setup = state.setup.as_mut().unwrap();
+        let setup = state.setup_mut().unwrap();
         setup.completions = vec!["a".into(), "b".into()];
         setup.selected_completion = Some(0);
 
         handle_setup_move_selection(&mut state, -1);
-        assert_eq!(state.setup.as_ref().unwrap().selected_completion, None);
+        assert_eq!(state.setup().unwrap().selected_completion, None);
     }
 
     #[test]
     fn setup_move_on_empty_completions_is_noop() {
         let mut state = make_setup_state();
-        let setup = state.setup.as_mut().unwrap();
+        let setup = state.setup_mut().unwrap();
         setup.completions = Vec::new();
         setup.selected_completion = None;
 
         handle_setup_move_selection(&mut state, 1);
-        assert_eq!(state.setup.as_ref().unwrap().selected_completion, None);
+        assert_eq!(state.setup().unwrap().selected_completion, None);
     }
 
     // ── Enter / add directory ──
@@ -3825,7 +3799,7 @@ mod tests {
     #[test]
     fn setup_enter_no_selection_adds_typed_text() {
         let mut state = make_setup_state();
-        let setup = state.setup.as_mut().unwrap();
+        let setup = state.setup_mut().unwrap();
         setup.input.text = "~/my-projects".into();
         setup.input.cursor = setup.input.text.len();
         setup.completions = vec!["~/my-projects-extra".into()];
@@ -3834,7 +3808,7 @@ mod tests {
         let result = handle_setup_add_dir(&mut state);
         assert!(result.is_none());
 
-        let setup = state.setup.as_ref().unwrap();
+        let setup = state.setup().unwrap();
         assert!(setup.dirs.contains(&"~/my-projects".to_string()));
         assert!(setup.input.text.is_empty());
     }
@@ -3844,7 +3818,7 @@ mod tests {
         let (_tmp, base) = setup_temp_dirs(&["Desktop", "Development"]);
 
         let mut state = make_setup_state();
-        let setup = state.setup.as_mut().unwrap();
+        let setup = state.setup_mut().unwrap();
         setup.input.text = format!("{base}De");
         setup.input.cursor = setup.input.text.len();
         setup.completions = vec![format!("{base}Desktop"), format!("{base}Development")];
@@ -3853,7 +3827,7 @@ mod tests {
         let result = handle_setup_add_dir(&mut state);
         assert!(result.is_none());
 
-        let setup = state.setup.as_ref().unwrap();
+        let setup = state.setup().unwrap();
         assert_eq!(setup.input.text, format!("{base}Development/"));
         assert!(setup.dirs.is_empty());
     }
@@ -3861,7 +3835,7 @@ mod tests {
     #[test]
     fn setup_enter_empty_with_dirs_completes_setup() {
         let mut state = make_setup_state();
-        let setup = state.setup.as_mut().unwrap();
+        let setup = state.setup_mut().unwrap();
         setup.input.text = String::new();
         setup.dirs = vec!["~/Projects".into()];
 
@@ -3872,7 +3846,7 @@ mod tests {
     #[test]
     fn setup_enter_empty_without_dirs_shows_error() {
         let mut state = make_setup_state();
-        let setup = state.setup.as_mut().unwrap();
+        let setup = state.setup_mut().unwrap();
         setup.input.text = String::new();
         setup.dirs = Vec::new();
 
@@ -3885,14 +3859,14 @@ mod tests {
     #[test]
     fn setup_enter_does_not_add_duplicate_dirs() {
         let mut state = make_setup_state();
-        let setup = state.setup.as_mut().unwrap();
+        let setup = state.setup_mut().unwrap();
         setup.dirs = vec!["~/Projects".into()];
         setup.input.text = "~/Projects".into();
         setup.input.cursor = setup.input.text.len();
 
         handle_setup_add_dir(&mut state);
 
-        let setup = state.setup.as_ref().unwrap();
+        let setup = state.setup().unwrap();
         assert_eq!(setup.dirs.len(), 1);
     }
 
@@ -3903,7 +3877,7 @@ mod tests {
         let (_tmp, base) = setup_temp_dirs(&["Desktop"]);
 
         let mut state = make_setup_state();
-        let setup = state.setup.as_mut().unwrap();
+        let setup = state.setup_mut().unwrap();
         setup.input.text = format!("{base}D");
         setup.input.cursor = setup.input.text.len();
         setup.completions = vec![format!("{base}Desktop")];
@@ -3912,7 +3886,7 @@ mod tests {
         let matcher = SkimMatcherV2::default();
         handle_search_push(&mut state, &matcher, 'e');
 
-        let setup = state.setup.as_ref().unwrap();
+        let setup = state.setup().unwrap();
         assert_eq!(setup.selected_completion, None);
         assert!(setup.input.text.ends_with("De"));
     }
@@ -3922,14 +3896,14 @@ mod tests {
         let (_tmp, base) = setup_temp_dirs(&["Desktop", "Development", "Documents"]);
 
         let mut state = make_setup_state();
-        let setup = state.setup.as_mut().unwrap();
+        let setup = state.setup_mut().unwrap();
         setup.input.text = format!("{base}D");
         setup.input.cursor = setup.input.text.len();
 
         let matcher = SkimMatcherV2::default();
         handle_search_push(&mut state, &matcher, 'e');
 
-        let setup = state.setup.as_ref().unwrap();
+        let setup = state.setup().unwrap();
         assert_eq!(setup.completions.len(), 2);
         let names: Vec<&str> = setup
             .completions
@@ -3945,14 +3919,14 @@ mod tests {
         let (_tmp, base) = setup_temp_dirs(&["Desktop", "Development", "Documents"]);
 
         let mut state = make_setup_state();
-        let setup = state.setup.as_mut().unwrap();
+        let setup = state.setup_mut().unwrap();
         setup.input.text = format!("{base}De");
         setup.input.cursor = setup.input.text.len();
 
         let matcher = SkimMatcherV2::default();
         handle_search_pop(&mut state, &matcher);
 
-        let setup = state.setup.as_ref().unwrap();
+        let setup = state.setup().unwrap();
         assert_eq!(setup.completions.len(), 3);
         assert_eq!(setup.selected_completion, None);
     }
@@ -3972,13 +3946,13 @@ mod tests {
             state.mode(),
             &Mode::Setup(kiosk_core::state::SetupStep::SearchDirs)
         );
-        assert!(state.setup.is_some());
+        assert!(state.setup().is_some());
     }
 
     #[test]
     fn setup_continue_preserves_existing_state() {
         let mut state = make_setup_state();
-        let setup = state.setup.as_mut().unwrap();
+        let setup = state.setup_mut().unwrap();
         setup.dirs.push("~/existing".to_string());
 
         handle_setup_continue(&mut state);
@@ -3986,7 +3960,7 @@ mod tests {
             state.mode(),
             &Mode::Setup(kiosk_core::state::SetupStep::SearchDirs)
         );
-        assert_eq!(state.setup.as_ref().unwrap().dirs.len(), 1);
+        assert_eq!(state.setup().unwrap().dirs.len(), 1);
     }
 
     // ── Full flow integration ──
@@ -4003,26 +3977,26 @@ mod tests {
             handle_search_push(&mut state, &matcher, c);
         }
 
-        let setup = state.setup.as_ref().unwrap();
+        let setup = state.setup().unwrap();
         assert_eq!(setup.completions.len(), 2);
         assert_eq!(setup.selected_completion, None);
 
         // Navigate down to highlight first completion
         handle_setup_move_selection(&mut state, 1);
-        assert_eq!(state.setup.as_ref().unwrap().selected_completion, Some(0));
+        assert_eq!(state.setup().unwrap().selected_completion, Some(0));
 
         // Navigate down again to highlight second completion (Development)
         handle_setup_move_selection(&mut state, 1);
-        assert_eq!(state.setup.as_ref().unwrap().selected_completion, Some(1));
+        assert_eq!(state.setup().unwrap().selected_completion, Some(1));
 
         // Press Enter to navigate into Development/
         handle_setup_add_dir(&mut state);
-        let setup = state.setup.as_ref().unwrap();
+        let setup = state.setup().unwrap();
         assert!(setup.input.text.ends_with("Development/"));
         assert!(setup.dirs.is_empty());
 
         // Clear input and type the path directly, then add it
-        let setup = state.setup.as_mut().unwrap();
+        let setup = state.setup_mut().unwrap();
         setup.input.clear();
         setup.completions.clear();
         setup.selected_completion = None;
@@ -4030,7 +4004,7 @@ mod tests {
         setup.input.cursor = setup.input.text.len();
 
         handle_setup_add_dir(&mut state);
-        let setup = state.setup.as_ref().unwrap();
+        let setup = state.setup().unwrap();
         assert_eq!(setup.dirs.len(), 1);
         assert!(setup.dirs[0].ends_with("Development"));
 
@@ -4044,19 +4018,19 @@ mod tests {
     #[test]
     fn setup_cancel_deselects_when_selected() {
         let mut state = make_setup_state();
-        let setup = state.setup.as_mut().unwrap();
+        let setup = state.setup_mut().unwrap();
         setup.completions = vec!["a".into(), "b".into()];
         setup.selected_completion = Some(1);
 
         let result = handle_setup_cancel(&mut state);
         assert!(result.is_none());
-        assert_eq!(state.setup.as_ref().unwrap().selected_completion, None);
+        assert_eq!(state.setup().unwrap().selected_completion, None);
     }
 
     #[test]
     fn setup_cancel_quits_when_no_selection() {
         let mut state = make_setup_state();
-        let setup = state.setup.as_mut().unwrap();
+        let setup = state.setup_mut().unwrap();
         setup.completions = vec!["a".into(), "b".into()];
         setup.selected_completion = None;
 
@@ -4077,33 +4051,33 @@ mod tests {
     #[test]
     fn setup_move_down_up_cycle_through_and_back() {
         let mut state = make_setup_state();
-        let setup = state.setup.as_mut().unwrap();
+        let setup = state.setup_mut().unwrap();
         setup.completions = vec!["a".into(), "b".into()];
         setup.selected_completion = None;
 
         // Down from None → first
         handle_setup_move_selection(&mut state, 1);
-        assert_eq!(state.setup.as_ref().unwrap().selected_completion, Some(0));
+        assert_eq!(state.setup().unwrap().selected_completion, Some(0));
 
         // Down → second
         handle_setup_move_selection(&mut state, 1);
-        assert_eq!(state.setup.as_ref().unwrap().selected_completion, Some(1));
+        assert_eq!(state.setup().unwrap().selected_completion, Some(1));
 
         // Down past last → None (back to text)
         handle_setup_move_selection(&mut state, 1);
-        assert_eq!(state.setup.as_ref().unwrap().selected_completion, None);
+        assert_eq!(state.setup().unwrap().selected_completion, None);
 
         // Up from None → last
         handle_setup_move_selection(&mut state, -1);
-        assert_eq!(state.setup.as_ref().unwrap().selected_completion, Some(1));
+        assert_eq!(state.setup().unwrap().selected_completion, Some(1));
 
         // Up → first
         handle_setup_move_selection(&mut state, -1);
-        assert_eq!(state.setup.as_ref().unwrap().selected_completion, Some(0));
+        assert_eq!(state.setup().unwrap().selected_completion, Some(0));
 
         // Up past first → None (back to text)
         handle_setup_move_selection(&mut state, -1);
-        assert_eq!(state.setup.as_ref().unwrap().selected_completion, None);
+        assert_eq!(state.setup().unwrap().selected_completion, None);
     }
 
     #[test]

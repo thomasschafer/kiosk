@@ -78,14 +78,14 @@ pub(super) fn handle_go_back(state: &mut AppState) {
             state.branch_list.input.clear();
         }
         Mode::SelectBaseBranch => {
-            state.base_branch_selection = None;
+            state.clear_base_branch_selection();
             state.apply_transition(&ModeTransition::BranchSelect);
         }
         Mode::ConfirmWorktreeDelete { .. } => {
             state.apply_transition(&ModeTransition::BranchSelect);
         }
         Mode::Help { previous } => {
-            state.help_overlay = None;
+            state.clear_help_overlay();
             state.apply_transition(&ModeTransition::Restore { mode: *previous });
         }
         Mode::Sessions => {
@@ -97,11 +97,11 @@ pub(super) fn handle_go_back(state: &mut AppState) {
 
 pub(super) fn handle_show_help(state: &mut AppState, keys: &KeysConfig) {
     if let Mode::Help { previous } = state.mode().clone() {
-        state.help_overlay = None;
+        state.clear_help_overlay();
         state.apply_transition(&ModeTransition::Restore { mode: *previous });
     } else {
         let catalog = keys.catalog_for_mode(state.mode());
-        state.help_overlay = Some(HelpOverlayState {
+        state.set_help_overlay(HelpOverlayState {
             list: SearchableList::new(catalog.flattened.len()),
             rows: catalog.flattened,
         });
@@ -133,7 +133,7 @@ pub(super) fn handle_start_new_branch(state: &mut AppState) {
     }
     let list = SearchableList::new(bases.len());
 
-    state.base_branch_selection = Some(BaseBranchSelection {
+    state.set_base_branch_selection(BaseBranchSelection {
         new_name: state.branch_list.input.text.clone(),
         bases,
         list,
@@ -270,7 +270,7 @@ pub(super) fn handle_open_branch(
             }
         }
         Mode::SelectBaseBranch => {
-            if let Some(flow) = &state.base_branch_selection
+            if let Some(flow) = state.base_branch_selection()
                 && let Some(sel) = flow.list.selected
                 && let Some(&(idx, _)) = flow.list.filtered.get(sel)
             {
@@ -407,13 +407,11 @@ pub(super) fn handle_setup_continue(state: &mut AppState) {
     state.apply_transition(&ModeTransition::Setup {
         step: SetupStep::SearchDirs,
     });
-    if state.setup.is_none() {
-        state.setup = Some(kiosk_core::state::SetupState::new());
-    }
+    let _ = state.ensure_setup();
 }
 
 pub(super) fn handle_setup_add_dir(state: &mut AppState) -> Option<super::OpenAction> {
-    let setup = state.setup.as_ref()?;
+    let setup = state.setup()?;
 
     // If a completion is selected, navigate into it instead of adding
     if let Some(sel) = setup.selected_completion {
@@ -430,7 +428,7 @@ pub(super) fn handle_setup_add_dir(state: &mut AppState) -> Option<super::OpenAc
         return Some(super::OpenAction::SetupComplete);
     }
 
-    let setup = state.setup.as_mut()?;
+    let setup = state.setup_mut()?;
     if !setup.dirs.contains(&input_text) {
         setup.dirs.push(input_text);
     }
@@ -443,7 +441,7 @@ pub(super) fn handle_setup_add_dir(state: &mut AppState) -> Option<super::OpenAc
 /// Fill the selected (or first) completion into the input and re-generate.
 /// Shared by Tab-complete and Enter-with-selection flows.
 fn fill_setup_completion(state: &mut AppState, index: usize) {
-    let Some(setup) = &mut state.setup else {
+    let Some(setup) = state.setup_mut() else {
         return;
     };
     let Some(completion) = setup.completions.get(index).cloned() else {
@@ -462,7 +460,7 @@ fn fill_setup_completion(state: &mut AppState, index: usize) {
 }
 
 pub(super) fn handle_setup_tab_complete(state: &mut AppState) {
-    let Some(setup) = &mut state.setup else {
+    let Some(setup) = state.setup_mut() else {
         return;
     };
 
@@ -494,7 +492,7 @@ pub(super) fn handle_setup_tab_complete(state: &mut AppState) {
 }
 
 pub(super) fn handle_setup_move_selection(state: &mut AppState, delta: i32) {
-    let Some(setup) = &mut state.setup else {
+    let Some(setup) = state.setup_mut() else {
         return;
     };
     if setup.completions.is_empty() {
@@ -524,7 +522,7 @@ pub(super) fn handle_setup_move_selection(state: &mut AppState, delta: i32) {
 
 /// Cancel in setup: deselect completion if one is highlighted, otherwise quit.
 pub(super) fn handle_setup_cancel(state: &mut AppState) -> Option<super::OpenAction> {
-    let Some(setup) = &mut state.setup else {
+    let Some(setup) = state.setup_mut() else {
         return Some(super::OpenAction::Quit);
     };
     if setup.selected_completion.is_some() {
@@ -536,7 +534,7 @@ pub(super) fn handle_setup_cancel(state: &mut AppState) -> Option<super::OpenAct
 }
 
 fn update_setup_completions(state: &mut AppState) {
-    let Some(setup) = &mut state.setup else {
+    let Some(setup) = state.setup_mut() else {
         return;
     };
     setup.completions = crate::components::path_input::complete(&setup.input.text);
@@ -561,13 +559,13 @@ fn update_active_filter(state: &mut AppState, matcher: &SkimMatcherV2) {
             );
         }
         Mode::SelectBaseBranch => {
-            if let Some(flow) = &mut state.base_branch_selection {
+            if let Some(flow) = state.base_branch_selection_mut() {
                 let bases = flow.bases.clone();
                 apply_fuzzy_filter(&mut flow.list, &bases, matcher);
             }
         }
         Mode::Help { .. } => {
-            if let Some(overlay) = &mut state.help_overlay {
+            if let Some(overlay) = state.help_overlay_mut() {
                 let search_items: Vec<String> = overlay
                     .rows
                     .iter()

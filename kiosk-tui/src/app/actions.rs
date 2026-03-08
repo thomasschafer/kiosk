@@ -71,20 +71,28 @@ fn apply_session_filter(
     list.scroll_offset = 0;
 }
 
+macro_rules! apply_transition {
+    ($state:expr, $transition:expr $(,)?) => {
+        if let Err(error) = $state.transition(&$transition) {
+            $state.set_error(&format!("Internal state transition error: {error:?}"));
+        }
+    };
+}
+
 pub(super) fn handle_go_back(state: &mut AppState) {
     match state.mode().clone() {
         Mode::BranchSelect => {
-            state.apply_transition(&ModeTransition::RepoSelect);
+            apply_transition!(state, ModeTransition::RepoSelect);
             state.branch_list.input.clear();
         }
         Mode::SelectBaseBranch | Mode::ConfirmWorktreeDelete { .. } => {
-            state.apply_transition(&ModeTransition::BranchSelect);
+            apply_transition!(state, ModeTransition::BranchSelect);
         }
         Mode::Help { .. } => {
-            state.apply_transition(&ModeTransition::CloseHelp);
+            apply_transition!(state, ModeTransition::CloseHelp);
         }
         Mode::Sessions => {
-            state.apply_transition(&ModeTransition::RepoSelect);
+            apply_transition!(state, ModeTransition::RepoSelect);
         }
         Mode::Setup(_) | Mode::RepoSelect | Mode::Loading(_) => {}
     }
@@ -92,15 +100,18 @@ pub(super) fn handle_go_back(state: &mut AppState) {
 
 pub(super) fn handle_show_help(state: &mut AppState, keys: &KeysConfig) {
     if matches!(state.mode(), Mode::Help { .. }) {
-        state.apply_transition(&ModeTransition::CloseHelp);
+        apply_transition!(state, ModeTransition::CloseHelp);
     } else {
         let catalog = keys.catalog_for_mode(state.mode());
-        state.apply_transition(&ModeTransition::OpenHelp {
-            overlay: HelpOverlayState {
-                list: SearchableList::new(catalog.flattened.len()),
-                rows: catalog.flattened,
+        apply_transition!(
+            state,
+            ModeTransition::OpenHelp {
+                overlay: HelpOverlayState {
+                    list: SearchableList::new(catalog.flattened.len()),
+                    rows: catalog.flattened,
+                },
             },
-        });
+        );
     }
 }
 
@@ -126,13 +137,16 @@ pub(super) fn handle_start_new_branch(state: &mut AppState) {
     }
     let list = SearchableList::new(bases.len());
 
-    state.apply_transition(&ModeTransition::SelectBaseBranch {
-        flow: BaseBranchSelection {
-            new_name: state.branch_list.input.text.clone(),
-            bases,
-            list,
+    apply_transition!(
+        state,
+        ModeTransition::SelectBaseBranch {
+            flow: BaseBranchSelection {
+                new_name: state.branch_list.input.text.clone(),
+                bases,
+                list,
+            },
         },
-    });
+    );
 }
 
 pub(super) fn handle_delete_worktree(state: &mut AppState) {
@@ -152,10 +166,13 @@ pub(super) fn handle_delete_worktree(state: &mut AppState) {
         } else if branch.is_current {
             state.set_error("Cannot delete the current branch's worktree");
         } else {
-            state.apply_transition(&ModeTransition::ConfirmWorktreeDelete {
-                branch_name: branch.name.clone(),
-                has_session: branch.has_session,
-            });
+            apply_transition!(
+                state,
+                ModeTransition::ConfirmWorktreeDelete {
+                    branch_name: branch.name.clone(),
+                    has_session: branch.has_session,
+                },
+            );
         }
     }
 }
@@ -196,12 +213,13 @@ pub(super) fn handle_confirm_delete<T: TmuxProvider + ?Sized>(
                     state.set_error(&format!("Failed to persist pending deletes: {e}"));
                 }
             }
-            state.apply_transition(&ModeTransition::BranchSelect);
+            apply_transition!(state, ModeTransition::BranchSelect);
             spawn_worktree_removal(git, sender, worktree_path, branch_name);
         }
     }
 }
 
+#[allow(clippy::too_many_lines)]
 pub(super) fn handle_open_branch(
     state: &mut AppState,
     git: &Arc<dyn GitProvider>,
@@ -231,9 +249,12 @@ pub(super) fn handle_open_branch(
                         let repo_path = repo.path.clone();
                         let session_name = repo.tmux_session_name(&wt_path);
                         if is_remote {
-                            state.apply_transition(&ModeTransition::Loading {
-                                message: format!("Checking out remote branch {branch_name}..."),
-                            });
+                            apply_transition!(
+                                state,
+                                ModeTransition::Loading {
+                                    message: format!("Checking out remote branch {branch_name}..."),
+                                },
+                            );
                             spawn_tracking_worktree_creation(
                                 git,
                                 sender,
@@ -243,9 +264,12 @@ pub(super) fn handle_open_branch(
                                 session_name,
                             );
                         } else {
-                            state.apply_transition(&ModeTransition::Loading {
-                                message: format!("Creating worktree for {branch_name}..."),
-                            });
+                            apply_transition!(
+                                state,
+                                ModeTransition::Loading {
+                                    message: format!("Creating worktree for {branch_name}..."),
+                                },
+                            );
                             spawn_worktree_creation(
                                 git,
                                 sender,
@@ -278,9 +302,12 @@ pub(super) fn handle_open_branch(
                     Ok(wt_path) => {
                         let repo_path = repo.path.clone();
                         let session_name = repo.tmux_session_name(&wt_path);
-                        state.apply_transition(&ModeTransition::Loading {
-                            message: format!("Creating branch {new_name} from {base}..."),
-                        });
+                        apply_transition!(
+                            state,
+                            ModeTransition::Loading {
+                                message: format!("Creating branch {new_name} from {base}..."),
+                            },
+                        );
                         spawn_branch_and_worktree_creation(
                             git,
                             sender,
@@ -330,7 +357,7 @@ pub(super) fn enter_branch_select_with_loading<T: TmuxProvider + ?Sized + 'stati
     let repo = state.repos[repo_idx].clone();
     let cwd = state.cwd_worktree_path.clone();
     if show_loading {
-        state.apply_transition(&ModeTransition::BranchSelect);
+        apply_transition!(state, ModeTransition::BranchSelect);
         state.branches.clear();
         state.branch_list.reset(0);
     }
@@ -405,10 +432,13 @@ pub(super) fn handle_setup_continue(state: &mut AppState) {
         .ok()
         .cloned()
         .unwrap_or_else(kiosk_core::state::SetupState::new);
-    state.apply_transition(&ModeTransition::Setup {
-        step: SetupStep::SearchDirs,
-        setup,
-    });
+    apply_transition!(
+        state,
+        ModeTransition::Setup {
+            step: SetupStep::SearchDirs,
+            setup,
+        },
+    );
 }
 
 pub(super) fn handle_setup_add_dir(state: &mut AppState) -> Option<super::OpenAction> {
@@ -784,7 +814,7 @@ mod tests {
     #[test]
     fn sessions_mode_search_filters_session_list() {
         let mut state = AppState::new(Vec::new(), None);
-        state.apply_transition(&ModeTransition::Sessions);
+        apply_transition!(state, ModeTransition::Sessions);
         state.sessions_view.sessions = vec![
             SessionEntry {
                 session_name: "scooter--add-scoop-to-readme".to_string(),
@@ -829,7 +859,7 @@ mod tests {
     #[test]
     fn sessions_mode_search_preserves_canonical_session_order() {
         let mut state = AppState::new(Vec::new(), None);
-        state.apply_transition(&ModeTransition::Sessions);
+        apply_transition!(state, ModeTransition::Sessions);
         state.sessions_view.sessions = vec![
             SessionEntry {
                 session_name: "kiosk--feat-agent-session-switcher".to_string(),

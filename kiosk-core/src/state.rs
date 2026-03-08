@@ -1145,6 +1145,7 @@ pub struct AppState {
 }
 
 impl AppState {
+    #[cfg(test)]
     fn apply_transition_with_fallback(&mut self, transition: &ModeTransition) {
         let fallback_mode = transition.target_mode_with_current(&self.mode);
         if let Err(error) = self.transition(transition) {
@@ -1279,6 +1280,7 @@ impl AppState {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn apply_transition(&mut self, transition: &ModeTransition) {
         self.apply_transition_with_fallback(transition);
     }

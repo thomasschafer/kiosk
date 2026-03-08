@@ -116,7 +116,9 @@ mod tests {
     #[test]
     fn ctrl_s_in_sessions_resolves_to_toggle_sessions() {
         let mut state = AppState::new(Vec::new(), None);
-        state.apply_transition(&kiosk_core::state::ModeTransition::Sessions);
+        state
+            .transition(&kiosk_core::state::ModeTransition::Sessions)
+            .expect("sessions transition should be valid");
         let keys = KeysConfig::default();
 
         let action = resolve_action(
@@ -134,7 +136,9 @@ mod tests {
     #[test]
     fn esc_in_sessions_resolves_to_quit() {
         let mut state = AppState::new(Vec::new(), None);
-        state.apply_transition(&kiosk_core::state::ModeTransition::Sessions);
+        state
+            .transition(&kiosk_core::state::ModeTransition::Sessions)
+            .expect("sessions transition should be valid");
         let keys = KeysConfig::default();
 
         let action = resolve_action(CtKeyEvent::new(CtKeyCode::Esc, CtMods::NONE), &state, &keys);

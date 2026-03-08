@@ -544,7 +544,9 @@ fn run_tui(
 
 fn apply_sessions_startup_mode(state: &mut AppState) {
     if state.sessions_initial {
-        state.apply_transition(&ModeTransition::Sessions);
+        if let Err(error) = state.transition(&ModeTransition::Sessions) {
+            state.set_error(&format!("Internal state transition error: {error:?}"));
+        }
         state.sessions_view.load_state = SessionsLoadState::Loading;
         state.sessions_view.pin_first_selection = true;
         state.sessions_view.sessions.clear();

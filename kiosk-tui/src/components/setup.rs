@@ -61,7 +61,7 @@ fn draw_welcome(f: &mut Frame, theme: &Theme) {
 
 #[allow(clippy::too_many_lines)]
 fn draw_search_dirs(f: &mut Frame, state: &AppState, theme: &Theme, show_selection: bool) {
-    let Some(setup) = state.setup() else {
+    let Ok(setup) = state.require_setup() else {
         return;
     };
 

@@ -38,7 +38,7 @@ fn compute_help_layout(overlay: &HelpOverlayState) -> Vec<HelpLayoutEntry> {
 
 /// Help overlay showing keybindings.
 pub fn draw(f: &mut Frame, state: &AppState, theme: &crate::theme::Theme, show_selection: bool) {
-    let Some(overlay) = state.help_overlay() else {
+    let Ok(overlay) = state.require_help_overlay() else {
         return;
     };
 

@@ -264,8 +264,10 @@ pub(super) fn handle_open_branch(
             }
         }
         Mode::SelectBaseBranch => {
-            if let Some(flow) = state.base_branch_selection()
-                && let Some(sel) = flow.list.selected
+            let flow = state
+                .require_base_branch_selection()
+                .expect("base branch selection context must exist in SelectBaseBranch mode");
+            if let Some(sel) = flow.list.selected
                 && let Some(&(idx, _)) = flow.list.filtered.get(sel)
             {
                 let base = flow.bases[idx].clone();
@@ -409,7 +411,7 @@ pub(super) fn handle_setup_continue(state: &mut AppState) {
 }
 
 pub(super) fn handle_setup_add_dir(state: &mut AppState) -> Option<super::OpenAction> {
-    let setup = state.setup()?;
+    let setup = state.require_setup().ok()?;
 
     // If a completion is selected, navigate into it instead of adding
     if let Some(sel) = setup.selected_completion {
@@ -443,7 +445,8 @@ pub(super) fn handle_setup_add_dir(state: &mut AppState) -> Option<super::OpenAc
 /// Shared by Tab-complete and Enter-with-selection flows.
 fn fill_setup_completion(state: &mut AppState, index: usize) {
     let Some(completion) = state
-        .setup()
+        .require_setup()
+        .ok()
         .and_then(|setup| setup.completions.get(index).cloned())
     else {
         return;
@@ -465,13 +468,15 @@ fn fill_setup_completion(state: &mut AppState, index: usize) {
 }
 
 pub(super) fn handle_setup_tab_complete(state: &mut AppState) {
-    let Some((completion_count, input_text, selected_completion)) = state.setup().map(|setup| {
-        (
-            setup.completions.len(),
-            setup.input.text.clone(),
-            setup.selected_completion,
-        )
-    }) else {
+    let Some((completion_count, input_text, selected_completion)) =
+        state.require_setup().ok().map(|setup| {
+            (
+                setup.completions.len(),
+                setup.input.text.clone(),
+                setup.selected_completion,
+            )
+        })
+    else {
         return;
     };
 
@@ -493,7 +498,8 @@ pub(super) fn handle_setup_tab_complete(state: &mut AppState) {
 
     // Multiple: fill to common prefix if it extends the input
     let completions = state
-        .setup()
+        .require_setup()
+        .ok()
         .map(|setup| setup.completions.clone())
         .unwrap_or_default();
     let common = crate::components::path_input::common_prefix(&completions);
@@ -516,7 +522,8 @@ pub(super) fn handle_setup_tab_complete(state: &mut AppState) {
 
 pub(super) fn handle_setup_move_selection(state: &mut AppState, delta: i32) {
     let Some((completions_len, selected_completion)) = state
-        .setup()
+        .require_setup()
+        .ok()
         .map(|setup| (setup.completions.len(), setup.selected_completion))
     else {
         return;
@@ -557,7 +564,8 @@ pub(super) fn handle_setup_move_selection(state: &mut AppState, delta: i32) {
 /// Cancel in setup: deselect completion if one is highlighted, otherwise quit.
 pub(super) fn handle_setup_cancel(state: &mut AppState) -> Option<super::OpenAction> {
     let Some(has_selection) = state
-        .setup()
+        .require_setup()
+        .ok()
         .map(|setup| setup.selected_completion.is_some())
     else {
         return Some(super::OpenAction::Quit);

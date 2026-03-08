@@ -1438,6 +1438,16 @@ impl AppState {
         })
     }
 
+    pub fn require_base_branch_selection(
+        &self,
+    ) -> Result<&BaseBranchSelection, ModeContextAccessError> {
+        self.base_branch_selection().ok_or_else(|| {
+            ModeContextAccessError::MissingBaseBranchSelection {
+                mode: self.mode.clone(),
+            }
+        })
+    }
+
     fn set_base_branch_selection(&mut self, flow: BaseBranchSelection) {
         match &mut self.mode_context {
             ModeContextState::HelpOverlay { previous, .. } => {
@@ -1486,6 +1496,13 @@ impl AppState {
     ) -> Result<R, ModeContextAccessError> {
         self.help_overlay_mut()
             .map(f)
+            .ok_or_else(|| ModeContextAccessError::MissingHelpOverlay {
+                mode: self.mode.clone(),
+            })
+    }
+
+    pub fn require_help_overlay(&self) -> Result<&HelpOverlayState, ModeContextAccessError> {
+        self.help_overlay()
             .ok_or_else(|| ModeContextAccessError::MissingHelpOverlay {
                 mode: self.mode.clone(),
             })
@@ -1548,6 +1565,13 @@ impl AppState {
     ) -> Result<R, ModeContextAccessError> {
         self.setup_mut()
             .map(f)
+            .ok_or_else(|| ModeContextAccessError::MissingSetup {
+                mode: self.mode.clone(),
+            })
+    }
+
+    pub fn require_setup(&self) -> Result<&SetupState, ModeContextAccessError> {
+        self.setup()
             .ok_or_else(|| ModeContextAccessError::MissingSetup {
                 mode: self.mode.clone(),
             })

@@ -77,16 +77,10 @@ pub(super) fn handle_go_back(state: &mut AppState) {
             state.apply_transition(&ModeTransition::RepoSelect);
             state.branch_list.input.clear();
         }
-        Mode::SelectBaseBranch => {
-            state.clear_base_branch_selection();
+        Mode::SelectBaseBranch | Mode::ConfirmWorktreeDelete { .. } => {
             state.apply_transition(&ModeTransition::BranchSelect);
         }
-        Mode::ConfirmWorktreeDelete { .. } => {
-            state.apply_transition(&ModeTransition::BranchSelect);
-        }
-        Mode::Help { previous } => {
-            state.clear_help_overlay();
-            let _ = previous; // explicitly ignored; CloseHelp derives target from current mode
+        Mode::Help { .. } => {
             state.apply_transition(&ModeTransition::CloseHelp);
         }
         Mode::Sessions => {
@@ -97,8 +91,7 @@ pub(super) fn handle_go_back(state: &mut AppState) {
 }
 
 pub(super) fn handle_show_help(state: &mut AppState, keys: &KeysConfig) {
-    if let Mode::Help { previous } = state.mode().clone() {
-        let _ = previous; // explicitly ignored; CloseHelp derives target from current mode
+    if matches!(state.mode(), Mode::Help { .. }) {
         state.apply_transition(&ModeTransition::CloseHelp);
     } else {
         let catalog = keys.catalog_for_mode(state.mode());

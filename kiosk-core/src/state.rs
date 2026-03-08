@@ -1420,7 +1420,7 @@ impl AppState {
         }
     }
 
-    pub fn set_base_branch_selection(&mut self, flow: BaseBranchSelection) {
+    fn set_base_branch_selection(&mut self, flow: BaseBranchSelection) {
         match &mut self.mode_context {
             ModeContextState::HelpOverlay { previous, .. } => {
                 **previous = ModeContextState::BaseBranchSelection(flow);
@@ -1431,7 +1431,7 @@ impl AppState {
         }
     }
 
-    pub fn clear_base_branch_selection(&mut self) {
+    fn clear_base_branch_selection(&mut self) {
         match &mut self.mode_context {
             ModeContextState::BaseBranchSelection(_) => {
                 self.mode_context = ModeContextState::None;
@@ -1462,7 +1462,7 @@ impl AppState {
         }
     }
 
-    pub fn set_help_overlay(&mut self, overlay: HelpOverlayState) {
+    fn set_help_overlay(&mut self, overlay: HelpOverlayState) {
         let previous = std::mem::replace(&mut self.mode_context, ModeContextState::None);
         self.mode_context = ModeContextState::HelpOverlay {
             overlay,
@@ -1470,13 +1470,13 @@ impl AppState {
         };
     }
 
-    pub fn clear_help_overlay(&mut self) {
+    fn clear_help_overlay(&mut self) {
         if let ModeContextState::HelpOverlay { previous, .. } = &mut self.mode_context {
             self.mode_context = std::mem::replace(previous.as_mut(), ModeContextState::None);
         }
     }
 
-    pub fn clear_setup(&mut self) {
+    fn clear_setup(&mut self) {
         match &mut self.mode_context {
             ModeContextState::Setup(_) => {
                 self.mode_context = ModeContextState::None;

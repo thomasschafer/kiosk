@@ -916,13 +916,8 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
         }
 
         AppEvent::GitError(msg) => {
-            // Return to the appropriate mode
-            if state.base_branch_selection().is_some() {
-                state.clear_base_branch_selection();
-                state.apply_transition(&ModeTransition::BranchSelect);
-            } else {
-                state.apply_transition(&ModeTransition::BranchSelect);
-            }
+            // Return to branch selection; transition reconciliation clears incompatible context.
+            state.apply_transition(&ModeTransition::BranchSelect);
             state.loading_branches = false;
             state.set_error(&msg);
         }

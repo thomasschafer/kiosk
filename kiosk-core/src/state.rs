@@ -919,15 +919,13 @@ pub enum ModeTransition {
     Loading {
         message: String,
     },
-    HelpOverlay {
+    OpenHelp {
         overlay: HelpOverlayState,
     },
+    CloseHelp,
     Setup {
         step: SetupStep,
         setup: SetupState,
-    },
-    Restore {
-        mode: Mode,
     },
 }
 
@@ -947,11 +945,14 @@ impl ModeTransition {
                 has_session: *has_session,
             },
             ModeTransition::Loading { message } => Mode::Loading(message.clone()),
-            ModeTransition::HelpOverlay { .. } => Mode::Help {
+            ModeTransition::OpenHelp { .. } => Mode::Help {
                 previous: Box::new(current.clone()),
             },
+            ModeTransition::CloseHelp => match current {
+                Mode::Help { previous } => (**previous).clone(),
+                other => other.clone(),
+            },
             ModeTransition::Setup { step, .. } => Mode::Setup(step.clone()),
-            ModeTransition::Restore { mode } => mode.clone(),
         }
     }
 }
@@ -1246,7 +1247,7 @@ impl AppState {
             ModeTransition::SelectBaseBranch { flow } => {
                 self.set_base_branch_selection(flow.clone());
             }
-            ModeTransition::HelpOverlay { overlay } => {
+            ModeTransition::OpenHelp { overlay } => {
                 self.set_help_overlay(overlay.clone());
             }
             ModeTransition::Setup { setup, .. } => match &mut self.mode_context {
@@ -1260,9 +1261,9 @@ impl AppState {
             ModeTransition::RepoSelect
             | ModeTransition::BranchSelect
             | ModeTransition::Sessions
+            | ModeTransition::CloseHelp
             | ModeTransition::ConfirmWorktreeDelete { .. }
-            | ModeTransition::Loading { .. }
-            | ModeTransition::Restore { .. } => {}
+            | ModeTransition::Loading { .. } => {}
         }
 
         self.mode = to;
@@ -3118,7 +3119,7 @@ mod tests {
             }
         );
 
-        state.apply_transition(&ModeTransition::HelpOverlay {
+        state.apply_transition(&ModeTransition::OpenHelp {
             overlay: HelpOverlayState {
                 list: SearchableList::new(0),
                 rows: Vec::new(),
@@ -3140,10 +3141,14 @@ mod tests {
         });
         assert_eq!(state.mode, Mode::Setup(SetupStep::SearchDirs));
 
-        state.apply_transition(&ModeTransition::Restore {
-            mode: Mode::BranchSelect,
+        state.apply_transition(&ModeTransition::OpenHelp {
+            overlay: HelpOverlayState {
+                list: SearchableList::new(0),
+                rows: Vec::new(),
+            },
         });
-        assert_eq!(state.mode, Mode::BranchSelect);
+        state.apply_transition(&ModeTransition::CloseHelp);
+        assert_eq!(state.mode, Mode::Setup(SetupStep::SearchDirs));
     }
 
     #[test]
@@ -3330,7 +3335,7 @@ mod tests {
                         branch_name: branch_name.clone(),
                         has_session: *has_session,
                     },
-                    Mode::Help { .. } => ModeTransition::HelpOverlay {
+                    Mode::Help { .. } => ModeTransition::OpenHelp {
                         overlay: HelpOverlayState {
                             list: SearchableList::new(0),
                             rows: Vec::new(),
@@ -3458,7 +3463,7 @@ mod tests {
         let sessions = PollerHandle::new();
         assert!(state.install_sessions_poller(sessions.clone()).is_ok());
 
-        state.apply_transition(&ModeTransition::HelpOverlay {
+        state.apply_transition(&ModeTransition::OpenHelp {
             overlay: HelpOverlayState {
                 list: SearchableList::new(0),
                 rows: Vec::new(),

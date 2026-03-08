@@ -3580,19 +3580,12 @@ mod tests {
     fn test_draw_mode_confirm_delete_renders_when_state_mode_is_help() {
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
-        state.apply_transition(&ModeTransition::HelpOverlay {
-            overlay: kiosk_core::state::HelpOverlayState {
-                list: SearchableList::new(0),
-                rows: Vec::new(),
-            },
+        state.apply_transition(&ModeTransition::BranchSelect);
+        state.apply_transition(&ModeTransition::ConfirmWorktreeDelete {
+            branch_name: "main".to_string(),
+            has_session: true,
         });
-        state.apply_transition(&ModeTransition::Restore {
-            mode: Mode::ConfirmWorktreeDelete {
-                branch_name: "main".to_string(),
-                has_session: true,
-            },
-        });
-        state.apply_transition(&ModeTransition::HelpOverlay {
+        state.apply_transition(&ModeTransition::OpenHelp {
             overlay: kiosk_core::state::HelpOverlayState {
                 list: SearchableList::new(0),
                 rows: Vec::new(),
@@ -4365,7 +4358,7 @@ mod tests {
         state.selected_repo_idx = Some(0);
         state.apply_transition(&ModeTransition::BranchSelect);
         // Help overlay wrapping BranchSelect — effective() should still be BranchSelect
-        state.apply_transition(&ModeTransition::HelpOverlay {
+        state.apply_transition(&ModeTransition::OpenHelp {
             overlay: kiosk_core::state::HelpOverlayState {
                 list: SearchableList::new(0),
                 rows: Vec::new(),
@@ -4571,7 +4564,7 @@ mod tests {
         let mut state = AppState::new(repos, None);
         state.selected_repo_idx = Some(0);
         state.apply_transition(&ModeTransition::BranchSelect);
-        state.apply_transition(&ModeTransition::HelpOverlay {
+        state.apply_transition(&ModeTransition::OpenHelp {
             overlay: kiosk_core::state::HelpOverlayState {
                 list: SearchableList::new(0),
                 rows: Vec::new(),
@@ -4611,7 +4604,7 @@ mod tests {
         let mut state = AppState::new(repos, None);
         state.selected_repo_idx = Some(0);
         state.apply_transition(&ModeTransition::BranchSelect);
-        state.apply_transition(&ModeTransition::HelpOverlay {
+        state.apply_transition(&ModeTransition::OpenHelp {
             overlay: kiosk_core::state::HelpOverlayState {
                 list: SearchableList::new(0),
                 rows: Vec::new(),

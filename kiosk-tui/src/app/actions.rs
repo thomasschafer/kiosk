@@ -86,7 +86,8 @@ pub(super) fn handle_go_back(state: &mut AppState) {
         }
         Mode::Help { previous } => {
             state.clear_help_overlay();
-            state.apply_transition(&ModeTransition::Restore { mode: *previous });
+            let _ = previous; // explicitly ignored; CloseHelp derives target from current mode
+            state.apply_transition(&ModeTransition::CloseHelp);
         }
         Mode::Sessions => {
             state.apply_transition(&ModeTransition::RepoSelect);
@@ -97,10 +98,11 @@ pub(super) fn handle_go_back(state: &mut AppState) {
 
 pub(super) fn handle_show_help(state: &mut AppState, keys: &KeysConfig) {
     if let Mode::Help { previous } = state.mode().clone() {
-        state.apply_transition(&ModeTransition::Restore { mode: *previous });
+        let _ = previous; // explicitly ignored; CloseHelp derives target from current mode
+        state.apply_transition(&ModeTransition::CloseHelp);
     } else {
         let catalog = keys.catalog_for_mode(state.mode());
-        state.apply_transition(&ModeTransition::HelpOverlay {
+        state.apply_transition(&ModeTransition::OpenHelp {
             overlay: HelpOverlayState {
                 list: SearchableList::new(catalog.flattened.len()),
                 rows: catalog.flattened,

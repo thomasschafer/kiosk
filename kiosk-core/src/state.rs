@@ -1390,7 +1390,7 @@ impl AppState {
             Mode::RepoSelect => Some(&self.repo_list),
             Mode::Sessions => Some(&self.sessions_view.list),
             Mode::BranchSelect => Some(&self.branch_list),
-            Mode::SelectBaseBranch => self.base_branch_selection().map(|f| &f.list),
+            Mode::SelectBaseBranch => self.require_base_branch_selection().ok().map(|f| &f.list),
             Mode::Help { .. } => self.active_help_list(),
             _ => None,
         }
@@ -1401,19 +1401,9 @@ impl AppState {
     }
 
     pub fn active_help_list(&self) -> Option<&SearchableList> {
-        self.help_overlay().map(|overlay| &overlay.list)
-    }
-
-    #[must_use]
-    fn base_branch_selection(&self) -> Option<&BaseBranchSelection> {
-        match &self.mode_context {
-            ModeContextState::BaseBranchSelection(flow) => Some(flow),
-            ModeContextState::HelpOverlay { previous, .. } => match previous.as_ref() {
-                ModeContextState::BaseBranchSelection(flow) => Some(flow),
-                _ => None,
-            },
-            _ => None,
-        }
+        self.require_help_overlay()
+            .ok()
+            .map(|overlay| &overlay.list)
     }
 
     fn base_branch_selection_mut(&mut self) -> Option<&mut BaseBranchSelection> {
@@ -1441,11 +1431,18 @@ impl AppState {
     pub fn require_base_branch_selection(
         &self,
     ) -> Result<&BaseBranchSelection, ModeContextAccessError> {
-        self.base_branch_selection().ok_or_else(|| {
-            ModeContextAccessError::MissingBaseBranchSelection {
+        match &self.mode_context {
+            ModeContextState::BaseBranchSelection(flow) => Ok(flow),
+            ModeContextState::HelpOverlay { previous, .. } => match previous.as_ref() {
+                ModeContextState::BaseBranchSelection(flow) => Ok(flow),
+                _ => Err(ModeContextAccessError::MissingBaseBranchSelection {
+                    mode: self.mode.clone(),
+                }),
+            },
+            _ => Err(ModeContextAccessError::MissingBaseBranchSelection {
                 mode: self.mode.clone(),
-            }
-        })
+            }),
+        }
     }
 
     fn set_base_branch_selection(&mut self, flow: BaseBranchSelection) {
@@ -1473,15 +1470,6 @@ impl AppState {
         }
     }
 
-    #[must_use]
-    fn help_overlay(&self) -> Option<&HelpOverlayState> {
-        if let ModeContextState::HelpOverlay { overlay, .. } = &self.mode_context {
-            Some(overlay)
-        } else {
-            None
-        }
-    }
-
     fn help_overlay_mut(&mut self) -> Option<&mut HelpOverlayState> {
         if let ModeContextState::HelpOverlay { overlay, .. } = &mut self.mode_context {
             Some(overlay)
@@ -1502,10 +1490,13 @@ impl AppState {
     }
 
     pub fn require_help_overlay(&self) -> Result<&HelpOverlayState, ModeContextAccessError> {
-        self.help_overlay()
-            .ok_or_else(|| ModeContextAccessError::MissingHelpOverlay {
+        if let ModeContextState::HelpOverlay { overlay, .. } = &self.mode_context {
+            Ok(overlay)
+        } else {
+            Err(ModeContextAccessError::MissingHelpOverlay {
                 mode: self.mode.clone(),
             })
+        }
     }
 
     fn set_help_overlay(&mut self, overlay: HelpOverlayState) {
@@ -1536,18 +1527,6 @@ impl AppState {
         }
     }
 
-    #[must_use]
-    fn setup(&self) -> Option<&SetupState> {
-        match &self.mode_context {
-            ModeContextState::Setup(setup) => Some(setup),
-            ModeContextState::HelpOverlay { previous, .. } => match previous.as_ref() {
-                ModeContextState::Setup(setup) => Some(setup),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
     fn setup_mut(&mut self) -> Option<&mut SetupState> {
         match &mut self.mode_context {
             ModeContextState::Setup(setup) => Some(setup),
@@ -1571,10 +1550,18 @@ impl AppState {
     }
 
     pub fn require_setup(&self) -> Result<&SetupState, ModeContextAccessError> {
-        self.setup()
-            .ok_or_else(|| ModeContextAccessError::MissingSetup {
+        match &self.mode_context {
+            ModeContextState::Setup(setup) => Ok(setup),
+            ModeContextState::HelpOverlay { previous, .. } => match previous.as_ref() {
+                ModeContextState::Setup(setup) => Ok(setup),
+                _ => Err(ModeContextAccessError::MissingSetup {
+                    mode: self.mode.clone(),
+                }),
+            },
+            _ => Err(ModeContextAccessError::MissingSetup {
                 mode: self.mode.clone(),
-            })
+            }),
+        }
     }
 
     pub fn ensure_setup(&mut self) -> &mut SetupState {
@@ -2926,7 +2913,8 @@ mod tests {
         }
         assert_eq!(
             state
-                .help_overlay()
+                .require_help_overlay()
+                .ok()
                 .and_then(|overlay| overlay.list.selected),
             Some(1)
         );
@@ -2963,7 +2951,7 @@ mod tests {
     #[test]
     fn test_app_state_new_setup() {
         let state = AppState::new_setup();
-        assert!(state.setup().is_some());
+        assert!(state.require_setup().is_ok());
         assert_eq!(state.mode, Mode::Setup(SetupStep::Welcome));
         assert!(state.repos.is_empty());
     }
@@ -2972,39 +2960,39 @@ mod tests {
     fn test_mode_context_help_overlay_preserves_previous_variant() {
         let mut state = AppState::new(vec![], None);
         let _ = state.ensure_setup();
-        assert!(state.setup().is_some());
-        assert!(state.help_overlay().is_none());
-        assert!(state.base_branch_selection().is_none());
+        assert!(state.require_setup().is_ok());
+        assert!(state.require_help_overlay().is_err());
+        assert!(state.require_base_branch_selection().is_err());
 
         state.set_help_overlay(HelpOverlayState {
             list: SearchableList::new(1),
             rows: Vec::new(),
         });
-        assert!(state.setup().is_some());
-        assert!(state.help_overlay().is_some());
-        assert!(state.base_branch_selection().is_none());
+        assert!(state.require_setup().is_ok());
+        assert!(state.require_help_overlay().is_ok());
+        assert!(state.require_base_branch_selection().is_err());
         state.clear_help_overlay();
-        assert!(state.setup().is_some());
-        assert!(state.help_overlay().is_none());
+        assert!(state.require_setup().is_ok());
+        assert!(state.require_help_overlay().is_err());
 
         state.set_base_branch_selection(BaseBranchSelection {
             new_name: "feat/new".to_string(),
             bases: vec!["main".to_string()],
             list: SearchableList::new(1),
         });
-        assert!(state.setup().is_none());
-        assert!(state.help_overlay().is_none());
-        assert!(state.base_branch_selection().is_some());
+        assert!(state.require_setup().is_err());
+        assert!(state.require_help_overlay().is_err());
+        assert!(state.require_base_branch_selection().is_ok());
 
         state.set_help_overlay(HelpOverlayState {
             list: SearchableList::new(1),
             rows: Vec::new(),
         });
-        assert!(state.help_overlay().is_some());
-        assert!(state.base_branch_selection().is_some());
+        assert!(state.require_help_overlay().is_ok());
+        assert!(state.require_base_branch_selection().is_ok());
         state.clear_help_overlay();
-        assert!(state.help_overlay().is_none());
-        assert!(state.base_branch_selection().is_some());
+        assert!(state.require_help_overlay().is_err());
+        assert!(state.require_base_branch_selection().is_ok());
     }
 
     #[test]
@@ -3017,10 +3005,80 @@ mod tests {
         });
 
         state.clear_help_overlay();
-        assert!(state.base_branch_selection().is_some());
+        assert!(state.require_base_branch_selection().is_ok());
 
         state.clear_base_branch_selection();
-        assert!(state.base_branch_selection().is_none());
+        assert!(state.require_base_branch_selection().is_err());
+    }
+
+    #[test]
+    fn test_mode_context_require_accessors_match_mode_invariants() {
+        fn assert_access(
+            state: &AppState,
+            expect_setup: bool,
+            expect_help: bool,
+            expect_base: bool,
+        ) {
+            assert_eq!(state.require_setup().is_ok(), expect_setup);
+            assert_eq!(state.require_help_overlay().is_ok(), expect_help);
+            assert_eq!(state.require_base_branch_selection().is_ok(), expect_base);
+        }
+
+        let mut state = AppState::new(vec![], None);
+        assert_access(&state, false, false, false); // loading
+
+        state.apply_transition(&ModeTransition::RepoSelect);
+        assert_access(&state, false, false, false);
+
+        state.apply_transition(&ModeTransition::BranchSelect);
+        assert_access(&state, false, false, false);
+
+        state.apply_transition(&ModeTransition::ConfirmWorktreeDelete {
+            branch_name: "main".to_string(),
+            has_session: false,
+        });
+        assert_access(&state, false, false, false);
+
+        state.apply_transition(&ModeTransition::Sessions);
+        assert_access(&state, false, false, false);
+
+        state.apply_transition(&ModeTransition::Setup {
+            step: SetupStep::SearchDirs,
+            setup: SetupState::new(),
+        });
+        assert_access(&state, true, false, false);
+
+        state.apply_transition(&ModeTransition::OpenHelp {
+            overlay: HelpOverlayState {
+                list: SearchableList::new(0),
+                rows: Vec::new(),
+            },
+        });
+        assert_access(&state, true, true, false);
+
+        state.apply_transition(&ModeTransition::CloseHelp);
+        assert_access(&state, true, false, false);
+
+        state.apply_transition(&ModeTransition::BranchSelect);
+        state.apply_transition(&ModeTransition::SelectBaseBranch {
+            flow: BaseBranchSelection {
+                new_name: "feat/new".to_string(),
+                bases: vec!["main".to_string()],
+                list: SearchableList::new(1),
+            },
+        });
+        assert_access(&state, false, false, true);
+
+        state.apply_transition(&ModeTransition::OpenHelp {
+            overlay: HelpOverlayState {
+                list: SearchableList::new(0),
+                rows: Vec::new(),
+            },
+        });
+        assert_access(&state, false, true, true);
+
+        state.apply_transition(&ModeTransition::CloseHelp);
+        assert_access(&state, false, false, true);
     }
 
     #[test]

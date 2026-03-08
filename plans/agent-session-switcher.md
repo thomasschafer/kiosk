@@ -25,8 +25,8 @@ Three features that work together to make kiosk an effective agent session manag
 ### ✅ Part 2: Sessions TUI View (Done)
 
 - A full ordered view of all sessions
-- Sort: Waiting > Idle > Running > No agent, then by activity recency within groups (newest first, unlike `kiosk next` which filters for oldest first within groups)
-- Enter to switch, Esc to go back, search/filter supported
+- Sort: Current session > Waiting > Idle > Running > No agent, then by activity recency within groups (newest first, unlike `kiosk next` which filters for oldest first within groups)
+- Enter to switch, search/filter supported
 
 ### Part 3: Session preview
 

@@ -904,12 +904,14 @@ pub enum TransitionError {
     Invalid { from: Mode, to: Mode },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum ModeTransition {
     RepoSelect,
     BranchSelect,
     Sessions,
-    SelectBaseBranch,
+    SelectBaseBranch {
+        flow: BaseBranchSelection,
+    },
     ConfirmWorktreeDelete {
         branch_name: String,
         has_session: bool,
@@ -917,11 +919,12 @@ pub enum ModeTransition {
     Loading {
         message: String,
     },
-    Help {
-        previous: Mode,
+    HelpOverlay {
+        overlay: HelpOverlayState,
     },
     Setup {
         step: SetupStep,
+        setup: SetupState,
     },
     Restore {
         mode: Mode,
@@ -930,12 +933,12 @@ pub enum ModeTransition {
 
 impl ModeTransition {
     #[must_use]
-    pub fn target_mode(&self) -> Mode {
+    pub fn target_mode_with_current(&self, current: &Mode) -> Mode {
         match self {
             ModeTransition::RepoSelect => Mode::RepoSelect,
             ModeTransition::BranchSelect => Mode::BranchSelect,
             ModeTransition::Sessions => Mode::Sessions,
-            ModeTransition::SelectBaseBranch => Mode::SelectBaseBranch,
+            ModeTransition::SelectBaseBranch { .. } => Mode::SelectBaseBranch,
             ModeTransition::ConfirmWorktreeDelete {
                 branch_name,
                 has_session,
@@ -944,10 +947,10 @@ impl ModeTransition {
                 has_session: *has_session,
             },
             ModeTransition::Loading { message } => Mode::Loading(message.clone()),
-            ModeTransition::Help { previous } => Mode::Help {
-                previous: Box::new(previous.clone()),
+            ModeTransition::HelpOverlay { .. } => Mode::Help {
+                previous: Box::new(current.clone()),
             },
-            ModeTransition::Setup { step } => Mode::Setup(step.clone()),
+            ModeTransition::Setup { step, .. } => Mode::Setup(step.clone()),
             ModeTransition::Restore { mode } => mode.clone(),
         }
     }
@@ -1135,10 +1138,11 @@ pub struct AppState {
 
 impl AppState {
     fn apply_transition_with_fallback(&mut self, transition: &ModeTransition) {
-        let fallback_mode = transition.target_mode();
+        let fallback_mode = transition.target_mode_with_current(&self.mode);
         if let Err(error) = self.transition(transition) {
             debug_assert!(false, "invalid mode transition: {error:?}");
             self.mode = fallback_mode;
+            self.reconcile_mode_context_for_mode();
             self.reconcile_agent_poller_mode_invariant();
         }
     }
@@ -1227,21 +1231,44 @@ impl AppState {
         }
     }
 
-    fn transition_to(&mut self, to: Mode) -> Result<(), TransitionError> {
-        if self.can_transition_to(&to) {
-            self.mode = to;
-            self.reconcile_agent_poller_mode_invariant();
-            Ok(())
-        } else {
-            Err(TransitionError::Invalid {
-                from: self.mode.clone(),
-                to,
-            })
-        }
-    }
-
     pub fn transition(&mut self, transition: &ModeTransition) -> Result<(), TransitionError> {
-        self.transition_to(transition.target_mode())
+        let from = self.mode.clone();
+        let to = transition.target_mode_with_current(&from);
+        if !self.can_transition_to(&to) {
+            return Err(TransitionError::Invalid { from, to });
+        }
+
+        if matches!(from, Mode::Help { .. }) && !matches!(to, Mode::Help { .. }) {
+            self.clear_help_overlay();
+        }
+
+        match transition {
+            ModeTransition::SelectBaseBranch { flow } => {
+                self.set_base_branch_selection(flow.clone());
+            }
+            ModeTransition::HelpOverlay { overlay } => {
+                self.set_help_overlay(overlay.clone());
+            }
+            ModeTransition::Setup { setup, .. } => match &mut self.mode_context {
+                ModeContextState::HelpOverlay { previous, .. } => {
+                    **previous = ModeContextState::Setup(setup.clone());
+                }
+                _ => {
+                    self.mode_context = ModeContextState::Setup(setup.clone());
+                }
+            },
+            ModeTransition::RepoSelect
+            | ModeTransition::BranchSelect
+            | ModeTransition::Sessions
+            | ModeTransition::ConfirmWorktreeDelete { .. }
+            | ModeTransition::Loading { .. }
+            | ModeTransition::Restore { .. } => {}
+        }
+
+        self.mode = to;
+        self.reconcile_mode_context_for_mode();
+        self.reconcile_agent_poller_mode_invariant();
+        Ok(())
     }
 
     pub fn apply_transition(&mut self, transition: &ModeTransition) {
@@ -1448,6 +1475,20 @@ impl AppState {
         }
     }
 
+    pub fn clear_setup(&mut self) {
+        match &mut self.mode_context {
+            ModeContextState::Setup(_) => {
+                self.mode_context = ModeContextState::None;
+            }
+            ModeContextState::HelpOverlay { previous, .. } => {
+                if matches!(previous.as_ref(), ModeContextState::Setup(_)) {
+                    **previous = ModeContextState::None;
+                }
+            }
+            _ => {}
+        }
+    }
+
     #[must_use]
     pub fn setup(&self) -> Option<&SetupState> {
         match &self.mode_context {
@@ -1493,6 +1534,18 @@ impl AppState {
 
         self.setup_mut()
             .expect("setup context should exist after ensure_setup")
+    }
+
+    fn reconcile_mode_context_for_mode(&mut self) {
+        let keep_base_branch = matches!(self.mode, Mode::SelectBaseBranch | Mode::Help { .. });
+        if !keep_base_branch {
+            self.clear_base_branch_selection();
+        }
+
+        let keep_setup = matches!(self.mode, Mode::Setup(_) | Mode::Help { .. });
+        if !keep_setup {
+            self.clear_setup();
+        }
     }
 
     pub fn is_branch_pending_delete(&self, repo_path: &Path, branch_name: &str) -> bool {
@@ -3033,7 +3086,13 @@ mod tests {
         assert_eq!(state.mode, Mode::Sessions);
 
         state.apply_transition(&ModeTransition::BranchSelect);
-        state.apply_transition(&ModeTransition::SelectBaseBranch);
+        state.apply_transition(&ModeTransition::SelectBaseBranch {
+            flow: BaseBranchSelection {
+                new_name: "feat/test".to_string(),
+                bases: vec!["main".to_string()],
+                list: SearchableList::new(1),
+            },
+        });
         assert_eq!(state.mode, Mode::SelectBaseBranch);
 
         state.apply_transition(&ModeTransition::Loading {
@@ -3059,18 +3118,25 @@ mod tests {
             }
         );
 
-        state.apply_transition(&ModeTransition::Help {
-            previous: Mode::RepoSelect,
+        state.apply_transition(&ModeTransition::HelpOverlay {
+            overlay: HelpOverlayState {
+                list: SearchableList::new(0),
+                rows: Vec::new(),
+            },
         });
         assert_eq!(
             state.mode,
             Mode::Help {
-                previous: Box::new(Mode::RepoSelect),
+                previous: Box::new(Mode::ConfirmWorktreeDelete {
+                    branch_name: "feat-x".to_string(),
+                    has_session: true,
+                }),
             }
         );
 
         state.apply_transition(&ModeTransition::Setup {
             step: SetupStep::SearchDirs,
+            setup: SetupState::new(),
         });
         assert_eq!(state.mode, Mode::Setup(SetupStep::SearchDirs));
 
@@ -3085,7 +3151,13 @@ mod tests {
         let mut state = AppState::new(vec![], None);
         state.apply_transition(&ModeTransition::RepoSelect);
 
-        let result = state.transition(&ModeTransition::SelectBaseBranch);
+        let result = state.transition(&ModeTransition::SelectBaseBranch {
+            flow: BaseBranchSelection {
+                new_name: "feat/test".to_string(),
+                bases: vec!["main".to_string()],
+                list: SearchableList::new(1),
+            },
+        });
         assert!(matches!(
             result,
             Err(TransitionError::Invalid {
@@ -3109,14 +3181,27 @@ mod tests {
 
     #[test]
     fn test_mode_transition_intents_map_to_expected_modes() {
-        assert_eq!(ModeTransition::RepoSelect.target_mode(), Mode::RepoSelect);
         assert_eq!(
-            ModeTransition::BranchSelect.target_mode(),
+            ModeTransition::RepoSelect.target_mode_with_current(&Mode::RepoSelect),
+            Mode::RepoSelect
+        );
+        assert_eq!(
+            ModeTransition::BranchSelect.target_mode_with_current(&Mode::RepoSelect),
             Mode::BranchSelect
         );
-        assert_eq!(ModeTransition::Sessions.target_mode(), Mode::Sessions);
         assert_eq!(
-            ModeTransition::SelectBaseBranch.target_mode(),
+            ModeTransition::Sessions.target_mode_with_current(&Mode::RepoSelect),
+            Mode::Sessions
+        );
+        assert_eq!(
+            ModeTransition::SelectBaseBranch {
+                flow: BaseBranchSelection {
+                    new_name: "feat-a".to_string(),
+                    bases: vec!["main".to_string()],
+                    list: SearchableList::new(1),
+                },
+            }
+            .target_mode_with_current(&Mode::BranchSelect),
             Mode::SelectBaseBranch
         );
         assert_eq!(
@@ -3124,7 +3209,7 @@ mod tests {
                 branch_name: "feat-a".to_string(),
                 has_session: true,
             }
-            .target_mode(),
+            .target_mode_with_current(&Mode::BranchSelect),
             Mode::ConfirmWorktreeDelete {
                 branch_name: "feat-a".to_string(),
                 has_session: true,
@@ -3137,14 +3222,26 @@ mod tests {
         let mut state = AppState::new(vec![], None);
         state.apply_transition(&ModeTransition::RepoSelect);
 
-        let result = state.transition(&ModeTransition::SelectBaseBranch);
+        let result = state.transition(&ModeTransition::SelectBaseBranch {
+            flow: BaseBranchSelection {
+                new_name: "feat/test".to_string(),
+                bases: vec!["main".to_string()],
+                list: SearchableList::new(1),
+            },
+        });
         assert!(
             result.is_err(),
             "RepoSelect -> SelectBaseBranch should fail"
         );
 
         state.apply_transition(&ModeTransition::BranchSelect);
-        let result = state.transition(&ModeTransition::SelectBaseBranch);
+        let result = state.transition(&ModeTransition::SelectBaseBranch {
+            flow: BaseBranchSelection {
+                new_name: "feat/test".to_string(),
+                bases: vec!["main".to_string()],
+                list: SearchableList::new(1),
+            },
+        });
         assert!(
             result.is_ok(),
             "BranchSelect -> SelectBaseBranch should succeed"
@@ -3156,7 +3253,17 @@ mod tests {
         let mut state = AppState::new(vec![], None);
         state.apply_transition(&ModeTransition::BranchSelect);
 
-        assert!(state.transition(&ModeTransition::SelectBaseBranch).is_ok());
+        assert!(
+            state
+                .transition(&ModeTransition::SelectBaseBranch {
+                    flow: BaseBranchSelection {
+                        new_name: "feat/test".to_string(),
+                        bases: vec!["main".to_string()],
+                        list: SearchableList::new(1),
+                    },
+                })
+                .is_ok()
+        );
         assert_eq!(state.mode, Mode::SelectBaseBranch);
 
         state.apply_transition(&ModeTransition::BranchSelect);
@@ -3206,7 +3313,13 @@ mod tests {
                     Mode::RepoSelect => ModeTransition::RepoSelect,
                     Mode::BranchSelect => ModeTransition::BranchSelect,
                     Mode::Sessions => ModeTransition::Sessions,
-                    Mode::SelectBaseBranch => ModeTransition::SelectBaseBranch,
+                    Mode::SelectBaseBranch => ModeTransition::SelectBaseBranch {
+                        flow: BaseBranchSelection {
+                            new_name: "feat-z".to_string(),
+                            bases: vec!["main".to_string()],
+                            list: SearchableList::new(1),
+                        },
+                    },
                     Mode::Loading(message) => ModeTransition::Loading {
                         message: message.clone(),
                     },
@@ -3217,10 +3330,16 @@ mod tests {
                         branch_name: branch_name.clone(),
                         has_session: *has_session,
                     },
-                    Mode::Help { previous } => ModeTransition::Help {
-                        previous: (**previous).clone(),
+                    Mode::Help { .. } => ModeTransition::HelpOverlay {
+                        overlay: HelpOverlayState {
+                            list: SearchableList::new(0),
+                            rows: Vec::new(),
+                        },
                     },
-                    Mode::Setup(step) => ModeTransition::Setup { step: step.clone() },
+                    Mode::Setup(step) => ModeTransition::Setup {
+                        step: step.clone(),
+                        setup: SetupState::new(),
+                    },
                 };
 
                 let result = state.transition(&transition);
@@ -3339,8 +3458,11 @@ mod tests {
         let sessions = PollerHandle::new();
         assert!(state.install_sessions_poller(sessions.clone()).is_ok());
 
-        state.apply_transition(&ModeTransition::Help {
-            previous: Mode::Sessions,
+        state.apply_transition(&ModeTransition::HelpOverlay {
+            overlay: HelpOverlayState {
+                list: SearchableList::new(0),
+                rows: Vec::new(),
+            },
         });
 
         assert!(!sessions.is_cancelled());

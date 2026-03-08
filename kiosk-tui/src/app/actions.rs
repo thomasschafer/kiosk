@@ -97,16 +97,14 @@ pub(super) fn handle_go_back(state: &mut AppState) {
 
 pub(super) fn handle_show_help(state: &mut AppState, keys: &KeysConfig) {
     if let Mode::Help { previous } = state.mode().clone() {
-        state.clear_help_overlay();
         state.apply_transition(&ModeTransition::Restore { mode: *previous });
     } else {
         let catalog = keys.catalog_for_mode(state.mode());
-        state.set_help_overlay(HelpOverlayState {
-            list: SearchableList::new(catalog.flattened.len()),
-            rows: catalog.flattened,
-        });
-        state.apply_transition(&ModeTransition::Help {
-            previous: state.mode().clone(),
+        state.apply_transition(&ModeTransition::HelpOverlay {
+            overlay: HelpOverlayState {
+                list: SearchableList::new(catalog.flattened.len()),
+                rows: catalog.flattened,
+            },
         });
     }
 }
@@ -133,12 +131,13 @@ pub(super) fn handle_start_new_branch(state: &mut AppState) {
     }
     let list = SearchableList::new(bases.len());
 
-    state.set_base_branch_selection(BaseBranchSelection {
-        new_name: state.branch_list.input.text.clone(),
-        bases,
-        list,
+    state.apply_transition(&ModeTransition::SelectBaseBranch {
+        flow: BaseBranchSelection {
+            new_name: state.branch_list.input.text.clone(),
+            bases,
+            list,
+        },
     });
-    state.apply_transition(&ModeTransition::SelectBaseBranch);
 }
 
 pub(super) fn handle_delete_worktree(state: &mut AppState) {
@@ -404,10 +403,14 @@ fn post_text_edit(state: &mut AppState, matcher: &SkimMatcherV2) {
 // ── Setup action handlers ──
 
 pub(super) fn handle_setup_continue(state: &mut AppState) {
+    let setup = state
+        .setup()
+        .cloned()
+        .unwrap_or_else(kiosk_core::state::SetupState::new);
     state.apply_transition(&ModeTransition::Setup {
         step: SetupStep::SearchDirs,
+        setup,
     });
-    let _ = state.ensure_setup();
 }
 
 pub(super) fn handle_setup_add_dir(state: &mut AppState) -> Option<super::OpenAction> {

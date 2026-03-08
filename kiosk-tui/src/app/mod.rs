@@ -1718,11 +1718,12 @@ mod tests {
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
         state.apply_transition(&ModeTransition::BranchSelect);
-        state.apply_transition(&ModeTransition::SelectBaseBranch);
-        state.set_base_branch_selection(kiosk_core::state::BaseBranchSelection {
-            new_name: "feat".into(),
-            bases: vec!["main".into()],
-            list: SearchableList::new(1),
+        state.apply_transition(&ModeTransition::SelectBaseBranch {
+            flow: kiosk_core::state::BaseBranchSelection {
+                new_name: "feat".into(),
+                bases: vec!["main".into()],
+                list: SearchableList::new(1),
+            },
         });
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
@@ -2861,11 +2862,12 @@ mod tests {
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
         state.apply_transition(&ModeTransition::BranchSelect);
-        state.apply_transition(&ModeTransition::SelectBaseBranch);
-        state.set_base_branch_selection(kiosk_core::state::BaseBranchSelection {
-            new_name: "feat".into(),
-            bases: vec!["main".into()],
-            list: SearchableList::new(1),
+        state.apply_transition(&ModeTransition::SelectBaseBranch {
+            flow: kiosk_core::state::BaseBranchSelection {
+                new_name: "feat".into(),
+                bases: vec!["main".into()],
+                list: SearchableList::new(1),
+            },
         });
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
@@ -3578,10 +3580,22 @@ mod tests {
     fn test_draw_mode_confirm_delete_renders_when_state_mode_is_help() {
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
-        state.apply_transition(&ModeTransition::Help {
-            previous: Mode::ConfirmWorktreeDelete {
+        state.apply_transition(&ModeTransition::HelpOverlay {
+            overlay: kiosk_core::state::HelpOverlayState {
+                list: SearchableList::new(0),
+                rows: Vec::new(),
+            },
+        });
+        state.apply_transition(&ModeTransition::Restore {
+            mode: Mode::ConfirmWorktreeDelete {
                 branch_name: "main".to_string(),
                 has_session: true,
+            },
+        });
+        state.apply_transition(&ModeTransition::HelpOverlay {
+            overlay: kiosk_core::state::HelpOverlayState {
+                list: SearchableList::new(0),
+                rows: Vec::new(),
             },
         });
 
@@ -3615,8 +3629,13 @@ mod tests {
 
     fn make_setup_state() -> AppState {
         let mut state = AppState::new_setup();
+        let setup = state
+            .setup()
+            .cloned()
+            .unwrap_or_else(kiosk_core::state::SetupState::new);
         state.apply_transition(&ModeTransition::Setup {
             step: kiosk_core::state::SetupStep::SearchDirs,
+            setup,
         });
         state
     }
@@ -4344,9 +4363,13 @@ mod tests {
         let repos = vec![make_repo("my-repo")];
         let mut state = AppState::new(repos, None);
         state.selected_repo_idx = Some(0);
+        state.apply_transition(&ModeTransition::BranchSelect);
         // Help overlay wrapping BranchSelect — effective() should still be BranchSelect
-        state.apply_transition(&ModeTransition::Help {
-            previous: Mode::BranchSelect,
+        state.apply_transition(&ModeTransition::HelpOverlay {
+            overlay: kiosk_core::state::HelpOverlayState {
+                list: SearchableList::new(0),
+                rows: Vec::new(),
+            },
         });
         state.branches = vec![BranchEntry {
             name: "feat/test".to_string(),
@@ -4547,8 +4570,12 @@ mod tests {
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
         state.selected_repo_idx = Some(0);
-        state.apply_transition(&ModeTransition::Help {
-            previous: Mode::BranchSelect,
+        state.apply_transition(&ModeTransition::BranchSelect);
+        state.apply_transition(&ModeTransition::HelpOverlay {
+            overlay: kiosk_core::state::HelpOverlayState {
+                list: SearchableList::new(0),
+                rows: Vec::new(),
+            },
         });
         state.branches = vec![make_branch("main", None)];
         state.branch_list.reset(1);
@@ -4583,8 +4610,12 @@ mod tests {
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
         state.selected_repo_idx = Some(0);
-        state.apply_transition(&ModeTransition::Help {
-            previous: Mode::BranchSelect,
+        state.apply_transition(&ModeTransition::BranchSelect);
+        state.apply_transition(&ModeTransition::HelpOverlay {
+            overlay: kiosk_core::state::HelpOverlayState {
+                list: SearchableList::new(0),
+                rows: Vec::new(),
+            },
         });
         state.branches = vec![make_branch("main", None)];
         state.branch_list.reset(1);

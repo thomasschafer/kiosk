@@ -1409,7 +1409,7 @@ impl AppState {
         }
     }
 
-    pub fn base_branch_selection_mut(&mut self) -> Option<&mut BaseBranchSelection> {
+    fn base_branch_selection_mut(&mut self) -> Option<&mut BaseBranchSelection> {
         match &mut self.mode_context {
             ModeContextState::BaseBranchSelection(flow) => Some(flow),
             ModeContextState::HelpOverlay { previous, .. } => match previous.as_mut() {
@@ -1418,6 +1418,13 @@ impl AppState {
             },
             _ => None,
         }
+    }
+
+    pub fn with_base_branch_selection_mut<R>(
+        &mut self,
+        f: impl FnOnce(&mut BaseBranchSelection) -> R,
+    ) -> Option<R> {
+        self.base_branch_selection_mut().map(f)
     }
 
     fn set_base_branch_selection(&mut self, flow: BaseBranchSelection) {
@@ -1454,12 +1461,19 @@ impl AppState {
         }
     }
 
-    pub fn help_overlay_mut(&mut self) -> Option<&mut HelpOverlayState> {
+    fn help_overlay_mut(&mut self) -> Option<&mut HelpOverlayState> {
         if let ModeContextState::HelpOverlay { overlay, .. } = &mut self.mode_context {
             Some(overlay)
         } else {
             None
         }
+    }
+
+    pub fn with_help_overlay_mut<R>(
+        &mut self,
+        f: impl FnOnce(&mut HelpOverlayState) -> R,
+    ) -> Option<R> {
+        self.help_overlay_mut().map(f)
     }
 
     fn set_help_overlay(&mut self, overlay: HelpOverlayState) {
@@ -1511,6 +1525,10 @@ impl AppState {
             },
             _ => None,
         }
+    }
+
+    pub fn with_setup_mut<R>(&mut self, f: impl FnOnce(&mut SetupState) -> R) -> Option<R> {
+        self.setup_mut().map(f)
     }
 
     pub fn ensure_setup(&mut self) -> &mut SetupState {

@@ -426,23 +426,24 @@ pub(super) fn handle_setup_add_dir(state: &mut AppState) -> Option<super::OpenAc
         return Some(super::OpenAction::SetupComplete);
     }
 
-    let setup = state.setup_mut()?;
-    if !setup.dirs.contains(&input_text) {
-        setup.dirs.push(input_text);
-    }
-    setup.input.clear();
-    setup.completions.clear();
-    setup.selected_completion = None;
+    state.with_setup_mut(|setup| {
+        if !setup.dirs.contains(&input_text) {
+            setup.dirs.push(input_text);
+        }
+        setup.input.clear();
+        setup.completions.clear();
+        setup.selected_completion = None;
+    })?;
     None
 }
 
 /// Fill the selected (or first) completion into the input and re-generate.
 /// Shared by Tab-complete and Enter-with-selection flows.
 fn fill_setup_completion(state: &mut AppState, index: usize) {
-    let Some(setup) = state.setup_mut() else {
-        return;
-    };
-    let Some(completion) = setup.completions.get(index).cloned() else {
+    let Some(completion) = state
+        .setup()
+        .and_then(|setup| setup.completions.get(index).cloned())
+    else {
         return;
     };
     let with_slash = if completion.ends_with('/') {
@@ -450,65 +451,87 @@ fn fill_setup_completion(state: &mut AppState, index: usize) {
     } else {
         format!("{completion}/")
     };
-    setup.input.text = with_slash;
-    setup.input.cursor = setup.input.text.len();
-    setup.completions.clear();
-    setup.selected_completion = None;
+    let _ = state.with_setup_mut(|setup| {
+        setup.input.text = with_slash;
+        setup.input.cursor = setup.input.text.len();
+        setup.completions.clear();
+        setup.selected_completion = None;
+    });
     update_setup_completions(state);
 }
 
 pub(super) fn handle_setup_tab_complete(state: &mut AppState) {
-    let Some(setup) = state.setup_mut() else {
+    let Some((completion_count, input_text, selected_completion)) = state.setup().map(|setup| {
+        (
+            setup.completions.len(),
+            setup.input.text.clone(),
+            setup.selected_completion,
+        )
+    }) else {
         return;
     };
 
     // Generate completions if not already present
-    if setup.completions.is_empty() {
-        setup.completions = crate::components::path_input::complete(&setup.input.text);
-        setup.selected_completion = None;
+    if completion_count == 0 {
+        let _ = state.with_setup_mut(|setup| {
+            setup.completions = crate::components::path_input::complete(&input_text);
+            setup.selected_completion = None;
+        });
         return;
     }
 
-    if setup.completions.len() == 1 {
+    if completion_count == 1 {
         fill_setup_completion(state, 0);
         return;
     }
 
     // Multiple: fill to common prefix if it extends the input
-    let common = crate::components::path_input::common_prefix(&setup.completions);
-    if !common.is_empty() && common != setup.input.text {
-        setup.input.text = common;
-        setup.input.cursor = setup.input.text.len();
-        setup.completions = crate::components::path_input::complete(&setup.input.text);
-        setup.selected_completion = None;
+    let completions = state
+        .setup()
+        .map(|setup| setup.completions.clone())
+        .unwrap_or_default();
+    let common = crate::components::path_input::common_prefix(&completions);
+    if !common.is_empty() && common != input_text {
+        let _ = state.with_setup_mut(|setup| {
+            setup.input.text = common;
+            setup.input.cursor = setup.input.text.len();
+            setup.completions = crate::components::path_input::complete(&setup.input.text);
+            setup.selected_completion = None;
+        });
         return;
     }
 
     // Common prefix already matches input: fill in the selected (or first) completion
-    let sel = setup.selected_completion.unwrap_or(0);
+    let sel = selected_completion.unwrap_or(0);
     fill_setup_completion(state, sel);
 }
 
 pub(super) fn handle_setup_move_selection(state: &mut AppState, delta: i32) {
-    let Some(setup) = state.setup_mut() else {
+    let Some((completions_len, selected_completion)) = state
+        .setup()
+        .map(|setup| (setup.completions.len(), setup.selected_completion))
+    else {
         return;
     };
-    if setup.completions.is_empty() {
+    if completions_len == 0 {
         return;
     }
-    let len = setup.completions.len();
-    setup.selected_completion = match setup.selected_completion {
+    let next_selection = match selected_completion {
         None => {
             if delta > 0 {
                 Some(0)
             } else {
-                Some(len - 1)
+                Some(completions_len - 1)
             }
         }
         Some(current) => {
             if delta > 0 {
                 let next = current.saturating_add(delta.unsigned_abs() as usize);
-                if next >= len { None } else { Some(next) }
+                if next >= completions_len {
+                    None
+                } else {
+                    Some(next)
+                }
             } else if current == 0 {
                 None
             } else {
@@ -516,15 +539,23 @@ pub(super) fn handle_setup_move_selection(state: &mut AppState, delta: i32) {
             }
         }
     };
+    let _ = state.with_setup_mut(|setup| {
+        setup.selected_completion = next_selection;
+    });
 }
 
 /// Cancel in setup: deselect completion if one is highlighted, otherwise quit.
 pub(super) fn handle_setup_cancel(state: &mut AppState) -> Option<super::OpenAction> {
-    let Some(setup) = state.setup_mut() else {
+    let Some(has_selection) = state
+        .setup()
+        .map(|setup| setup.selected_completion.is_some())
+    else {
         return Some(super::OpenAction::Quit);
     };
-    if setup.selected_completion.is_some() {
-        setup.selected_completion = None;
+    if has_selection {
+        let _ = state.with_setup_mut(|setup| {
+            setup.selected_completion = None;
+        });
         None
     } else {
         Some(super::OpenAction::Quit)
@@ -532,11 +563,10 @@ pub(super) fn handle_setup_cancel(state: &mut AppState) -> Option<super::OpenAct
 }
 
 fn update_setup_completions(state: &mut AppState) {
-    let Some(setup) = state.setup_mut() else {
-        return;
-    };
-    setup.completions = crate::components::path_input::complete(&setup.input.text);
-    setup.selected_completion = None;
+    let _ = state.with_setup_mut(|setup| {
+        setup.completions = crate::components::path_input::complete(&setup.input.text);
+        setup.selected_completion = None;
+    });
 }
 
 fn update_active_filter(state: &mut AppState, matcher: &SkimMatcherV2) {
@@ -557,13 +587,13 @@ fn update_active_filter(state: &mut AppState, matcher: &SkimMatcherV2) {
             );
         }
         Mode::SelectBaseBranch => {
-            if let Some(flow) = state.base_branch_selection_mut() {
+            let _ = state.with_base_branch_selection_mut(|flow| {
                 let bases = flow.bases.clone();
                 apply_fuzzy_filter(&mut flow.list, &bases, matcher);
-            }
+            });
         }
         Mode::Help { .. } => {
-            if let Some(overlay) = state.help_overlay_mut() {
+            let _ = state.with_help_overlay_mut(|overlay| {
                 let search_items: Vec<String> = overlay
                     .rows
                     .iter()
@@ -581,7 +611,7 @@ fn update_active_filter(state: &mut AppState, matcher: &SkimMatcherV2) {
                 overlay.list.filtered.sort_by_key(|(row_idx, _score)| {
                     overlay.rows.get(*row_idx).map_or(0, |r| r.section_index)
                 });
-            }
+            });
         }
         _ => {}
     }

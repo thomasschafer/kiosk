@@ -961,9 +961,9 @@ fn handle_movement_actions(action: &Action, state: &mut AppState) -> bool {
 
 fn update_active_list_scroll_offset(state: &mut AppState, viewport_rows: usize) {
     if let Mode::Help { .. } = state.mode() {
-        if let Some(overlay) = state.help_overlay_mut() {
+        let _ = state.with_help_overlay_mut(|overlay| {
             update_help_scroll_offset(overlay, viewport_rows);
-        }
+        });
     } else if let Some(list) = state.active_list_mut() {
         list.update_scroll_offset_for_selection(viewport_rows);
     }

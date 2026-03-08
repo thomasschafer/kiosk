@@ -1405,7 +1405,7 @@ impl AppState {
     }
 
     #[must_use]
-    pub fn base_branch_selection(&self) -> Option<&BaseBranchSelection> {
+    fn base_branch_selection(&self) -> Option<&BaseBranchSelection> {
         match &self.mode_context {
             ModeContextState::BaseBranchSelection(flow) => Some(flow),
             ModeContextState::HelpOverlay { previous, .. } => match previous.as_ref() {
@@ -1474,7 +1474,7 @@ impl AppState {
     }
 
     #[must_use]
-    pub fn help_overlay(&self) -> Option<&HelpOverlayState> {
+    fn help_overlay(&self) -> Option<&HelpOverlayState> {
         if let ModeContextState::HelpOverlay { overlay, .. } = &self.mode_context {
             Some(overlay)
         } else {
@@ -1537,7 +1537,7 @@ impl AppState {
     }
 
     #[must_use]
-    pub fn setup(&self) -> Option<&SetupState> {
+    fn setup(&self) -> Option<&SetupState> {
         match &self.mode_context {
             ModeContextState::Setup(setup) => Some(setup),
             ModeContextState::HelpOverlay { previous, .. } => match previous.as_ref() {

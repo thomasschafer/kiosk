@@ -573,7 +573,11 @@ fn run_setup_then_tui() -> ExitCode {
 
     match result {
         Ok(Some(kiosk_tui::OpenAction::SetupComplete)) => {
-            let dirs: Vec<String> = state.setup().map(|s| s.dirs.clone()).unwrap_or_default();
+            let dirs: Vec<String> = state
+                .require_setup()
+                .ok()
+                .map(|s| s.dirs.clone())
+                .unwrap_or_default();
             if dirs.is_empty() {
                 eprintln!("Setup cancelled: no directories added.");
                 return ExitCode::from(1);

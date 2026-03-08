@@ -401,7 +401,8 @@ fn post_text_edit(state: &mut AppState, matcher: &SkimMatcherV2) {
 
 pub(super) fn handle_setup_continue(state: &mut AppState) {
     let setup = state
-        .setup()
+        .require_setup()
+        .ok()
         .cloned()
         .unwrap_or_else(kiosk_core::state::SetupState::new);
     state.apply_transition(&ModeTransition::Setup {

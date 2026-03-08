@@ -904,6 +904,13 @@ pub enum TransitionError {
     Invalid { from: Mode, to: Mode },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModeContextAccessError {
+    MissingBaseBranchSelection { mode: Mode },
+    MissingHelpOverlay { mode: Mode },
+    MissingSetup { mode: Mode },
+}
+
 #[derive(Debug, Clone)]
 pub enum ModeTransition {
     RepoSelect,
@@ -1420,11 +1427,15 @@ impl AppState {
         }
     }
 
-    pub fn with_base_branch_selection_mut<R>(
+    pub fn update_base_branch_selection<R>(
         &mut self,
         f: impl FnOnce(&mut BaseBranchSelection) -> R,
-    ) -> Option<R> {
-        self.base_branch_selection_mut().map(f)
+    ) -> Result<R, ModeContextAccessError> {
+        self.base_branch_selection_mut().map(f).ok_or_else(|| {
+            ModeContextAccessError::MissingBaseBranchSelection {
+                mode: self.mode.clone(),
+            }
+        })
     }
 
     fn set_base_branch_selection(&mut self, flow: BaseBranchSelection) {
@@ -1469,11 +1480,15 @@ impl AppState {
         }
     }
 
-    pub fn with_help_overlay_mut<R>(
+    pub fn update_help_overlay<R>(
         &mut self,
         f: impl FnOnce(&mut HelpOverlayState) -> R,
-    ) -> Option<R> {
-        self.help_overlay_mut().map(f)
+    ) -> Result<R, ModeContextAccessError> {
+        self.help_overlay_mut()
+            .map(f)
+            .ok_or_else(|| ModeContextAccessError::MissingHelpOverlay {
+                mode: self.mode.clone(),
+            })
     }
 
     fn set_help_overlay(&mut self, overlay: HelpOverlayState) {
@@ -1527,8 +1542,15 @@ impl AppState {
         }
     }
 
-    pub fn with_setup_mut<R>(&mut self, f: impl FnOnce(&mut SetupState) -> R) -> Option<R> {
-        self.setup_mut().map(f)
+    pub fn update_setup<R>(
+        &mut self,
+        f: impl FnOnce(&mut SetupState) -> R,
+    ) -> Result<R, ModeContextAccessError> {
+        self.setup_mut()
+            .map(f)
+            .ok_or_else(|| ModeContextAccessError::MissingSetup {
+                mode: self.mode.clone(),
+            })
     }
 
     pub fn ensure_setup(&mut self) -> &mut SetupState {

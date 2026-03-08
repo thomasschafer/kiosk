@@ -426,14 +426,16 @@ pub(super) fn handle_setup_add_dir(state: &mut AppState) -> Option<super::OpenAc
         return Some(super::OpenAction::SetupComplete);
     }
 
-    state.with_setup_mut(|setup| {
-        if !setup.dirs.contains(&input_text) {
-            setup.dirs.push(input_text);
-        }
-        setup.input.clear();
-        setup.completions.clear();
-        setup.selected_completion = None;
-    })?;
+    state
+        .update_setup(|setup| {
+            if !setup.dirs.contains(&input_text) {
+                setup.dirs.push(input_text);
+            }
+            setup.input.clear();
+            setup.completions.clear();
+            setup.selected_completion = None;
+        })
+        .ok()?;
     None
 }
 
@@ -451,12 +453,14 @@ fn fill_setup_completion(state: &mut AppState, index: usize) {
     } else {
         format!("{completion}/")
     };
-    let _ = state.with_setup_mut(|setup| {
-        setup.input.text = with_slash;
-        setup.input.cursor = setup.input.text.len();
-        setup.completions.clear();
-        setup.selected_completion = None;
-    });
+    state
+        .update_setup(|setup| {
+            setup.input.text = with_slash;
+            setup.input.cursor = setup.input.text.len();
+            setup.completions.clear();
+            setup.selected_completion = None;
+        })
+        .expect("setup context must exist while applying setup completion");
     update_setup_completions(state);
 }
 
@@ -473,10 +477,12 @@ pub(super) fn handle_setup_tab_complete(state: &mut AppState) {
 
     // Generate completions if not already present
     if completion_count == 0 {
-        let _ = state.with_setup_mut(|setup| {
-            setup.completions = crate::components::path_input::complete(&input_text);
-            setup.selected_completion = None;
-        });
+        state
+            .update_setup(|setup| {
+                setup.completions = crate::components::path_input::complete(&input_text);
+                setup.selected_completion = None;
+            })
+            .expect("setup context must exist when generating setup completions");
         return;
     }
 
@@ -492,12 +498,14 @@ pub(super) fn handle_setup_tab_complete(state: &mut AppState) {
         .unwrap_or_default();
     let common = crate::components::path_input::common_prefix(&completions);
     if !common.is_empty() && common != input_text {
-        let _ = state.with_setup_mut(|setup| {
-            setup.input.text = common;
-            setup.input.cursor = setup.input.text.len();
-            setup.completions = crate::components::path_input::complete(&setup.input.text);
-            setup.selected_completion = None;
-        });
+        state
+            .update_setup(|setup| {
+                setup.input.text = common;
+                setup.input.cursor = setup.input.text.len();
+                setup.completions = crate::components::path_input::complete(&setup.input.text);
+                setup.selected_completion = None;
+            })
+            .expect("setup context must exist when filling setup common prefix");
         return;
     }
 
@@ -539,9 +547,11 @@ pub(super) fn handle_setup_move_selection(state: &mut AppState, delta: i32) {
             }
         }
     };
-    let _ = state.with_setup_mut(|setup| {
-        setup.selected_completion = next_selection;
-    });
+    state
+        .update_setup(|setup| {
+            setup.selected_completion = next_selection;
+        })
+        .expect("setup context must exist while moving setup selection");
 }
 
 /// Cancel in setup: deselect completion if one is highlighted, otherwise quit.
@@ -553,9 +563,11 @@ pub(super) fn handle_setup_cancel(state: &mut AppState) -> Option<super::OpenAct
         return Some(super::OpenAction::Quit);
     };
     if has_selection {
-        let _ = state.with_setup_mut(|setup| {
-            setup.selected_completion = None;
-        });
+        state
+            .update_setup(|setup| {
+                setup.selected_completion = None;
+            })
+            .expect("setup context must exist while cancelling setup selection");
         None
     } else {
         Some(super::OpenAction::Quit)
@@ -563,10 +575,12 @@ pub(super) fn handle_setup_cancel(state: &mut AppState) -> Option<super::OpenAct
 }
 
 fn update_setup_completions(state: &mut AppState) {
-    let _ = state.with_setup_mut(|setup| {
-        setup.completions = crate::components::path_input::complete(&setup.input.text);
-        setup.selected_completion = None;
-    });
+    state
+        .update_setup(|setup| {
+            setup.completions = crate::components::path_input::complete(&setup.input.text);
+            setup.selected_completion = None;
+        })
+        .expect("setup context must exist while updating setup completions");
 }
 
 fn update_active_filter(state: &mut AppState, matcher: &SkimMatcherV2) {
@@ -587,31 +601,35 @@ fn update_active_filter(state: &mut AppState, matcher: &SkimMatcherV2) {
             );
         }
         Mode::SelectBaseBranch => {
-            let _ = state.with_base_branch_selection_mut(|flow| {
-                let bases = flow.bases.clone();
-                apply_fuzzy_filter(&mut flow.list, &bases, matcher);
-            });
+            state
+                .update_base_branch_selection(|flow| {
+                    let bases = flow.bases.clone();
+                    apply_fuzzy_filter(&mut flow.list, &bases, matcher);
+                })
+                .expect("base branch selection context must exist in SelectBaseBranch mode");
         }
         Mode::Help { .. } => {
-            let _ = state.with_help_overlay_mut(|overlay| {
-                let search_items: Vec<String> = overlay
-                    .rows
-                    .iter()
-                    .map(|row| {
-                        format!(
-                            "{} {} {} {}",
-                            row.section_name, row.key_display, row.command, row.description
-                        )
-                    })
-                    .collect();
-                apply_fuzzy_filter(&mut overlay.list, &search_items, matcher);
-                // Stable-sort filtered results by section_index so that
-                // compute_help_layout never emits duplicate section headers
-                // when fuzzy scoring reorders items across sections.
-                overlay.list.filtered.sort_by_key(|(row_idx, _score)| {
-                    overlay.rows.get(*row_idx).map_or(0, |r| r.section_index)
-                });
-            });
+            state
+                .update_help_overlay(|overlay| {
+                    let search_items: Vec<String> = overlay
+                        .rows
+                        .iter()
+                        .map(|row| {
+                            format!(
+                                "{} {} {} {}",
+                                row.section_name, row.key_display, row.command, row.description
+                            )
+                        })
+                        .collect();
+                    apply_fuzzy_filter(&mut overlay.list, &search_items, matcher);
+                    // Stable-sort filtered results by section_index so that
+                    // compute_help_layout never emits duplicate section headers
+                    // when fuzzy scoring reorders items across sections.
+                    overlay.list.filtered.sort_by_key(|(row_idx, _score)| {
+                        overlay.rows.get(*row_idx).map_or(0, |r| r.section_index)
+                    });
+                })
+                .expect("help overlay context must exist in Help mode");
         }
         _ => {}
     }

@@ -961,9 +961,11 @@ fn handle_movement_actions(action: &Action, state: &mut AppState) -> bool {
 
 fn update_active_list_scroll_offset(state: &mut AppState, viewport_rows: usize) {
     if let Mode::Help { .. } = state.mode() {
-        let _ = state.with_help_overlay_mut(|overlay| {
-            update_help_scroll_offset(overlay, viewport_rows);
-        });
+        state
+            .update_help_overlay(|overlay| {
+                update_help_scroll_offset(overlay, viewport_rows);
+            })
+            .expect("help overlay context must exist in Help mode");
     } else if let Some(list) = state.active_list_mut() {
         list.update_scroll_offset_for_selection(viewport_rows);
     }
@@ -3647,7 +3649,7 @@ mod tests {
 
         let mut state = make_setup_state();
         state
-            .with_setup_mut(|setup| {
+            .update_setup(|setup| {
                 setup.input.text = base;
                 setup.input.cursor = setup.input.text.len();
             })
@@ -3666,7 +3668,7 @@ mod tests {
 
         let mut state = make_setup_state();
         state
-            .with_setup_mut(|setup| {
+            .update_setup(|setup| {
                 setup.input.text = format!("{base}on");
                 setup.input.cursor = setup.input.text.len();
             })
@@ -3689,7 +3691,7 @@ mod tests {
 
         let mut state = make_setup_state();
         state
-            .with_setup_mut(|setup| {
+            .update_setup(|setup| {
                 setup.input.text = format!("{base}D");
                 setup.input.cursor = setup.input.text.len();
             })
@@ -3714,7 +3716,7 @@ mod tests {
 
         let mut state = make_setup_state();
         state
-            .with_setup_mut(|setup| {
+            .update_setup(|setup| {
                 setup.input.text = format!("{base}De");
                 setup.input.cursor = setup.input.text.len();
                 setup.completions = vec![format!("{base}Desktop"), format!("{base}Development")];
@@ -3734,7 +3736,7 @@ mod tests {
 
         let mut state = make_setup_state();
         state
-            .with_setup_mut(|setup| {
+            .update_setup(|setup| {
                 setup.input.text = format!("{base}De");
                 setup.input.cursor = setup.input.text.len();
                 setup.completions = vec![format!("{base}Desktop"), format!("{base}Development")];
@@ -3754,7 +3756,7 @@ mod tests {
     fn setup_move_down_from_none_selects_first() {
         let mut state = make_setup_state();
         state
-            .with_setup_mut(|setup| {
+            .update_setup(|setup| {
                 setup.completions = vec!["a".into(), "b".into()];
                 setup.selected_completion = None;
             })
@@ -3768,7 +3770,7 @@ mod tests {
     fn setup_move_up_from_none_selects_last() {
         let mut state = make_setup_state();
         state
-            .with_setup_mut(|setup| {
+            .update_setup(|setup| {
                 setup.completions = vec!["a".into(), "b".into(), "c".into()];
                 setup.selected_completion = None;
             })
@@ -3782,7 +3784,7 @@ mod tests {
     fn setup_move_down_increments_selection() {
         let mut state = make_setup_state();
         state
-            .with_setup_mut(|setup| {
+            .update_setup(|setup| {
                 setup.completions = vec!["a".into(), "b".into(), "c".into()];
                 setup.selected_completion = Some(0);
             })
@@ -3796,7 +3798,7 @@ mod tests {
     fn setup_move_down_past_last_deselects() {
         let mut state = make_setup_state();
         state
-            .with_setup_mut(|setup| {
+            .update_setup(|setup| {
                 setup.completions = vec!["a".into(), "b".into()];
                 setup.selected_completion = Some(1);
             })
@@ -3810,7 +3812,7 @@ mod tests {
     fn setup_move_up_from_first_deselects() {
         let mut state = make_setup_state();
         state
-            .with_setup_mut(|setup| {
+            .update_setup(|setup| {
                 setup.completions = vec!["a".into(), "b".into()];
                 setup.selected_completion = Some(0);
             })
@@ -3824,7 +3826,7 @@ mod tests {
     fn setup_move_on_empty_completions_is_noop() {
         let mut state = make_setup_state();
         state
-            .with_setup_mut(|setup| {
+            .update_setup(|setup| {
                 setup.completions = Vec::new();
                 setup.selected_completion = None;
             })
@@ -3840,7 +3842,7 @@ mod tests {
     fn setup_enter_no_selection_adds_typed_text() {
         let mut state = make_setup_state();
         state
-            .with_setup_mut(|setup| {
+            .update_setup(|setup| {
                 setup.input.text = "~/my-projects".into();
                 setup.input.cursor = setup.input.text.len();
                 setup.completions = vec!["~/my-projects-extra".into()];
@@ -3862,7 +3864,7 @@ mod tests {
 
         let mut state = make_setup_state();
         state
-            .with_setup_mut(|setup| {
+            .update_setup(|setup| {
                 setup.input.text = format!("{base}De");
                 setup.input.cursor = setup.input.text.len();
                 setup.completions = vec![format!("{base}Desktop"), format!("{base}Development")];
@@ -3882,7 +3884,7 @@ mod tests {
     fn setup_enter_empty_with_dirs_completes_setup() {
         let mut state = make_setup_state();
         state
-            .with_setup_mut(|setup| {
+            .update_setup(|setup| {
                 setup.input.text = String::new();
                 setup.dirs = vec!["~/Projects".into()];
             })
@@ -3896,7 +3898,7 @@ mod tests {
     fn setup_enter_empty_without_dirs_shows_error() {
         let mut state = make_setup_state();
         state
-            .with_setup_mut(|setup| {
+            .update_setup(|setup| {
                 setup.input.text = String::new();
                 setup.dirs = Vec::new();
             })
@@ -3912,7 +3914,7 @@ mod tests {
     fn setup_enter_does_not_add_duplicate_dirs() {
         let mut state = make_setup_state();
         state
-            .with_setup_mut(|setup| {
+            .update_setup(|setup| {
                 setup.dirs = vec!["~/Projects".into()];
                 setup.input.text = "~/Projects".into();
                 setup.input.cursor = setup.input.text.len();
@@ -3933,7 +3935,7 @@ mod tests {
 
         let mut state = make_setup_state();
         state
-            .with_setup_mut(|setup| {
+            .update_setup(|setup| {
                 setup.input.text = format!("{base}D");
                 setup.input.cursor = setup.input.text.len();
                 setup.completions = vec![format!("{base}Desktop")];
@@ -3955,7 +3957,7 @@ mod tests {
 
         let mut state = make_setup_state();
         state
-            .with_setup_mut(|setup| {
+            .update_setup(|setup| {
                 setup.input.text = format!("{base}D");
                 setup.input.cursor = setup.input.text.len();
             })
@@ -3981,7 +3983,7 @@ mod tests {
 
         let mut state = make_setup_state();
         state
-            .with_setup_mut(|setup| {
+            .update_setup(|setup| {
                 setup.input.text = format!("{base}De");
                 setup.input.cursor = setup.input.text.len();
             })
@@ -4017,7 +4019,7 @@ mod tests {
     fn setup_continue_preserves_existing_state() {
         let mut state = make_setup_state();
         state
-            .with_setup_mut(|setup| {
+            .update_setup(|setup| {
                 setup.dirs.push("~/existing".to_string());
             })
             .unwrap();
@@ -4064,7 +4066,7 @@ mod tests {
 
         // Clear input and type the path directly, then add it
         state
-            .with_setup_mut(|setup| {
+            .update_setup(|setup| {
                 setup.input.clear();
                 setup.completions.clear();
                 setup.selected_completion = None;
@@ -4089,7 +4091,7 @@ mod tests {
     fn setup_cancel_deselects_when_selected() {
         let mut state = make_setup_state();
         state
-            .with_setup_mut(|setup| {
+            .update_setup(|setup| {
                 setup.completions = vec!["a".into(), "b".into()];
                 setup.selected_completion = Some(1);
             })
@@ -4104,7 +4106,7 @@ mod tests {
     fn setup_cancel_quits_when_no_selection() {
         let mut state = make_setup_state();
         state
-            .with_setup_mut(|setup| {
+            .update_setup(|setup| {
                 setup.completions = vec!["a".into(), "b".into()];
                 setup.selected_completion = None;
             })
@@ -4128,7 +4130,7 @@ mod tests {
     fn setup_move_down_up_cycle_through_and_back() {
         let mut state = make_setup_state();
         state
-            .with_setup_mut(|setup| {
+            .update_setup(|setup| {
                 setup.completions = vec!["a".into(), "b".into()];
                 setup.selected_completion = None;
             })

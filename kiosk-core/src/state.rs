@@ -1516,7 +1516,7 @@ impl AppState {
         }
     }
 
-    pub fn setup_mut(&mut self) -> Option<&mut SetupState> {
+    fn setup_mut(&mut self) -> Option<&mut SetupState> {
         match &mut self.mode_context {
             ModeContextState::Setup(setup) => Some(setup),
             ModeContextState::HelpOverlay { previous, .. } => match previous.as_mut() {

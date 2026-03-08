@@ -3646,9 +3646,12 @@ mod tests {
         let (_tmp, base) = setup_temp_dirs(&["alpha", "beta"]);
 
         let mut state = make_setup_state();
-        let setup = state.setup_mut().unwrap();
-        setup.input.text = base;
-        setup.input.cursor = setup.input.text.len();
+        state
+            .with_setup_mut(|setup| {
+                setup.input.text = base;
+                setup.input.cursor = setup.input.text.len();
+            })
+            .unwrap();
 
         handle_setup_tab_complete(&mut state);
 
@@ -3662,9 +3665,12 @@ mod tests {
         let (_tmp, base) = setup_temp_dirs(&["only_dir"]);
 
         let mut state = make_setup_state();
-        let setup = state.setup_mut().unwrap();
-        setup.input.text = format!("{base}on");
-        setup.input.cursor = setup.input.text.len();
+        state
+            .with_setup_mut(|setup| {
+                setup.input.text = format!("{base}on");
+                setup.input.cursor = setup.input.text.len();
+            })
+            .unwrap();
 
         // First Tab generates completions
         handle_setup_tab_complete(&mut state);
@@ -3682,9 +3688,12 @@ mod tests {
         let (_tmp, base) = setup_temp_dirs(&["Desktop", "Development"]);
 
         let mut state = make_setup_state();
-        let setup = state.setup_mut().unwrap();
-        setup.input.text = format!("{base}D");
-        setup.input.cursor = setup.input.text.len();
+        state
+            .with_setup_mut(|setup| {
+                setup.input.text = format!("{base}D");
+                setup.input.cursor = setup.input.text.len();
+            })
+            .unwrap();
 
         // First Tab generates completions
         handle_setup_tab_complete(&mut state);
@@ -3704,11 +3713,14 @@ mod tests {
         let (_tmp, base) = setup_temp_dirs(&["Desktop", "Development"]);
 
         let mut state = make_setup_state();
-        let setup = state.setup_mut().unwrap();
-        setup.input.text = format!("{base}De");
-        setup.input.cursor = setup.input.text.len();
-        setup.completions = vec![format!("{base}Desktop"), format!("{base}Development")];
-        setup.selected_completion = Some(1);
+        state
+            .with_setup_mut(|setup| {
+                setup.input.text = format!("{base}De");
+                setup.input.cursor = setup.input.text.len();
+                setup.completions = vec![format!("{base}Desktop"), format!("{base}Development")];
+                setup.selected_completion = Some(1);
+            })
+            .unwrap();
 
         handle_setup_tab_complete(&mut state);
 
@@ -3721,11 +3733,14 @@ mod tests {
         let (_tmp, base) = setup_temp_dirs(&["Desktop", "Development"]);
 
         let mut state = make_setup_state();
-        let setup = state.setup_mut().unwrap();
-        setup.input.text = format!("{base}De");
-        setup.input.cursor = setup.input.text.len();
-        setup.completions = vec![format!("{base}Desktop"), format!("{base}Development")];
-        setup.selected_completion = None;
+        state
+            .with_setup_mut(|setup| {
+                setup.input.text = format!("{base}De");
+                setup.input.cursor = setup.input.text.len();
+                setup.completions = vec![format!("{base}Desktop"), format!("{base}Development")];
+                setup.selected_completion = None;
+            })
+            .unwrap();
 
         handle_setup_tab_complete(&mut state);
 
@@ -3738,9 +3753,12 @@ mod tests {
     #[test]
     fn setup_move_down_from_none_selects_first() {
         let mut state = make_setup_state();
-        let setup = state.setup_mut().unwrap();
-        setup.completions = vec!["a".into(), "b".into()];
-        setup.selected_completion = None;
+        state
+            .with_setup_mut(|setup| {
+                setup.completions = vec!["a".into(), "b".into()];
+                setup.selected_completion = None;
+            })
+            .unwrap();
 
         handle_setup_move_selection(&mut state, 1);
         assert_eq!(state.setup().unwrap().selected_completion, Some(0));
@@ -3749,9 +3767,12 @@ mod tests {
     #[test]
     fn setup_move_up_from_none_selects_last() {
         let mut state = make_setup_state();
-        let setup = state.setup_mut().unwrap();
-        setup.completions = vec!["a".into(), "b".into(), "c".into()];
-        setup.selected_completion = None;
+        state
+            .with_setup_mut(|setup| {
+                setup.completions = vec!["a".into(), "b".into(), "c".into()];
+                setup.selected_completion = None;
+            })
+            .unwrap();
 
         handle_setup_move_selection(&mut state, -1);
         assert_eq!(state.setup().unwrap().selected_completion, Some(2));
@@ -3760,9 +3781,12 @@ mod tests {
     #[test]
     fn setup_move_down_increments_selection() {
         let mut state = make_setup_state();
-        let setup = state.setup_mut().unwrap();
-        setup.completions = vec!["a".into(), "b".into(), "c".into()];
-        setup.selected_completion = Some(0);
+        state
+            .with_setup_mut(|setup| {
+                setup.completions = vec!["a".into(), "b".into(), "c".into()];
+                setup.selected_completion = Some(0);
+            })
+            .unwrap();
 
         handle_setup_move_selection(&mut state, 1);
         assert_eq!(state.setup().unwrap().selected_completion, Some(1));
@@ -3771,9 +3795,12 @@ mod tests {
     #[test]
     fn setup_move_down_past_last_deselects() {
         let mut state = make_setup_state();
-        let setup = state.setup_mut().unwrap();
-        setup.completions = vec!["a".into(), "b".into()];
-        setup.selected_completion = Some(1);
+        state
+            .with_setup_mut(|setup| {
+                setup.completions = vec!["a".into(), "b".into()];
+                setup.selected_completion = Some(1);
+            })
+            .unwrap();
 
         handle_setup_move_selection(&mut state, 1);
         assert_eq!(state.setup().unwrap().selected_completion, None);
@@ -3782,9 +3809,12 @@ mod tests {
     #[test]
     fn setup_move_up_from_first_deselects() {
         let mut state = make_setup_state();
-        let setup = state.setup_mut().unwrap();
-        setup.completions = vec!["a".into(), "b".into()];
-        setup.selected_completion = Some(0);
+        state
+            .with_setup_mut(|setup| {
+                setup.completions = vec!["a".into(), "b".into()];
+                setup.selected_completion = Some(0);
+            })
+            .unwrap();
 
         handle_setup_move_selection(&mut state, -1);
         assert_eq!(state.setup().unwrap().selected_completion, None);
@@ -3793,9 +3823,12 @@ mod tests {
     #[test]
     fn setup_move_on_empty_completions_is_noop() {
         let mut state = make_setup_state();
-        let setup = state.setup_mut().unwrap();
-        setup.completions = Vec::new();
-        setup.selected_completion = None;
+        state
+            .with_setup_mut(|setup| {
+                setup.completions = Vec::new();
+                setup.selected_completion = None;
+            })
+            .unwrap();
 
         handle_setup_move_selection(&mut state, 1);
         assert_eq!(state.setup().unwrap().selected_completion, None);
@@ -3806,11 +3839,14 @@ mod tests {
     #[test]
     fn setup_enter_no_selection_adds_typed_text() {
         let mut state = make_setup_state();
-        let setup = state.setup_mut().unwrap();
-        setup.input.text = "~/my-projects".into();
-        setup.input.cursor = setup.input.text.len();
-        setup.completions = vec!["~/my-projects-extra".into()];
-        setup.selected_completion = None;
+        state
+            .with_setup_mut(|setup| {
+                setup.input.text = "~/my-projects".into();
+                setup.input.cursor = setup.input.text.len();
+                setup.completions = vec!["~/my-projects-extra".into()];
+                setup.selected_completion = None;
+            })
+            .unwrap();
 
         let result = handle_setup_add_dir(&mut state);
         assert!(result.is_none());
@@ -3825,11 +3861,14 @@ mod tests {
         let (_tmp, base) = setup_temp_dirs(&["Desktop", "Development"]);
 
         let mut state = make_setup_state();
-        let setup = state.setup_mut().unwrap();
-        setup.input.text = format!("{base}De");
-        setup.input.cursor = setup.input.text.len();
-        setup.completions = vec![format!("{base}Desktop"), format!("{base}Development")];
-        setup.selected_completion = Some(1);
+        state
+            .with_setup_mut(|setup| {
+                setup.input.text = format!("{base}De");
+                setup.input.cursor = setup.input.text.len();
+                setup.completions = vec![format!("{base}Desktop"), format!("{base}Development")];
+                setup.selected_completion = Some(1);
+            })
+            .unwrap();
 
         let result = handle_setup_add_dir(&mut state);
         assert!(result.is_none());
@@ -3842,9 +3881,12 @@ mod tests {
     #[test]
     fn setup_enter_empty_with_dirs_completes_setup() {
         let mut state = make_setup_state();
-        let setup = state.setup_mut().unwrap();
-        setup.input.text = String::new();
-        setup.dirs = vec!["~/Projects".into()];
+        state
+            .with_setup_mut(|setup| {
+                setup.input.text = String::new();
+                setup.dirs = vec!["~/Projects".into()];
+            })
+            .unwrap();
 
         let result = handle_setup_add_dir(&mut state);
         assert!(matches!(result, Some(OpenAction::SetupComplete)));
@@ -3853,9 +3895,12 @@ mod tests {
     #[test]
     fn setup_enter_empty_without_dirs_shows_error() {
         let mut state = make_setup_state();
-        let setup = state.setup_mut().unwrap();
-        setup.input.text = String::new();
-        setup.dirs = Vec::new();
+        state
+            .with_setup_mut(|setup| {
+                setup.input.text = String::new();
+                setup.dirs = Vec::new();
+            })
+            .unwrap();
 
         let result = handle_setup_add_dir(&mut state);
         assert!(result.is_none());
@@ -3866,10 +3911,13 @@ mod tests {
     #[test]
     fn setup_enter_does_not_add_duplicate_dirs() {
         let mut state = make_setup_state();
-        let setup = state.setup_mut().unwrap();
-        setup.dirs = vec!["~/Projects".into()];
-        setup.input.text = "~/Projects".into();
-        setup.input.cursor = setup.input.text.len();
+        state
+            .with_setup_mut(|setup| {
+                setup.dirs = vec!["~/Projects".into()];
+                setup.input.text = "~/Projects".into();
+                setup.input.cursor = setup.input.text.len();
+            })
+            .unwrap();
 
         handle_setup_add_dir(&mut state);
 
@@ -3884,11 +3932,14 @@ mod tests {
         let (_tmp, base) = setup_temp_dirs(&["Desktop"]);
 
         let mut state = make_setup_state();
-        let setup = state.setup_mut().unwrap();
-        setup.input.text = format!("{base}D");
-        setup.input.cursor = setup.input.text.len();
-        setup.completions = vec![format!("{base}Desktop")];
-        setup.selected_completion = Some(0);
+        state
+            .with_setup_mut(|setup| {
+                setup.input.text = format!("{base}D");
+                setup.input.cursor = setup.input.text.len();
+                setup.completions = vec![format!("{base}Desktop")];
+                setup.selected_completion = Some(0);
+            })
+            .unwrap();
 
         let matcher = SkimMatcherV2::default();
         handle_search_push(&mut state, &matcher, 'e');
@@ -3903,9 +3954,12 @@ mod tests {
         let (_tmp, base) = setup_temp_dirs(&["Desktop", "Development", "Documents"]);
 
         let mut state = make_setup_state();
-        let setup = state.setup_mut().unwrap();
-        setup.input.text = format!("{base}D");
-        setup.input.cursor = setup.input.text.len();
+        state
+            .with_setup_mut(|setup| {
+                setup.input.text = format!("{base}D");
+                setup.input.cursor = setup.input.text.len();
+            })
+            .unwrap();
 
         let matcher = SkimMatcherV2::default();
         handle_search_push(&mut state, &matcher, 'e');
@@ -3926,9 +3980,12 @@ mod tests {
         let (_tmp, base) = setup_temp_dirs(&["Desktop", "Development", "Documents"]);
 
         let mut state = make_setup_state();
-        let setup = state.setup_mut().unwrap();
-        setup.input.text = format!("{base}De");
-        setup.input.cursor = setup.input.text.len();
+        state
+            .with_setup_mut(|setup| {
+                setup.input.text = format!("{base}De");
+                setup.input.cursor = setup.input.text.len();
+            })
+            .unwrap();
 
         let matcher = SkimMatcherV2::default();
         handle_search_pop(&mut state, &matcher);
@@ -3959,8 +4016,11 @@ mod tests {
     #[test]
     fn setup_continue_preserves_existing_state() {
         let mut state = make_setup_state();
-        let setup = state.setup_mut().unwrap();
-        setup.dirs.push("~/existing".to_string());
+        state
+            .with_setup_mut(|setup| {
+                setup.dirs.push("~/existing".to_string());
+            })
+            .unwrap();
 
         handle_setup_continue(&mut state);
         assert_eq!(
@@ -4003,12 +4063,15 @@ mod tests {
         assert!(setup.dirs.is_empty());
 
         // Clear input and type the path directly, then add it
-        let setup = state.setup_mut().unwrap();
-        setup.input.clear();
-        setup.completions.clear();
-        setup.selected_completion = None;
-        setup.input.text = format!("{base}Development");
-        setup.input.cursor = setup.input.text.len();
+        state
+            .with_setup_mut(|setup| {
+                setup.input.clear();
+                setup.completions.clear();
+                setup.selected_completion = None;
+                setup.input.text = format!("{base}Development");
+                setup.input.cursor = setup.input.text.len();
+            })
+            .unwrap();
 
         handle_setup_add_dir(&mut state);
         let setup = state.setup().unwrap();
@@ -4025,9 +4088,12 @@ mod tests {
     #[test]
     fn setup_cancel_deselects_when_selected() {
         let mut state = make_setup_state();
-        let setup = state.setup_mut().unwrap();
-        setup.completions = vec!["a".into(), "b".into()];
-        setup.selected_completion = Some(1);
+        state
+            .with_setup_mut(|setup| {
+                setup.completions = vec!["a".into(), "b".into()];
+                setup.selected_completion = Some(1);
+            })
+            .unwrap();
 
         let result = handle_setup_cancel(&mut state);
         assert!(result.is_none());
@@ -4037,9 +4103,12 @@ mod tests {
     #[test]
     fn setup_cancel_quits_when_no_selection() {
         let mut state = make_setup_state();
-        let setup = state.setup_mut().unwrap();
-        setup.completions = vec!["a".into(), "b".into()];
-        setup.selected_completion = None;
+        state
+            .with_setup_mut(|setup| {
+                setup.completions = vec!["a".into(), "b".into()];
+                setup.selected_completion = None;
+            })
+            .unwrap();
 
         let result = handle_setup_cancel(&mut state);
         assert!(matches!(result, Some(OpenAction::Quit)));
@@ -4058,9 +4127,12 @@ mod tests {
     #[test]
     fn setup_move_down_up_cycle_through_and_back() {
         let mut state = make_setup_state();
-        let setup = state.setup_mut().unwrap();
-        setup.completions = vec!["a".into(), "b".into()];
-        setup.selected_completion = None;
+        state
+            .with_setup_mut(|setup| {
+                setup.completions = vec!["a".into(), "b".into()];
+                setup.selected_completion = None;
+            })
+            .unwrap();
 
         // Down from None → first
         handle_setup_move_selection(&mut state, 1);

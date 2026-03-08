@@ -1,7 +1,7 @@
 use super::dialog::Dialog;
 use crate::theme::Theme;
 use kiosk_core::{
-    config::{KeysConfig, keys::Command},
+    config::{KeysConfig, keys::ModalCommand},
     state::AppState,
 };
 use ratatui::{
@@ -39,7 +39,8 @@ fn build_error_dialog<'a>(error: &'a str, dismiss_key: &'a str, theme: &Theme) -
 }
 
 fn cancel_key_label(keys: &KeysConfig) -> String {
-    KeysConfig::find_key(&keys.modal, &Command::Cancel).map_or("esc".to_string(), |k| k.to_string())
+    KeysConfig::find_layer_key(&keys.modal, &ModalCommand::Cancel)
+        .map_or("esc".to_string(), |k| k.to_string())
 }
 
 /// Compute the width and height for an error toast dialog.

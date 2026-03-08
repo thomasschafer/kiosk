@@ -248,8 +248,104 @@ define_commands! {
     },
 }
 
-/// Key bindings for a specific layer/mode
+/// Effective key bindings after composing mode-relevant layers.
 pub type KeyMap = HashMap<KeyEvent, Command>;
+
+/// Key bindings for a specific command layer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LayerKeyMap<C>(HashMap<KeyEvent, C>);
+
+impl<C> LayerKeyMap<C> {
+    pub fn new() -> Self {
+        Self(HashMap::new())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn get(&self, key: &KeyEvent) -> Option<&C> {
+        self.0.get(key)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&KeyEvent, &C)> {
+        self.0.iter()
+    }
+
+    pub fn insert(&mut self, key: KeyEvent, command: C) {
+        self.0.insert(key, command);
+    }
+}
+
+impl<C> Default for LayerKeyMap<C> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+macro_rules! define_layer_commands {
+    ($name:ident => [$($variant:ident),+ $(,)?]) => {
+        #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+        pub enum $name {
+            Noop,
+            $($variant),+
+        }
+
+        impl From<$name> for Command {
+            fn from(value: $name) -> Self {
+                match value {
+                    $name::Noop => Command::Noop,
+                    $($name::$variant => Command::$variant),+
+                }
+            }
+        }
+
+        impl TryFrom<Command> for $name {
+            type Error = String;
+
+            fn try_from(value: Command) -> Result<Self, Self::Error> {
+                match value {
+                    Command::Noop => Ok($name::Noop),
+                    $(Command::$variant => Ok($name::$variant),)+
+                    other => Err(format!(
+                        "Command '{}' is not allowed in {} layer",
+                        other,
+                        stringify!($name)
+                    )),
+                }
+            }
+        }
+    };
+}
+
+define_layer_commands!(GeneralCommand => [Quit, ShowHelp]);
+define_layer_commands!(TextEditCommand => [
+    MoveCursorLeft,
+    MoveCursorRight,
+    MoveCursorWordLeft,
+    MoveCursorWordRight,
+    MoveCursorStart,
+    MoveCursorEnd,
+    DeleteBackwardChar,
+    DeleteForwardChar,
+    DeleteBackwardWord,
+    DeleteForwardWord,
+    DeleteToStart,
+    DeleteToEnd
+]);
+define_layer_commands!(ListNavigationCommand => [
+    MoveUp,
+    MoveDown,
+    HalfPageUp,
+    HalfPageDown,
+    PageUp,
+    PageDown,
+    MoveTop,
+    MoveBottom
+]);
+define_layer_commands!(ModalCommand => [Confirm, Cancel, TabComplete]);
+define_layer_commands!(RepoSelectCommand => [OpenRepo, EnterRepo, Quit]);
+define_layer_commands!(BranchSelectCommand => [OpenBranch, GoBack, NewBranch, DeleteWorktree]);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeybindingEntry {
@@ -317,12 +413,12 @@ impl Layer {
 /// Complete key binding configuration, composed from reusable layers.
 #[derive(Debug, Clone, Serialize)]
 pub struct KeysConfig {
-    pub general: KeyMap,
-    pub text_edit: KeyMap,
-    pub list_navigation: KeyMap,
-    pub modal: KeyMap,
-    pub repo_select: KeyMap,
-    pub branch_select: KeyMap,
+    pub general: LayerKeyMap<GeneralCommand>,
+    pub text_edit: LayerKeyMap<TextEditCommand>,
+    pub list_navigation: LayerKeyMap<ListNavigationCommand>,
+    pub modal: LayerKeyMap<ModalCommand>,
+    pub repo_select: LayerKeyMap<RepoSelectCommand>,
+    pub branch_select: LayerKeyMap<BranchSelectCommand>,
 }
 
 /// Intermediate structure for deserializing key bindings
@@ -365,7 +461,16 @@ impl KeysConfig {
         let mut combined = KeyMap::new();
         for layer in Layer::ORDER_ASC {
             if Self::mode_uses_layer(mode, layer) {
-                Self::apply_layer(&mut combined, self.layer(layer));
+                match layer {
+                    Layer::General => Self::apply_layer(&mut combined, &self.general),
+                    Layer::TextEdit => Self::apply_layer(&mut combined, &self.text_edit),
+                    Layer::ListNavigation => {
+                        Self::apply_layer(&mut combined, &self.list_navigation);
+                    }
+                    Layer::RepoSelect => Self::apply_layer(&mut combined, &self.repo_select),
+                    Layer::BranchSelect => Self::apply_layer(&mut combined, &self.branch_select),
+                    Layer::Modal => Self::apply_layer(&mut combined, &self.modal),
+                }
             }
         }
 
@@ -381,10 +486,17 @@ impl KeysConfig {
             .filter(|layer| Self::mode_uses_layer(mode, *layer))
             .map(|layer| KeybindingSection {
                 name: layer.section_name(),
-                entries: Self::entries_for_layer(self.layer(layer))
-                    .into_iter()
-                    .filter(|e| effective.get(&e.key) == Some(&e.command))
-                    .collect(),
+                entries: match layer {
+                    Layer::General => Self::entries_for_layer(&self.general),
+                    Layer::TextEdit => Self::entries_for_layer(&self.text_edit),
+                    Layer::ListNavigation => Self::entries_for_layer(&self.list_navigation),
+                    Layer::RepoSelect => Self::entries_for_layer(&self.repo_select),
+                    Layer::BranchSelect => Self::entries_for_layer(&self.branch_select),
+                    Layer::Modal => Self::entries_for_layer(&self.modal),
+                }
+                .into_iter()
+                .filter(|e| effective.get(&e.key) == Some(&e.command))
+                .collect(),
             })
             .filter(|section| !section.entries.is_empty())
             .collect()
@@ -449,21 +561,43 @@ impl KeysConfig {
         found.into_iter().next()
     }
 
-    fn apply_layer(base: &mut KeyMap, layer: &KeyMap) {
-        for (key, command) in layer {
-            if *command == Command::Noop {
+    /// Find the first key bound to a given command in a typed layer keymap.
+    pub fn find_layer_key<C>(keymap: &LayerKeyMap<C>, command: &C) -> Option<KeyEvent>
+    where
+        C: PartialEq,
+    {
+        let mut found: Vec<_> = keymap
+            .iter()
+            .filter(|(_, cmd)| *cmd == command)
+            .map(|(key, _)| *key)
+            .collect();
+        found.sort();
+        found.into_iter().next()
+    }
+
+    fn apply_layer<C>(base: &mut KeyMap, layer: &LayerKeyMap<C>)
+    where
+        C: Clone + Into<Command>,
+    {
+        for (key, command) in layer.iter() {
+            let command: Command = command.clone().into();
+            if command == Command::Noop {
                 base.remove(key);
             } else {
-                base.insert(*key, command.clone());
+                base.insert(*key, command);
             }
         }
     }
 
-    fn entries_for_layer(layer: &KeyMap) -> Vec<KeybindingEntry> {
+    fn entries_for_layer<C>(layer: &LayerKeyMap<C>) -> Vec<KeybindingEntry>
+    where
+        C: Clone + Into<Command>,
+    {
         let mut entries: Vec<KeybindingEntry> = layer
             .iter()
             .filter_map(|(key, command)| {
-                if *command == Command::Noop {
+                let command: Command = command.clone().into();
+                if command == Command::Noop {
                     None
                 } else {
                     Some(KeybindingEntry {
@@ -483,17 +617,6 @@ impl KeysConfig {
         entries
     }
 
-    fn layer(&self, layer: Layer) -> &KeyMap {
-        match layer {
-            Layer::General => &self.general,
-            Layer::TextEdit => &self.text_edit,
-            Layer::ListNavigation => &self.list_navigation,
-            Layer::RepoSelect => &self.repo_select,
-            Layer::BranchSelect => &self.branch_select,
-            Layer::Modal => &self.modal,
-        }
-    }
-
     fn mode_uses_layer(mode: &Mode, layer: Layer) -> bool {
         match layer {
             Layer::General => true,
@@ -505,200 +628,200 @@ impl KeysConfig {
         }
     }
 
-    fn default_general() -> KeyMap {
-        let mut map = KeyMap::new();
+    fn default_general() -> LayerKeyMap<GeneralCommand> {
+        let mut map = LayerKeyMap::new();
         map.insert(
             KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
-            Command::Quit,
+            GeneralCommand::Quit,
         );
         map.insert(
             KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL),
-            Command::ShowHelp,
+            GeneralCommand::ShowHelp,
         );
         map
     }
 
-    fn default_text_edit() -> KeyMap {
-        let mut map = KeyMap::new();
+    fn default_text_edit() -> LayerKeyMap<TextEditCommand> {
+        let mut map = LayerKeyMap::new();
         map.insert(
             KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
-            Command::DeleteBackwardChar,
+            TextEditCommand::DeleteBackwardChar,
         );
         map.insert(
             KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE),
-            Command::DeleteForwardChar,
+            TextEditCommand::DeleteForwardChar,
         );
         map.insert(
             KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
-            Command::DeleteForwardChar,
+            TextEditCommand::DeleteForwardChar,
         );
         map.insert(
             KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
-            Command::DeleteBackwardWord,
+            TextEditCommand::DeleteBackwardWord,
         );
         map.insert(
             KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT),
-            Command::DeleteBackwardWord,
+            TextEditCommand::DeleteBackwardWord,
         );
         map.insert(
             KeyEvent::new(KeyCode::Char('d'), KeyModifiers::ALT),
-            Command::DeleteForwardWord,
+            TextEditCommand::DeleteForwardWord,
         );
         map.insert(
             KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
-            Command::DeleteToStart,
+            TextEditCommand::DeleteToStart,
         );
         map.insert(
             KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL),
-            Command::DeleteToEnd,
+            TextEditCommand::DeleteToEnd,
         );
         map.insert(
             KeyEvent::new(KeyCode::Left, KeyModifiers::NONE),
-            Command::MoveCursorLeft,
+            TextEditCommand::MoveCursorLeft,
         );
         map.insert(
             KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
-            Command::MoveCursorRight,
+            TextEditCommand::MoveCursorRight,
         );
         map.insert(
             KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT),
-            Command::MoveCursorWordLeft,
+            TextEditCommand::MoveCursorWordLeft,
         );
         map.insert(
             KeyEvent::new(KeyCode::Left, KeyModifiers::ALT),
-            Command::MoveCursorWordLeft,
+            TextEditCommand::MoveCursorWordLeft,
         );
         map.insert(
             KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT),
-            Command::MoveCursorWordRight,
+            TextEditCommand::MoveCursorWordRight,
         );
         map.insert(
             KeyEvent::new(KeyCode::Right, KeyModifiers::ALT),
-            Command::MoveCursorWordRight,
+            TextEditCommand::MoveCursorWordRight,
         );
         map.insert(
             KeyEvent::new(KeyCode::Home, KeyModifiers::NONE),
-            Command::MoveCursorStart,
+            TextEditCommand::MoveCursorStart,
         );
         map.insert(
             KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
-            Command::MoveCursorStart,
+            TextEditCommand::MoveCursorStart,
         );
         map.insert(
             KeyEvent::new(KeyCode::End, KeyModifiers::NONE),
-            Command::MoveCursorEnd,
+            TextEditCommand::MoveCursorEnd,
         );
         map.insert(
             KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL),
-            Command::MoveCursorEnd,
+            TextEditCommand::MoveCursorEnd,
         );
         map
     }
 
-    fn default_list_navigation() -> KeyMap {
-        let mut map = KeyMap::new();
+    fn default_list_navigation() -> LayerKeyMap<ListNavigationCommand> {
+        let mut map = LayerKeyMap::new();
         map.insert(
             KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
-            Command::MoveUp,
+            ListNavigationCommand::MoveUp,
         );
         map.insert(
             KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
-            Command::MoveDown,
+            ListNavigationCommand::MoveDown,
         );
         map.insert(
             KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
-            Command::MoveUp,
+            ListNavigationCommand::MoveUp,
         );
         map.insert(
             KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
-            Command::MoveDown,
+            ListNavigationCommand::MoveDown,
         );
         map.insert(
             KeyEvent::new(KeyCode::Char('j'), KeyModifiers::ALT),
-            Command::HalfPageDown,
+            ListNavigationCommand::HalfPageDown,
         );
         map.insert(
             KeyEvent::new(KeyCode::Char('k'), KeyModifiers::ALT),
-            Command::HalfPageUp,
+            ListNavigationCommand::HalfPageUp,
         );
         map.insert(
             KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE),
-            Command::PageUp,
+            ListNavigationCommand::PageUp,
         );
         map.insert(
             KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
-            Command::PageDown,
+            ListNavigationCommand::PageDown,
         );
         map.insert(
             KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
-            Command::PageDown,
+            ListNavigationCommand::PageDown,
         );
         map.insert(
             KeyEvent::new(KeyCode::Char('v'), KeyModifiers::ALT),
-            Command::PageUp,
+            ListNavigationCommand::PageUp,
         );
         map.insert(
             KeyEvent::new(KeyCode::Char('g'), KeyModifiers::ALT),
-            Command::MoveTop,
+            ListNavigationCommand::MoveTop,
         );
         map.insert(
             KeyEvent::new(KeyCode::Char('G'), KeyModifiers::ALT),
-            Command::MoveBottom,
+            ListNavigationCommand::MoveBottom,
         );
         map
     }
 
-    fn default_modal() -> KeyMap {
-        let mut map = KeyMap::new();
+    fn default_modal() -> LayerKeyMap<ModalCommand> {
+        let mut map = LayerKeyMap::new();
         map.insert(
             KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            Command::Confirm,
+            ModalCommand::Confirm,
         );
         map.insert(
             KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-            Command::Cancel,
+            ModalCommand::Cancel,
         );
         map.insert(
             KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
-            Command::TabComplete,
+            ModalCommand::TabComplete,
         );
         map
     }
 
-    fn default_repo_select() -> KeyMap {
-        let mut map = KeyMap::new();
+    fn default_repo_select() -> LayerKeyMap<RepoSelectCommand> {
+        let mut map = LayerKeyMap::new();
         map.insert(
             KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            Command::OpenRepo,
+            RepoSelectCommand::OpenRepo,
         );
         map.insert(
             KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
-            Command::EnterRepo,
+            RepoSelectCommand::EnterRepo,
         );
         map.insert(
             KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-            Command::Quit,
+            RepoSelectCommand::Quit,
         );
         map
     }
 
-    fn default_branch_select() -> KeyMap {
-        let mut map = KeyMap::new();
+    fn default_branch_select() -> LayerKeyMap<BranchSelectCommand> {
+        let mut map = LayerKeyMap::new();
         map.insert(
             KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            Command::OpenBranch,
+            BranchSelectCommand::OpenBranch,
         );
         map.insert(
             KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-            Command::GoBack,
+            BranchSelectCommand::GoBack,
         );
         map.insert(
             KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
-            Command::NewBranch,
+            BranchSelectCommand::NewBranch,
         );
         map.insert(
             KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
-            Command::DeleteWorktree,
+            BranchSelectCommand::DeleteWorktree,
         );
         map
     }
@@ -716,8 +839,18 @@ impl KeysConfig {
         Ok(keymap)
     }
 
-    fn extend_layer(base: &mut KeyMap, raw_map: &HashMap<String, String>) -> Result<(), String> {
-        base.extend(Self::parse_keymap(raw_map)?);
+    fn extend_typed_layer<C>(
+        base: &mut LayerKeyMap<C>,
+        raw_map: &HashMap<String, String>,
+    ) -> Result<(), String>
+    where
+        C: TryFrom<Command, Error = String>,
+    {
+        let parsed = Self::parse_keymap(raw_map)?;
+        for (key, command) in parsed {
+            let typed = C::try_from(command)?;
+            base.insert(key, typed);
+        }
         Ok(())
     }
 
@@ -726,12 +859,12 @@ impl KeysConfig {
     /// Keep `Noop` values so higher-precedence layers can explicitly unbind inherited mappings.
     fn from_raw(raw: &KeysConfigRaw) -> Result<Self, String> {
         let mut config = Self::default();
-        Self::extend_layer(&mut config.general, &raw.general)?;
-        Self::extend_layer(&mut config.text_edit, &raw.text_edit)?;
-        Self::extend_layer(&mut config.list_navigation, &raw.list_navigation)?;
-        Self::extend_layer(&mut config.modal, &raw.modal)?;
-        Self::extend_layer(&mut config.repo_select, &raw.repo_select)?;
-        Self::extend_layer(&mut config.branch_select, &raw.branch_select)?;
+        Self::extend_typed_layer(&mut config.general, &raw.general)?;
+        Self::extend_typed_layer(&mut config.text_edit, &raw.text_edit)?;
+        Self::extend_typed_layer(&mut config.list_navigation, &raw.list_navigation)?;
+        Self::extend_typed_layer(&mut config.modal, &raw.modal)?;
+        Self::extend_typed_layer(&mut config.repo_select, &raw.repo_select)?;
+        Self::extend_typed_layer(&mut config.branch_select, &raw.branch_select)?;
 
         Ok(config)
     }
@@ -825,7 +958,7 @@ mod tests {
             modal: HashMap::new(),
             repo_select: {
                 let mut map = HashMap::new();
-                map.insert("C-c".to_string(), "show_help".to_string());
+                map.insert("C-c".to_string(), "open_repo".to_string());
                 map
             },
             branch_select: HashMap::new(),
@@ -834,7 +967,26 @@ mod tests {
         let config = KeysConfig::from_raw(&raw).unwrap();
         let map = config.keymap_for_mode(&Mode::RepoSelect);
         let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
-        assert_eq!(map.get(&ctrl_c), Some(&Command::ShowHelp));
+        assert_eq!(map.get(&ctrl_c), Some(&Command::OpenRepo));
+    }
+
+    #[test]
+    fn test_rejects_command_not_allowed_in_layer() {
+        let raw = KeysConfigRaw {
+            general: HashMap::new(),
+            text_edit: {
+                let mut map = HashMap::new();
+                map.insert("C-x".to_string(), "delete_worktree".to_string());
+                map
+            },
+            list_navigation: HashMap::new(),
+            modal: HashMap::new(),
+            repo_select: HashMap::new(),
+            branch_select: HashMap::new(),
+        };
+
+        let result = KeysConfig::from_raw(&raw);
+        assert!(result.is_err());
     }
 
     #[test]

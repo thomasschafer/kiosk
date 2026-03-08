@@ -14,7 +14,10 @@ use crossterm::event::{self, Event, KeyEventKind};
 use fuzzy_matcher::{FuzzyMatcher, skim::SkimMatcherV2};
 use kiosk_core::{
     action::Action,
-    config::{KeysConfig, keys::Command},
+    config::{
+        KeysConfig,
+        keys::{Command, GeneralCommand, ModalCommand},
+    },
     event::{AppEvent, SessionRuntimeUpdate},
     git::GitProvider,
     pending_delete::save_pending_worktree_deletes,
@@ -134,9 +137,9 @@ pub fn run(
             if state.error.is_some() {
                 let mut our_key: kiosk_core::keyboard::KeyEvent = key.into();
                 our_key.canonicalize();
-                if keys.modal.get(&our_key) == Some(&Command::Cancel) {
+                if keys.modal.get(&our_key) == Some(&ModalCommand::Cancel) {
                     state.clear_error();
-                } else if keys.general.get(&our_key) == Some(&Command::Quit) {
+                } else if keys.general.get(&our_key) == Some(&GeneralCommand::Quit) {
                     cancel.store(true, Ordering::Relaxed);
                     return Ok(Some(OpenAction::Quit));
                 }

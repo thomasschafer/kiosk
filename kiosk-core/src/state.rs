@@ -1,5 +1,5 @@
 use crate::{
-    agent::AgentStatus,
+    agent::{AgentKind, AgentStatus},
     config::{
         AgentConfig, AgentLabelsConfig,
         keys::{Command, FlattenedKeybindingRow},
@@ -566,11 +566,38 @@ pub fn agent_statuses_sort_priority(statuses: &[crate::agent::AgentStatus]) -> u
         .unwrap_or(0)
 }
 
+fn agent_kind_sort_priority(kind: AgentKind) -> u8 {
+    match kind {
+        AgentKind::ClaudeCode => 0,
+        AgentKind::Codex => 1,
+        AgentKind::CursorAgent => 2,
+        AgentKind::OpenCode => 3,
+        AgentKind::Gemini => 4,
+    }
+}
+
+/// Canonicalize agent statuses for stable sorting, comparisons, and display.
+pub fn normalized_agent_statuses(
+    statuses: &[crate::agent::AgentStatus],
+) -> Vec<crate::agent::AgentStatus> {
+    let mut normalized = statuses.to_vec();
+    normalized.sort_by(|left, right| {
+        agent_state_sort_priority(right.state)
+            .cmp(&agent_state_sort_priority(left.state))
+            .then(agent_kind_sort_priority(left.kind).cmp(&agent_kind_sort_priority(right.kind)))
+    });
+    normalized.dedup();
+    normalized
+}
+
 /// Sort and deduplicate agent states by attention priority (highest first).
 pub fn sorted_unique_agent_states(
     statuses: &[crate::agent::AgentStatus],
 ) -> Vec<crate::AgentState> {
-    let mut states: Vec<crate::AgentState> = statuses.iter().map(|status| status.state).collect();
+    let mut states: Vec<crate::AgentState> = normalized_agent_statuses(statuses)
+        .into_iter()
+        .map(|status| status.state)
+        .collect();
     states.sort_by_key(|state| std::cmp::Reverse(agent_state_sort_priority(*state)));
     states.dedup();
     states
@@ -718,6 +745,43 @@ pub struct SessionEntry {
     pub attached: bool,
 }
 
+pub fn active_session_entries<S1, S2>(
+    repos: &[Repo],
+    session_activity: &HashMap<String, u64, S1>,
+    attached_sessions: &HashSet<String, S2>,
+) -> Vec<SessionEntry>
+where
+    S1: std::hash::BuildHasher,
+    S2: std::hash::BuildHasher,
+{
+    let mut sessions = Vec::new();
+    for repo in repos {
+        for worktree in &repo.worktrees {
+            let session_name = repo.tmux_session_name(&worktree.path);
+            let Some(&activity) = session_activity.get(&session_name) else {
+                continue;
+            };
+            sessions.push(SessionEntry {
+                session_name: session_name.clone(),
+                repo_name: repo.name.clone(),
+                branch: worktree.branch.clone(),
+                path: worktree.path.clone(),
+                agent_statuses: Vec::new(),
+                session_activity: activity,
+                attached: attached_sessions.contains(&session_name),
+            });
+        }
+    }
+    sessions
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StartupMode {
+    #[default]
+    Repos,
+    Sessions,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SessionsLoadState {
     #[default]
@@ -852,16 +916,43 @@ impl ActiveAgentPoller {
     }
 }
 
-/// Sort sessions by: Waiting first, then Idle, then Running, then no agents.
+fn session_matches_current(
+    session: &SessionEntry,
+    current_worktree_path: Option<&Path>,
+    current_canonical: Option<&PathBuf>,
+) -> bool {
+    let Some(current_worktree_path) = current_worktree_path else {
+        return false;
+    };
+    session.path == current_worktree_path
+        || current_canonical.is_some_and(|canonical| {
+            session.path == *canonical
+                || std::fs::canonicalize(&session.path).is_ok_and(|path| path == *canonical)
+        })
+}
+
+/// Sort sessions by: current session first, then Waiting, Idle, Running, no agent.
 /// Within same tier: newest activity first (most recently visited).
-pub fn sort_sessions(sessions: &mut [SessionEntry]) {
+pub fn sort_sessions(sessions: &mut [SessionEntry], current_worktree_path: Option<&Path>) {
+    let current_canonical = current_worktree_path
+        .and_then(|path| std::fs::canonicalize(path).ok())
+        .or_else(|| current_worktree_path.map(ToOwned::to_owned));
     sessions.sort_by(|a, b| {
-        cmp_by_agent_priority_then_newest_activity(
-            &a.agent_statuses,
-            a.session_activity,
-            &b.agent_statuses,
-            b.session_activity,
-        )
+        let a_is_current =
+            session_matches_current(a, current_worktree_path, current_canonical.as_ref());
+        let b_is_current =
+            session_matches_current(b, current_worktree_path, current_canonical.as_ref());
+        b_is_current
+            .cmp(&a_is_current)
+            .then_with(|| {
+                cmp_by_agent_priority_then_newest_activity(
+                    &a.agent_statuses,
+                    a.session_activity,
+                    &b.agent_statuses,
+                    b.session_activity,
+                )
+            })
+            .then_with(|| a.session_name.cmp(&b.session_name))
     });
 }
 
@@ -1140,8 +1231,8 @@ pub struct AppState {
     pub search_dirs: Vec<(PathBuf, u16)>,
     /// Sessions view state. Grouped to reduce invalid cross-mode combinations.
     pub sessions_view: SessionsViewState,
-    /// Whether the TUI was launched with --sessions flag
-    pub sessions_initial: bool,
+    /// Which mode the TUI should open into initially.
+    pub startup_mode: StartupMode,
 }
 
 impl AppState {
@@ -1185,7 +1276,7 @@ impl AppState {
             seen_repo_paths: HashSet::new(),
             search_dirs: Vec::new(),
             sessions_view: SessionsViewState::new(),
-            sessions_initial: false,
+            startup_mode: StartupMode::Repos,
         }
     }
 
@@ -3652,7 +3743,7 @@ mod tests {
             },
         ];
 
-        sort_sessions(&mut sessions);
+        sort_sessions(&mut sessions, None);
 
         assert_eq!(
             sessions[0].session_name, "waiting",
@@ -3700,7 +3791,7 @@ mod tests {
             },
         ];
 
-        sort_sessions(&mut sessions);
+        sort_sessions(&mut sessions, None);
 
         assert_eq!(
             sessions[0].session_name, "recent",
@@ -3738,6 +3829,71 @@ mod tests {
             vec![AgentState::Waiting, AgentState::Idle, AgentState::Running]
         );
         assert_eq!(primary_agent_state(&statuses), AgentState::Waiting);
+    }
+
+    #[test]
+    fn test_normalized_agent_statuses_are_sorted_and_deduped() {
+        use crate::agent::{AgentKind, AgentState, AgentStatus};
+
+        let statuses = vec![
+            AgentStatus {
+                kind: AgentKind::Codex,
+                state: AgentState::Idle,
+            },
+            AgentStatus {
+                kind: AgentKind::ClaudeCode,
+                state: AgentState::Waiting,
+            },
+            AgentStatus {
+                kind: AgentKind::Codex,
+                state: AgentState::Idle,
+            },
+        ];
+
+        assert_eq!(
+            normalized_agent_statuses(&statuses),
+            vec![
+                AgentStatus {
+                    kind: AgentKind::ClaudeCode,
+                    state: AgentState::Waiting,
+                },
+                AgentStatus {
+                    kind: AgentKind::Codex,
+                    state: AgentState::Idle,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn test_sort_sessions_current_session_first() {
+        let mut sessions = vec![
+            SessionEntry {
+                session_name: "waiting".into(),
+                repo_name: "repo1".into(),
+                branch: Some("feat".into()),
+                path: PathBuf::from("/tmp/waiting"),
+                agent_statuses: vec![crate::agent::AgentStatus {
+                    kind: crate::agent::AgentKind::ClaudeCode,
+                    state: crate::agent::AgentState::Waiting,
+                }],
+                session_activity: 200,
+                attached: false,
+            },
+            SessionEntry {
+                session_name: "current".into(),
+                repo_name: "repo2".into(),
+                branch: Some("main".into()),
+                path: PathBuf::from("/tmp/current"),
+                agent_statuses: vec![],
+                session_activity: 1,
+                attached: false,
+            },
+        ];
+
+        sort_sessions(&mut sessions, Some(Path::new("/tmp/current")));
+
+        assert_eq!(sessions[0].session_name, "current");
     }
 
     #[test]

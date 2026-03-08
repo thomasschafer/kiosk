@@ -1,10 +1,7 @@
 use kiosk_core::{
     agent,
     event::{AppEvent, SessionRuntimeUpdate},
-    git::{
-        GitProvider, Repo, apply_repo_name_collision_resolution, repo_matches_active_session,
-        tmux_session_name_for_worktree,
-    },
+    git::{GitProvider, Repo, apply_repo_name_collision_resolution},
     state::{BranchEntry, PollerHandle},
 };
 use rayon::ThreadPoolBuilder;
@@ -33,14 +30,12 @@ const SESSIONS_MEMBERSHIP_POLL_INTERVAL: Duration = Duration::from_secs(3);
 /// Repo/worktree index refreshes less often than membership updates.
 const SESSIONS_INDEX_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 
-type SessionRepoData = (String, String, PathBuf, Vec<kiosk_core::git::Worktree>);
-
 struct SessionsPollerConfig {
     status_interval: Duration,
     membership_interval: Duration,
     index_refresh_interval: Duration,
     search_dirs: Vec<(PathBuf, u16)>,
-    repo_index: Vec<SessionRepoData>,
+    repo_index: Vec<Repo>,
 }
 
 pub(super) fn spawn_repo_discovery<T: TmuxProvider + ?Sized + 'static>(
@@ -481,7 +476,9 @@ fn detect_agent_statuses<T: TmuxProvider + ?Sized>(
                     || all_pane_data.contains_key(&session_name),
                 session_name,
                 session_activity_ts,
-                agent_statuses: result.into_iter().map(|r| r.status).collect(),
+                agent_statuses: kiosk_core::state::normalized_agent_statuses(
+                    &result.into_iter().map(|r| r.status).collect::<Vec<_>>(),
+                ),
             }
         })
         .collect()
@@ -496,62 +493,30 @@ fn session_agent_states(
         .collect()
 }
 
-fn build_sessions_repo_index(
-    git: &dyn GitProvider,
-    search_dirs: &[(PathBuf, u16)],
-) -> Vec<SessionRepoData> {
+fn build_sessions_repo_index(git: &dyn GitProvider, search_dirs: &[(PathBuf, u16)]) -> Vec<Repo> {
     let mut repos = git.scan_repos(search_dirs);
     apply_repo_name_collision_resolution(&mut repos, search_dirs);
 
     repos
         .into_iter()
-        .map(|repo| {
-            let worktrees = git.list_worktrees(&repo.path);
-            (repo.name, repo.session_name, repo.path, worktrees)
+        .map(|mut repo| {
+            repo.worktrees = git.list_worktrees(&repo.path);
+            repo
         })
         .collect()
 }
 
 fn discover_sessions_from_repos(
-    repos: &[SessionRepoData],
+    repos: &[Repo],
     active_sessions: &HashMap<String, u64>,
     attached_sessions: &HashSet<String>,
 ) -> (Vec<kiosk_core::state::SessionEntry>, Vec<String>) {
-    let mut sessions = Vec::new();
-    let mut session_names = Vec::new();
-    let active_session_names: HashSet<String> = active_sessions.keys().cloned().collect();
-
-    for (repo_name, repo_session_name, repo_path, worktrees) in repos {
-        if !repo_matches_active_session(
-            &Repo {
-                name: repo_name.clone(),
-                session_name: repo_session_name.clone(),
-                path: repo_path.clone(),
-                worktrees: Vec::new(),
-            },
-            &active_session_names,
-        ) {
-            continue;
-        }
-        for wt in worktrees {
-            let session_name =
-                tmux_session_name_for_worktree(repo_name, repo_session_name, repo_path, &wt.path);
-
-            if let Some(&activity) = active_sessions.get(&session_name) {
-                sessions.push(kiosk_core::state::SessionEntry {
-                    session_name: session_name.clone(),
-                    repo_name: repo_name.clone(),
-                    branch: wt.branch.clone(),
-                    path: wt.path.clone(),
-                    agent_statuses: Vec::new(),
-                    session_activity: activity,
-                    attached: attached_sessions.contains(&session_name),
-                });
-                session_names.push(session_name);
-            }
-        }
-    }
-
+    let sessions =
+        kiosk_core::state::active_session_entries(repos, active_sessions, attached_sessions);
+    let session_names = sessions
+        .iter()
+        .map(|session| session.session_name.clone())
+        .collect();
     (sessions, session_names)
 }
 
@@ -765,36 +730,36 @@ mod tests {
         tmux.clients.insert("beta--feat".into(), vec!["1".into()]);
 
         let repos = vec![
-            (
-                "alpha".to_string(),
-                "alpha".to_string(),
-                PathBuf::from("/tmp/alpha"),
-                vec![Worktree {
+            Repo {
+                name: "alpha".to_string(),
+                session_name: "alpha".to_string(),
+                path: PathBuf::from("/tmp/alpha"),
+                worktrees: vec![Worktree {
                     path: PathBuf::from("/tmp/alpha"),
                     branch: Some("main".to_string()),
                     is_main: true,
                 }],
-            ),
-            (
-                "beta".to_string(),
-                "beta".to_string(),
-                PathBuf::from("/tmp/beta"),
-                vec![Worktree {
+            },
+            Repo {
+                name: "beta".to_string(),
+                session_name: "beta".to_string(),
+                path: PathBuf::from("/tmp/beta"),
+                worktrees: vec![Worktree {
                     path: PathBuf::from("/tmp/beta--feat"),
                     branch: Some("feat".to_string()),
                     is_main: false,
                 }],
-            ),
-            (
-                "gamma".to_string(),
-                "gamma".to_string(),
-                PathBuf::from("/tmp/gamma"),
-                vec![Worktree {
+            },
+            Repo {
+                name: "gamma".to_string(),
+                session_name: "gamma".to_string(),
+                path: PathBuf::from("/tmp/gamma"),
+                worktrees: vec![Worktree {
                     path: PathBuf::from("/tmp/gamma--dev"),
                     branch: Some("dev".to_string()),
                     is_main: false,
                 }],
-            ),
+            },
         ];
 
         let active_sessions: HashMap<String, u64> =
@@ -818,16 +783,16 @@ mod tests {
             ..Default::default()
         };
 
-        let repos = vec![(
-            "api".to_string(),
-            "api--(work)".to_string(),
-            PathBuf::from("/tmp/work/api"),
-            vec![Worktree {
+        let repos = vec![Repo {
+            name: "api".to_string(),
+            session_name: "api--(work)".to_string(),
+            path: PathBuf::from("/tmp/work/api"),
+            worktrees: vec![Worktree {
                 path: PathBuf::from("/tmp/worktrees/api--feat"),
                 branch: Some("feat".to_string()),
                 is_main: false,
             }],
-        )];
+        }];
 
         let active_sessions: HashMap<String, u64> =
             tmux.list_sessions_with_activity().into_iter().collect();
@@ -870,7 +835,7 @@ mod tests {
 
         let index = build_sessions_repo_index(&git, &search_dirs);
         assert_eq!(index.len(), 2);
-        assert_eq!(index[0].1, "api--(work)");
-        assert_eq!(index[1].1, "api--(personal)");
+        assert_eq!(index[0].session_name, "api--(work)");
+        assert_eq!(index[1].session_name, "api--(personal)");
     }
 }

@@ -110,7 +110,7 @@ pub fn run(
 
     // Start repo discovery in background unless startup is explicitly sessions-first.
     // In that case we defer repo scanning until the user leaves sessions mode.
-    let sessions_first_startup = state.sessions_initial
+    let sessions_first_startup = state.startup_mode == kiosk_core::state::StartupMode::Sessions
         && state.mode() == &Mode::Sessions
         && state.sessions_view.is_loading();
     if !sessions_first_startup && (state.loading_repos || state.repos.is_empty()) {
@@ -692,7 +692,9 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
 
             // Only switch to RepoSelect from Loading — don't kick users out of BranchSelect.
             // In --sessions mode, keep loading UI until we can enter sessions view directly.
-            if !state.sessions_initial && matches!(state.mode(), Mode::Loading(_)) {
+            if state.startup_mode != kiosk_core::state::StartupMode::Sessions
+                && matches!(state.mode(), Mode::Loading(_))
+            {
                 apply_transition!(state, ModeTransition::RepoSelect);
             }
         }
@@ -707,7 +709,9 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
 
             // Switch to RepoSelect from Loading (so user sees repos appearing),
             // except in --sessions mode where we keep a stable loading screen.
-            if !state.sessions_initial && matches!(state.mode(), Mode::Loading(_)) {
+            if state.startup_mode != kiosk_core::state::StartupMode::Sessions
+                && matches!(state.mode(), Mode::Loading(_))
+            {
                 apply_transition!(state, ModeTransition::RepoSelect);
             }
         }
@@ -721,7 +725,9 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
 
             state.loading_repos = false;
 
-            if state.sessions_initial && state.mode() != &Mode::Sessions {
+            if state.startup_mode == kiosk_core::state::StartupMode::Sessions
+                && state.mode() != &Mode::Sessions
+            {
                 enter_sessions_view(state, git, tmux, sender);
             } else if matches!(state.mode(), Mode::Loading(_)) {
                 apply_transition!(state, ModeTransition::RepoSelect);
@@ -907,13 +913,17 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
 
         AppEvent::SessionAgentStatesUpdated { states } => {
             if state.effective_mode() == &Mode::Sessions {
+                let selected_session_name = selected_session_name(state);
                 for (session_name, agent_statuses) in states {
                     for session in &mut state.sessions_view.sessions {
                         if session.session_name == session_name {
-                            session.agent_statuses.clone_from(&agent_statuses);
+                            session.agent_statuses =
+                                kiosk_core::state::normalized_agent_statuses(&agent_statuses);
                         }
                     }
                 }
+                sort_sessions_for_view(state);
+                rebuild_sessions_list(state, selected_session_name);
                 if state.sessions_view.pin_first_selection
                     && !state.sessions_view.list.filtered.is_empty()
                 {
@@ -1114,7 +1124,7 @@ fn merge_session_agent_states(
 
     for session in sessions {
         if let Some(agent_statuses) = by_session.get(session.session_name.as_str()) {
-            session.agent_statuses.clone_from(agent_statuses);
+            session.agent_statuses = kiosk_core::state::normalized_agent_statuses(agent_statuses);
         }
     }
 }
@@ -1133,59 +1143,16 @@ fn preserve_existing_session_agent_states(
         if session.agent_statuses.is_empty()
             && let Some(agent_statuses) = by_session.get(session.session_name.as_str())
         {
-            session.agent_statuses.clone_from(agent_statuses);
+            session.agent_statuses = kiosk_core::state::normalized_agent_statuses(agent_statuses);
         }
-    }
-}
-
-fn pin_current_session_first(state: &mut AppState) {
-    let Some(cwd_worktree_path) = state.cwd_worktree_path.as_ref() else {
-        return;
-    };
-    let cwd_canonical =
-        std::fs::canonicalize(cwd_worktree_path).unwrap_or_else(|_| cwd_worktree_path.clone());
-    if let Some(idx) = state.sessions_view.sessions.iter().position(|session| {
-        session.path == *cwd_worktree_path
-            || session.path == cwd_canonical
-            || std::fs::canonicalize(&session.path).is_ok_and(|p| p == cwd_canonical)
-    }) && idx > 0
-    {
-        let current = state.sessions_view.sessions.remove(idx);
-        state.sessions_view.sessions.insert(0, current);
     }
 }
 
 fn sort_sessions_for_view(state: &mut AppState) {
-    kiosk_core::state::sort_sessions(&mut state.sessions_view.sessions);
-    pin_current_session_first(state);
-}
-
-fn merge_sessions_preserving_existing_order(
-    existing: &[kiosk_core::state::SessionEntry],
-    mut incoming: Vec<kiosk_core::state::SessionEntry>,
-) -> Vec<kiosk_core::state::SessionEntry> {
-    let incoming_index: std::collections::HashMap<&str, usize> = incoming
-        .iter()
-        .enumerate()
-        .map(|(idx, session)| (session.session_name.as_str(), idx))
-        .collect();
-    let mut consumed = vec![false; incoming.len()];
-    let mut merged = Vec::with_capacity(incoming.len());
-
-    for session in existing {
-        if let Some(idx) = incoming_index.get(session.session_name.as_str()).copied() {
-            consumed[idx] = true;
-            merged.push(incoming[idx].clone());
-        }
-    }
-
-    for (idx, session) in incoming.drain(..).enumerate() {
-        if !consumed[idx] {
-            merged.push(session);
-        }
-    }
-
-    merged
+    kiosk_core::state::sort_sessions(
+        &mut state.sessions_view.sessions,
+        state.cwd_worktree_path.as_deref(),
+    );
 }
 
 fn apply_sessions_update(
@@ -1193,24 +1160,17 @@ fn apply_sessions_update(
     mut sessions: Vec<kiosk_core::state::SessionEntry>,
     states: &[(String, Vec<kiosk_core::agent::AgentStatus>)],
 ) {
-    let initial_sessions_load =
-        state.sessions_view.is_loading() || state.sessions_view.sessions.is_empty();
-    let selected_session_name = if initial_sessions_load {
-        None
-    } else {
-        selected_session_name(state)
-    };
+    let selected_session_name =
+        if state.sessions_view.is_loading() || state.sessions_view.sessions.is_empty() {
+            None
+        } else {
+            selected_session_name(state)
+        };
 
     preserve_existing_session_agent_states(&state.sessions_view.sessions, &mut sessions);
     merge_session_agent_states(&mut sessions, states);
-    state.sessions_view.sessions = if initial_sessions_load {
-        sessions
-    } else {
-        merge_sessions_preserving_existing_order(&state.sessions_view.sessions, sessions)
-    };
-    if initial_sessions_load {
-        sort_sessions_for_view(state);
-    }
+    state.sessions_view.sessions = sessions;
+    sort_sessions_for_view(state);
     rebuild_sessions_list(state, selected_session_name);
 
     if state.sessions_view.pin_first_selection && !state.sessions_view.list.filtered.is_empty() {
@@ -1273,7 +1233,9 @@ fn process_action<T: TmuxProvider + ?Sized + 'static>(
         }
 
         Action::GoBack => {
-            if matches!(state.mode(), Mode::Sessions) && state.sessions_initial {
+            if matches!(state.mode(), Mode::Sessions)
+                && state.startup_mode == kiosk_core::state::StartupMode::Sessions
+            {
                 state.cancel_all_agent_pollers();
                 return Some(OpenAction::Quit);
             }
@@ -5219,7 +5181,7 @@ mod tests {
                 message: "Discovering repos...".into(),
             },
         );
-        state.sessions_initial = true;
+        state.startup_mode = kiosk_core::state::StartupMode::Sessions;
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux = Arc::new(MockTmuxProvider::default());
@@ -5683,7 +5645,7 @@ mod tests {
     }
 
     #[test]
-    fn test_session_agent_update_keeps_first_selected_before_user_interaction() {
+    fn test_session_agent_update_resorts_and_keeps_first_selected_before_user_interaction() {
         let mut state = AppState::new(vec![make_repo("alpha")], None);
         apply_transition!(state, ModeTransition::Sessions);
         state.sessions_view.pin_first_selection = true;
@@ -5712,11 +5674,11 @@ mod tests {
         );
 
         assert_eq!(state.sessions_view.list.selected, Some(0));
-        assert_eq!(state.sessions_view.sessions[0].session_name, "beta");
+        assert_eq!(state.sessions_view.sessions[0].session_name, "alpha");
     }
 
     #[test]
-    fn test_sessions_snapshot_updates_membership_without_reordering_existing_rows() {
+    fn test_sessions_snapshot_updates_membership_and_resorts_rows() {
         let mut state = AppState::new(vec![make_repo("alpha")], None);
         apply_transition!(state, ModeTransition::Sessions);
         state.sessions_view.load_state = kiosk_core::state::SessionsLoadState::Ready;

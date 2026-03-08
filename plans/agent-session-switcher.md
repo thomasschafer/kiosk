@@ -26,6 +26,7 @@ Three features that work together to make kiosk an effective agent session manag
 
 - A full ordered view of all sessions
 - Sort: Current session > Waiting > Idle > Running > No agent, then by activity recency within groups (newest first, unlike `kiosk next` which filters for oldest first within groups)
+- Re-sort live as statuses and session activity change, while preserving the selected session when possible
 - Enter to switch, search/filter supported
 
 ### Part 3: Session preview
@@ -53,11 +54,12 @@ Three features that work together to make kiosk an effective agent session manag
 ## Still To Do
 
 - [ ] Manual QA with real agent sessions (multiple agents running across worktrees)
-- [ ] Update README with sessions view documentation and keybinding examples
+- [ ] Session preview (part 3) in a later PR
 
 ## Resolved Decisions
 
 - **Sort order**: Waiting > Idle > Running > No agent (Idle above Running because Idle includes potential questions — see issue #33)
+- **Sessions view current row**: Always pin the current session to the top of the sessions list
 - **`kiosk next` includes Idle**: Idle includes agents that may have asked questions
 - **Round-robin strategy**: Stateless, using tmux `session_activity` timestamps (oldest first within priority group)
 - **Skip current session**: `kiosk next` only switches to a *different* session, if one exists, otherwise shows message saying no session to jump to

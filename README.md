@@ -26,6 +26,12 @@ bind-key f popup -xC -yC -w90% -h90% -E "kiosk"
   - Tab opens the branch view for that repo
 - From the branch view, you can again fuzzy match across branches:
   - Enter opens a session in a worktree on that branch, either attaching to an existing session if one exists, or creating a new one otherwise
+- Press `Ctrl-S` to open the sessions view from anywhere in the TUI:
+  - The current session stays pinned first
+  - Remaining sessions are sorted by agent urgency, then recent activity
+  - Enter switches to the selected session
+  - Type to filter by session name, repo name, or branch
+- Run `kiosk --sessions` to open directly into the sessions view
 
 ### CLI
 
@@ -73,6 +79,9 @@ kiosk status my-project feat/thing --json --debug-agent
 
 # List active kiosk sessions (includes last_activity, pane_count, current_command)
 kiosk sessions --json
+
+# Switch to the next agent session that needs attention
+kiosk next --json
 
 # Read session logs
 kiosk log my-project feat/thing --tail 100 --json

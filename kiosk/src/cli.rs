@@ -306,6 +306,18 @@ fn discover_active_repos_with_worktrees(
         .collect()
 }
 
+fn detect_session_statuses(
+    tmux: &dyn TmuxProvider,
+    session_name: &str,
+) -> Vec<kiosk_core::AgentStatus> {
+    kiosk_core::state::normalized_agent_statuses(
+        &kiosk_core::agent::detect_all_for_session(tmux, session_name)
+            .into_iter()
+            .map(|result| result.status)
+            .collect::<Vec<_>>(),
+    )
+}
+
 pub fn cmd_list(config: &Config, git: &dyn GitProvider, json: bool) -> CliResult<()> {
     let repos = git.discover_repos(&config.resolved_search_dirs());
     let output: Vec<RepoOutput> = repos
@@ -352,11 +364,7 @@ pub fn cmd_branches(
                 && let Some(ref wt_path) = entry.worktree_path
             {
                 let session_name = repo.tmux_session_name(wt_path);
-                entry.agent_statuses =
-                    kiosk_core::agent::detect_all_for_session(tmux, &session_name)
-                        .into_iter()
-                        .map(|r| r.status)
-                        .collect();
+                entry.agent_statuses = detect_session_statuses(tmux, &session_name);
             }
         }
     }
@@ -742,40 +750,33 @@ pub fn cmd_sessions(
     let session_activity: std::collections::HashMap<String, u64> =
         tmux.list_sessions_with_activity().into_iter().collect();
     let attached_sessions = tmux.list_attached_sessions();
-    let mut output = Vec::new();
+    let mut output: Vec<SessionOutput> =
+        kiosk_core::state::active_session_entries(&repos, &session_activity, &attached_sessions)
+            .into_iter()
+            .map(|session| {
+                let pane_count = tmux.pane_count(&session.session_name).unwrap_or(1);
+                let current_command = tmux
+                    .pane_current_command(&session.session_name, "0")
+                    .unwrap_or_else(|_| "unknown".to_string());
+                let agent_statuses = if config.agent.enabled {
+                    detect_session_statuses(tmux, &session.session_name)
+                } else {
+                    Vec::new()
+                };
 
-    for repo in &repos {
-        for worktree in &repo.worktrees {
-            let session = repo.tmux_session_name(&worktree.path);
-            let Some(&last_activity) = session_activity.get(&session) else {
-                continue;
-            };
-            let pane_count = tmux.pane_count(&session).unwrap_or(1);
-            let current_command = tmux
-                .pane_current_command(&session, "0")
-                .unwrap_or_else(|_| "unknown".to_string());
-            let agent_statuses: Vec<kiosk_core::AgentStatus> = if config.agent.enabled {
-                kiosk_core::agent::detect_all_for_session(tmux, &session)
-                    .into_iter()
-                    .map(|r| r.status)
-                    .collect()
-            } else {
-                Vec::new()
-            };
-
-            output.push(SessionOutput {
-                session: session.clone(),
-                repo: repo.name.clone(),
-                branch: worktree.branch.clone(),
-                path: worktree.path.clone(),
-                attached: attached_sessions.contains(&session),
-                last_activity,
-                pane_count,
-                current_command,
-                agent_statuses,
-            });
-        }
-    }
+                SessionOutput {
+                    session: session.session_name,
+                    repo: session.repo_name,
+                    branch: session.branch,
+                    path: session.path,
+                    attached: session.attached,
+                    last_activity: session.session_activity,
+                    pane_count,
+                    current_command,
+                    agent_statuses,
+                }
+            })
+            .collect();
 
     output.sort_by(|left, right| left.session.cmp(&right.session));
 
@@ -807,24 +808,20 @@ pub fn cmd_next(
 
     let current_session = tmux.current_session_name();
     let all_pane_data = tmux.list_all_panes_with_activity();
-    let active_sessions: HashSet<String> = tmux.list_session_names().into_iter().collect();
-    let repos = discover_active_repos_with_worktrees(config, git, &active_sessions);
-
-    // Collect non-current kiosk-managed sessions for agent detection
-    let mut session_names: Vec<String> = Vec::new();
-
-    for repo in &repos {
-        for worktree in &repo.worktrees {
-            let session = repo.tmux_session_name(&worktree.path);
-            if !active_sessions.contains(&session) {
-                continue;
-            }
-            if current_session.as_deref() == Some(session.as_str()) {
-                continue;
-            }
-            session_names.push(session);
-        }
-    }
+    let active_sessions_set: HashSet<String> = tmux.list_session_names().into_iter().collect();
+    let session_activity: std::collections::HashMap<String, u64> = all_pane_data
+        .iter()
+        .map(|(name, data)| (name.clone(), data.session_activity))
+        .collect();
+    let repos = discover_active_repos_with_worktrees(config, git, &active_sessions_set);
+    let session_names: Vec<String> =
+        kiosk_core::state::active_session_entries(&repos, &session_activity, &HashSet::new())
+            .into_iter()
+            .filter_map(|session| {
+                (current_session.as_deref() != Some(session.session_name.as_str()))
+                    .then_some(session.session_name)
+            })
+            .collect();
 
     // Batched agent detection — include sessions with Waiting/Idle/Running
     // agents. Preference order is Waiting > Idle > Running.
@@ -834,8 +831,12 @@ pub fn cmd_next(
     let mut candidates: Vec<(String, Vec<kiosk_core::AgentStatus>, u64)> = detection_results
         .into_iter()
         .filter_map(|(session, detection)| {
-            let statuses: Vec<kiosk_core::AgentStatus> =
-                detection.into_iter().map(|det| det.status).collect();
+            let statuses = kiosk_core::state::normalized_agent_statuses(
+                &detection
+                    .into_iter()
+                    .map(|det| det.status)
+                    .collect::<Vec<_>>(),
+            );
             let needs_attention = statuses.iter().any(|s| {
                 matches!(
                     s.state,
@@ -1191,9 +1192,9 @@ fn format_agent_badges(
     if statuses.is_empty() {
         "-".to_string()
     } else {
-        statuses
+        kiosk_core::state::sorted_unique_agent_states(statuses)
             .iter()
-            .map(|s| agent_state_label(s.state, labels))
+            .map(|state| agent_state_label(*state, labels))
             .collect::<Vec<_>>()
             .join(" ")
     }

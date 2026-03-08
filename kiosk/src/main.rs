@@ -8,7 +8,7 @@ use kiosk_core::{
     constants::{GIT_DIR_ENTRY, GITDIR_FILE_PREFIX, WORKTREE_DIR_NAME},
     git::{CliGitProvider, GitProvider},
     pending_delete::load_pending_worktree_deletes,
-    state::{AppState, ModeTransition, SessionsLoadState},
+    state::{AppState, ModeTransition, SessionsLoadState, StartupMode},
     tmux::{CliTmuxProvider, TmuxProvider},
 };
 use kiosk_tui::{OpenAction, Theme};
@@ -280,7 +280,12 @@ fn main() -> ExitCode {
     let git: Arc<dyn GitProvider> = Arc::new(CliGitProvider);
     let tmux: Arc<dyn TmuxProvider> = Arc::new(CliTmuxProvider);
 
-    let result = dispatch_command(cli.sessions, cli.command, &config, &git, &tmux);
+    let startup_mode = if cli.sessions {
+        StartupMode::Sessions
+    } else {
+        StartupMode::Repos
+    };
+    let result = dispatch_command(startup_mode, cli.command, &config, &git, &tmux);
 
     match result {
         Ok(()) => ExitCode::from(0),
@@ -297,7 +302,7 @@ fn main() -> ExitCode {
 
 #[allow(clippy::too_many_lines)]
 fn dispatch_command(
-    sessions: bool,
+    startup_mode: StartupMode,
     command: Option<Commands>,
     config: &config::Config,
     git: &Arc<dyn GitProvider>,
@@ -443,12 +448,12 @@ fn dispatch_command(
                 Err(crate::cli::CliError::user("config subcommand required"))
             }
         },
-        None => run_tui(sessions, config, git, tmux).map_err(crate::cli::CliError::from),
+        None => run_tui(startup_mode, config, git, tmux).map_err(crate::cli::CliError::from),
     }
 }
 
 fn run_tui(
-    sessions_flag: bool,
+    startup_mode: StartupMode,
     config: &config::Config,
     git: &Arc<dyn GitProvider>,
     tmux: &Arc<dyn TmuxProvider>,
@@ -497,7 +502,7 @@ fn run_tui(
     state.agent_enabled = config.agent.enabled;
     state.agent_poll_interval = std::time::Duration::from_millis(config.agent.poll_interval_ms);
     state.agent_labels = config.agent.labels.clone();
-    state.sessions_initial = sessions_flag;
+    state.startup_mode = startup_mode;
     apply_sessions_startup_mode(&mut state);
 
     let theme = Theme::from_config(&config.theme);
@@ -543,7 +548,7 @@ fn run_tui(
 }
 
 fn apply_sessions_startup_mode(state: &mut AppState) {
-    if state.sessions_initial {
+    if state.startup_mode == StartupMode::Sessions {
         if let Err(error) = state.transition(&ModeTransition::Sessions) {
             state.set_error(&format!("Internal state transition error: {error:?}"));
         }
@@ -595,7 +600,7 @@ fn run_setup_then_tui() -> ExitCode {
             }
             // Load the newly written config and continue into normal TUI
             match config::load_config(None) {
-                Ok(config) => match run_tui(false, &config, &git, &tmux) {
+                Ok(config) => match run_tui(StartupMode::Repos, &config, &git, &tmux) {
                     Ok(()) => ExitCode::from(0),
                     Err(e) => {
                         eprintln!("Error: {e}");
@@ -918,12 +923,12 @@ fn remove_worktree(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::apply_sessions_startup_mode;
-    use kiosk_core::state::{AppState, Mode};
+    use kiosk_core::state::{AppState, Mode, StartupMode};
 
     #[test]
     fn sessions_startup_enters_sessions_mode_without_loading_screen() {
         let mut state = AppState::new(vec![], None);
-        state.sessions_initial = true;
+        state.startup_mode = StartupMode::Sessions;
         assert_eq!(state.mode(), &Mode::RepoSelect);
 
         apply_sessions_startup_mode(&mut state);
@@ -935,7 +940,7 @@ mod tests {
     #[test]
     fn non_sessions_startup_keeps_existing_mode() {
         let mut state = AppState::new(vec![], None);
-        state.sessions_initial = false;
+        state.startup_mode = StartupMode::Repos;
         assert_eq!(state.mode(), &Mode::RepoSelect);
 
         apply_sessions_startup_mode(&mut state);

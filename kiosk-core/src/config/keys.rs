@@ -285,7 +285,7 @@ impl<C> Default for LayerKeyMap<C> {
 
 macro_rules! define_layer_commands {
     ($name:ident => [$($variant:ident),+ $(,)?]) => {
-        #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+        #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
         pub enum $name {
             Noop,
             $($variant),+
@@ -313,6 +313,16 @@ macro_rules! define_layer_commands {
                         stringify!($name)
                     )),
                 }
+            }
+        }
+
+        impl Serialize for $name {
+            fn serialize<S: serde::Serializer>(
+                &self,
+                serializer: S,
+            ) -> Result<S::Ok, S::Error> {
+                let command: Command = self.clone().into();
+                serializer.serialize_str(&command.to_string())
             }
         }
     };
@@ -987,6 +997,42 @@ mod tests {
 
         let result = KeysConfig::from_raw(&raw);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_typed_layer_command_serializes_as_config_string() {
+        let value = toml::Value::try_from(GeneralCommand::Quit).expect("serialize command");
+        assert_eq!(value.as_str(), Some("quit"));
+    }
+
+    #[test]
+    fn test_keys_config_default_serializes_layer_values_as_config_strings() {
+        let value = toml::Value::try_from(KeysConfig::default()).expect("serialize keys");
+        let keys = value
+            .as_table()
+            .and_then(|root| root.get("general"))
+            .and_then(toml::Value::as_table)
+            .expect("general layer");
+        assert_eq!(
+            keys.get("C-c").and_then(toml::Value::as_str),
+            Some("quit"),
+            "expected lowercase config command string"
+        );
+    }
+
+    #[test]
+    fn test_keys_config_ref_serialization_matches_value_serialization() {
+        let keys = KeysConfig::default();
+        let value = toml::Value::try_from(&keys).expect("serialize keys by ref");
+        let general = value
+            .as_table()
+            .and_then(|root| root.get("general"))
+            .and_then(toml::Value::as_table)
+            .expect("general layer");
+        assert_eq!(
+            general.get("C-c").and_then(toml::Value::as_str),
+            Some("quit")
+        );
     }
 
     #[test]

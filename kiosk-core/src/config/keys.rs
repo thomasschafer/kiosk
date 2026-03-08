@@ -1030,6 +1030,7 @@ mod tests {
             modal: HashMap::new(),
             repo_select: HashMap::new(),
             branch_select: HashMap::new(),
+            sessions_select: HashMap::new(),
         };
 
         let result = KeysConfig::from_raw(&raw);

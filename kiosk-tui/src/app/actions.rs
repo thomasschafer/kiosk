@@ -412,7 +412,9 @@ pub(super) fn handle_setup_continue(state: &mut AppState) {
 }
 
 pub(super) fn handle_setup_add_dir(state: &mut AppState) -> Option<super::OpenAction> {
-    let setup = state.require_setup().ok()?;
+    let Ok(setup) = state.require_setup() else {
+        return None;
+    };
 
     // If a completion is selected, navigate into it instead of adding
     if let Some(sel) = setup.selected_completion {
@@ -469,17 +471,14 @@ fn fill_setup_completion(state: &mut AppState, index: usize) {
 }
 
 pub(super) fn handle_setup_tab_complete(state: &mut AppState) {
-    let Some((completion_count, input_text, selected_completion)) =
-        state.require_setup().ok().map(|setup| {
-            (
-                setup.completions.len(),
-                setup.input.text.clone(),
-                setup.selected_completion,
-            )
-        })
-    else {
+    let Ok(setup) = state.require_setup() else {
         return;
     };
+    let (completion_count, input_text, selected_completion) = (
+        setup.completions.len(),
+        setup.input.text.clone(),
+        setup.selected_completion,
+    );
 
     // Generate completions if not already present
     if completion_count == 0 {

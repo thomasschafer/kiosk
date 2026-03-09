@@ -905,15 +905,14 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             apply_sessions_discovered(state, sessions);
         }
 
-        AppEvent::SessionMetadataResolved { sessions } => {
-            apply_session_metadata(state, sessions);
+        AppEvent::SessionMetadataResolved { sessions, complete } => {
+            apply_session_metadata(state, sessions, complete);
         }
 
         AppEvent::SessionAgentStatesUpdated { states } => {
             if state.effective_mode() == &Mode::Sessions {
                 let selected_session_name = selected_session_name(state);
                 merge_session_agent_states(&mut state.sessions_view.sessions, &states);
-                sort_sessions_for_view(state);
                 rebuild_sessions_list(state, selected_session_name);
                 state.sessions_view.apply_pin_first_selection();
             }
@@ -1178,10 +1177,6 @@ fn merge_session_metadata(
     }
 }
 
-fn sort_sessions_for_view(state: &mut AppState) {
-    kiosk_core::state::sort_sessions(&mut state.sessions_view.sessions);
-}
-
 fn apply_sessions_discovered(
     state: &mut AppState,
     mut sessions: Vec<kiosk_core::state::SessionEntry>,
@@ -1196,7 +1191,6 @@ fn apply_sessions_discovered(
     preserve_existing_session_agent_states(&state.sessions_view.sessions, &mut sessions);
     preserve_existing_session_metadata(&state.sessions_view.sessions, &mut sessions);
     state.sessions_view.sessions = sessions;
-    sort_sessions_for_view(state);
     rebuild_sessions_list(state, selected_session_name);
     state.sessions_view.apply_pin_first_selection();
     if state.sessions_view.is_loading() {
@@ -1211,13 +1205,15 @@ fn apply_sessions_discovered(
 fn apply_session_metadata(
     state: &mut AppState,
     resolved_sessions: Vec<kiosk_core::state::SessionEntry>,
+    complete: bool,
 ) {
     let selected_session_name = selected_session_name(state);
     merge_session_metadata(&mut state.sessions_view.sessions, resolved_sessions);
-    sort_sessions_for_view(state);
     rebuild_sessions_list(state, selected_session_name);
     state.sessions_view.apply_pin_first_selection();
-    state.sessions_view.mark_ready();
+    if complete {
+        state.sessions_view.mark_ready();
+    }
 }
 
 fn enter_sessions_view<T: TmuxProvider + ?Sized + 'static>(
@@ -5656,7 +5652,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sessions_discovered_pins_current_session_first() {
+    fn test_sessions_discovered_keeps_tmux_recency_order() {
         let mut state = AppState::new(vec![make_repo("alpha")], None);
         apply_transition!(state, ModeTransition::Sessions);
 
@@ -5666,7 +5662,7 @@ mod tests {
 
         process_app_event(
             AppEvent::SessionsDiscovered {
-                sessions: vec![make_session("beta", 5), make_current_session("alpha", 50)],
+                sessions: vec![make_current_session("alpha", 5), make_session("beta", 50)],
             },
             &mut state,
             &git,
@@ -5674,7 +5670,7 @@ mod tests {
             &sender,
         );
 
-        assert_eq!(state.sessions_view.sessions[0].session_name, "alpha");
+        assert_eq!(state.sessions_view.sessions[0].session_name, "beta");
     }
 
     #[test]
@@ -5707,7 +5703,7 @@ mod tests {
     }
 
     #[test]
-    fn test_session_agent_update_resorts_and_keeps_first_selected_before_user_interaction() {
+    fn test_session_agent_update_keeps_existing_order_and_selection() {
         let mut state = AppState::new(vec![make_repo("alpha")], None);
         apply_transition!(state, ModeTransition::Sessions);
         state.sessions_view.pin_first_selection = true;
@@ -5736,11 +5732,12 @@ mod tests {
         );
 
         assert_eq!(state.sessions_view.list.selected, Some(0));
-        assert_eq!(state.sessions_view.sessions[0].session_name, "alpha");
+        assert_eq!(state.sessions_view.sessions[0].session_name, "beta");
+        assert_eq!(state.sessions_view.sessions[1].session_name, "alpha");
     }
 
     #[test]
-    fn test_sessions_discovered_updates_membership_and_resorts_rows() {
+    fn test_sessions_discovered_updates_membership_using_incoming_tmux_order() {
         let mut state = AppState::new(vec![make_repo("alpha")], None);
         apply_transition!(state, ModeTransition::Sessions);
         state.sessions_view.load_state = kiosk_core::state::SessionsLoadState::Ready;
@@ -5889,6 +5886,51 @@ mod tests {
         assert!(!state.sessions_view.is_loading());
         assert!(state.sessions_view.is_resolving());
         assert_eq!(filtered_session_names(&state), vec!["alpha", "beta"]);
+    }
+
+    #[test]
+    fn test_session_metadata_patch_updates_rows_in_place_without_reordering() {
+        let mut state = AppState::new(vec![make_repo("alpha")], None);
+        apply_transition!(state, ModeTransition::Sessions);
+        state.sessions_view.load_state = kiosk_core::state::SessionsLoadState::MetadataPending;
+        state.sessions_view.sessions = vec![make_session("beta", 50), make_session("alpha", 5)];
+        state.sessions_view.list.filtered = vec![(0, 0), (1, 0)];
+        state.sessions_view.list.selected = Some(1);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux = Arc::new(MockTmuxProvider::default());
+        let sender = make_sender();
+
+        process_app_event(
+            AppEvent::SessionMetadataResolved {
+                sessions: vec![kiosk_core::state::SessionEntry::resolved(
+                    "alpha".to_string(),
+                    "alpha".to_string(),
+                    Some("main".to_string()),
+                    PathBuf::from("/tmp/alpha"),
+                    Vec::new(),
+                    5,
+                    false,
+                    false,
+                )],
+                complete: false,
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+        );
+
+        let names: Vec<&str> = state
+            .sessions_view
+            .sessions
+            .iter()
+            .map(|session| session.session_name.as_str())
+            .collect();
+        assert_eq!(names, vec!["beta", "alpha"]);
+        assert_eq!(state.sessions_view.list.selected, Some(1));
+        assert_eq!(state.sessions_view.sessions[1].repo_name(), Some("alpha"));
+        assert!(state.sessions_view.is_resolving());
     }
 
     #[test]

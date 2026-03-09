@@ -95,6 +95,7 @@ pub enum AppEvent {
     /// Git-derived metadata resolved for already-known sessions.
     SessionMetadataResolved {
         sessions: Vec<crate::state::SessionEntry>,
+        complete: bool,
     },
 
     /// Agent statuses updated for sessions view

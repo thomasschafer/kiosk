@@ -22,10 +22,10 @@ Three features that work together to make kiosk an effective agent session manag
 - Never switches to the current session if there is another session that is either Waiting or Idle
 - `--json` output supported
 
-### ✅ Part 2: Sessions TUI View (Done)
+### ✅ Part 2: Sessions TUI View
 
-- A full ordered view of all sessions
-- Sort: Current session > Waiting > Idle > Running > No agent, then by activity recency within groups (newest first, unlike `kiosk next` which filters for oldest first within groups)
+- A full view of all sessions
+- Sort by recency, like the `choose-tree -s -O time -Z` command
 - Re-sort live as statuses and session activity change, while preserving the selected session when possible
 - Enter to switch, search/filter supported
 

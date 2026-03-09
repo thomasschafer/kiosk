@@ -1379,7 +1379,7 @@ fn test_e2e_sessions_view_search_filters_sessions() {
 
     env.send("sco");
     let screen = wait_for_screen(&env, 4000, |s| {
-        s.contains("1 sessions") && s.contains("scooter")
+        s.contains("1 session") && s.contains("scooter")
     });
     assert!(
         !screen.contains("falcon"),

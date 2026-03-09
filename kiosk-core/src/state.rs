@@ -566,6 +566,7 @@ pub fn agent_statuses_sort_priority(statuses: &[crate::agent::AgentStatus]) -> u
         .unwrap_or(0)
 }
 
+/// Stable display tie-break order for agents with equal-priority states.
 fn agent_kind_sort_priority(kind: AgentKind) -> u8 {
     match kind {
         AgentKind::ClaudeCode => 0,
@@ -591,6 +592,9 @@ pub fn normalized_agent_statuses(
 }
 
 /// Sort and deduplicate agent states by attention priority (highest first).
+///
+/// Relies on `normalized_agent_statuses` already sorting by state priority
+/// descending, so only dedup is needed here.
 pub fn sorted_unique_agent_states(
     statuses: &[crate::agent::AgentStatus],
 ) -> Vec<crate::AgentState> {
@@ -598,12 +602,15 @@ pub fn sorted_unique_agent_states(
         .into_iter()
         .map(|status| status.state)
         .collect();
-    states.sort_by_key(|state| std::cmp::Reverse(agent_state_sort_priority(*state)));
     states.dedup();
     states
 }
 
 /// Select the highest-priority state from a status list.
+///
+/// Returns `Unknown` when the input slice is empty as a convenience default;
+/// callers that need to distinguish "no agent" from "unknown agent" should
+/// check for an empty slice before calling.
 pub fn primary_agent_state(statuses: &[crate::agent::AgentStatus]) -> crate::AgentState {
     sorted_unique_agent_states(statuses)
         .first()
@@ -808,6 +815,8 @@ impl PollerHandle {
         }
     }
 
+    /// Wraps an existing cancel token. The caller retains shared ownership;
+    /// calling `cancel()` on this handle sets the flag for all holders.
     #[must_use]
     pub fn from_cancel(cancel: Arc<AtomicBool>) -> Self {
         Self { cancel }
@@ -874,6 +883,14 @@ impl SessionsViewState {
     pub fn mark_ready(&mut self) {
         self.load_state = SessionsLoadState::Ready;
     }
+
+    /// If the initial-selection pin is active, reset selection to the first item.
+    pub fn apply_pin_first_selection(&mut self) {
+        if self.pin_first_selection && !self.list.filtered.is_empty() {
+            self.list.selected = Some(0);
+            self.list.scroll_offset = 0;
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -917,18 +934,13 @@ impl ActiveAgentPoller {
 }
 
 fn session_matches_current(
-    session: &SessionEntry,
-    current_worktree_path: Option<&Path>,
+    session_canonical: Option<&PathBuf>,
     current_canonical: Option<&PathBuf>,
 ) -> bool {
-    let Some(current_worktree_path) = current_worktree_path else {
-        return false;
-    };
-    session.path == current_worktree_path
-        || current_canonical.is_some_and(|canonical| {
-            session.path == *canonical
-                || std::fs::canonicalize(&session.path).is_ok_and(|path| path == *canonical)
-        })
+    match (session_canonical, current_canonical) {
+        (Some(session), Some(current)) => session == current,
+        _ => false,
+    }
 }
 
 /// Sort sessions by: current session first, then Waiting, Idle, Running, no agent.
@@ -937,23 +949,39 @@ pub fn sort_sessions(sessions: &mut [SessionEntry], current_worktree_path: Optio
     let current_canonical = current_worktree_path
         .and_then(|path| std::fs::canonicalize(path).ok())
         .or_else(|| current_worktree_path.map(ToOwned::to_owned));
-    sessions.sort_by(|a, b| {
+
+    // Pre-compute canonical paths to avoid filesystem I/O in the comparator.
+    let session_canonicals: Vec<Option<PathBuf>> = sessions
+        .iter()
+        .map(|s| {
+            std::fs::canonicalize(&s.path)
+                .ok()
+                .or_else(|| Some(s.path.clone()))
+        })
+        .collect();
+
+    let mut indices: Vec<usize> = (0..sessions.len()).collect();
+    indices.sort_by(|&ai, &bi| {
         let a_is_current =
-            session_matches_current(a, current_worktree_path, current_canonical.as_ref());
+            session_matches_current(session_canonicals[ai].as_ref(), current_canonical.as_ref());
         let b_is_current =
-            session_matches_current(b, current_worktree_path, current_canonical.as_ref());
+            session_matches_current(session_canonicals[bi].as_ref(), current_canonical.as_ref());
         b_is_current
             .cmp(&a_is_current)
             .then_with(|| {
                 cmp_by_agent_priority_then_newest_activity(
-                    &a.agent_statuses,
-                    a.session_activity,
-                    &b.agent_statuses,
-                    b.session_activity,
+                    &sessions[ai].agent_statuses,
+                    sessions[ai].session_activity,
+                    &sessions[bi].agent_statuses,
+                    sessions[bi].session_activity,
                 )
             })
-            .then_with(|| a.session_name.cmp(&b.session_name))
+            .then_with(|| sessions[ai].session_name.cmp(&sessions[bi].session_name))
     });
+
+    // Apply the sorted permutation in-place.
+    let sorted: Vec<SessionEntry> = indices.into_iter().map(|i| sessions[i].clone()).collect();
+    sessions.clone_from_slice(&sorted);
 }
 
 /// What mode the app is in
@@ -1373,7 +1401,8 @@ impl AppState {
 
     #[cfg(test)]
     pub fn apply_transition(&mut self, transition: &ModeTransition) {
-        self.apply_transition_with_fallback(transition);
+        self.transition(transition)
+            .expect("transition failed in test");
     }
 
     #[must_use]
@@ -1386,7 +1415,7 @@ impl AppState {
         self.mode.effective()
     }
 
-    pub fn reconcile_agent_poller_mode_invariant(&mut self) {
+    fn reconcile_agent_poller_mode_invariant(&mut self) {
         if self.active_agent_poller.scope() != self.mode.expected_agent_poller_scope() {
             self.cancel_all_agent_pollers();
         }

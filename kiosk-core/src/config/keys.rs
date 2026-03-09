@@ -366,7 +366,7 @@ define_layer_commands!(ListNavigationCommand => [
 define_layer_commands!(ModalCommand => [Confirm, Cancel, TabComplete]);
 define_layer_commands!(RepoSelectCommand => [OpenRepo, EnterRepo, Quit]);
 define_layer_commands!(BranchSelectCommand => [OpenBranch, GoBack, NewBranch, DeleteWorktree]);
-define_layer_commands!(SessionsSelectCommand => [SwitchToSession, GoBack]);
+define_layer_commands!(SessionsSelectCommand => [SwitchToSession]);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeybindingEntry {

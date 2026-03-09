@@ -6,10 +6,17 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState},
+    widgets::{Block, Borders, HighlightSpacing, List, ListItem, ListState},
 };
 
-pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, _keys: &KeysConfig) {
+pub fn draw(
+    f: &mut Frame,
+    area: Rect,
+    state: &AppState,
+    theme: &Theme,
+    _keys: &KeysConfig,
+    show_selection: bool,
+) {
     let chunks = Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(area);
 
     // Search bar
@@ -77,6 +84,14 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, _keys: &
             "No active sessions",
             Style::default().fg(theme.muted),
         ))));
+    } else if !state.sessions_view.sessions.is_empty()
+        && state.sessions_view.list.filtered.is_empty()
+        && !state.sessions_view.is_loading()
+    {
+        items.push(ListItem::new(Line::from(Span::styled(
+            "No matching sessions",
+            Style::default().fg(theme.muted),
+        ))));
     }
 
     let count = state.sessions_view.list.filtered.len();
@@ -85,11 +100,12 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, _keys: &
     } else {
         ""
     };
+    let session_word = if count == 1 { "session" } else { "sessions" };
     let list = List::new(items)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(format!(" {count} sessions{loading_suffix} "))
+                .title(format!(" {count} {session_word}{loading_suffix} "))
                 .border_style(Style::default().fg(theme.border)),
         )
         .highlight_style(
@@ -98,10 +114,13 @@ pub fn draw(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme, _keys: &
                 .fg(theme.highlight_fg)
                 .add_modifier(Modifier::BOLD),
         )
-        .highlight_symbol("▸ ");
+        .highlight_symbol("▸ ")
+        .highlight_spacing(HighlightSpacing::Always);
 
     let mut list_state = ListState::default();
-    list_state.select(state.sessions_view.list.selected);
+    if show_selection {
+        list_state.select(state.sessions_view.list.selected);
+    }
     *list_state.offset_mut() = state.sessions_view.list.scroll_offset;
     f.render_stateful_widget(list, chunks[1], &mut list_state);
 }

@@ -110,7 +110,7 @@ pub fn render_with_optional_agent_badges<'a>(
     row_width: usize,
 ) -> Vec<Span<'a>> {
     if statuses.is_empty() {
-        left.to_vec()
+        truncate_spans(left, row_width)
     } else {
         let right = render_agent_badges(statuses, labels, theme);
         right_align_suffix(left, &right, row_width)

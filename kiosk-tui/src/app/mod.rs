@@ -105,7 +105,7 @@ pub fn run(
         cancel: Arc::clone(&cancel),
     };
     let spinner_start = Instant::now();
-    state.search_dirs.clone_from(&search_dirs.to_owned());
+    state.search_dirs = search_dirs.to_vec();
     let mut repo_scan_started = false;
 
     // Start repo discovery in background unless startup is explicitly sessions-first.
@@ -281,7 +281,7 @@ fn draw_mode(
             components::repo_list::draw(f, main_area, state, theme, keys, show_selection);
         }
         Mode::Sessions => {
-            components::sessions_view::draw(f, main_area, state, theme, keys);
+            components::sessions_view::draw(f, main_area, state, theme, keys, show_selection);
         }
         Mode::BranchSelect => {
             components::branch_picker::draw(f, main_area, state, theme, keys, show_selection);
@@ -524,8 +524,6 @@ fn selected_session_name(state: &AppState) -> Option<String> {
         .map(|session| session.session_name.clone())
 }
 
-/// Handle events from background tasks
-#[allow(clippy::too_many_lines)]
 /// Deduplicate `incoming` branches against `state.branches`, append any new ones,
 /// and rebuild the filtered list preserving search.
 ///
@@ -914,22 +912,10 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
         AppEvent::SessionAgentStatesUpdated { states } => {
             if state.effective_mode() == &Mode::Sessions {
                 let selected_session_name = selected_session_name(state);
-                for (session_name, agent_statuses) in states {
-                    for session in &mut state.sessions_view.sessions {
-                        if session.session_name == session_name {
-                            session.agent_statuses =
-                                kiosk_core::state::normalized_agent_statuses(&agent_statuses);
-                        }
-                    }
-                }
+                merge_session_agent_states(&mut state.sessions_view.sessions, &states);
                 sort_sessions_for_view(state);
                 rebuild_sessions_list(state, selected_session_name);
-                if state.sessions_view.pin_first_selection
-                    && !state.sessions_view.list.filtered.is_empty()
-                {
-                    state.sessions_view.list.selected = Some(0);
-                    state.sessions_view.list.scroll_offset = 0;
-                }
+                state.sessions_view.apply_pin_first_selection();
             }
         }
 
@@ -1143,7 +1129,8 @@ fn preserve_existing_session_agent_states(
         if session.agent_statuses.is_empty()
             && let Some(agent_statuses) = by_session.get(session.session_name.as_str())
         {
-            session.agent_statuses = kiosk_core::state::normalized_agent_statuses(agent_statuses);
+            // Previous values are already normalized, so clone directly.
+            session.agent_statuses = (*agent_statuses).clone();
         }
     }
 }
@@ -1173,10 +1160,7 @@ fn apply_sessions_update(
     sort_sessions_for_view(state);
     rebuild_sessions_list(state, selected_session_name);
 
-    if state.sessions_view.pin_first_selection && !state.sessions_view.list.filtered.is_empty() {
-        state.sessions_view.list.selected = Some(0);
-        state.sessions_view.list.scroll_offset = 0;
-    }
+    state.sessions_view.apply_pin_first_selection();
     state.sessions_view.mark_ready();
 }
 
@@ -1198,7 +1182,12 @@ fn process_action<T: TmuxProvider + ?Sized + 'static>(
     state: &mut AppState,
     ctx: &ActionContext<'_, T>,
 ) -> Option<OpenAction> {
-    if state.mode() == &Mode::Sessions && !matches!(action, Action::ToggleSessions) {
+    if state.mode() == &Mode::Sessions
+        && !matches!(
+            action,
+            Action::ToggleSessions | Action::ShowHelp | Action::Quit
+        )
+    {
         state.sessions_view.pin_first_selection = false;
     }
 

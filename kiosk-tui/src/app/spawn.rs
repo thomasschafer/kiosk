@@ -460,6 +460,14 @@ fn detect_agent_statuses<T: TmuxProvider + ?Sized>(
 ) -> Vec<SessionRuntimeUpdate> {
     let sessions_with_activity: HashMap<String, u64> =
         tmux.list_sessions_with_activity().into_iter().collect();
+    detect_agent_statuses_with_activity(tmux, sessions, &sessions_with_activity)
+}
+
+fn detect_agent_statuses_with_activity<T: TmuxProvider + ?Sized>(
+    tmux: &T,
+    sessions: &[String],
+    sessions_with_activity: &HashMap<String, u64>,
+) -> Vec<SessionRuntimeUpdate> {
     // Batch: fetch all pane info + session activity in a single tmux call,
     // then detect agents using the pre-fetched data. Only capture_pane_content
     // still requires per-pane calls.
@@ -493,12 +501,17 @@ fn session_agent_states(
         .collect()
 }
 
-fn build_sessions_repo_index(git: &dyn GitProvider, search_dirs: &[(PathBuf, u16)]) -> Vec<Repo> {
+fn build_sessions_repo_index(
+    git: &dyn GitProvider,
+    search_dirs: &[(PathBuf, u16)],
+    is_cancelled: &dyn Fn() -> bool,
+) -> Vec<Repo> {
     let mut repos = git.scan_repos(search_dirs);
     apply_repo_name_collision_resolution(&mut repos, search_dirs);
 
     repos
         .into_iter()
+        .take_while(|_| !is_cancelled())
         .map(|mut repo| {
             repo.worktrees = git.list_worktrees(&repo.path);
             repo
@@ -549,11 +562,13 @@ pub(super) fn spawn_sessions_discovery<T: TmuxProvider + ?Sized + 'static>(
     let search_dirs_for_poller = search_dirs.clone();
 
     thread::spawn(move || {
-        if sender_clone.cancel.load(Ordering::Relaxed) {
+        let is_cancelled =
+            || poller_cancel.load(Ordering::Relaxed) || sender_clone.cancel.load(Ordering::Relaxed);
+        if is_cancelled() {
             return;
         }
 
-        let repo_index = build_sessions_repo_index(&*git, &search_dirs);
+        let repo_index = build_sessions_repo_index(&*git, &search_dirs, &is_cancelled);
         let active_sessions: HashMap<String, u64> = tmux_clone
             .list_sessions_with_activity()
             .into_iter()
@@ -564,7 +579,11 @@ pub(super) fn spawn_sessions_discovery<T: TmuxProvider + ?Sized + 'static>(
         let states = if session_names.is_empty() {
             Vec::new()
         } else {
-            session_agent_states(detect_agent_statuses(&*tmux_clone, &session_names))
+            session_agent_states(detect_agent_statuses_with_activity(
+                &*tmux_clone,
+                &session_names,
+                &active_sessions,
+            ))
         };
         sender_clone.send(AppEvent::SessionsSnapshot { sessions, states });
 
@@ -623,7 +642,7 @@ fn spawn_sessions_agent_poller<T: TmuxProvider + ?Sized + 'static>(
 
             if now.duration_since(last_membership_tick) >= membership_interval {
                 if now.duration_since(last_index_refresh) >= index_refresh_interval {
-                    repo_index = build_sessions_repo_index(&*git, &search_dirs);
+                    repo_index = build_sessions_repo_index(&*git, &search_dirs, &is_cancelled);
                     last_index_refresh = now;
                 }
                 let active_sessions: HashMap<String, u64> =
@@ -634,7 +653,11 @@ fn spawn_sessions_agent_poller<T: TmuxProvider + ?Sized + 'static>(
                 let states = if session_names.is_empty() {
                     Vec::new()
                 } else {
-                    session_agent_states(detect_agent_statuses(&*tmux, &session_names))
+                    session_agent_states(detect_agent_statuses_with_activity(
+                        &*tmux,
+                        &session_names,
+                        &active_sessions,
+                    ))
                 };
                 known_session_names = session_names;
                 sender.send(AppEvent::SessionsSnapshot { sessions, states });
@@ -833,7 +856,7 @@ mod tests {
             (PathBuf::from("/tmp/personal"), 2),
         ];
 
-        let index = build_sessions_repo_index(&git, &search_dirs);
+        let index = build_sessions_repo_index(&git, &search_dirs, &|| false);
         assert_eq!(index.len(), 2);
         assert_eq!(index[0].session_name, "api--(work)");
         assert_eq!(index[1].session_name, "api--(personal)");

@@ -43,26 +43,40 @@ pub(super) fn rebuild_session_filter_preserving_search(
     list: &mut SearchableList,
     sessions: &[SessionEntry],
 ) {
-    if list.input.text.is_empty() {
-        list.filtered = (0..sessions.len()).map(|i| (i, 0)).collect();
+    let items = session_search_items(sessions);
+    list.filtered = compute_session_filtered(&list.input.text, &items);
+
+    // Clamp selection and scroll to the new filtered bounds.
+    if list.filtered.is_empty() {
+        list.selected = None;
+        list.scroll_offset = 0;
+    } else {
+        let max = list.filtered.len() - 1;
+        if let Some(sel) = list.selected
+            && sel > max
+        {
+            list.selected = Some(max);
+        }
+        list.scroll_offset = list.scroll_offset.min(max);
+    }
+}
+
+fn compute_session_filtered(query: &str, items: &[String]) -> Vec<(usize, i64)> {
+    if query.is_empty() {
+        (0..items.len()).map(|i| (i, 0)).collect()
     } else {
         let matcher = SkimMatcherV2::default();
-        let items = session_search_items(sessions);
-        list.filtered = fuzzy_matches_in_source_order(&list.input.text, &items, &matcher);
+        fuzzy_matches_in_source_order(query, items, &matcher)
     }
 }
 
 fn apply_session_filter(
     list: &mut SearchableList,
     sessions: &[SessionEntry],
-    matcher: &SkimMatcherV2,
+    _matcher: &SkimMatcherV2,
 ) {
-    if list.input.text.is_empty() {
-        list.filtered = (0..sessions.len()).map(|i| (i, 0)).collect();
-    } else {
-        let items = session_search_items(sessions);
-        list.filtered = fuzzy_matches_in_source_order(&list.input.text, &items, matcher);
-    }
+    let items = session_search_items(sessions);
+    list.filtered = compute_session_filtered(&list.input.text, &items);
     list.selected = if list.filtered.is_empty() {
         None
     } else {
@@ -91,10 +105,7 @@ pub(super) fn handle_go_back(state: &mut AppState) {
         Mode::Help { .. } => {
             apply_transition!(state, ModeTransition::CloseHelp);
         }
-        Mode::Sessions => {
-            apply_transition!(state, ModeTransition::RepoSelect);
-        }
-        Mode::Setup(_) | Mode::RepoSelect | Mode::Loading(_) => {}
+        Mode::Sessions | Mode::Setup(_) | Mode::RepoSelect | Mode::Loading(_) => {}
     }
 }
 

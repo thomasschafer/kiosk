@@ -87,16 +87,14 @@ pub enum AppEvent {
 
     /// A background git operation failed
     GitError(String),
-    /// Sessions discovered and loaded for the sessions view
-    SessionsLoaded {
+    /// Fast tmux-first snapshot for sessions view startup.
+    SessionsDiscovered {
         sessions: Vec<crate::state::SessionEntry>,
     },
 
-    /// Atomic sessions snapshot for sessions view. Includes session membership
-    /// and agent statuses together to avoid intermediate flicker.
-    SessionsSnapshot {
+    /// Git-derived metadata resolved for already-known sessions.
+    SessionMetadataResolved {
         sessions: Vec<crate::state::SessionEntry>,
-        states: Vec<(String, Vec<AgentStatus>)>,
     },
 
     /// Agent statuses updated for sessions view

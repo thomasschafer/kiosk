@@ -46,9 +46,9 @@ pub fn draw(
             let session = &state.sessions_view.sessions[*idx];
             let mut left_spans: Vec<Span<'_>> = Vec::new();
 
-            // repo/branch
-            left_spans.push(Span::raw(&session.repo_name));
-            if let Some(branch) = &session.branch {
+            let primary_label = session.repo_name().unwrap_or(session.session_name.as_str());
+            left_spans.push(Span::raw(primary_label));
+            if let Some(branch) = session.branch() {
                 left_spans.push(Span::styled(
                     format!("/{branch}"),
                     Style::default().fg(theme.secondary),

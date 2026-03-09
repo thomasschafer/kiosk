@@ -1,7 +1,7 @@
 use kiosk_core::{
     agent,
     event::{AppEvent, SessionRuntimeUpdate},
-    git::{GitProvider, Repo, apply_repo_name_collision_resolution},
+    git::{GitProvider, Repo, apply_repo_name_collision_resolution, repo_matches_active_session},
     state::{BranchEntry, PollerHandle},
 };
 use rayon::ThreadPoolBuilder;
@@ -27,15 +27,10 @@ const ENRICHMENT_POOL_SIZE: usize = 8;
 const FETCH_POOL_SIZE: usize = 4;
 /// Sessions membership updates can be slower than agent status updates.
 const SESSIONS_MEMBERSHIP_POLL_INTERVAL: Duration = Duration::from_secs(3);
-/// Repo/worktree index refreshes less often than membership updates.
-const SESSIONS_INDEX_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
-
 struct SessionsPollerConfig {
     status_interval: Duration,
     membership_interval: Duration,
-    index_refresh_interval: Duration,
     search_dirs: Vec<(PathBuf, u16)>,
-    repo_index: Vec<Repo>,
 }
 
 pub(super) fn spawn_repo_discovery<T: TmuxProvider + ?Sized + 'static>(
@@ -458,30 +453,21 @@ fn detect_agent_statuses<T: TmuxProvider + ?Sized>(
     tmux: &T,
     sessions: &[String],
 ) -> Vec<SessionRuntimeUpdate> {
-    let sessions_with_activity: HashMap<String, u64> =
-        tmux.list_sessions_with_activity().into_iter().collect();
-    detect_agent_statuses_with_activity(tmux, sessions, &sessions_with_activity)
+    let all_pane_data = tmux.list_all_panes_with_activity();
+    detect_agent_statuses_from_pane_data(tmux, sessions, &all_pane_data)
 }
 
-fn detect_agent_statuses_with_activity<T: TmuxProvider + ?Sized>(
+fn detect_agent_statuses_from_pane_data<T: TmuxProvider + ?Sized>(
     tmux: &T,
     sessions: &[String],
-    sessions_with_activity: &HashMap<String, u64>,
+    all_pane_data: &HashMap<String, kiosk_core::tmux::provider::SessionPaneData>,
 ) -> Vec<SessionRuntimeUpdate> {
-    // Batch: fetch all pane info + session activity in a single tmux call,
-    // then detect agents using the pre-fetched data. Only capture_pane_content
-    // still requires per-pane calls.
-    let all_pane_data = tmux.list_all_panes_with_activity();
     agent::detect_all_for_sessions_batched(tmux, sessions, &all_pane_data)
         .into_iter()
         .map(|(session_name, result)| {
-            let session_activity_ts = sessions_with_activity
-                .get(&session_name)
-                .copied()
-                .or_else(|| all_pane_data.get(&session_name).map(|d| d.session_activity));
+            let session_activity_ts = all_pane_data.get(&session_name).map(|d| d.session_activity);
             SessionRuntimeUpdate {
-                session_exists: sessions_with_activity.contains_key(&session_name)
-                    || all_pane_data.contains_key(&session_name),
+                session_exists: all_pane_data.contains_key(&session_name),
                 session_name,
                 session_activity_ts,
                 agent_statuses: kiosk_core::state::normalized_agent_statuses(
@@ -501,9 +487,49 @@ fn session_agent_states(
         .collect()
 }
 
-fn build_sessions_repo_index(
+fn build_session_shell_snapshot<T: TmuxProvider + ?Sized>(
+    tmux: &T,
+    all_pane_data: &HashMap<String, kiosk_core::tmux::provider::SessionPaneData>,
+    attached_sessions: &HashSet<String>,
+    current_session_name: Option<&str>,
+) -> Vec<kiosk_core::state::SessionEntry> {
+    let mut session_names: Vec<String> = all_pane_data.keys().cloned().collect();
+    session_names.sort();
+    let states = session_agent_states(detect_agent_statuses_from_pane_data(
+        tmux,
+        &session_names,
+        all_pane_data,
+    ));
+    let by_session: HashMap<&str, &Vec<kiosk_core::agent::AgentStatus>> = states
+        .iter()
+        .map(|(session_name, agent_statuses)| (session_name.as_str(), agent_statuses))
+        .collect();
+
+    let mut sessions: Vec<kiosk_core::state::SessionEntry> = session_names
+        .into_iter()
+        .filter_map(|session_name| {
+            let pane_data = all_pane_data.get(&session_name)?;
+            Some(kiosk_core::state::SessionEntry::unresolved(
+                session_name.clone(),
+                by_session
+                    .get(session_name.as_str())
+                    .cloned()
+                    .cloned()
+                    .unwrap_or_default(),
+                pane_data.session_activity,
+                attached_sessions.contains(&session_name),
+                current_session_name == Some(session_name.as_str()),
+            ))
+        })
+        .collect();
+    kiosk_core::state::sort_sessions(&mut sessions);
+    sessions
+}
+
+fn enrich_session_repos(
     git: &dyn GitProvider,
     search_dirs: &[(PathBuf, u16)],
+    active_sessions: &HashSet<String>,
     is_cancelled: &dyn Fn() -> bool,
 ) -> Vec<Repo> {
     let mut repos = git.scan_repos(search_dirs);
@@ -512,6 +538,7 @@ fn build_sessions_repo_index(
     repos
         .into_iter()
         .take_while(|_| !is_cancelled())
+        .filter(|repo| repo_matches_active_session(repo, active_sessions))
         .map(|mut repo| {
             repo.worktrees = git.list_worktrees(&repo.path);
             repo
@@ -519,18 +546,50 @@ fn build_sessions_repo_index(
         .collect()
 }
 
-fn discover_sessions_from_repos(
-    repos: &[Repo],
-    active_sessions: &HashMap<String, u64>,
-    attached_sessions: &HashSet<String>,
-) -> (Vec<kiosk_core::state::SessionEntry>, Vec<String>) {
-    let sessions =
-        kiosk_core::state::active_session_entries(repos, active_sessions, attached_sessions);
-    let session_names = sessions
+fn resolve_session_metadata(
+    git: &dyn GitProvider,
+    search_dirs: &[(PathBuf, u16)],
+    sessions: &[kiosk_core::state::SessionEntry],
+    is_cancelled: &dyn Fn() -> bool,
+) -> Vec<kiosk_core::state::SessionEntry> {
+    let active_sessions: HashSet<String> = sessions
         .iter()
         .map(|session| session.session_name.clone())
         .collect();
-    (sessions, session_names)
+    if active_sessions.is_empty() {
+        return Vec::new();
+    }
+
+    let session_activity: HashMap<String, u64> = sessions
+        .iter()
+        .map(|session| (session.session_name.clone(), session.session_activity))
+        .collect();
+    let attached_sessions: HashSet<String> = sessions
+        .iter()
+        .filter(|session| session.attached)
+        .map(|session| session.session_name.clone())
+        .collect();
+    let current_session_name = sessions
+        .iter()
+        .find(|session| session.is_current)
+        .map(|session| session.session_name.as_str());
+    let by_session: HashMap<&str, &Vec<kiosk_core::agent::AgentStatus>> = sessions
+        .iter()
+        .map(|session| (session.session_name.as_str(), &session.agent_statuses))
+        .collect();
+
+    let mut resolved = kiosk_core::state::active_session_entries(
+        &enrich_session_repos(git, search_dirs, &active_sessions, is_cancelled),
+        &session_activity,
+        &attached_sessions,
+        current_session_name,
+    );
+    for session in &mut resolved {
+        if let Some(agent_statuses) = by_session.get(session.session_name.as_str()) {
+            session.agent_statuses = (*agent_statuses).clone();
+        }
+    }
+    resolved
 }
 
 /// Spawn background session discovery for the sessions view.
@@ -568,32 +627,28 @@ pub(super) fn spawn_sessions_discovery<T: TmuxProvider + ?Sized + 'static>(
             return;
         }
 
-        let repo_index = build_sessions_repo_index(&*git, &search_dirs, &is_cancelled);
-        let active_sessions: HashMap<String, u64> = tmux_clone
-            .list_sessions_with_activity()
-            .into_iter()
-            .collect();
         let attached_sessions = tmux_clone.list_attached_sessions();
-        let (sessions, session_names) =
-            discover_sessions_from_repos(&repo_index, &active_sessions, &attached_sessions);
-        let states = if session_names.is_empty() {
-            Vec::new()
-        } else {
-            session_agent_states(detect_agent_statuses_with_activity(
-                &*tmux_clone,
-                &session_names,
-                &active_sessions,
-            ))
-        };
-        sender_clone.send(AppEvent::SessionsSnapshot { sessions, states });
+        let current_session_name = tmux_clone.current_session_name();
+        let all_pane_data = tmux_clone.list_all_panes_with_activity();
+        let sessions = build_session_shell_snapshot(
+            &*tmux_clone,
+            &all_pane_data,
+            &attached_sessions,
+            current_session_name.as_deref(),
+        );
+        sender_clone.send(AppEvent::SessionsDiscovered {
+            sessions: sessions.clone(),
+        });
+        let resolved = resolve_session_metadata(&*git, &search_dirs, &sessions, &is_cancelled);
+        if !is_cancelled() {
+            sender_clone.send(AppEvent::SessionMetadataResolved { sessions: resolved });
+        }
 
         // Start sessions pollers: fast status updates + slower membership diffs.
         let config = SessionsPollerConfig {
             status_interval,
             membership_interval: SESSIONS_MEMBERSHIP_POLL_INTERVAL,
-            index_refresh_interval: SESSIONS_INDEX_REFRESH_INTERVAL,
             search_dirs: search_dirs_for_poller,
-            repo_index,
         };
         spawn_sessions_agent_poller(
             &git_for_poller,
@@ -618,9 +673,7 @@ fn spawn_sessions_agent_poller<T: TmuxProvider + ?Sized + 'static>(
     let SessionsPollerConfig {
         status_interval,
         membership_interval,
-        index_refresh_interval,
         search_dirs,
-        mut repo_index,
     } = config;
     let git = Arc::clone(git);
     let tmux = Arc::clone(tmux);
@@ -631,7 +684,6 @@ fn spawn_sessions_agent_poller<T: TmuxProvider + ?Sized + 'static>(
         let mut known_session_names: Vec<String> = Vec::new();
         let mut last_status_tick = std::time::Instant::now();
         let mut last_membership_tick = std::time::Instant::now();
-        let mut last_index_refresh = std::time::Instant::now();
 
         loop {
             if is_cancelled() {
@@ -641,26 +693,28 @@ fn spawn_sessions_agent_poller<T: TmuxProvider + ?Sized + 'static>(
             let now = std::time::Instant::now();
 
             if now.duration_since(last_membership_tick) >= membership_interval {
-                if now.duration_since(last_index_refresh) >= index_refresh_interval {
-                    repo_index = build_sessions_repo_index(&*git, &search_dirs, &is_cancelled);
-                    last_index_refresh = now;
-                }
-                let active_sessions: HashMap<String, u64> =
-                    tmux.list_sessions_with_activity().into_iter().collect();
                 let attached_sessions = tmux.list_attached_sessions();
-                let (sessions, session_names) =
-                    discover_sessions_from_repos(&repo_index, &active_sessions, &attached_sessions);
-                let states = if session_names.is_empty() {
-                    Vec::new()
-                } else {
-                    session_agent_states(detect_agent_statuses_with_activity(
-                        &*tmux,
-                        &session_names,
-                        &active_sessions,
-                    ))
-                };
-                known_session_names = session_names;
-                sender.send(AppEvent::SessionsSnapshot { sessions, states });
+                let current_session_name = tmux.current_session_name();
+                let all_pane_data = tmux.list_all_panes_with_activity();
+                let sessions = build_session_shell_snapshot(
+                    &*tmux,
+                    &all_pane_data,
+                    &attached_sessions,
+                    current_session_name.as_deref(),
+                );
+                known_session_names = sessions
+                    .iter()
+                    .map(|session| session.session_name.clone())
+                    .collect();
+                sender.send(AppEvent::SessionsDiscovered {
+                    sessions: sessions.clone(),
+                });
+                let resolved =
+                    resolve_session_metadata(&*git, &search_dirs, &sessions, &is_cancelled);
+                if is_cancelled() {
+                    return;
+                }
+                sender.send(AppEvent::SessionMetadataResolved { sessions: resolved });
                 last_membership_tick = now;
                 last_status_tick = now;
             }
@@ -681,13 +735,13 @@ fn spawn_sessions_agent_poller<T: TmuxProvider + ?Sized + 'static>(
 
 #[cfg(test)]
 mod tests {
-    use super::{build_sessions_repo_index, detect_agent_statuses, discover_sessions_from_repos};
+    use super::{build_session_shell_snapshot, detect_agent_statuses, resolve_session_metadata};
     use kiosk_core::{
         agent::{AgentKind, AgentState},
         git::{Repo, Worktree, mock::MockGitProvider},
         tmux::{mock::MockTmuxProvider, provider::PaneInfo, provider::TmuxProvider},
     };
-    use std::{collections::HashMap, path::PathBuf};
+    use std::path::PathBuf;
 
     #[allow(clippy::similar_names)]
     #[test]
@@ -745,51 +799,42 @@ mod tests {
     }
 
     #[test]
-    fn discover_sessions_includes_only_active_kiosk_sessions() {
+    fn build_session_shell_snapshot_includes_active_sessions() {
         let mut tmux = MockTmuxProvider {
             sessions_with_activity: vec![("alpha".into(), 100), ("beta--feat".into(), 200)],
             ..Default::default()
         };
         tmux.clients.insert("beta--feat".into(), vec!["1".into()]);
+        tmux.session_activity_ts.insert("alpha".into(), 100);
+        tmux.session_activity_ts.insert("beta--feat".into(), 200);
+        tmux.pane_info.insert(
+            "alpha".into(),
+            vec![PaneInfo {
+                pane_id: "%1".into(),
+                command: "bash".into(),
+                pid: 1,
+            }],
+        );
+        tmux.pane_info.insert(
+            "beta--feat".into(),
+            vec![PaneInfo {
+                pane_id: "%2".into(),
+                command: "bash".into(),
+                pid: 2,
+            }],
+        );
 
-        let repos = vec![
-            Repo {
-                name: "alpha".to_string(),
-                session_name: "alpha".to_string(),
-                path: PathBuf::from("/tmp/alpha"),
-                worktrees: vec![Worktree {
-                    path: PathBuf::from("/tmp/alpha"),
-                    branch: Some("main".to_string()),
-                    is_main: true,
-                }],
-            },
-            Repo {
-                name: "beta".to_string(),
-                session_name: "beta".to_string(),
-                path: PathBuf::from("/tmp/beta"),
-                worktrees: vec![Worktree {
-                    path: PathBuf::from("/tmp/beta--feat"),
-                    branch: Some("feat".to_string()),
-                    is_main: false,
-                }],
-            },
-            Repo {
-                name: "gamma".to_string(),
-                session_name: "gamma".to_string(),
-                path: PathBuf::from("/tmp/gamma"),
-                worktrees: vec![Worktree {
-                    path: PathBuf::from("/tmp/gamma--dev"),
-                    branch: Some("dev".to_string()),
-                    is_main: false,
-                }],
-            },
-        ];
-
-        let active_sessions: HashMap<String, u64> =
-            tmux.list_sessions_with_activity().into_iter().collect();
         let attached = tmux.list_attached_sessions();
-        let (sessions, session_names) =
-            discover_sessions_from_repos(&repos, &active_sessions, &attached);
+        let sessions = build_session_shell_snapshot(
+            &tmux,
+            &tmux.list_all_panes_with_activity(),
+            &attached,
+            None,
+        );
+        let session_names: Vec<String> = sessions
+            .iter()
+            .map(|session| session.session_name.clone())
+            .collect();
         assert_eq!(
             session_names,
             vec!["alpha".to_string(), "beta--feat".to_string()]
@@ -800,35 +845,7 @@ mod tests {
     }
 
     #[test]
-    fn discover_sessions_uses_repo_session_name_for_disambiguation() {
-        let tmux = MockTmuxProvider {
-            sessions_with_activity: vec![("api--(work)--feat".into(), 123)],
-            ..Default::default()
-        };
-
-        let repos = vec![Repo {
-            name: "api".to_string(),
-            session_name: "api--(work)".to_string(),
-            path: PathBuf::from("/tmp/work/api"),
-            worktrees: vec![Worktree {
-                path: PathBuf::from("/tmp/worktrees/api--feat"),
-                branch: Some("feat".to_string()),
-                is_main: false,
-            }],
-        }];
-
-        let active_sessions: HashMap<String, u64> =
-            tmux.list_sessions_with_activity().into_iter().collect();
-        let attached = tmux.list_attached_sessions();
-        let (sessions, session_names) =
-            discover_sessions_from_repos(&repos, &active_sessions, &attached);
-        assert_eq!(session_names, vec!["api--(work)--feat".to_string()]);
-        assert_eq!(sessions.len(), 1);
-        assert_eq!(sessions[0].session_name, "api--(work)--feat");
-    }
-
-    #[test]
-    fn build_sessions_repo_index_applies_collision_resolution() {
+    fn resolve_session_metadata_uses_repo_session_name_for_disambiguation() {
         let git = MockGitProvider {
             repos: vec![
                 Repo {
@@ -855,10 +872,17 @@ mod tests {
             (PathBuf::from("/tmp/work"), 2),
             (PathBuf::from("/tmp/personal"), 2),
         ];
+        let sessions = vec![kiosk_core::state::SessionEntry::unresolved(
+            "api--(work)--feat".to_string(),
+            Vec::new(),
+            123,
+            false,
+            false,
+        )];
 
-        let index = build_sessions_repo_index(&git, &search_dirs, &|| false);
-        assert_eq!(index.len(), 2);
-        assert_eq!(index[0].session_name, "api--(work)");
-        assert_eq!(index[1].session_name, "api--(personal)");
+        let resolved = resolve_session_metadata(&git, &search_dirs, &sessions, &|| false);
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].session_name, "api--(work)--feat");
+        assert_eq!(resolved[0].repo_name(), Some("api"));
     }
 }

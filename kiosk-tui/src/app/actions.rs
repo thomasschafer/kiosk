@@ -21,8 +21,9 @@ pub(super) fn session_search_items(sessions: &[SessionEntry]) -> Vec<String> {
     sessions
         .iter()
         .map(|session| {
-            let branch = session.branch.as_deref().unwrap_or("");
-            format!("{} {} {}", session.session_name, session.repo_name, branch)
+            let repo_name = session.repo_name().unwrap_or(session.session_name.as_str());
+            let branch = session.branch().unwrap_or("");
+            format!("{} {} {}", session.session_name, repo_name, branch)
         })
         .collect()
 }
@@ -827,33 +828,36 @@ mod tests {
         let mut state = AppState::new(Vec::new(), None);
         apply_transition!(state, ModeTransition::Sessions);
         state.sessions_view.sessions = vec![
-            SessionEntry {
-                session_name: "scooter--add-scoop-to-readme".to_string(),
-                repo_name: "scooter".to_string(),
-                branch: Some("add-scoop-to-readme".to_string()),
-                path: PathBuf::from("/tmp/scooter-add-scoop"),
-                agent_statuses: Vec::new(),
-                session_activity: 10,
-                attached: false,
-            },
-            SessionEntry {
-                session_name: "scooter--main".to_string(),
-                repo_name: "scooter".to_string(),
-                branch: Some("main".to_string()),
-                path: PathBuf::from("/tmp/scooter-main"),
-                agent_statuses: Vec::new(),
-                session_activity: 20,
-                attached: false,
-            },
-            SessionEntry {
-                session_name: "kiosk--feat-agent-session-switcher".to_string(),
-                repo_name: "kiosk".to_string(),
-                branch: Some("feat-agent-session-switcher".to_string()),
-                path: PathBuf::from("/tmp/kiosk-feat"),
-                agent_statuses: Vec::new(),
-                session_activity: 30,
-                attached: false,
-            },
+            SessionEntry::resolved(
+                "scooter--add-scoop-to-readme".to_string(),
+                "scooter".to_string(),
+                Some("add-scoop-to-readme".to_string()),
+                PathBuf::from("/tmp/scooter-add-scoop"),
+                Vec::new(),
+                10,
+                false,
+                false,
+            ),
+            SessionEntry::resolved(
+                "scooter--main".to_string(),
+                "scooter".to_string(),
+                Some("main".to_string()),
+                PathBuf::from("/tmp/scooter-main"),
+                Vec::new(),
+                20,
+                false,
+                false,
+            ),
+            SessionEntry::resolved(
+                "kiosk--feat-agent-session-switcher".to_string(),
+                "kiosk".to_string(),
+                Some("feat-agent-session-switcher".to_string()),
+                PathBuf::from("/tmp/kiosk-feat"),
+                Vec::new(),
+                30,
+                false,
+                false,
+            ),
         ];
         state.sessions_view.list = SearchableList::new(state.sessions_view.sessions.len());
 
@@ -872,33 +876,36 @@ mod tests {
         let mut state = AppState::new(Vec::new(), None);
         apply_transition!(state, ModeTransition::Sessions);
         state.sessions_view.sessions = vec![
-            SessionEntry {
-                session_name: "kiosk--feat-agent-session-switcher".to_string(),
-                repo_name: "kiosk".to_string(),
-                branch: Some("feat-agent-session-switcher".to_string()),
-                path: PathBuf::from("/tmp/kiosk-feat"),
-                agent_statuses: Vec::new(),
-                session_activity: 30,
-                attached: true,
-            },
-            SessionEntry {
-                session_name: "scooter--main".to_string(),
-                repo_name: "scooter".to_string(),
-                branch: Some("main".to_string()),
-                path: PathBuf::from("/tmp/scooter-main"),
-                agent_statuses: Vec::new(),
-                session_activity: 20,
-                attached: false,
-            },
-            SessionEntry {
-                session_name: "dotfiles--main".to_string(),
-                repo_name: "dotfiles".to_string(),
-                branch: Some("main".to_string()),
-                path: PathBuf::from("/tmp/dotfiles-main"),
-                agent_statuses: Vec::new(),
-                session_activity: 10,
-                attached: false,
-            },
+            SessionEntry::resolved(
+                "kiosk--feat-agent-session-switcher".to_string(),
+                "kiosk".to_string(),
+                Some("feat-agent-session-switcher".to_string()),
+                PathBuf::from("/tmp/kiosk-feat"),
+                Vec::new(),
+                30,
+                true,
+                false,
+            ),
+            SessionEntry::resolved(
+                "scooter--main".to_string(),
+                "scooter".to_string(),
+                Some("main".to_string()),
+                PathBuf::from("/tmp/scooter-main"),
+                Vec::new(),
+                20,
+                false,
+                false,
+            ),
+            SessionEntry::resolved(
+                "dotfiles--main".to_string(),
+                "dotfiles".to_string(),
+                Some("main".to_string()),
+                PathBuf::from("/tmp/dotfiles-main"),
+                Vec::new(),
+                10,
+                false,
+                false,
+            ),
         ];
         state.sessions_view.list = SearchableList::new(state.sessions_view.sessions.len());
 

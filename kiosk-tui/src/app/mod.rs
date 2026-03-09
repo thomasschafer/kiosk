@@ -901,12 +901,12 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
                 apply_session_runtime_updates(state, states);
             }
         }
-        AppEvent::SessionsLoaded { sessions } => {
-            apply_sessions_update(state, sessions, &[]);
+        AppEvent::SessionsDiscovered { sessions } => {
+            apply_sessions_discovered(state, sessions);
         }
 
-        AppEvent::SessionsSnapshot { sessions, states } => {
-            apply_sessions_update(state, sessions, &states);
+        AppEvent::SessionMetadataResolved { sessions } => {
+            apply_session_metadata(state, sessions);
         }
 
         AppEvent::SessionAgentStatesUpdated { states } => {
@@ -1135,17 +1135,56 @@ fn preserve_existing_session_agent_states(
     }
 }
 
-fn sort_sessions_for_view(state: &mut AppState) {
-    kiosk_core::state::sort_sessions(
-        &mut state.sessions_view.sessions,
-        state.cwd_worktree_path.as_deref(),
-    );
+fn preserve_existing_session_metadata(
+    previous_sessions: &[kiosk_core::state::SessionEntry],
+    sessions: &mut [kiosk_core::state::SessionEntry],
+) {
+    let by_session: std::collections::HashMap<&str, &kiosk_core::state::SessionMetadata> =
+        previous_sessions
+            .iter()
+            .map(|session| (session.session_name.as_str(), &session.metadata))
+            .collect();
+
+    for session in sessions {
+        if matches!(
+            session.metadata,
+            kiosk_core::state::SessionMetadata::Unresolved
+        ) && let Some(metadata) = by_session.get(session.session_name.as_str())
+            && matches!(metadata, kiosk_core::state::SessionMetadata::Resolved(_))
+        {
+            session.metadata = (*metadata).clone();
+        }
+    }
 }
 
-fn apply_sessions_update(
+fn merge_session_metadata(
+    sessions: &mut [kiosk_core::state::SessionEntry],
+    resolved_sessions: Vec<kiosk_core::state::SessionEntry>,
+) {
+    if resolved_sessions.is_empty() {
+        return;
+    }
+
+    let by_session: std::collections::HashMap<String, kiosk_core::state::SessionMetadata> =
+        resolved_sessions
+            .into_iter()
+            .map(|session| (session.session_name, session.metadata))
+            .collect();
+
+    for session in sessions {
+        if let Some(metadata) = by_session.get(session.session_name.as_str()) {
+            session.metadata = metadata.clone();
+        }
+    }
+}
+
+fn sort_sessions_for_view(state: &mut AppState) {
+    kiosk_core::state::sort_sessions(&mut state.sessions_view.sessions);
+}
+
+fn apply_sessions_discovered(
     state: &mut AppState,
     mut sessions: Vec<kiosk_core::state::SessionEntry>,
-    states: &[(String, Vec<kiosk_core::agent::AgentStatus>)],
 ) {
     let selected_session_name =
         if state.sessions_view.is_loading() || state.sessions_view.sessions.is_empty() {
@@ -1155,11 +1194,21 @@ fn apply_sessions_update(
         };
 
     preserve_existing_session_agent_states(&state.sessions_view.sessions, &mut sessions);
-    merge_session_agent_states(&mut sessions, states);
+    preserve_existing_session_metadata(&state.sessions_view.sessions, &mut sessions);
     state.sessions_view.sessions = sessions;
     sort_sessions_for_view(state);
     rebuild_sessions_list(state, selected_session_name);
+    state.sessions_view.apply_pin_first_selection();
+}
 
+fn apply_session_metadata(
+    state: &mut AppState,
+    resolved_sessions: Vec<kiosk_core::state::SessionEntry>,
+) {
+    let selected_session_name = selected_session_name(state);
+    merge_session_metadata(&mut state.sessions_view.sessions, resolved_sessions);
+    sort_sessions_for_view(state);
+    rebuild_sessions_list(state, selected_session_name);
     state.sessions_view.apply_pin_first_selection();
     state.sessions_view.mark_ready();
 }
@@ -1377,15 +1426,29 @@ mod tests {
     }
 
     fn make_session(session_name: &str, ts: u64) -> kiosk_core::state::SessionEntry {
-        kiosk_core::state::SessionEntry {
-            session_name: session_name.to_string(),
-            repo_name: session_name.to_string(),
-            branch: Some("main".to_string()),
-            path: PathBuf::from(format!("/tmp/{session_name}")),
-            agent_statuses: Vec::new(),
-            session_activity: ts,
-            attached: false,
-        }
+        make_session_with(session_name, ts, Vec::new(), false)
+    }
+
+    fn make_current_session(session_name: &str, ts: u64) -> kiosk_core::state::SessionEntry {
+        make_session_with(session_name, ts, Vec::new(), true)
+    }
+
+    fn make_session_with(
+        session_name: &str,
+        ts: u64,
+        agent_statuses: Vec<kiosk_core::agent::AgentStatus>,
+        is_current: bool,
+    ) -> kiosk_core::state::SessionEntry {
+        kiosk_core::state::SessionEntry::resolved(
+            session_name.to_string(),
+            session_name.to_string(),
+            Some("main".to_string()),
+            PathBuf::from(format!("/tmp/{session_name}")),
+            agent_statuses,
+            ts,
+            false,
+            is_current,
+        )
     }
 
     fn filtered_session_names(state: &AppState) -> Vec<&str> {
@@ -5449,7 +5512,7 @@ mod tests {
         let sender = make_sender();
 
         process_app_event(
-            AppEvent::SessionsLoaded {
+            AppEvent::SessionsDiscovered {
                 sessions: vec![make_session("alpha", 50), make_session("beta", 5)],
             },
             &mut state,
@@ -5552,15 +5615,19 @@ mod tests {
         let sender = make_sender();
 
         process_app_event(
-            AppEvent::SessionsSnapshot {
-                sessions: vec![make_session("alpha", 10), make_session("beta", 20)],
-                states: vec![(
-                    "beta".to_string(),
-                    vec![kiosk_core::agent::AgentStatus {
-                        kind: kiosk_core::agent::AgentKind::Codex,
-                        state: kiosk_core::agent::AgentState::Running,
-                    }],
-                )],
+            AppEvent::SessionsDiscovered {
+                sessions: vec![
+                    make_session("alpha", 10),
+                    make_session_with(
+                        "beta",
+                        20,
+                        vec![kiosk_core::agent::AgentStatus {
+                            kind: kiosk_core::agent::AgentKind::Codex,
+                            state: kiosk_core::agent::AgentState::Running,
+                        }],
+                        false,
+                    ),
+                ],
             },
             &mut state,
             &git,
@@ -5582,19 +5649,17 @@ mod tests {
     }
 
     #[test]
-    fn test_sessions_snapshot_pins_current_session_first() {
+    fn test_sessions_discovered_pins_current_session_first() {
         let mut state = AppState::new(vec![make_repo("alpha")], None);
         apply_transition!(state, ModeTransition::Sessions);
-        state.cwd_worktree_path = Some(PathBuf::from("/tmp/alpha"));
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux = Arc::new(MockTmuxProvider::default());
         let sender = make_sender();
 
         process_app_event(
-            AppEvent::SessionsSnapshot {
-                sessions: vec![make_session("beta", 5), make_session("alpha", 50)],
-                states: vec![],
+            AppEvent::SessionsDiscovered {
+                sessions: vec![make_session("beta", 5), make_current_session("alpha", 50)],
             },
             &mut state,
             &git,
@@ -5620,9 +5685,16 @@ mod tests {
         let sender = make_sender();
 
         process_app_event(
-            AppEvent::SessionsLoaded {
+            AppEvent::SessionsDiscovered {
                 sessions: vec![make_session("alpha", 50), make_session("beta", 5)],
             },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+        );
+        process_app_event(
+            AppEvent::SessionMetadataResolved { sessions: vec![] },
             &mut state,
             &git,
             &tmux,
@@ -5667,7 +5739,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sessions_snapshot_updates_membership_and_resorts_rows() {
+    fn test_sessions_discovered_updates_membership_and_resorts_rows() {
         let mut state = AppState::new(vec![make_repo("alpha")], None);
         apply_transition!(state, ModeTransition::Sessions);
         state.sessions_view.load_state = kiosk_core::state::SessionsLoadState::Ready;
@@ -5684,13 +5756,12 @@ mod tests {
         let sender = make_sender();
 
         process_app_event(
-            AppEvent::SessionsSnapshot {
+            AppEvent::SessionsDiscovered {
                 sessions: vec![
                     make_session("beta--feat", 95),
                     make_session("alpha--main", 110),
                     make_session("delta--new", 70),
                 ],
-                states: vec![],
             },
             &mut state,
             &git,
@@ -5723,7 +5794,7 @@ mod tests {
         let sender = make_sender();
 
         process_app_event(
-            AppEvent::SessionsLoaded {
+            AppEvent::SessionsDiscovered {
                 sessions: vec![make_session("beta", 5), make_session("alpha", 50)],
             },
             &mut state,
@@ -5737,10 +5808,9 @@ mod tests {
     }
 
     #[test]
-    fn test_sessions_snapshot_preserves_filtered_order_with_active_search() {
+    fn test_sessions_discovered_preserves_filtered_order_with_active_search() {
         let mut state = AppState::new(vec![make_repo("alpha")], None);
         apply_transition!(state, ModeTransition::Sessions);
-        state.cwd_worktree_path = Some(PathBuf::from("/tmp/kiosk--feat-agent-session-switcher"));
         state.sessions_view.list.input.text = "o".to_string();
         state.sessions_view.list.input.cursor = 1;
 
@@ -5749,13 +5819,12 @@ mod tests {
         let sender = make_sender();
 
         process_app_event(
-            AppEvent::SessionsSnapshot {
+            AppEvent::SessionsDiscovered {
                 sessions: vec![
                     make_session("scooter--main", 20),
-                    make_session("kiosk--feat-agent-session-switcher", 50),
+                    make_current_session("kiosk--feat-agent-session-switcher", 50),
                     make_session("dotfiles--main", 10),
                 ],
-                states: vec![],
             },
             &mut state,
             &git,
@@ -5773,13 +5842,12 @@ mod tests {
         );
 
         process_app_event(
-            AppEvent::SessionsSnapshot {
+            AppEvent::SessionsDiscovered {
                 sessions: vec![
                     make_session("dotfiles--main", 5),
                     make_session("scooter--main", 25),
-                    make_session("kiosk--feat-agent-session-switcher", 60),
+                    make_current_session("kiosk--feat-agent-session-switcher", 60),
                 ],
-                states: vec![],
             },
             &mut state,
             &git,

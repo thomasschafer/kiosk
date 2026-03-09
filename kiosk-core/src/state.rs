@@ -740,22 +740,104 @@ impl Default for SetupState {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct ResolvedSessionMetadata {
+    pub repo_name: String,
+    pub branch: Option<String>,
+    pub path: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+pub enum SessionMetadata {
+    Unresolved,
+    Resolved(ResolvedSessionMetadata),
+}
+
 /// A session entry for the sessions view (cross-repo tmux session list).
 #[derive(Debug, Clone)]
 pub struct SessionEntry {
     pub session_name: String,
-    pub repo_name: String,
-    pub branch: Option<String>,
-    pub path: PathBuf,
+    pub metadata: SessionMetadata,
     pub agent_statuses: Vec<AgentStatus>,
     pub session_activity: u64,
     pub attached: bool,
+    pub is_current: bool,
+}
+
+impl SessionEntry {
+    #[must_use]
+    pub fn unresolved(
+        session_name: String,
+        agent_statuses: Vec<AgentStatus>,
+        session_activity: u64,
+        attached: bool,
+        is_current: bool,
+    ) -> Self {
+        Self {
+            session_name,
+            metadata: SessionMetadata::Unresolved,
+            agent_statuses,
+            session_activity,
+            attached,
+            is_current,
+        }
+    }
+
+    #[must_use]
+    pub fn resolved(
+        session_name: String,
+        repo_name: String,
+        branch: Option<String>,
+        path: PathBuf,
+        agent_statuses: Vec<AgentStatus>,
+        session_activity: u64,
+        attached: bool,
+        is_current: bool,
+    ) -> Self {
+        Self {
+            session_name,
+            metadata: SessionMetadata::Resolved(ResolvedSessionMetadata {
+                repo_name,
+                branch,
+                path,
+            }),
+            agent_statuses,
+            session_activity,
+            attached,
+            is_current,
+        }
+    }
+
+    #[must_use]
+    pub fn repo_name(&self) -> Option<&str> {
+        match &self.metadata {
+            SessionMetadata::Resolved(metadata) => Some(&metadata.repo_name),
+            SessionMetadata::Unresolved => None,
+        }
+    }
+
+    #[must_use]
+    pub fn branch(&self) -> Option<&str> {
+        match &self.metadata {
+            SessionMetadata::Resolved(metadata) => metadata.branch.as_deref(),
+            SessionMetadata::Unresolved => None,
+        }
+    }
+
+    #[must_use]
+    pub fn path(&self) -> Option<&Path> {
+        match &self.metadata {
+            SessionMetadata::Resolved(metadata) => Some(&metadata.path),
+            SessionMetadata::Unresolved => None,
+        }
+    }
 }
 
 pub fn active_session_entries<S1, S2>(
     repos: &[Repo],
     session_activity: &HashMap<String, u64, S1>,
     attached_sessions: &HashSet<String, S2>,
+    current_session_name: Option<&str>,
 ) -> Vec<SessionEntry>
 where
     S1: std::hash::BuildHasher,
@@ -768,15 +850,16 @@ where
             let Some(&activity) = session_activity.get(&session_name) else {
                 continue;
             };
-            sessions.push(SessionEntry {
-                session_name: session_name.clone(),
-                repo_name: repo.name.clone(),
-                branch: worktree.branch.clone(),
-                path: worktree.path.clone(),
-                agent_statuses: Vec::new(),
-                session_activity: activity,
-                attached: attached_sessions.contains(&session_name),
-            });
+            sessions.push(SessionEntry::resolved(
+                session_name.clone(),
+                repo.name.clone(),
+                worktree.branch.clone(),
+                worktree.path.clone(),
+                Vec::new(),
+                activity,
+                attached_sessions.contains(&session_name),
+                current_session_name == Some(session_name.as_str()),
+            ));
         }
     }
     sessions
@@ -933,55 +1016,23 @@ impl ActiveAgentPoller {
     }
 }
 
-fn session_matches_current(
-    session_canonical: Option<&PathBuf>,
-    current_canonical: Option<&PathBuf>,
-) -> bool {
-    match (session_canonical, current_canonical) {
-        (Some(session), Some(current)) => session == current,
-        _ => false,
-    }
-}
-
 /// Sort sessions by: current session first, then Waiting, Idle, Running, no agent.
 /// Within same tier: newest activity first (most recently visited).
-pub fn sort_sessions(sessions: &mut [SessionEntry], current_worktree_path: Option<&Path>) {
-    let current_canonical = current_worktree_path
-        .and_then(|path| std::fs::canonicalize(path).ok())
-        .or_else(|| current_worktree_path.map(ToOwned::to_owned));
-
-    // Pre-compute canonical paths to avoid filesystem I/O in the comparator.
-    let session_canonicals: Vec<Option<PathBuf>> = sessions
-        .iter()
-        .map(|s| {
-            std::fs::canonicalize(&s.path)
-                .ok()
-                .or_else(|| Some(s.path.clone()))
-        })
-        .collect();
-
-    let mut indices: Vec<usize> = (0..sessions.len()).collect();
-    indices.sort_by(|&ai, &bi| {
-        let a_is_current =
-            session_matches_current(session_canonicals[ai].as_ref(), current_canonical.as_ref());
-        let b_is_current =
-            session_matches_current(session_canonicals[bi].as_ref(), current_canonical.as_ref());
-        b_is_current
-            .cmp(&a_is_current)
+pub fn sort_sessions(sessions: &mut [SessionEntry]) {
+    sessions.sort_by(|left, right| {
+        right
+            .is_current
+            .cmp(&left.is_current)
             .then_with(|| {
                 cmp_by_agent_priority_then_newest_activity(
-                    &sessions[ai].agent_statuses,
-                    sessions[ai].session_activity,
-                    &sessions[bi].agent_statuses,
-                    sessions[bi].session_activity,
+                    &left.agent_statuses,
+                    left.session_activity,
+                    &right.agent_statuses,
+                    right.session_activity,
                 )
             })
-            .then_with(|| sessions[ai].session_name.cmp(&sessions[bi].session_name))
+            .then_with(|| left.session_name.cmp(&right.session_name))
     });
-
-    // Apply the sorted permutation in-place.
-    let sorted: Vec<SessionEntry> = indices.into_iter().map(|i| sessions[i].clone()).collect();
-    sessions.clone_from_slice(&sorted);
 }
 
 /// What mode the app is in
@@ -3725,54 +3776,40 @@ mod tests {
         use crate::agent::{AgentKind, AgentState, AgentStatus};
 
         let mut sessions = vec![
-            SessionEntry {
-                session_name: "no-agent".into(),
-                repo_name: "repo1".into(),
-                branch: Some("main".into()),
-                path: PathBuf::from("/tmp/a"),
-                agent_statuses: vec![],
-                session_activity: 100,
-                attached: false,
-            },
-            SessionEntry {
-                session_name: "running".into(),
-                repo_name: "repo2".into(),
-                branch: Some("feat".into()),
-                path: PathBuf::from("/tmp/b"),
-                agent_statuses: vec![AgentStatus {
+            SessionEntry::unresolved("no-agent".into(), vec![], 100, false, false),
+            SessionEntry::unresolved(
+                "running".into(),
+                vec![AgentStatus {
                     kind: AgentKind::ClaudeCode,
                     state: AgentState::Running,
                 }],
-                session_activity: 200,
-                attached: false,
-            },
-            SessionEntry {
-                session_name: "waiting".into(),
-                repo_name: "repo3".into(),
-                branch: Some("fix".into()),
-                path: PathBuf::from("/tmp/c"),
-                agent_statuses: vec![AgentStatus {
+                200,
+                false,
+                false,
+            ),
+            SessionEntry::unresolved(
+                "waiting".into(),
+                vec![AgentStatus {
                     kind: AgentKind::ClaudeCode,
                     state: AgentState::Waiting,
                 }],
-                session_activity: 300,
-                attached: false,
-            },
-            SessionEntry {
-                session_name: "idle".into(),
-                repo_name: "repo4".into(),
-                branch: Some("dev".into()),
-                path: PathBuf::from("/tmp/d"),
-                agent_statuses: vec![AgentStatus {
+                300,
+                false,
+                false,
+            ),
+            SessionEntry::unresolved(
+                "idle".into(),
+                vec![AgentStatus {
                     kind: AgentKind::ClaudeCode,
                     state: AgentState::Idle,
                 }],
-                session_activity: 50,
-                attached: false,
-            },
+                50,
+                false,
+                false,
+            ),
         ];
 
-        sort_sessions(&mut sessions, None);
+        sort_sessions(&mut sessions);
 
         assert_eq!(
             sessions[0].session_name, "waiting",
@@ -3794,33 +3831,29 @@ mod tests {
         use crate::agent::{AgentKind, AgentState, AgentStatus};
 
         let mut sessions = vec![
-            SessionEntry {
-                session_name: "recent".into(),
-                repo_name: "repo1".into(),
-                branch: Some("main".into()),
-                path: PathBuf::from("/tmp/a"),
-                agent_statuses: vec![AgentStatus {
+            SessionEntry::unresolved(
+                "recent".into(),
+                vec![AgentStatus {
                     kind: AgentKind::ClaudeCode,
                     state: AgentState::Running,
                 }],
-                session_activity: 500,
-                attached: false,
-            },
-            SessionEntry {
-                session_name: "old".into(),
-                repo_name: "repo2".into(),
-                branch: Some("feat".into()),
-                path: PathBuf::from("/tmp/b"),
-                agent_statuses: vec![AgentStatus {
+                500,
+                false,
+                false,
+            ),
+            SessionEntry::unresolved(
+                "old".into(),
+                vec![AgentStatus {
                     kind: AgentKind::ClaudeCode,
                     state: AgentState::Running,
                 }],
-                session_activity: 100,
-                attached: false,
-            },
+                100,
+                false,
+                false,
+            ),
         ];
 
-        sort_sessions(&mut sessions, None);
+        sort_sessions(&mut sessions);
 
         assert_eq!(
             sessions[0].session_name, "recent",
@@ -3897,30 +3930,20 @@ mod tests {
     #[test]
     fn test_sort_sessions_current_session_first() {
         let mut sessions = vec![
-            SessionEntry {
-                session_name: "waiting".into(),
-                repo_name: "repo1".into(),
-                branch: Some("feat".into()),
-                path: PathBuf::from("/tmp/waiting"),
-                agent_statuses: vec![crate::agent::AgentStatus {
+            SessionEntry::unresolved(
+                "waiting".into(),
+                vec![crate::agent::AgentStatus {
                     kind: crate::agent::AgentKind::ClaudeCode,
                     state: crate::agent::AgentState::Waiting,
                 }],
-                session_activity: 200,
-                attached: false,
-            },
-            SessionEntry {
-                session_name: "current".into(),
-                repo_name: "repo2".into(),
-                branch: Some("main".into()),
-                path: PathBuf::from("/tmp/current"),
-                agent_statuses: vec![],
-                session_activity: 1,
-                attached: false,
-            },
+                200,
+                false,
+                false,
+            ),
+            SessionEntry::unresolved("current".into(), vec![], 1, false, true),
         ];
 
-        sort_sessions(&mut sessions, Some(Path::new("/tmp/current")));
+        sort_sessions(&mut sessions);
 
         assert_eq!(sessions[0].session_name, "current");
     }

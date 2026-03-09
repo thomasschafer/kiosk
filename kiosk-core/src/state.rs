@@ -631,19 +631,6 @@ pub fn cmp_by_agent_priority_then_oldest_activity(
         .then(left_activity.cmp(&right_activity))
 }
 
-/// Shared ordering for session-like rows: higher-priority agent state first,
-/// then newest activity first.
-pub fn cmp_by_agent_priority_then_newest_activity(
-    left_statuses: &[crate::agent::AgentStatus],
-    left_activity: u64,
-    right_statuses: &[crate::agent::AgentStatus],
-    right_activity: u64,
-) -> std::cmp::Ordering {
-    agent_statuses_sort_priority(right_statuses)
-        .cmp(&agent_statuses_sort_priority(left_statuses))
-        .then(right_activity.cmp(&left_activity))
-}
-
 /// Compare two optional timestamps for recency-based sorting (most recent first).
 /// `Some` sorts before `None`; when both are `Some`, the higher timestamp sorts first.
 fn cmp_optional_recency(a: Option<u64>, b: Option<u64>) -> std::cmp::Ordering {
@@ -1027,25 +1014,6 @@ impl ActiveAgentPoller {
             ActiveAgentPoller::Sessions(_) => AgentPollerScope::Sessions,
         }
     }
-}
-
-/// Sort sessions by: current session first, then Waiting, Idle, Running, no agent.
-/// Within same tier: newest activity first (most recently visited).
-pub fn sort_sessions(sessions: &mut [SessionEntry]) {
-    sessions.sort_by(|left, right| {
-        right
-            .is_current
-            .cmp(&left.is_current)
-            .then_with(|| {
-                cmp_by_agent_priority_then_newest_activity(
-                    &left.agent_statuses,
-                    left.session_activity,
-                    &right.agent_statuses,
-                    right.session_activity,
-                )
-            })
-            .then_with(|| left.session_name.cmp(&right.session_name))
-    });
 }
 
 /// What mode the app is in
@@ -3785,97 +3753,6 @@ mod tests {
         );
     }
     #[test]
-    fn test_sort_sessions_waiting_first() {
-        use crate::agent::{AgentKind, AgentState, AgentStatus};
-
-        let mut sessions = vec![
-            SessionEntry::unresolved("no-agent".into(), vec![], 100, false, false),
-            SessionEntry::unresolved(
-                "running".into(),
-                vec![AgentStatus {
-                    kind: AgentKind::ClaudeCode,
-                    state: AgentState::Running,
-                }],
-                200,
-                false,
-                false,
-            ),
-            SessionEntry::unresolved(
-                "waiting".into(),
-                vec![AgentStatus {
-                    kind: AgentKind::ClaudeCode,
-                    state: AgentState::Waiting,
-                }],
-                300,
-                false,
-                false,
-            ),
-            SessionEntry::unresolved(
-                "idle".into(),
-                vec![AgentStatus {
-                    kind: AgentKind::ClaudeCode,
-                    state: AgentState::Idle,
-                }],
-                50,
-                false,
-                false,
-            ),
-        ];
-
-        sort_sessions(&mut sessions);
-
-        assert_eq!(
-            sessions[0].session_name, "waiting",
-            "Waiting should be first"
-        );
-        assert_eq!(sessions[1].session_name, "idle", "Idle should be second");
-        assert_eq!(
-            sessions[2].session_name, "running",
-            "Running should be third"
-        );
-        assert_eq!(
-            sessions[3].session_name, "no-agent",
-            "No agent should be last"
-        );
-    }
-
-    #[test]
-    fn test_sort_sessions_same_tier_newest_first() {
-        use crate::agent::{AgentKind, AgentState, AgentStatus};
-
-        let mut sessions = vec![
-            SessionEntry::unresolved(
-                "recent".into(),
-                vec![AgentStatus {
-                    kind: AgentKind::ClaudeCode,
-                    state: AgentState::Running,
-                }],
-                500,
-                false,
-                false,
-            ),
-            SessionEntry::unresolved(
-                "old".into(),
-                vec![AgentStatus {
-                    kind: AgentKind::ClaudeCode,
-                    state: AgentState::Running,
-                }],
-                100,
-                false,
-                false,
-            ),
-        ];
-
-        sort_sessions(&mut sessions);
-
-        assert_eq!(
-            sessions[0].session_name, "recent",
-            "Newest activity should be first within same tier"
-        );
-        assert_eq!(sessions[1].session_name, "old");
-    }
-
-    #[test]
     fn test_sorted_unique_agent_states_priority_order() {
         use crate::agent::{AgentKind, AgentState, AgentStatus};
 
@@ -3938,27 +3815,6 @@ mod tests {
                 },
             ]
         );
-    }
-
-    #[test]
-    fn test_sort_sessions_current_session_first() {
-        let mut sessions = vec![
-            SessionEntry::unresolved(
-                "waiting".into(),
-                vec![crate::agent::AgentStatus {
-                    kind: crate::agent::AgentKind::ClaudeCode,
-                    state: crate::agent::AgentState::Waiting,
-                }],
-                200,
-                false,
-                false,
-            ),
-            SessionEntry::unresolved("current".into(), vec![], 1, false, true),
-        ];
-
-        sort_sessions(&mut sessions);
-
-        assert_eq!(sessions[0].session_name, "current");
     }
 
     #[test]

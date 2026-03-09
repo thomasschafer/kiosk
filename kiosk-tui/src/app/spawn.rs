@@ -535,24 +535,27 @@ fn resolve_repo_session_metadata(
     git: &dyn GitProvider,
     repo: Repo,
     session_activity: &HashMap<String, u64>,
-    attached_sessions: &HashSet<String>,
-    current_session_name: Option<&str>,
-    by_session: &HashMap<String, Vec<kiosk_core::agent::AgentStatus>>,
-) -> Vec<kiosk_core::state::SessionEntry> {
+) -> Vec<kiosk_core::event::SessionMetadataPatch> {
     let mut repo = repo;
     repo.worktrees = git.list_worktrees(&repo.path);
-    let mut resolved = kiosk_core::state::active_session_entries(
-        &[repo],
-        session_activity,
-        attached_sessions,
-        current_session_name,
-    );
-    for session in &mut resolved {
-        if let Some(agent_statuses) = by_session.get(session.session_name.as_str()) {
-            session.agent_statuses = agent_statuses.clone();
-        }
-    }
-    resolved
+    repo.worktrees
+        .iter()
+        .filter_map(|worktree| {
+            let session_name = repo.tmux_session_name(&worktree.path);
+            session_activity.contains_key(&session_name).then_some(
+                kiosk_core::event::SessionMetadataPatch {
+                    session_name,
+                    metadata: kiosk_core::state::SessionMetadata::Resolved(
+                        kiosk_core::state::ResolvedSessionMetadata {
+                            repo_name: repo.name.clone(),
+                            branch: worktree.branch.clone(),
+                            path: worktree.path.clone(),
+                        },
+                    ),
+                },
+            )
+        })
+        .collect()
 }
 
 fn stream_session_metadata(
@@ -567,8 +570,8 @@ fn stream_session_metadata(
         .map(|session| session.session_name.clone())
         .collect();
     if active_sessions.is_empty() {
-        sender.send(AppEvent::SessionMetadataResolved {
-            sessions: Vec::new(),
+        sender.send(AppEvent::SessionMetadataPatched {
+            patches: Vec::new(),
             complete: true,
         });
         return;
@@ -577,19 +580,6 @@ fn stream_session_metadata(
     let session_activity: HashMap<String, u64> = sessions
         .iter()
         .map(|session| (session.session_name.clone(), session.session_activity))
-        .collect();
-    let attached_sessions: HashSet<String> = sessions
-        .iter()
-        .filter(|session| session.attached)
-        .map(|session| session.session_name.clone())
-        .collect();
-    let current_session_name = sessions
-        .iter()
-        .find(|session| session.is_current)
-        .map(|session| session.session_name.as_str());
-    let by_session: HashMap<String, Vec<kiosk_core::agent::AgentStatus>> = sessions
-        .iter()
-        .map(|session| (session.session_name.clone(), session.agent_statuses.clone()))
         .collect();
     let is_cancelled = || cancel.load(Ordering::Relaxed) || sender.cancel.load(Ordering::Relaxed);
     let mut repos = git.scan_repos(&search_dirs);
@@ -601,21 +591,18 @@ fn stream_session_metadata(
         .collect();
 
     if candidate_repos.is_empty() {
-        sender.send(AppEvent::SessionMetadataResolved {
-            sessions: Vec::new(),
+        sender.send(AppEvent::SessionMetadataPatched {
+            patches: Vec::new(),
             complete: true,
         });
         return;
     }
 
-    let (tx, rx) = mpsc::channel::<Vec<kiosk_core::state::SessionEntry>>();
+    let (tx, rx) = mpsc::channel::<Vec<kiosk_core::event::SessionMetadataPatch>>();
     for repo in candidate_repos {
         let tx = tx.clone();
         let git = Arc::clone(&git);
         let session_activity = session_activity.clone();
-        let attached_sessions = attached_sessions.clone();
-        let current_session_name = current_session_name.map(str::to_string);
-        let by_session = by_session.clone();
         let cancel = Arc::clone(cancel);
 
         thread::spawn(move || {
@@ -623,34 +610,30 @@ fn stream_session_metadata(
                 return;
             }
 
-            let resolved = resolve_repo_session_metadata(
+            let _ = tx.send(resolve_repo_session_metadata(
                 &*git,
                 repo,
                 &session_activity,
-                &attached_sessions,
-                current_session_name.as_deref(),
-                &by_session,
-            );
-            let _ = tx.send(resolved);
+            ));
         });
     }
     drop(tx);
 
-    for resolved in rx {
+    for patches in rx {
         if is_cancelled() {
             return;
         }
-        if !resolved.is_empty() {
-            sender.send(AppEvent::SessionMetadataResolved {
-                sessions: resolved,
+        if !patches.is_empty() {
+            sender.send(AppEvent::SessionMetadataPatched {
+                patches,
                 complete: false,
             });
         }
     }
 
     if !is_cancelled() {
-        sender.send(AppEvent::SessionMetadataResolved {
-            sessions: Vec::new(),
+        sender.send(AppEvent::SessionMetadataPatched {
+            patches: Vec::new(),
             complete: true,
         });
     }
@@ -691,7 +674,7 @@ fn refresh_sessions_view<T: TmuxProvider + ?Sized>(
     if !is_cancelled() {
         let states = detect_session_agent_states(tmux, &sessions);
         if !states.is_empty() {
-            sender.send(AppEvent::SessionAgentStatesUpdated { states });
+            sender.send(AppEvent::SessionAgentStatesPatched { states });
         }
     }
 
@@ -805,7 +788,7 @@ fn spawn_sessions_agent_poller<T: TmuxProvider + ?Sized + 'static>(
             {
                 let states =
                     session_agent_states(detect_agent_statuses(&*tmux, &known_session_names));
-                sender.send(AppEvent::SessionAgentStatesUpdated { states });
+                sender.send(AppEvent::SessionAgentStatesPatched { states });
                 last_status_tick = now;
             }
 
@@ -966,12 +949,16 @@ mod tests {
                 worktrees: Vec::new(),
             },
             &session_activity,
-            &std::collections::HashSet::new(),
-            None,
-            &std::collections::HashMap::new(),
         );
         assert_eq!(resolved.len(), 1);
         assert_eq!(resolved[0].session_name, "api--(work)--feat");
-        assert_eq!(resolved[0].repo_name(), Some("api"));
+        match &resolved[0].metadata {
+            kiosk_core::state::SessionMetadata::Resolved(metadata) => {
+                assert_eq!(metadata.repo_name, "api");
+            }
+            kiosk_core::state::SessionMetadata::Unresolved => {
+                panic!("metadata should be resolved");
+            }
+        }
     }
 }

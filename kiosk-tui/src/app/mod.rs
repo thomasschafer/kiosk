@@ -905,11 +905,11 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             apply_sessions_discovered(state, sessions);
         }
 
-        AppEvent::SessionMetadataResolved { sessions, complete } => {
-            apply_session_metadata(state, sessions, complete);
+        AppEvent::SessionMetadataPatched { patches, complete } => {
+            apply_session_metadata(state, patches, complete);
         }
 
-        AppEvent::SessionAgentStatesUpdated { states } => {
+        AppEvent::SessionAgentStatesPatched { states } => {
             if state.effective_mode() == &Mode::Sessions {
                 let selected_session_name = selected_session_name(state);
                 merge_session_agent_states(&mut state.sessions_view.sessions, &states);
@@ -1158,17 +1158,16 @@ fn preserve_existing_session_metadata(
 
 fn merge_session_metadata(
     sessions: &mut [kiosk_core::state::SessionEntry],
-    resolved_sessions: Vec<kiosk_core::state::SessionEntry>,
+    patches: Vec<kiosk_core::event::SessionMetadataPatch>,
 ) {
-    if resolved_sessions.is_empty() {
+    if patches.is_empty() {
         return;
     }
 
-    let by_session: std::collections::HashMap<String, kiosk_core::state::SessionMetadata> =
-        resolved_sessions
-            .into_iter()
-            .map(|session| (session.session_name, session.metadata))
-            .collect();
+    let by_session: std::collections::HashMap<String, kiosk_core::state::SessionMetadata> = patches
+        .into_iter()
+        .map(|patch| (patch.session_name, patch.metadata))
+        .collect();
 
     for session in sessions {
         if let Some(metadata) = by_session.get(session.session_name.as_str()) {
@@ -1204,11 +1203,11 @@ fn apply_sessions_discovered(
 
 fn apply_session_metadata(
     state: &mut AppState,
-    resolved_sessions: Vec<kiosk_core::state::SessionEntry>,
+    patches: Vec<kiosk_core::event::SessionMetadataPatch>,
     complete: bool,
 ) {
     let selected_session_name = selected_session_name(state);
-    merge_session_metadata(&mut state.sessions_view.sessions, resolved_sessions);
+    merge_session_metadata(&mut state.sessions_view.sessions, patches);
     rebuild_sessions_list(state, selected_session_name);
     state.sessions_view.apply_pin_first_selection();
     if complete {
@@ -5716,7 +5715,7 @@ mod tests {
         let sender = make_sender();
 
         process_app_event(
-            AppEvent::SessionAgentStatesUpdated {
+            AppEvent::SessionAgentStatesPatched {
                 states: vec![(
                     "alpha".to_string(),
                     vec![kiosk_core::agent::AgentStatus {
@@ -5902,17 +5901,17 @@ mod tests {
         let sender = make_sender();
 
         process_app_event(
-            AppEvent::SessionMetadataResolved {
-                sessions: vec![kiosk_core::state::SessionEntry::resolved(
-                    "alpha".to_string(),
-                    "alpha".to_string(),
-                    Some("main".to_string()),
-                    PathBuf::from("/tmp/alpha"),
-                    Vec::new(),
-                    5,
-                    false,
-                    false,
-                )],
+            AppEvent::SessionMetadataPatched {
+                patches: vec![kiosk_core::event::SessionMetadataPatch {
+                    session_name: "alpha".to_string(),
+                    metadata: kiosk_core::state::SessionMetadata::Resolved(
+                        kiosk_core::state::ResolvedSessionMetadata {
+                            repo_name: "alpha".to_string(),
+                            branch: Some("main".to_string()),
+                            path: PathBuf::from("/tmp/alpha"),
+                        },
+                    ),
+                }],
                 complete: false,
             },
             &mut state,

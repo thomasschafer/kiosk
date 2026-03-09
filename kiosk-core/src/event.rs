@@ -3,6 +3,7 @@ use std::{collections::HashMap, path::PathBuf};
 use crate::{
     agent::AgentStatus,
     git::{Repo, Worktree},
+    state::SessionMetadata,
 };
 
 /// Runtime session data from the latest tmux poll.
@@ -12,6 +13,12 @@ pub struct SessionRuntimeUpdate {
     pub session_exists: bool,
     pub session_activity_ts: Option<u64>,
     pub agent_statuses: Vec<AgentStatus>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SessionMetadataPatch {
+    pub session_name: String,
+    pub metadata: SessionMetadata,
 }
 
 /// Events that arrive asynchronously from background tasks.
@@ -92,14 +99,14 @@ pub enum AppEvent {
         sessions: Vec<crate::state::SessionEntry>,
     },
 
-    /// Git-derived metadata resolved for already-known sessions.
-    SessionMetadataResolved {
-        sessions: Vec<crate::state::SessionEntry>,
+    /// Git-derived metadata patched into already-known sessions.
+    SessionMetadataPatched {
+        patches: Vec<SessionMetadataPatch>,
         complete: bool,
     },
 
-    /// Agent statuses updated for sessions view
-    SessionAgentStatesUpdated {
+    /// Agent statuses patched into the sessions view.
+    SessionAgentStatesPatched {
         states: Vec<(String, Vec<AgentStatus>)>,
     },
 }

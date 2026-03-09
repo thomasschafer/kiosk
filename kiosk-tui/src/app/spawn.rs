@@ -487,43 +487,45 @@ fn session_agent_states(
         .collect()
 }
 
-fn build_session_shell_snapshot<T: TmuxProvider + ?Sized>(
-    tmux: &T,
-    all_pane_data: &HashMap<String, kiosk_core::tmux::provider::SessionPaneData>,
+fn build_session_discovered_snapshot(
+    sessions_with_activity: &[(String, u64)],
     attached_sessions: &HashSet<String>,
     current_session_name: Option<&str>,
 ) -> Vec<kiosk_core::state::SessionEntry> {
-    let mut session_names: Vec<String> = all_pane_data.keys().cloned().collect();
-    session_names.sort();
-    let states = session_agent_states(detect_agent_statuses_from_pane_data(
-        tmux,
-        &session_names,
-        all_pane_data,
-    ));
-    let by_session: HashMap<&str, &Vec<kiosk_core::agent::AgentStatus>> = states
-        .iter()
-        .map(|(session_name, agent_statuses)| (session_name.as_str(), agent_statuses))
-        .collect();
-
-    let mut sessions: Vec<kiosk_core::state::SessionEntry> = session_names
+    let mut sessions: Vec<kiosk_core::state::SessionEntry> = sessions_with_activity
         .into_iter()
-        .filter_map(|session_name| {
-            let pane_data = all_pane_data.get(&session_name)?;
-            Some(kiosk_core::state::SessionEntry::unresolved(
+        .map(|(session_name, session_activity)| {
+            kiosk_core::state::SessionEntry::unresolved(
                 session_name.clone(),
-                by_session
-                    .get(session_name.as_str())
-                    .cloned()
-                    .cloned()
-                    .unwrap_or_default(),
-                pane_data.session_activity,
-                attached_sessions.contains(&session_name),
+                Vec::new(),
+                *session_activity,
+                attached_sessions.contains(session_name),
                 current_session_name == Some(session_name.as_str()),
-            ))
+            )
         })
         .collect();
     kiosk_core::state::sort_sessions(&mut sessions);
     sessions
+}
+
+fn detect_session_agent_states<T: TmuxProvider + ?Sized>(
+    tmux: &T,
+    sessions: &[kiosk_core::state::SessionEntry],
+) -> Vec<(String, Vec<kiosk_core::agent::AgentStatus>)> {
+    if sessions.is_empty() {
+        return Vec::new();
+    }
+
+    let all_pane_data = tmux.list_all_panes_with_activity();
+    let session_names: Vec<String> = sessions
+        .iter()
+        .map(|session| session.session_name.clone())
+        .collect();
+    session_agent_states(detect_agent_statuses_from_pane_data(
+        tmux,
+        &session_names,
+        &all_pane_data,
+    ))
 }
 
 fn enrich_session_repos(
@@ -592,6 +594,46 @@ fn resolve_session_metadata(
     resolved
 }
 
+fn refresh_sessions_view<T: TmuxProvider + ?Sized>(
+    git: &dyn GitProvider,
+    tmux: &T,
+    sender: &EventSender,
+    search_dirs: &[(PathBuf, u16)],
+    is_cancelled: &dyn Fn() -> bool,
+) -> Vec<kiosk_core::state::SessionEntry> {
+    let sessions_with_activity = tmux.list_sessions_with_activity();
+    let attached_sessions = tmux.list_attached_sessions();
+    let current_session_name = tmux.current_session_name();
+    let sessions = build_session_discovered_snapshot(
+        &sessions_with_activity,
+        &attached_sessions,
+        current_session_name.as_deref(),
+    );
+    sender.send(AppEvent::SessionsDiscovered {
+        sessions: sessions.clone(),
+    });
+
+    if is_cancelled() {
+        return sessions;
+    }
+
+    let states = detect_session_agent_states(tmux, &sessions);
+    if !states.is_empty() {
+        sender.send(AppEvent::SessionAgentStatesUpdated { states });
+    }
+
+    if is_cancelled() {
+        return sessions;
+    }
+
+    let resolved = resolve_session_metadata(git, search_dirs, &sessions, is_cancelled);
+    if !is_cancelled() {
+        sender.send(AppEvent::SessionMetadataResolved { sessions: resolved });
+    }
+
+    sessions
+}
+
 /// Spawn background session discovery for the sessions view.
 pub(super) fn spawn_sessions_discovery<T: TmuxProvider + ?Sized + 'static>(
     git: &Arc<dyn GitProvider>,
@@ -627,22 +669,13 @@ pub(super) fn spawn_sessions_discovery<T: TmuxProvider + ?Sized + 'static>(
             return;
         }
 
-        let attached_sessions = tmux_clone.list_attached_sessions();
-        let current_session_name = tmux_clone.current_session_name();
-        let all_pane_data = tmux_clone.list_all_panes_with_activity();
-        let sessions = build_session_shell_snapshot(
+        refresh_sessions_view(
+            &*git,
             &*tmux_clone,
-            &all_pane_data,
-            &attached_sessions,
-            current_session_name.as_deref(),
+            &sender_clone,
+            &search_dirs,
+            &is_cancelled,
         );
-        sender_clone.send(AppEvent::SessionsDiscovered {
-            sessions: sessions.clone(),
-        });
-        let resolved = resolve_session_metadata(&*git, &search_dirs, &sessions, &is_cancelled);
-        if !is_cancelled() {
-            sender_clone.send(AppEvent::SessionMetadataResolved { sessions: resolved });
-        }
 
         // Start sessions pollers: fast status updates + slower membership diffs.
         let config = SessionsPollerConfig {
@@ -693,28 +726,15 @@ fn spawn_sessions_agent_poller<T: TmuxProvider + ?Sized + 'static>(
             let now = std::time::Instant::now();
 
             if now.duration_since(last_membership_tick) >= membership_interval {
-                let attached_sessions = tmux.list_attached_sessions();
-                let current_session_name = tmux.current_session_name();
-                let all_pane_data = tmux.list_all_panes_with_activity();
-                let sessions = build_session_shell_snapshot(
-                    &*tmux,
-                    &all_pane_data,
-                    &attached_sessions,
-                    current_session_name.as_deref(),
-                );
+                let sessions =
+                    refresh_sessions_view(&*git, &*tmux, &sender, &search_dirs, &is_cancelled);
                 known_session_names = sessions
                     .iter()
                     .map(|session| session.session_name.clone())
                     .collect();
-                sender.send(AppEvent::SessionsDiscovered {
-                    sessions: sessions.clone(),
-                });
-                let resolved =
-                    resolve_session_metadata(&*git, &search_dirs, &sessions, &is_cancelled);
                 if is_cancelled() {
                     return;
                 }
-                sender.send(AppEvent::SessionMetadataResolved { sessions: resolved });
                 last_membership_tick = now;
                 last_status_tick = now;
             }
@@ -735,7 +755,9 @@ fn spawn_sessions_agent_poller<T: TmuxProvider + ?Sized + 'static>(
 
 #[cfg(test)]
 mod tests {
-    use super::{build_session_shell_snapshot, detect_agent_statuses, resolve_session_metadata};
+    use super::{
+        build_session_discovered_snapshot, detect_agent_statuses, resolve_session_metadata,
+    };
     use kiosk_core::{
         agent::{AgentKind, AgentState},
         git::{Repo, Worktree, mock::MockGitProvider},
@@ -799,38 +821,16 @@ mod tests {
     }
 
     #[test]
-    fn build_session_shell_snapshot_includes_active_sessions() {
+    fn build_session_discovered_snapshot_includes_active_sessions() {
         let mut tmux = MockTmuxProvider {
             sessions_with_activity: vec![("alpha".into(), 100), ("beta--feat".into(), 200)],
             ..Default::default()
         };
         tmux.clients.insert("beta--feat".into(), vec!["1".into()]);
-        tmux.session_activity_ts.insert("alpha".into(), 100);
-        tmux.session_activity_ts.insert("beta--feat".into(), 200);
-        tmux.pane_info.insert(
-            "alpha".into(),
-            vec![PaneInfo {
-                pane_id: "%1".into(),
-                command: "bash".into(),
-                pid: 1,
-            }],
-        );
-        tmux.pane_info.insert(
-            "beta--feat".into(),
-            vec![PaneInfo {
-                pane_id: "%2".into(),
-                command: "bash".into(),
-                pid: 2,
-            }],
-        );
 
         let attached = tmux.list_attached_sessions();
-        let sessions = build_session_shell_snapshot(
-            &tmux,
-            &tmux.list_all_panes_with_activity(),
-            &attached,
-            None,
-        );
+        let sessions =
+            build_session_discovered_snapshot(&tmux.list_sessions_with_activity(), &attached, None);
         let session_names: Vec<String> = sessions
             .iter()
             .map(|session| session.session_name.clone())
@@ -842,6 +842,31 @@ mod tests {
         assert_eq!(sessions.len(), 2);
         assert!(!sessions[0].attached);
         assert!(sessions[1].attached);
+        assert!(
+            sessions
+                .iter()
+                .all(|session| session.agent_statuses.is_empty())
+        );
+    }
+
+    #[test]
+    fn build_session_discovered_snapshot_pins_current_session_first_before_agent_sorting() {
+        let sessions = build_session_discovered_snapshot(
+            &[
+                ("alpha".to_string(), 100),
+                ("beta".to_string(), 200),
+                ("gamma".to_string(), 150),
+            ],
+            &std::collections::HashSet::new(),
+            Some("alpha"),
+        );
+
+        let session_names: Vec<&str> = sessions
+            .iter()
+            .map(|session| session.session_name.as_str())
+            .collect();
+        assert_eq!(session_names, vec!["alpha", "beta", "gamma"]);
+        assert!(sessions[0].is_current);
     }
 
     #[test]

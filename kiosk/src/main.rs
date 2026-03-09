@@ -552,7 +552,7 @@ fn apply_sessions_startup_mode(state: &mut AppState) {
         if let Err(error) = state.transition(&ModeTransition::Sessions) {
             state.set_error(&format!("Internal state transition error: {error:?}"));
         }
-        state.sessions_view.load_state = SessionsLoadState::Loading;
+        state.sessions_view.load_state = SessionsLoadState::Discovering;
         state.sessions_view.pin_first_selection = true;
         state.sessions_view.sessions.clear();
         state.sessions_view.list = kiosk_core::state::SearchableList::new(0);

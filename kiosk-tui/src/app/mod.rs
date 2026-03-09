@@ -1199,6 +1199,13 @@ fn apply_sessions_discovered(
     sort_sessions_for_view(state);
     rebuild_sessions_list(state, selected_session_name);
     state.sessions_view.apply_pin_first_selection();
+    if state.sessions_view.is_loading() {
+        if state.sessions_view.sessions.is_empty() {
+            state.sessions_view.mark_ready();
+        } else {
+            state.sessions_view.mark_shell_ready();
+        }
+    }
 }
 
 fn apply_session_metadata(
@@ -5674,7 +5681,7 @@ mod tests {
     fn test_sessions_loaded_initial_load_selects_first_item() {
         let mut state = AppState::new(vec![make_repo("alpha")], None);
         apply_transition!(state, ModeTransition::Sessions);
-        state.sessions_view.load_state = kiosk_core::state::SessionsLoadState::Loading;
+        state.sessions_view.load_state = kiosk_core::state::SessionsLoadState::Discovering;
         state.sessions_view.pin_first_selection = true;
         state.sessions_view.sessions = vec![make_session("alpha", 10), make_session("beta", 20)];
         state.sessions_view.list.filtered = vec![(0, 0), (1, 0)];
@@ -5693,16 +5700,10 @@ mod tests {
             &tmux,
             &sender,
         );
-        process_app_event(
-            AppEvent::SessionMetadataResolved { sessions: vec![] },
-            &mut state,
-            &git,
-            &tmux,
-            &sender,
-        );
 
         assert_eq!(state.sessions_view.list.selected, Some(0));
         assert!(!state.sessions_view.is_loading());
+        assert!(state.sessions_view.is_resolving());
     }
 
     #[test]
@@ -5863,6 +5864,31 @@ mod tests {
                 "dotfiles--main",
             ]
         );
+    }
+
+    #[test]
+    fn test_sessions_discovered_exits_blocking_load_before_metadata_resolves() {
+        let mut state = AppState::new(vec![make_repo("alpha")], None);
+        apply_transition!(state, ModeTransition::Sessions);
+        state.sessions_view.begin_loading();
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux = Arc::new(MockTmuxProvider::default());
+        let sender = make_sender();
+
+        process_app_event(
+            AppEvent::SessionsDiscovered {
+                sessions: vec![make_current_session("alpha", 50), make_session("beta", 5)],
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+        );
+
+        assert!(!state.sessions_view.is_loading());
+        assert!(state.sessions_view.is_resolving());
+        assert_eq!(filtered_session_names(&state), vec!["alpha", "beta"]);
     }
 
     #[test]

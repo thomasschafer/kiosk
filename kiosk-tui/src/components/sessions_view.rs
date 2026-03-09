@@ -95,7 +95,7 @@ pub fn draw(
     }
 
     let count = state.sessions_view.list.filtered.len();
-    let loading_suffix = if state.sessions_view.is_loading() {
+    let loading_suffix = if state.sessions_view.is_resolving() {
         " | loading..."
     } else {
         ""

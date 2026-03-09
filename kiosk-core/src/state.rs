@@ -875,7 +875,8 @@ pub enum StartupMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SessionsLoadState {
     #[default]
-    Loading,
+    Discovering,
+    MetadataPending,
     Ready,
 }
 
@@ -946,7 +947,7 @@ impl SessionsViewState {
         Self {
             sessions: Vec::new(),
             list: SearchableList::new(0),
-            load_state: SessionsLoadState::Loading,
+            load_state: SessionsLoadState::Discovering,
             pin_first_selection: false,
         }
     }
@@ -954,13 +955,25 @@ impl SessionsViewState {
     pub fn begin_loading(&mut self) {
         self.sessions.clear();
         self.list = SearchableList::new(0);
-        self.load_state = SessionsLoadState::Loading;
+        self.load_state = SessionsLoadState::Discovering;
         self.pin_first_selection = true;
     }
 
     #[must_use]
     pub fn is_loading(&self) -> bool {
-        self.load_state == SessionsLoadState::Loading
+        self.load_state == SessionsLoadState::Discovering
+    }
+
+    #[must_use]
+    pub fn is_resolving(&self) -> bool {
+        matches!(
+            self.load_state,
+            SessionsLoadState::MetadataPending | SessionsLoadState::Discovering
+        )
+    }
+
+    pub fn mark_shell_ready(&mut self) {
+        self.load_state = SessionsLoadState::MetadataPending;
     }
 
     pub fn mark_ready(&mut self) {

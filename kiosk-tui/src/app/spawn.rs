@@ -511,24 +511,52 @@ fn build_session_discovered_snapshot(
         .collect()
 }
 
-fn detect_session_agent_states<T: TmuxProvider + ?Sized>(
-    tmux: &T,
+fn detect_session_agent_states<T: TmuxProvider + ?Sized + 'static>(
+    tmux: &Arc<T>,
     sessions: &[kiosk_core::state::SessionEntry],
-) -> Vec<(String, Vec<kiosk_core::agent::AgentStatus>)> {
+    sender: &EventSender,
+    cancel: &Arc<AtomicBool>,
+) {
     if sessions.is_empty() {
-        return Vec::new();
+        return;
     }
 
     let all_pane_data = tmux.list_all_panes_with_activity();
-    let session_names: Vec<String> = sessions
-        .iter()
-        .map(|session| session.session_name.clone())
-        .collect();
-    session_agent_states(detect_agent_statuses_from_pane_data(
-        tmux,
-        &session_names,
-        &all_pane_data,
-    ))
+    let (tx, rx) = mpsc::channel::<(String, Vec<kiosk_core::agent::AgentStatus>)>();
+    for session in sessions {
+        let tx = tx.clone();
+        let tmux = Arc::clone(tmux);
+        let session_name = session.session_name.clone();
+        let pane_data = all_pane_data.get(&session_name).cloned();
+        let cancel = Arc::clone(cancel);
+
+        thread::spawn(move || {
+            if cancel.load(Ordering::Relaxed) {
+                return;
+            }
+            let statuses = pane_data
+                .map(|data| {
+                    kiosk_core::state::normalized_agent_statuses(
+                        &agent::detect_all_for_session_from_pane_data(&*tmux, &data)
+                            .into_iter()
+                            .map(|result| result.status)
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .unwrap_or_default();
+            let _ = tx.send((session_name, statuses));
+        });
+    }
+    drop(tx);
+
+    for state in rx {
+        if cancel.load(Ordering::Relaxed) || sender.cancel.load(Ordering::Relaxed) {
+            return;
+        }
+        sender.send(AppEvent::SessionAgentStatesPatched {
+            states: vec![state],
+        });
+    }
 }
 
 fn resolve_repo_session_metadata(
@@ -639,9 +667,9 @@ fn stream_session_metadata(
     }
 }
 
-fn refresh_sessions_view<T: TmuxProvider + ?Sized>(
+fn refresh_sessions_view<T: TmuxProvider + ?Sized + 'static>(
     git: &Arc<dyn GitProvider>,
-    tmux: &T,
+    tmux: &Arc<T>,
     sender: &EventSender,
     search_dirs: &[(PathBuf, u16)],
     cancel: &Arc<AtomicBool>,
@@ -672,10 +700,7 @@ fn refresh_sessions_view<T: TmuxProvider + ?Sized>(
     );
 
     if !is_cancelled() {
-        let states = detect_session_agent_states(tmux, &sessions);
-        if !states.is_empty() {
-            sender.send(AppEvent::SessionAgentStatesPatched { states });
-        }
+        detect_session_agent_states(tmux, &sessions, sender, cancel);
     }
 
     sessions
@@ -716,7 +741,7 @@ pub(super) fn spawn_sessions_discovery<T: TmuxProvider + ?Sized + 'static>(
 
         refresh_sessions_view(
             &git,
-            &*tmux_clone,
+            &tmux_clone,
             &sender_clone,
             &search_dirs,
             &poller_cancel,
@@ -771,7 +796,7 @@ fn spawn_sessions_agent_poller<T: TmuxProvider + ?Sized + 'static>(
             let now = std::time::Instant::now();
 
             if now.duration_since(last_membership_tick) >= membership_interval {
-                let sessions = refresh_sessions_view(&git, &*tmux, &sender, &search_dirs, &cancel);
+                let sessions = refresh_sessions_view(&git, &tmux, &sender, &search_dirs, &cancel);
                 known_session_names = sessions
                     .iter()
                     .map(|session| session.session_name.clone())
@@ -800,14 +825,20 @@ fn spawn_sessions_agent_poller<T: TmuxProvider + ?Sized + 'static>(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_session_discovered_snapshot, detect_agent_statuses, resolve_repo_session_metadata,
+        build_session_discovered_snapshot, detect_agent_statuses, detect_session_agent_states,
+        resolve_repo_session_metadata,
     };
+    use crate::app::EventSender;
     use kiosk_core::{
         agent::{AgentKind, AgentState},
+        event::AppEvent,
         git::{Repo, Worktree, mock::MockGitProvider},
         tmux::{mock::MockTmuxProvider, provider::PaneInfo, provider::TmuxProvider},
     };
-    use std::path::PathBuf;
+    use std::{
+        path::PathBuf,
+        sync::{Arc, atomic::AtomicBool, mpsc},
+    };
 
     #[allow(clippy::similar_names)]
     #[test]
@@ -911,6 +942,65 @@ mod tests {
             .collect();
         assert_eq!(session_names, vec!["beta", "gamma", "alpha"]);
         assert!(sessions[2].is_current);
+    }
+
+    #[test]
+    fn detect_session_agent_states_streams_one_patch_event_per_session() {
+        let mut tmux = MockTmuxProvider::default();
+        tmux.pane_info.insert(
+            "alpha".into(),
+            vec![PaneInfo {
+                pane_id: "%1".into(),
+                command: "bash".into(),
+                pid: 1,
+            }],
+        );
+        tmux.pane_info.insert(
+            "beta".into(),
+            vec![PaneInfo {
+                pane_id: "%2".into(),
+                command: "bash".into(),
+                pid: 2,
+            }],
+        );
+        tmux.session_activity_ts.insert("alpha".into(), 10);
+        tmux.session_activity_ts.insert("beta".into(), 20);
+        let tmux = Arc::new(tmux);
+
+        let (tx, rx) = mpsc::channel();
+        let sender = EventSender {
+            tx,
+            cancel: Arc::new(AtomicBool::new(false)),
+        };
+
+        detect_session_agent_states(
+            &tmux,
+            &[
+                kiosk_core::state::SessionEntry::unresolved(
+                    "alpha".into(),
+                    vec![],
+                    10,
+                    false,
+                    false,
+                ),
+                kiosk_core::state::SessionEntry::unresolved(
+                    "beta".into(),
+                    vec![],
+                    20,
+                    false,
+                    false,
+                ),
+            ],
+            &sender,
+            &Arc::new(AtomicBool::new(false)),
+        );
+
+        let events: Vec<AppEvent> = rx.try_iter().collect();
+        assert_eq!(events.len(), 2);
+        assert!(events.iter().all(|event| matches!(
+            event,
+            AppEvent::SessionAgentStatesPatched { states } if states.len() == 1
+        )));
     }
 
     #[test]

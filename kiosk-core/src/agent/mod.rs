@@ -185,6 +185,14 @@ pub fn detect_for_sessions_batched(
         .collect()
 }
 
+/// Detect all agent statuses for one session using pre-fetched pane data.
+pub fn detect_all_for_session_from_pane_data(
+    tmux: &(impl crate::tmux::TmuxProvider + ?Sized),
+    data: &crate::tmux::provider::SessionPaneData,
+) -> Vec<DetectionResult> {
+    detect_all_from_pane_data(tmux, data)
+}
+
 /// Core detection logic operating on pre-fetched [`SessionPaneData`].
 /// Returns all detected agents sorted by attention priority (highest first).
 fn detect_all_from_pane_data(

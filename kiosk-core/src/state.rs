@@ -1302,17 +1302,6 @@ pub struct AppState {
 }
 
 impl AppState {
-    #[cfg(test)]
-    fn apply_transition_with_fallback(&mut self, transition: &ModeTransition) {
-        let fallback_mode = transition.target_mode_with_current(&self.mode);
-        if let Err(error) = self.transition(transition) {
-            debug_assert!(false, "invalid mode transition: {error:?}");
-            self.mode = fallback_mode;
-            self.reconcile_mode_context_for_mode();
-            self.reconcile_agent_poller_mode_invariant();
-        }
-    }
-
     fn base(mode: Mode) -> Self {
         Self {
             repos: Vec::new(),

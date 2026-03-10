@@ -51,6 +51,7 @@ where
         }
     }
 }
+
 /// Sessions membership updates can be slower than agent status updates.
 const SESSIONS_MEMBERSHIP_POLL_INTERVAL: Duration = Duration::from_secs(3);
 struct SessionsPollerConfig {
@@ -617,9 +618,8 @@ fn stream_session_metadata(
         .map(|session| (session.session_name.clone(), session.session_activity))
         .collect();
     let is_cancelled = || cancel.load(Ordering::Relaxed) || sender.cancel.load(Ordering::Relaxed);
-    let search_dirs_vec: Vec<(PathBuf, u16)> = search_dirs.to_vec();
-    let mut repos = git.scan_repos(&search_dirs_vec);
-    apply_repo_name_collision_resolution(&mut repos, &search_dirs_vec);
+    let mut repos = git.scan_repos(search_dirs);
+    apply_repo_name_collision_resolution(&mut repos, search_dirs);
     let candidate_repos: Vec<Repo> = repos
         .into_iter()
         .take_while(|_| !is_cancelled())

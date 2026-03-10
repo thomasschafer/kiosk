@@ -1189,6 +1189,13 @@ fn apply_sessions_discovered(
 
     preserve_existing_session_agent_states(&state.sessions_view.sessions, &mut sessions);
     preserve_existing_session_metadata(&state.sessions_view.sessions, &mut sessions);
+    // Sort by tmux recency: most recently used session first.
+    sessions.sort_by(|left, right| {
+        right
+            .session_activity
+            .cmp(&left.session_activity)
+            .then_with(|| left.session_name.cmp(&right.session_name))
+    });
     state.sessions_view.sessions = sessions;
     rebuild_sessions_list(state, selected_session_name);
     state.sessions_view.apply_pin_first_selection();

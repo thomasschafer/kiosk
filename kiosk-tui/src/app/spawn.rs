@@ -481,12 +481,21 @@ fn detect_agent_statuses<T: TmuxProvider + ?Sized>(
     sessions: &[String],
 ) -> Vec<SessionRuntimeUpdate> {
     let all_pane_data = tmux.list_all_panes_with_activity();
+    // Fall back to the session list for existence/activity when a session has
+    // no panes (e.g. a freshly created session that tmux list-panes hasn't
+    // seen yet).
+    let session_list: std::collections::HashMap<String, u64> =
+        tmux.list_sessions_with_activity().into_iter().collect();
     agent::detect_all_for_sessions_batched(tmux, sessions, &all_pane_data)
         .into_iter()
         .map(|(session_name, result)| {
-            let session_activity_ts = all_pane_data.get(&session_name).map(|d| d.session_activity);
+            let session_activity_ts = all_pane_data
+                .get(&session_name)
+                .map(|d| d.session_activity)
+                .or_else(|| session_list.get(&session_name).copied());
             SessionRuntimeUpdate {
-                session_exists: all_pane_data.contains_key(&session_name),
+                session_exists: all_pane_data.contains_key(&session_name)
+                    || session_list.contains_key(&session_name),
                 session_name,
                 session_activity_ts,
                 agent_statuses: kiosk_core::state::normalized_agent_statuses(

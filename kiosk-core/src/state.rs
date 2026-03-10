@@ -1068,6 +1068,25 @@ pub enum ModeContextAccessError {
     MissingSetup { mode: Mode },
 }
 
+impl std::fmt::Display for ModeContextAccessError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingBaseBranchSelection { mode } => {
+                write!(
+                    f,
+                    "base branch selection context not available in mode {mode:?}"
+                )
+            }
+            Self::MissingHelpOverlay { mode } => {
+                write!(f, "help overlay context not available in mode {mode:?}")
+            }
+            Self::MissingSetup { mode } => {
+                write!(f, "setup context not available in mode {mode:?}")
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum ModeTransition {
     RepoSelect,

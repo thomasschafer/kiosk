@@ -2032,6 +2032,53 @@ fn poll_for_any_startup_state(
     current_agent_state(env)
 }
 
+/// Handles Cursor Agent's quirky startup sequence: it may show a trust dialog
+/// (surfacing as `Waiting`) between the initial idle detection and our first
+/// CLI poll. Returns once the trust dialog has been dismissed (if present).
+fn handle_cursor_startup(env: &AgentTestEnvDefault, state: Option<String>, agent_name: &str) {
+    let state = if state.is_none() {
+        // On some versions, agent_status can be briefly absent right after
+        // startup while trust UI is still initializing. Nudge trust accept
+        // once more, then repoll.
+        env.tmux_cmd()
+            .args(["send-keys", "-t", &env.kiosk_session, "a"])
+            .status()
+            .unwrap();
+        wait_ms(300);
+        env.tmux_cmd()
+            .args(["send-keys", "-t", &env.kiosk_session, "Enter"])
+            .status()
+            .unwrap();
+        wait_ms(1500);
+        poll_for_any_startup_state(env, &["Idle", "Waiting", "Unknown"], 10)
+    } else {
+        state
+    };
+
+    assert!(
+        state.is_none() || state.as_deref() == Some("Idle") || state.as_deref() == Some("Waiting"),
+        "{agent_name}: expected None/Idle/Waiting after startup, got {state:?}"
+    );
+
+    if state.as_deref() == Some("Waiting") {
+        // Trust dialog is showing — we've already verified Idle during
+        // start_real_agent (it found the idle marker). The trust dialog
+        // appeared between idle detection and our kiosk CLI poll. We can
+        // still test Running by dismissing and proceeding.
+        eprintln!("{agent_name}: trust dialog still visible, dismissing before task");
+        env.tmux_cmd()
+            .args(["send-keys", "-t", &env.kiosk_session, "a"])
+            .status()
+            .unwrap();
+        wait_ms(3000);
+    } else if state.is_none() {
+        eprintln!(
+            "{agent_name}: startup state unavailable (None), continuing; this can happen during \
+             trust-screen transitions."
+        );
+    }
+}
+
 /// Core test logic shared by all real-agent tests.
 ///
 /// 1. Starts the agent and asserts Idle.
@@ -2039,6 +2086,7 @@ fn poll_for_any_startup_state(
 /// 3. Polls for Running (agent thinking) and Waiting (approval prompt).
 ///
 /// The delete prompt is chosen because:
+///
 /// - It's cheap (~200 tokens round-trip).
 /// - All agents show a Running phase while the API processes.
 /// - All agents in their default/test configurations ask for approval
@@ -2068,47 +2116,7 @@ fn run_real_agent_all_states(agent: AgentKind) {
 
     // Cursor may still be showing a trust dialog (Waiting) after startup.
     if agent == AgentKind::CursorAgent {
-        let state = if state.is_none() {
-            // On some versions, agent_status can be briefly absent right after
-            // startup while trust UI is still initializing. Nudge trust accept
-            // once more, then repoll.
-            env.tmux_cmd()
-                .args(["send-keys", "-t", &env.kiosk_session, "a"])
-                .status()
-                .unwrap();
-            wait_ms(300);
-            env.tmux_cmd()
-                .args(["send-keys", "-t", &env.kiosk_session, "Enter"])
-                .status()
-                .unwrap();
-            wait_ms(1500);
-            poll_for_any_startup_state(&env, &["Idle", "Waiting", "Unknown"], 10)
-        } else {
-            state
-        };
-        assert!(
-            state.is_none()
-                || state.as_deref() == Some("Idle")
-                || state.as_deref() == Some("Waiting"),
-            "{agent_name}: expected None/Idle/Waiting after startup, got {state:?}"
-        );
-        if state.as_deref() == Some("Waiting") {
-            // Trust dialog is showing — we've already verified Idle during
-            // start_real_agent (it found the idle marker). The trust dialog
-            // appeared between idle detection and our kiosk CLI poll. We can
-            // still test Running by dismissing and proceeding.
-            eprintln!("{agent_name}: trust dialog still visible, dismissing before task");
-            env.tmux_cmd()
-                .args(["send-keys", "-t", &env.kiosk_session, "a"])
-                .status()
-                .unwrap();
-            wait_ms(3000);
-        } else if state.is_none() {
-            eprintln!(
-                "{agent_name}: startup state unavailable (None), continuing; this can happen during \
-                 trust-screen transitions."
-            );
-        }
+        handle_cursor_startup(&env, state, &agent_name);
     } else if agent == AgentKind::Gemini || agent == AgentKind::ClaudeCode {
         assert!(
             state.as_deref() == Some("Idle")

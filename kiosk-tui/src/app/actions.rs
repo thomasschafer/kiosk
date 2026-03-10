@@ -28,7 +28,8 @@ pub(super) fn session_search_items(sessions: &[SessionEntry]) -> Vec<String> {
         .collect()
 }
 
-fn fuzzy_matches_in_source_order(
+/// Collect fuzzy matches as (index, score) pairs, preserving source order.
+fn fuzzy_match_indices(
     query: &str,
     items: &[String],
     matcher: &SkimMatcherV2,
@@ -67,15 +68,12 @@ fn compute_session_filtered(query: &str, items: &[String]) -> Vec<(usize, i64)> 
         (0..items.len()).map(|i| (i, 0)).collect()
     } else {
         let matcher = SkimMatcherV2::default();
-        fuzzy_matches_in_source_order(query, items, &matcher)
+        // Sessions preserve source order (by recency) rather than sorting by score
+        fuzzy_match_indices(query, items, &matcher)
     }
 }
 
-fn apply_session_filter(
-    list: &mut SearchableList,
-    sessions: &[SessionEntry],
-    _matcher: &SkimMatcherV2,
-) {
+fn apply_session_filter(list: &mut SearchableList, sessions: &[SessionEntry]) {
     let items = session_search_items(sessions);
     list.filtered = compute_session_filtered(&list.input.text, &items);
     list.selected = if list.filtered.is_empty() {
@@ -644,11 +642,7 @@ fn update_active_filter(state: &mut AppState, matcher: &SkimMatcherV2) {
             apply_fuzzy_filter(&mut state.branch_list, &names, matcher);
         }
         Mode::Sessions => {
-            apply_session_filter(
-                &mut state.sessions_view.list,
-                &state.sessions_view.sessions,
-                matcher,
-            );
+            apply_session_filter(&mut state.sessions_view.list, &state.sessions_view.sessions);
         }
         Mode::SelectBaseBranch => {
             state
@@ -689,15 +683,8 @@ fn apply_fuzzy_filter(list: &mut SearchableList, items: &[String], matcher: &Ski
     if list.input.text.is_empty() {
         list.filtered = items.iter().enumerate().map(|(i, _)| (i, 0)).collect();
     } else {
-        let mut scored: Vec<(usize, i64)> = items
-            .iter()
-            .enumerate()
-            .filter_map(|(i, item)| {
-                matcher
-                    .fuzzy_match(item, &list.input.text)
-                    .map(|score| (i, score))
-            })
-            .collect();
+        // Branches/repos sort by score desc, length asc, alphabetical
+        let mut scored = fuzzy_match_indices(&list.input.text, items, matcher);
         scored.sort_by(|a, b| {
             b.1.cmp(&a.1)
                 .then_with(|| items[a.0].len().cmp(&items[b.0].len()))
@@ -716,6 +703,7 @@ fn apply_fuzzy_filter(list: &mut SearchableList, items: &[String], matcher: &Ski
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kiosk_core::state::ResolvedSessionParams;
     use std::path::PathBuf;
 
     fn make_list(search: &str) -> SearchableList {
@@ -828,36 +816,36 @@ mod tests {
         let mut state = AppState::new(Vec::new(), None);
         apply_transition!(state, ModeTransition::Sessions);
         state.sessions_view.sessions = vec![
-            SessionEntry::resolved(
-                "scooter--add-scoop-to-readme".to_string(),
-                "scooter".to_string(),
-                Some("add-scoop-to-readme".to_string()),
-                PathBuf::from("/tmp/scooter-add-scoop"),
-                Vec::new(),
-                10,
-                false,
-                false,
-            ),
-            SessionEntry::resolved(
-                "scooter--main".to_string(),
-                "scooter".to_string(),
-                Some("main".to_string()),
-                PathBuf::from("/tmp/scooter-main"),
-                Vec::new(),
-                20,
-                false,
-                false,
-            ),
-            SessionEntry::resolved(
-                "kiosk--feat-agent-session-switcher".to_string(),
-                "kiosk".to_string(),
-                Some("feat-agent-session-switcher".to_string()),
-                PathBuf::from("/tmp/kiosk-feat"),
-                Vec::new(),
-                30,
-                false,
-                false,
-            ),
+            SessionEntry::resolved(ResolvedSessionParams {
+                session_name: "scooter--add-scoop-to-readme".to_string(),
+                repo_name: "scooter".to_string(),
+                branch: Some("add-scoop-to-readme".to_string()),
+                path: PathBuf::from("/tmp/scooter-add-scoop"),
+                agent_statuses: Vec::new(),
+                session_activity: 10,
+                attached: false,
+                is_current: false,
+            }),
+            SessionEntry::resolved(ResolvedSessionParams {
+                session_name: "scooter--main".to_string(),
+                repo_name: "scooter".to_string(),
+                branch: Some("main".to_string()),
+                path: PathBuf::from("/tmp/scooter-main"),
+                agent_statuses: Vec::new(),
+                session_activity: 20,
+                attached: false,
+                is_current: false,
+            }),
+            SessionEntry::resolved(ResolvedSessionParams {
+                session_name: "kiosk--feat-agent-session-switcher".to_string(),
+                repo_name: "kiosk".to_string(),
+                branch: Some("feat-agent-session-switcher".to_string()),
+                path: PathBuf::from("/tmp/kiosk-feat"),
+                agent_statuses: Vec::new(),
+                session_activity: 30,
+                attached: false,
+                is_current: false,
+            }),
         ];
         state.sessions_view.list = SearchableList::new(state.sessions_view.sessions.len());
 
@@ -876,36 +864,36 @@ mod tests {
         let mut state = AppState::new(Vec::new(), None);
         apply_transition!(state, ModeTransition::Sessions);
         state.sessions_view.sessions = vec![
-            SessionEntry::resolved(
-                "kiosk--feat-agent-session-switcher".to_string(),
-                "kiosk".to_string(),
-                Some("feat-agent-session-switcher".to_string()),
-                PathBuf::from("/tmp/kiosk-feat"),
-                Vec::new(),
-                30,
-                true,
-                false,
-            ),
-            SessionEntry::resolved(
-                "scooter--main".to_string(),
-                "scooter".to_string(),
-                Some("main".to_string()),
-                PathBuf::from("/tmp/scooter-main"),
-                Vec::new(),
-                20,
-                false,
-                false,
-            ),
-            SessionEntry::resolved(
-                "dotfiles--main".to_string(),
-                "dotfiles".to_string(),
-                Some("main".to_string()),
-                PathBuf::from("/tmp/dotfiles-main"),
-                Vec::new(),
-                10,
-                false,
-                false,
-            ),
+            SessionEntry::resolved(ResolvedSessionParams {
+                session_name: "kiosk--feat-agent-session-switcher".to_string(),
+                repo_name: "kiosk".to_string(),
+                branch: Some("feat-agent-session-switcher".to_string()),
+                path: PathBuf::from("/tmp/kiosk-feat"),
+                agent_statuses: Vec::new(),
+                session_activity: 30,
+                attached: true,
+                is_current: false,
+            }),
+            SessionEntry::resolved(ResolvedSessionParams {
+                session_name: "scooter--main".to_string(),
+                repo_name: "scooter".to_string(),
+                branch: Some("main".to_string()),
+                path: PathBuf::from("/tmp/scooter-main"),
+                agent_statuses: Vec::new(),
+                session_activity: 20,
+                attached: false,
+                is_current: false,
+            }),
+            SessionEntry::resolved(ResolvedSessionParams {
+                session_name: "dotfiles--main".to_string(),
+                repo_name: "dotfiles".to_string(),
+                branch: Some("main".to_string()),
+                path: PathBuf::from("/tmp/dotfiles-main"),
+                agent_statuses: Vec::new(),
+                session_activity: 10,
+                attached: false,
+                is_current: false,
+            }),
         ];
         state.sessions_view.list = SearchableList::new(state.sessions_view.sessions.len());
 

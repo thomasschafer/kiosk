@@ -1441,16 +1441,16 @@ mod tests {
         agent_statuses: Vec<kiosk_core::agent::AgentStatus>,
         is_current: bool,
     ) -> kiosk_core::state::SessionEntry {
-        kiosk_core::state::SessionEntry::resolved(
-            session_name.to_string(),
-            session_name.to_string(),
-            Some("main".to_string()),
-            PathBuf::from(format!("/tmp/{session_name}")),
+        kiosk_core::state::SessionEntry::resolved(kiosk_core::state::ResolvedSessionParams {
+            session_name: session_name.to_string(),
+            repo_name: session_name.to_string(),
+            branch: Some("main".to_string()),
+            path: PathBuf::from(format!("/tmp/{session_name}")),
             agent_statuses,
-            ts,
-            false,
+            session_activity: ts,
+            attached: false,
             is_current,
-        )
+        })
     }
 
     fn filtered_session_names(state: &AppState) -> Vec<&str> {

@@ -727,11 +727,26 @@ impl Default for SetupState {
     }
 }
 
+/// Metadata for a session that has been resolved to a repo/worktree.
 #[derive(Debug, Clone)]
 pub struct ResolvedSessionMetadata {
     pub repo_name: String,
     pub branch: Option<String>,
     pub path: PathBuf,
+}
+
+/// Parameters for constructing a resolved `SessionEntry`.
+/// Groups the many fields to avoid `too_many_arguments` on the constructor.
+#[derive(Debug, Clone)]
+pub struct ResolvedSessionParams {
+    pub session_name: String,
+    pub repo_name: String,
+    pub branch: Option<String>,
+    pub path: PathBuf,
+    pub agent_statuses: Vec<AgentStatus>,
+    pub session_activity: u64,
+    pub attached: bool,
+    pub is_current: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -771,27 +786,18 @@ impl SessionEntry {
     }
 
     #[must_use]
-    pub fn resolved(
-        session_name: String,
-        repo_name: String,
-        branch: Option<String>,
-        path: PathBuf,
-        agent_statuses: Vec<AgentStatus>,
-        session_activity: u64,
-        attached: bool,
-        is_current: bool,
-    ) -> Self {
+    pub fn resolved(params: ResolvedSessionParams) -> Self {
         Self {
-            session_name,
+            session_name: params.session_name,
             metadata: SessionMetadata::Resolved(ResolvedSessionMetadata {
-                repo_name,
-                branch,
-                path,
+                repo_name: params.repo_name,
+                branch: params.branch,
+                path: params.path,
             }),
-            agent_statuses,
-            session_activity,
-            attached,
-            is_current,
+            agent_statuses: params.agent_statuses,
+            session_activity: params.session_activity,
+            attached: params.attached,
+            is_current: params.is_current,
         }
     }
 
@@ -837,16 +843,16 @@ where
             let Some(&activity) = session_activity.get(&session_name) else {
                 continue;
             };
-            sessions.push(SessionEntry::resolved(
-                session_name.clone(),
-                repo.name.clone(),
-                worktree.branch.clone(),
-                worktree.path.clone(),
-                Vec::new(),
-                activity,
-                attached_sessions.contains(&session_name),
-                current_session_name == Some(session_name.as_str()),
-            ));
+            sessions.push(SessionEntry::resolved(ResolvedSessionParams {
+                session_name: session_name.clone(),
+                repo_name: repo.name.clone(),
+                branch: worktree.branch.clone(),
+                path: worktree.path.clone(),
+                agent_statuses: Vec::new(),
+                session_activity: activity,
+                attached: attached_sessions.contains(&session_name),
+                is_current: current_session_name == Some(session_name.as_str()),
+            }));
         }
     }
     sessions

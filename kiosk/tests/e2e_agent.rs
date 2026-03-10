@@ -651,31 +651,6 @@ impl AgentTestEnvDefault {
             .unwrap();
     }
 
-    /// Poll `kiosk branches --json` until the given state appears, or panic.
-    #[allow(dead_code)]
-    fn poll_for_cli_state(&self, expected_state: &str, timeout_secs: u64) {
-        let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
-        let needle = format!("\"{expected_state}\"");
-        loop {
-            let output = Command::new(kiosk_binary())
-                .args(["branches", &self.repo_name, "--json"])
-                .env("XDG_CONFIG_HOME", &self.config_dir)
-                .env("XDG_STATE_HOME", &self.state_dir)
-                .env("KIOSK_TMUX_SOCKET", &self.tmux_socket)
-                .output()
-                .unwrap();
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            if stdout.contains(&needle) {
-                return;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "Agent never reached {expected_state} within {timeout_secs}s (last: {stdout})"
-            );
-            wait_ms(1000);
-        }
-    }
-
     #[allow(clippy::too_many_lines)]
     fn launch_real_agent(&self, agent: AgentKind, state: FakeState) {
         // Step 1: Start the agent and wait for it to reach idle.

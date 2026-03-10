@@ -23,6 +23,8 @@ use super::EventSender;
 
 /// Maximum number of concurrent `git worktree list` enrichment calls.
 const ENRICHMENT_POOL_SIZE: usize = 8;
+/// Maximum number of concurrent session agent detections.
+const SESSION_STATUS_POOL_SIZE: usize = 8;
 
 /// Maximum number of concurrent per-remote `git fetch` calls.
 const FETCH_POOL_SIZE: usize = 4;
@@ -455,14 +457,6 @@ fn detect_agent_statuses<T: TmuxProvider + ?Sized>(
     sessions: &[String],
 ) -> Vec<SessionRuntimeUpdate> {
     let all_pane_data = tmux.list_all_panes_with_activity();
-    detect_agent_statuses_from_pane_data(tmux, sessions, &all_pane_data)
-}
-
-fn detect_agent_statuses_from_pane_data<T: TmuxProvider + ?Sized>(
-    tmux: &T,
-    sessions: &[String],
-    all_pane_data: &HashMap<String, kiosk_core::tmux::provider::SessionPaneData>,
-) -> Vec<SessionRuntimeUpdate> {
     agent::detect_all_for_sessions_batched(tmux, sessions, &all_pane_data)
         .into_iter()
         .map(|(session_name, result)| {
@@ -476,15 +470,6 @@ fn detect_agent_statuses_from_pane_data<T: TmuxProvider + ?Sized>(
                 ),
             }
         })
-        .collect()
-}
-
-fn session_agent_states(
-    updates: Vec<SessionRuntimeUpdate>,
-) -> Vec<(String, Vec<kiosk_core::agent::AgentStatus>)> {
-    updates
-        .into_iter()
-        .map(|update| (update.session_name, update.agent_statuses))
         .collect()
 }
 
@@ -511,26 +496,28 @@ fn build_session_discovered_snapshot(
         .collect()
 }
 
-fn detect_session_agent_states<T: TmuxProvider + ?Sized + 'static>(
-    tmux: &Arc<T>,
-    sessions: &[kiosk_core::state::SessionEntry],
+fn stream_session_agent_states<T: TmuxProvider + ?Sized + 'static>(
+    tmux: Arc<T>,
+    session_names: Vec<String>,
     sender: &EventSender,
-    cancel: &Arc<AtomicBool>,
+    cancel: Arc<AtomicBool>,
 ) {
-    if sessions.is_empty() {
+    if session_names.is_empty() {
         return;
     }
 
     let all_pane_data = tmux.list_all_panes_with_activity();
     let (tx, rx) = mpsc::channel::<(String, Vec<kiosk_core::agent::AgentStatus>)>();
-    for session in sessions {
-        let tx = tx.clone();
-        let tmux = Arc::clone(tmux);
-        let session_name = session.session_name.clone();
-        let pane_data = all_pane_data.get(&session_name).cloned();
-        let cancel = Arc::clone(cancel);
-
-        thread::spawn(move || {
+    let pool = ThreadPoolBuilder::new()
+        .num_threads(SESSION_STATUS_POOL_SIZE)
+        .build()
+        .ok();
+    let run_job = |session_name: String,
+                   tx: mpsc::Sender<(String, Vec<kiosk_core::agent::AgentStatus>)>,
+                   tmux: Arc<T>,
+                   pane_data: Option<kiosk_core::tmux::provider::SessionPaneData>,
+                   cancel: Arc<AtomicBool>| {
+        move || {
             if cancel.load(Ordering::Relaxed) {
                 return;
             }
@@ -545,7 +532,28 @@ fn detect_session_agent_states<T: TmuxProvider + ?Sized + 'static>(
                 })
                 .unwrap_or_default();
             let _ = tx.send((session_name, statuses));
-        });
+        }
+    };
+
+    match &pool {
+        Some(pool) => {
+            for session_name in session_names {
+                let tx = tx.clone();
+                let tmux = Arc::clone(&tmux);
+                let pane_data = all_pane_data.get(&session_name).cloned();
+                let cancel = Arc::clone(&cancel);
+                pool.spawn(run_job(session_name, tx, tmux, pane_data, cancel));
+            }
+        }
+        None => {
+            for session_name in session_names {
+                let tx = tx.clone();
+                let tmux = Arc::clone(&tmux);
+                let pane_data = all_pane_data.get(&session_name).cloned();
+                let cancel = Arc::clone(&cancel);
+                thread::spawn(run_job(session_name, tx, tmux, pane_data, cancel));
+            }
+        }
     }
     drop(tx);
 
@@ -627,23 +635,45 @@ fn stream_session_metadata(
     }
 
     let (tx, rx) = mpsc::channel::<Vec<kiosk_core::event::SessionMetadataPatch>>();
-    for repo in candidate_repos {
-        let tx = tx.clone();
-        let git = Arc::clone(&git);
-        let session_activity = session_activity.clone();
-        let cancel = Arc::clone(cancel);
-
-        thread::spawn(move || {
+    let pool = ThreadPoolBuilder::new()
+        .num_threads(ENRICHMENT_POOL_SIZE)
+        .build()
+        .ok();
+    let run_job = |repo: Repo,
+                   tx: mpsc::Sender<Vec<kiosk_core::event::SessionMetadataPatch>>,
+                   git: Arc<dyn GitProvider>,
+                   session_activity: HashMap<String, u64>,
+                   cancel: Arc<AtomicBool>| {
+        move || {
             if cancel.load(Ordering::Relaxed) {
                 return;
             }
-
             let _ = tx.send(resolve_repo_session_metadata(
                 &*git,
                 repo,
                 &session_activity,
             ));
-        });
+        }
+    };
+    match &pool {
+        Some(pool) => {
+            for repo in candidate_repos {
+                let tx = tx.clone();
+                let git = Arc::clone(&git);
+                let session_activity = session_activity.clone();
+                let cancel = Arc::clone(cancel);
+                pool.spawn(run_job(repo, tx, git, session_activity, cancel));
+            }
+        }
+        None => {
+            for repo in candidate_repos {
+                let tx = tx.clone();
+                let git = Arc::clone(&git);
+                let session_activity = session_activity.clone();
+                let cancel = Arc::clone(cancel);
+                thread::spawn(run_job(repo, tx, git, session_activity, cancel));
+            }
+        }
     }
     drop(tx);
 
@@ -691,17 +721,31 @@ fn refresh_sessions_view<T: TmuxProvider + ?Sized + 'static>(
         return sessions;
     }
 
-    stream_session_metadata(
-        Arc::clone(git),
-        search_dirs.to_vec(),
-        &sessions,
-        sender,
-        cancel,
-    );
+    let metadata_git = Arc::clone(git);
+    let metadata_sender = sender.clone();
+    let metadata_search_dirs = search_dirs.to_vec();
+    let metadata_sessions = sessions.clone();
+    let metadata_cancel = Arc::clone(cancel);
+    thread::spawn(move || {
+        stream_session_metadata(
+            metadata_git,
+            metadata_search_dirs,
+            &metadata_sessions,
+            &metadata_sender,
+            &metadata_cancel,
+        );
+    });
 
-    if !is_cancelled() {
-        detect_session_agent_states(tmux, &sessions, sender, cancel);
-    }
+    let status_tmux = Arc::clone(tmux);
+    let status_sender = sender.clone();
+    let status_cancel = Arc::clone(cancel);
+    let session_names: Vec<String> = sessions
+        .iter()
+        .map(|session| session.session_name.clone())
+        .collect();
+    thread::spawn(move || {
+        stream_session_agent_states(status_tmux, session_names, &status_sender, status_cancel);
+    });
 
     sessions
 }
@@ -811,9 +855,12 @@ fn spawn_sessions_agent_poller<T: TmuxProvider + ?Sized + 'static>(
             if now.duration_since(last_status_tick) >= status_interval
                 && !known_session_names.is_empty()
             {
-                let states =
-                    session_agent_states(detect_agent_statuses(&*tmux, &known_session_names));
-                sender.send(AppEvent::SessionAgentStatesPatched { states });
+                stream_session_agent_states(
+                    Arc::clone(&tmux),
+                    known_session_names.clone(),
+                    &sender,
+                    Arc::clone(&cancel),
+                );
                 last_status_tick = now;
             }
 
@@ -825,8 +872,8 @@ fn spawn_sessions_agent_poller<T: TmuxProvider + ?Sized + 'static>(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_session_discovered_snapshot, detect_agent_statuses, detect_session_agent_states,
-        resolve_repo_session_metadata,
+        build_session_discovered_snapshot, detect_agent_statuses, resolve_repo_session_metadata,
+        stream_session_agent_states,
     };
     use crate::app::EventSender;
     use kiosk_core::{
@@ -945,7 +992,7 @@ mod tests {
     }
 
     #[test]
-    fn detect_session_agent_states_streams_one_patch_event_per_session() {
+    fn stream_session_agent_states_streams_one_patch_event_per_session() {
         let mut tmux = MockTmuxProvider::default();
         tmux.pane_info.insert(
             "alpha".into(),
@@ -973,26 +1020,11 @@ mod tests {
             cancel: Arc::new(AtomicBool::new(false)),
         };
 
-        detect_session_agent_states(
-            &tmux,
-            &[
-                kiosk_core::state::SessionEntry::unresolved(
-                    "alpha".into(),
-                    vec![],
-                    10,
-                    false,
-                    false,
-                ),
-                kiosk_core::state::SessionEntry::unresolved(
-                    "beta".into(),
-                    vec![],
-                    20,
-                    false,
-                    false,
-                ),
-            ],
+        stream_session_agent_states(
+            tmux,
+            vec!["alpha".into(), "beta".into()],
             &sender,
-            &Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
         );
 
         let events: Vec<AppEvent> = rx.try_iter().collect();

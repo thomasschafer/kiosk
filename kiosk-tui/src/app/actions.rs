@@ -45,8 +45,9 @@ pub(super) fn rebuild_session_filter_preserving_search(
     list: &mut SearchableList,
     sessions: &[SessionEntry],
 ) {
+    let matcher = SkimMatcherV2::default();
     let items = session_search_items(sessions);
-    list.filtered = compute_session_filtered(&list.input.text, &items);
+    list.filtered = compute_session_filtered(&list.input.text, &items, &matcher);
 
     // Clamp selection and scroll to the new filtered bounds.
     if list.filtered.is_empty() {
@@ -63,19 +64,26 @@ pub(super) fn rebuild_session_filter_preserving_search(
     }
 }
 
-fn compute_session_filtered(query: &str, items: &[String]) -> Vec<(usize, i64)> {
+fn compute_session_filtered(
+    query: &str,
+    items: &[String],
+    matcher: &SkimMatcherV2,
+) -> Vec<(usize, i64)> {
     if query.is_empty() {
         (0..items.len()).map(|i| (i, 0)).collect()
     } else {
-        let matcher = SkimMatcherV2::default();
         // Sessions preserve source order (by recency) rather than sorting by score
-        fuzzy_match_indices(query, items, &matcher)
+        fuzzy_match_indices(query, items, matcher)
     }
 }
 
-fn apply_session_filter(list: &mut SearchableList, sessions: &[SessionEntry]) {
+fn apply_session_filter(
+    list: &mut SearchableList,
+    sessions: &[SessionEntry],
+    matcher: &SkimMatcherV2,
+) {
     let items = session_search_items(sessions);
-    list.filtered = compute_session_filtered(&list.input.text, &items);
+    list.filtered = compute_session_filtered(&list.input.text, &items, matcher);
     list.selected = if list.filtered.is_empty() {
         None
     } else {
@@ -642,7 +650,11 @@ fn update_active_filter(state: &mut AppState, matcher: &SkimMatcherV2) {
             apply_fuzzy_filter(&mut state.branch_list, &names, matcher);
         }
         Mode::Sessions => {
-            apply_session_filter(&mut state.sessions_view.list, &state.sessions_view.sessions);
+            apply_session_filter(
+                &mut state.sessions_view.list,
+                &state.sessions_view.sessions,
+                matcher,
+            );
         }
         Mode::SelectBaseBranch => {
             state

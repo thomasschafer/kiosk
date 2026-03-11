@@ -74,7 +74,19 @@ pub fn draw(
         })
         .collect();
 
-    if state.sessions_view.is_loading() && state.sessions_view.list.filtered.is_empty() {
+    // Determine the right empty-state message.
+    // Priority order matters: "No matching sessions" should show whenever
+    // sessions exist but the filter produces no hits, regardless of whether
+    // a background refresh is in progress — the title bar already shows the
+    // "(loading...)" suffix so there's no need to hide the filter feedback.
+    if !state.sessions_view.sessions.is_empty()
+        && state.sessions_view.list.filtered.is_empty()
+    {
+        items.push(ListItem::new(Line::from(Span::styled(
+            "No matching sessions",
+            Style::default().fg(theme.muted),
+        ))));
+    } else if state.sessions_view.sessions.is_empty() && state.sessions_view.is_loading() {
         items.push(ListItem::new(Line::from(Span::styled(
             "Loading sessions...",
             Style::default().fg(theme.muted),
@@ -82,14 +94,6 @@ pub fn draw(
     } else if state.sessions_view.sessions.is_empty() && !state.sessions_view.is_loading() {
         items.push(ListItem::new(Line::from(Span::styled(
             "No active sessions",
-            Style::default().fg(theme.muted),
-        ))));
-    } else if !state.sessions_view.sessions.is_empty()
-        && state.sessions_view.list.filtered.is_empty()
-        && !state.sessions_view.is_loading()
-    {
-        items.push(ListItem::new(Line::from(Span::styled(
-            "No matching sessions",
             Style::default().fg(theme.muted),
         ))));
     }

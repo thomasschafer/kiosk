@@ -1865,14 +1865,21 @@ fn test_e2e_agent_multi_pane_highest_priority_wins() {
     let main_branch = branches.iter().find(|b| b["name"] == "main").unwrap();
 
     let agent = &main_branch["agent_statuses"];
+    let agent_arr = agent.as_array().expect("agent_statuses should be an array");
     assert!(
-        agent.is_array() && !agent.as_array().unwrap().is_empty(),
-        "should detect an agent: {main_branch}"
+        agent_arr.len() >= 2,
+        "expected at least two agent statuses (Waiting + Idle), got {}: {agent}",
+        agent_arr.len()
     );
     // Waiting (Codex) should win over Idle (Claude)
     assert_eq!(
         agent[0]["state"], "Waiting",
-        "Waiting should have higher priority than Idle: {agent}"
+        "highest-priority entry should be Waiting: {agent}"
+    );
+    // The lower-priority pane should still be reported
+    assert_eq!(
+        agent[1]["state"], "Idle",
+        "second entry should be Idle: {agent}"
     );
 }
 

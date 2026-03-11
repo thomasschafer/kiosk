@@ -212,6 +212,11 @@ impl TmuxProvider for MockTmuxProvider {
     }
 
     fn current_session_name(&self) -> Option<String> {
-        self.current_session.clone()
+        // Mirror CliTmuxProvider: return None when not inside tmux.
+        if self.inside_tmux {
+            self.current_session.clone()
+        } else {
+            None
+        }
     }
 }

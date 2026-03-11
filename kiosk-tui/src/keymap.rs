@@ -30,7 +30,8 @@ pub fn resolve_action(
     // Handle printable characters for search in search-enabled modes
     if state.mode().supports_text_edit()
         && let KeyCode::Char(c) = our_key.code
-        && (our_key.modifiers == KeyModifiers::NONE && c.is_ascii_graphic() || c == ' ')
+        && our_key.modifiers == KeyModifiers::NONE
+        && (c.is_ascii_graphic() || c == ' ')
     {
         return Some(Action::SearchPush(c));
     }

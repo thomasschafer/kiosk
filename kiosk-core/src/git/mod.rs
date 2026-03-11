@@ -69,26 +69,141 @@ pub fn tmux_session_name_for_worktree(
 }
 
 /// Apply deterministic session-name disambiguation for repos with name collisions.
+///
+/// When multiple repos share the same name (e.g. `api` under `~/work/api` and
+/// `~/personal/api`), their session names are disambiguated using the shortest
+/// unique trailing suffix of path components above each repo, anchored at the
+/// deepest matching search root.
+///
+/// The algorithm groups colliding repos and incrementally grows the suffix
+/// (one path component at a time) until every member of the group has a unique
+/// disambiguator.  This correctly handles the edge case where repos sit directly
+/// under different search roots that happen to share the same leaf name
+/// (e.g. `~/alice/projects/api` and `~/bob/projects/api` under search roots
+/// `~/alice/projects` and `~/bob/projects` both named "projects") — the suffix
+/// is extended to include the parent directories above the search root until
+/// unique labels can be formed.
 pub fn apply_repo_name_collision_resolution(repos: &mut [Repo], search_dirs: &[(PathBuf, u16)]) {
-    let mut name_counts = std::collections::HashMap::<String, usize>::new();
-    for repo in repos.iter() {
-        *name_counts.entry(repo.name.clone()).or_insert(0) += 1;
-    }
-    if !name_counts.values().any(|&count| count > 1) {
-        return;
+    // Group repo indices by name.
+    let mut by_name: std::collections::HashMap<String, Vec<usize>> =
+        std::collections::HashMap::new();
+    for (i, repo) in repos.iter().enumerate() {
+        by_name.entry(repo.name.clone()).or_default().push(i);
     }
 
-    for repo in repos {
-        if name_counts[&repo.name] > 1 {
-            let search_dir_name = search_dirs
-                .iter()
-                .filter(|(dir, _)| repo.path.starts_with(dir))
-                .max_by_key(|(dir, _)| dir.components().count())
-                .and_then(|(dir, _)| dir.file_name())
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            repo.session_name = format!("{}--({search_dir_name})", repo.name);
+    for (name, indices) in by_name {
+        if indices.len() <= 1 {
+            continue;
         }
+
+        // For each repo in the collision group, build an ordered list of path
+        // components that can be used for disambiguation.  We anchor at the
+        // deepest matching search root and walk *upward* (toward the fs root)
+        // so that more context is added with each growth step.
+        let component_chains: Vec<Vec<String>> = indices
+            .iter()
+            .map(|&i| disambiguator_components(&repos[i].path, search_dirs))
+            .collect();
+
+        // Find the minimum trailing-suffix length that yields unique labels
+        // for all repos in this group.
+        let max_len = component_chains
+            .iter()
+            .map(Vec::len)
+            .max()
+            .unwrap_or(0)
+            .max(1);
+
+        let mut chosen_labels: Option<Vec<String>> = None;
+        for suffix_len in 1..=max_len {
+            let labels: Vec<String> = component_chains
+                .iter()
+                .map(|comps| {
+                    let start = comps.len().saturating_sub(suffix_len);
+                    comps[start..].join("/")
+                })
+                .collect();
+
+            let unique_count = labels
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len();
+            if unique_count == labels.len() {
+                chosen_labels = Some(labels);
+                break;
+            }
+        }
+
+        // Apply: if we found unique labels use them; otherwise fall back to
+        // the full absolute path parent (handles identical or symlinked paths).
+        if let Some(labels) = chosen_labels {
+            for (&repo_idx, label) in indices.iter().zip(labels.iter()) {
+                repos[repo_idx].session_name = format!("{name}--({label})");
+            }
+        } else {
+            for &repo_idx in &indices {
+                let label = repos[repo_idx]
+                    .path
+                    .parent()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                repos[repo_idx].session_name = format!("{name}--({label})");
+            }
+        }
+    }
+}
+
+/// Build the list of path components above `repo_path` that can be used for
+/// disambiguation, ordered from most-specific (closest to repo) to least
+/// (toward the filesystem root).
+///
+/// Anchoring: we strip the deepest matching search root first.  If the repo
+/// sits directly under the root (no intermediate directories), we continue
+/// upward into the search root's own components so that repos under differently-
+/// named roots (or differently-named parent dirs) can still be told apart.
+fn disambiguator_components(repo_path: &Path, search_dirs: &[(PathBuf, u16)]) -> Vec<String> {
+    let best_root = search_dirs
+        .iter()
+        .filter(|(dir, _)| repo_path.starts_with(dir))
+        .max_by_key(|(dir, _)| dir.components().count())
+        .map(|(dir, _)| dir.as_path());
+
+    // Components between the search root and the repo dir.
+    let relative_parent: Vec<String> = match best_root {
+        Some(root) => repo_path
+            .strip_prefix(root)
+            .unwrap_or(repo_path)
+            .parent()
+            .unwrap_or(Path::new(""))
+            .components()
+            .filter_map(normal_component)
+            .collect(),
+        None => repo_path
+            .parent()
+            .unwrap_or(Path::new(""))
+            .components()
+            .filter_map(normal_component)
+            .collect(),
+    };
+
+    if relative_parent.is_empty() {
+        // Repo is directly under the search root.  Walk into the root's own
+        // components so we can disambiguate repos under same-named roots.
+        let root_components: Vec<String> = best_root
+            .unwrap_or(Path::new(""))
+            .components()
+            .filter_map(normal_component)
+            .collect();
+        root_components
+    } else {
+        relative_parent
+    }
+}
+
+fn normal_component(c: std::path::Component<'_>) -> Option<String> {
+    match c {
+        std::path::Component::Normal(n) => Some(n.to_string_lossy().into_owned()),
+        _ => None,
     }
 }
 
@@ -165,31 +280,132 @@ branch refs/heads/feat/thing
         assert!(wts.is_empty());
     }
 
+    fn make_repo(name: &str, path: &str) -> Repo {
+        Repo {
+            name: name.to_string(),
+            session_name: name.to_string(),
+            path: PathBuf::from(path),
+            worktrees: vec![],
+        }
+    }
+
+    // ── collision resolution ─────────────────────────────────────────────────
+
     #[test]
-    fn test_apply_repo_name_collision_resolution_disambiguates() {
+    fn collision_resolution_basic_different_roots() {
+        // Two repos named "api" under different search roots.
         let mut repos = vec![
-            Repo {
-                name: "api".to_string(),
-                session_name: "api".to_string(),
-                path: PathBuf::from("/tmp/work/api"),
-                worktrees: vec![],
-            },
-            Repo {
-                name: "api".to_string(),
-                session_name: "api".to_string(),
-                path: PathBuf::from("/tmp/personal/api"),
-                worktrees: vec![],
-            },
+            make_repo("api", "/tmp/work/api"),
+            make_repo("api", "/tmp/personal/api"),
         ];
         let search_dirs = vec![
             (PathBuf::from("/tmp/work"), 2),
             (PathBuf::from("/tmp/personal"), 2),
         ];
-
         apply_repo_name_collision_resolution(&mut repos, &search_dirs);
-
         assert_eq!(repos[0].session_name, "api--(work)");
         assert_eq!(repos[1].session_name, "api--(personal)");
+    }
+
+    #[test]
+    fn collision_resolution_no_collision_leaves_names_unchanged() {
+        let mut repos = vec![
+            make_repo("api", "/tmp/work/api"),
+            make_repo("frontend", "/tmp/work/frontend"),
+        ];
+        let search_dirs = vec![(PathBuf::from("/tmp/work"), 2)];
+        apply_repo_name_collision_resolution(&mut repos, &search_dirs);
+        assert_eq!(repos[0].session_name, "api");
+        assert_eq!(repos[1].session_name, "frontend");
+    }
+
+    #[test]
+    fn collision_resolution_three_way_collision() {
+        // Three repos under the same root.  The immediate parent dirs are
+        // "alpha", "beta", "personal" — all unique at suffix_len=1.
+        let mut repos = vec![
+            make_repo("app", "/home/user/clients/alpha/app"),
+            make_repo("app", "/home/user/clients/beta/app"),
+            make_repo("app", "/home/user/personal/app"),
+        ];
+        let search_dirs = vec![(PathBuf::from("/home/user"), 2)];
+        apply_repo_name_collision_resolution(&mut repos, &search_dirs);
+        assert_eq!(repos[0].session_name, "app--(alpha)");
+        assert_eq!(repos[1].session_name, "app--(beta)");
+        assert_eq!(repos[2].session_name, "app--(personal)");
+    }
+
+    #[test]
+    fn collision_resolution_nested_search_dir_picks_deepest() {
+        // The repo is under a more specific search dir — use that one.
+        let mut repos = vec![
+            make_repo("api", "/home/user/projects/work/api"),
+            make_repo("api", "/home/user/projects/personal/api"),
+        ];
+        let search_dirs = vec![
+            (PathBuf::from("/home/user"), 2),
+            (PathBuf::from("/home/user/projects"), 2),
+        ];
+        apply_repo_name_collision_resolution(&mut repos, &search_dirs);
+        // Deepest match is /home/user/projects; relative parent is work / personal.
+        assert_eq!(repos[0].session_name, "api--(work)");
+        assert_eq!(repos[1].session_name, "api--(personal)");
+    }
+
+    #[test]
+    fn collision_resolution_shared_search_root_leaf_still_disambiguates() {
+        // Both repos sit directly under different search roots that share the
+        // same leaf name ("projects").  The old algorithm would produce
+        // "api--(projects)" for both — a collision.
+        // The new algorithm walks into the root's own components and grows the
+        // suffix until unique: suffix_len=1 → both "projects" (collision);
+        // suffix_len=2 → "alice/projects" vs "bob/projects" (unique).
+        let mut repos = vec![
+            make_repo("api", "/home/alice/projects/api"),
+            make_repo("api", "/home/bob/projects/api"),
+        ];
+        let search_dirs = vec![
+            (PathBuf::from("/home/alice/projects"), 2),
+            (PathBuf::from("/home/bob/projects"), 2),
+        ];
+        apply_repo_name_collision_resolution(&mut repos, &search_dirs);
+        assert_eq!(repos[0].session_name, "api--(alice/projects)");
+        assert_eq!(repos[1].session_name, "api--(bob/projects)");
+    }
+
+    #[test]
+    fn collision_resolution_repo_directly_under_root_uses_root_leaf() {
+        // Repo is directly inside the search root: relative parent is empty,
+        // so we fall back to the search root's leaf name.
+        let mut repos = vec![
+            make_repo("api", "/work/api"),
+            make_repo("api", "/personal/api"),
+        ];
+        let search_dirs = vec![
+            (PathBuf::from("/work"), 2),
+            (PathBuf::from("/personal"), 2),
+        ];
+        apply_repo_name_collision_resolution(&mut repos, &search_dirs);
+        assert_eq!(repos[0].session_name, "api--(work)");
+        assert_eq!(repos[1].session_name, "api--(personal)");
+    }
+
+    #[test]
+    fn collision_resolution_mixed_colliding_and_unique() {
+        // Only the "api" repos collide; "frontend" is unique and must not change.
+        let mut repos = vec![
+            make_repo("api", "/tmp/work/api"),
+            make_repo("api", "/tmp/personal/api"),
+            make_repo("frontend", "/tmp/work/frontend"),
+        ];
+        let search_dirs = vec![
+            (PathBuf::from("/tmp/work"), 2),
+            (PathBuf::from("/tmp/personal"), 2),
+        ];
+        apply_repo_name_collision_resolution(&mut repos, &search_dirs);
+        assert_eq!(repos[0].session_name, "api--(work)");
+        assert_eq!(repos[1].session_name, "api--(personal)");
+        assert_eq!(repos[2].session_name, "frontend");
     }
 
     #[test]

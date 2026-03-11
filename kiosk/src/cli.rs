@@ -861,12 +861,10 @@ pub fn cmd_next(
             if needs_attention {
                 // session_names is derived from the same all_pane_data map, so
                 // every candidate session is guaranteed to have an entry here.
-                let activity = all_pane_data
-                    .get(&session)
-                    .map_or_else(
-                        || unreachable!("session {session:?} must exist in all_pane_data"),
-                        |d| d.session_activity,
-                    );
+                let activity = all_pane_data.get(&session).map_or_else(
+                    || unreachable!("session {session:?} must exist in all_pane_data"),
+                    |d| d.session_activity,
+                );
                 Some((session, statuses, activity))
             } else {
                 None

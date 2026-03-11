@@ -847,9 +847,7 @@ fn spawn_sessions_agent_poller<T: TmuxProvider + ?Sized + 'static>(
             // Cap the tick at 150 ms regardless of the configured interval so
             // the loop remains responsive; also cap at status_interval / 4 so
             // fast intervals (< 600 ms) aren't rounded up to 150 ms.
-            let tick = status_interval
-                .div_f32(4.0)
-                .min(Duration::from_millis(150));
+            let tick = status_interval.div_f32(4.0).min(Duration::from_millis(150));
             thread::sleep(tick);
         }
     });

@@ -381,10 +381,7 @@ branch refs/heads/feat/thing
             make_repo("api", "/work/api"),
             make_repo("api", "/personal/api"),
         ];
-        let search_dirs = vec![
-            (PathBuf::from("/work"), 2),
-            (PathBuf::from("/personal"), 2),
-        ];
+        let search_dirs = vec![(PathBuf::from("/work"), 2), (PathBuf::from("/personal"), 2)];
         apply_repo_name_collision_resolution(&mut repos, &search_dirs);
         assert_eq!(repos[0].session_name, "api--(work)");
         assert_eq!(repos[1].session_name, "api--(personal)");

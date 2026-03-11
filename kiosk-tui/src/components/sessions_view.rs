@@ -79,9 +79,7 @@ pub fn draw(
     // sessions exist but the filter produces no hits, regardless of whether
     // a background refresh is in progress — the title bar already shows the
     // "(loading...)" suffix so there's no need to hide the filter feedback.
-    if !state.sessions_view.sessions.is_empty()
-        && state.sessions_view.list.filtered.is_empty()
-    {
+    if !state.sessions_view.sessions.is_empty() && state.sessions_view.list.filtered.is_empty() {
         items.push(ListItem::new(Line::from(Span::styled(
             "No matching sessions",
             Style::default().fg(theme.muted),

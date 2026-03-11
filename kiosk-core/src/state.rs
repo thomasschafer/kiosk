@@ -1128,8 +1128,12 @@ impl ModeTransition {
                 has_session: *has_session,
             },
             ModeTransition::Loading { message } => Mode::Loading(message.clone()),
-            ModeTransition::OpenHelp { .. } => Mode::Help {
-                previous: Box::new(current.clone()),
+            ModeTransition::OpenHelp { .. } => match current {
+                // Idempotent: if already in Help, don't nest another layer.
+                Mode::Help { .. } => current.clone(),
+                _ => Mode::Help {
+                    previous: Box::new(current.clone()),
+                },
             },
             ModeTransition::CloseHelp => match current {
                 Mode::Help { previous } => (**previous).clone(),
@@ -1394,13 +1398,16 @@ impl AppState {
     #[must_use]
     fn can_transition_to(&self, to: &Mode) -> bool {
         use ModeKind::{BranchSelect, ConfirmWorktreeDelete, SelectBaseBranch};
-        let from_kind = self.mode.kind();
+        // Look through Help overlays to the underlying mode so that, e.g.,
+        // Help opened over Sessions cannot bypass BranchSelect-only guards.
+        let effective_from_kind = self.mode.effective().kind();
         let to_kind = to.kind();
-        if from_kind == ModeKind::Help {
-            return true;
-        }
         match to_kind {
-            SelectBaseBranch | ConfirmWorktreeDelete => from_kind == BranchSelect,
+            SelectBaseBranch | ConfirmWorktreeDelete => {
+                // Allow from BranchSelect, or when unwinding Help back to the
+                // same mode (e.g. CloseHelp from Help { previous: SelectBaseBranch }).
+                effective_from_kind == BranchSelect || effective_from_kind == to_kind
+            }
             _ => true,
         }
     }
@@ -3596,13 +3603,19 @@ mod tests {
                 let mut state = AppState::new(vec![], None);
                 state.mode = from.clone();
 
-                let from_help_overlay = matches!(from, Mode::Help { .. });
-                let expected = matches!(
+                // Policy: SelectBaseBranch and ConfirmWorktreeDelete are only
+                // reachable from BranchSelect, or when returning to that same
+                // mode via CloseHelp (effective mode == target mode).
+                let effective_from = from.effective();
+                let expected = if matches!(
                     to,
                     Mode::SelectBaseBranch | Mode::ConfirmWorktreeDelete { .. }
-                )
-                .then_some(matches!(from, Mode::BranchSelect) || from_help_overlay)
-                .unwrap_or(true);
+                ) {
+                    matches!(effective_from, Mode::BranchSelect)
+                        || std::mem::discriminant(effective_from) == std::mem::discriminant(to)
+                } else {
+                    true
+                };
 
                 let transition = match to {
                     Mode::RepoSelect => ModeTransition::RepoSelect,

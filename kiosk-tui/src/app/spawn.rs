@@ -750,10 +750,8 @@ pub(super) fn spawn_sessions_discovery<T: TmuxProvider + ?Sized + 'static>(
     let sender_clone = sender.clone();
 
     let poller_handle = PollerHandle::new();
-    if state
-        .install_sessions_poller(poller_handle.clone())
-        .is_err()
-    {
+    if let Err(err) = state.install_sessions_poller(poller_handle.clone()) {
+        log::warn!("sessions discovery aborted: poller install failed: {err:?}");
         return;
     }
     let poller_cancel = poller_handle.cancel_token();
@@ -845,7 +843,14 @@ fn spawn_sessions_agent_poller<T: TmuxProvider + ?Sized + 'static>(
                 last_status_tick = now;
             }
 
-            thread::sleep(Duration::from_millis(150));
+            // Sleep in small increments so cancellation is checked promptly.
+            // Cap the tick at 150 ms regardless of the configured interval so
+            // the loop remains responsive; also cap at status_interval / 4 so
+            // fast intervals (< 600 ms) aren't rounded up to 150 ms.
+            let tick = status_interval
+                .div_f32(4.0)
+                .min(Duration::from_millis(150));
+            thread::sleep(tick);
         }
     });
 }

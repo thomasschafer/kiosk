@@ -551,6 +551,9 @@ fn apply_sessions_startup_mode(state: &mut AppState) {
     if state.startup_mode == StartupMode::Sessions {
         if let Err(error) = state.transition(&ModeTransition::Sessions) {
             state.set_error(&format!("Internal state transition error: {error:?}"));
+            // Don't mutate sessions_view after a failed transition — the state
+            // is already inconsistent and further writes would make it worse.
+            return;
         }
         state.sessions_view.load_state = SessionsLoadState::Discovering;
         state.sessions_view.pin_first_selection = true;

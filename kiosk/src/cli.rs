@@ -198,7 +198,6 @@ struct SessionOutput {
 struct NextOutput {
     switched: bool,
     session: String,
-    agent_state: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     agent_states: Vec<String>,
 }
@@ -860,9 +859,14 @@ pub fn cmd_next(
                 )
             });
             if needs_attention {
+                // session_names is derived from the same all_pane_data map, so
+                // every candidate session is guaranteed to have an entry here.
                 let activity = all_pane_data
                     .get(&session)
-                    .map_or(0, |d| d.session_activity);
+                    .map_or_else(
+                        || unreachable!("session {session:?} must exist in all_pane_data"),
+                        |d| d.session_activity,
+                    );
                 Some((session, statuses, activity))
             } else {
                 None
@@ -876,17 +880,21 @@ pub fn cmd_next(
     });
 
     if let Some((session, statuses, _)) = candidates.first() {
-        let primary_state = kiosk_core::state::primary_agent_state(statuses);
         let agent_states: Vec<String> = kiosk_core::state::sorted_unique_agent_states(statuses)
             .into_iter()
             .map(|state| state.to_string())
             .collect();
+        // primary_state is always present: candidates only contain sessions with
+        // at least one detected agent, so agent_states is guaranteed non-empty.
+        let primary_state = agent_states
+            .first()
+            .expect("candidate has at least one agent state")
+            .clone();
 
         tmux.switch_to_session(session);
         let output = NextOutput {
             switched: true,
             session: session.clone(),
-            agent_state: primary_state.to_string(),
             agent_states,
         };
         if json {
@@ -894,11 +902,11 @@ pub fn cmd_next(
         } else if output.agent_states.len() > 1 {
             println!(
                 "Switched to: {session} ({}; agents: {})",
-                output.agent_state,
+                primary_state,
                 output.agent_states.join(", ")
             );
         } else {
-            println!("Switched to: {session} ({})", output.agent_state);
+            println!("Switched to: {session} ({primary_state})");
         }
         Ok(())
     } else {

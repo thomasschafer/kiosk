@@ -111,7 +111,7 @@ pub fn run(
     // Start repo discovery in background unless startup is explicitly sessions-first.
     // In that case we defer repo scanning until the user leaves sessions mode.
     let sessions_first_startup = state.startup_mode == kiosk_core::state::StartupMode::Sessions
-        && state.mode() == &Mode::Sessions
+        && state.is_sessions_context()
         && state.sessions_view.is_loading();
     if !sessions_first_startup && (state.loading_repos || state.repos.is_empty()) {
         initialize_repo_scan(state);
@@ -121,13 +121,13 @@ pub fn run(
 
     // Sessions mode runs its own tmux-first discovery path and should not wait
     // for repo scan completion.
-    if state.mode() == &Mode::Sessions && state.sessions_view.is_loading() {
+    if state.is_sessions_context() && state.sessions_view.is_loading() {
         spawn_sessions_discovery(git, tmux, &event_sender, state);
     }
 
     let result = loop {
         if !repo_scan_started
-            && state.mode() != &Mode::Sessions
+            && !state.is_sessions_context()
             && (state.loading_repos || state.repos.is_empty())
         {
             initialize_repo_scan(state);
@@ -724,7 +724,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             state.loading_repos = false;
 
             if state.startup_mode == kiosk_core::state::StartupMode::Sessions
-                && state.mode() != &Mode::Sessions
+                && !state.is_sessions_context()
             {
                 enter_sessions_view(state, git, tmux, sender);
             } else if matches!(state.mode(), Mode::Loading(_)) {
@@ -869,7 +869,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             }
         }
         AppEvent::RemoteBranchesLoaded { branches } => {
-            if state.effective_mode() == &Mode::BranchSelect {
+            if state.is_branch_select_context() {
                 extend_branches_deduped(state, branches);
             }
         }
@@ -887,14 +887,12 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             let current_repo_path = state
                 .selected_repo_idx
                 .and_then(|idx| state.repos.get(idx).map(|r| &r.path));
-            if state.effective_mode() == &Mode::BranchSelect
-                && current_repo_path == Some(&repo_path)
-            {
+            if state.is_branch_select_context() && current_repo_path == Some(&repo_path) {
                 extend_branches_deduped(state, branches);
             }
         }
         AppEvent::AgentStatesUpdated { states } => {
-            if state.effective_mode() == &Mode::BranchSelect {
+            if state.is_branch_select_context() {
                 // Update runtime state in-place — no re-sorting or filter changes.
                 // Missing agent status clears stale badges and session_activity is
                 // refreshed from the same snapshot.
@@ -910,7 +908,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
         }
 
         AppEvent::SessionAgentStatesPatched { states } => {
-            if state.effective_mode() == &Mode::Sessions {
+            if state.is_sessions_context() {
                 let selected_session_name = selected_session_name(state);
                 merge_session_agent_states(&mut state.sessions_view.sessions, &states);
                 rebuild_sessions_list(state, selected_session_name);
@@ -1240,7 +1238,7 @@ fn process_action<T: TmuxProvider + ?Sized + 'static>(
     state: &mut AppState,
     ctx: &ActionContext<'_, T>,
 ) -> Option<OpenAction> {
-    if state.mode() == &Mode::Sessions
+    if state.is_sessions_context()
         && !matches!(
             action,
             Action::ToggleSessions | Action::ShowHelp | Action::Quit
@@ -1280,6 +1278,8 @@ fn process_action<T: TmuxProvider + ?Sized + 'static>(
         }
 
         Action::GoBack => {
+            // Startup sessions mode should only quit from the real sessions view,
+            // not when a help overlay is open over it.
             if matches!(state.mode(), Mode::Sessions)
                 && state.startup_mode == kiosk_core::state::StartupMode::Sessions
             {
@@ -1358,7 +1358,7 @@ fn process_action<T: TmuxProvider + ?Sized + 'static>(
             }
         }
         Action::ToggleSessions => {
-            if state.mode() == &Mode::Sessions {
+            if state.is_sessions_context() {
                 apply_transition!(state, ModeTransition::RepoSelect);
             } else {
                 enter_sessions_view(state, ctx.git, ctx.tmux, ctx.sender);
@@ -1366,6 +1366,7 @@ fn process_action<T: TmuxProvider + ?Sized + 'static>(
         }
 
         Action::SwitchToSession => {
+            // Switching sessions is disabled while help is open.
             if state.mode() == &Mode::Sessions
                 && let Some(selected) = state.sessions_view.list.selected
                 && let Some((idx, _)) = state.sessions_view.list.filtered.get(selected)
@@ -1770,7 +1771,7 @@ mod tests {
     }
 
     #[test]
-    fn test_show_help_initializes_overlay_and_toggles_back() {
+    fn test_show_help_initializes_overlay_and_is_idempotent() {
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
 
@@ -1790,8 +1791,8 @@ mod tests {
 
         process_action(Action::ShowHelp, &mut state, &ctx);
 
-        assert_eq!(state.mode(), &Mode::RepoSelect);
-        assert!(state.require_help_overlay().is_err());
+        assert!(matches!(state.mode(), Mode::Help { .. }));
+        assert!(state.require_help_overlay().is_ok());
     }
 
     #[test]
@@ -2889,10 +2890,10 @@ mod tests {
         );
     }
 
-    // ── Help toggle + parent mode round-trip tests ──
+    // ── Help open-only + parent mode round-trip tests ──
 
     #[test]
-    fn test_help_toggle_from_branch_select_restores_mode() {
+    fn test_help_from_branch_select_restores_mode_on_go_back() {
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
         apply_transition!(state, ModeTransition::BranchSelect);
@@ -2908,16 +2909,16 @@ mod tests {
         assert!(matches!(state.mode(), Mode::Help { .. }));
         assert!(state.require_help_overlay().is_ok());
 
-        process_action(Action::ShowHelp, &mut state, &ctx);
+        process_action(Action::GoBack, &mut state, &ctx);
         assert_eq!(state.mode(), &Mode::BranchSelect);
         assert!(
             state.require_help_overlay().is_err(),
-            "Toggle off should clear help_overlay"
+            "GoBack should clear help_overlay"
         );
     }
 
     #[test]
-    fn test_help_toggle_from_select_base_branch_restores_mode() {
+    fn test_help_from_select_base_branch_restores_mode_on_go_back() {
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
         apply_transition!(state, ModeTransition::BranchSelect);
@@ -2942,7 +2943,7 @@ mod tests {
         process_action(Action::ShowHelp, &mut state, &ctx);
         assert!(matches!(state.mode(), Mode::Help { .. }));
 
-        process_action(Action::ShowHelp, &mut state, &ctx);
+        process_action(Action::GoBack, &mut state, &ctx);
         assert_eq!(state.mode(), &Mode::SelectBaseBranch);
         assert!(state.require_help_overlay().is_err());
         assert!(
@@ -2952,7 +2953,7 @@ mod tests {
     }
 
     #[test]
-    fn test_help_toggle_from_confirm_worktree_delete_restores_mode() {
+    fn test_help_from_confirm_worktree_delete_restores_mode_on_go_back() {
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
         apply_transition!(state, ModeTransition::BranchSelect);
@@ -2974,7 +2975,7 @@ mod tests {
         process_action(Action::ShowHelp, &mut state, &ctx);
         assert!(matches!(state.mode(), Mode::Help { .. }));
 
-        process_action(Action::ShowHelp, &mut state, &ctx);
+        process_action(Action::GoBack, &mut state, &ctx);
         assert_eq!(
             state.mode(),
             &Mode::ConfirmWorktreeDelete {
@@ -5540,6 +5541,39 @@ mod tests {
     }
 
     #[test]
+    fn test_scan_complete_does_not_close_help_over_sessions() {
+        let mut state = AppState::new(vec![make_repo("alpha")], None);
+        apply_transition!(state, ModeTransition::Sessions);
+        state.startup_mode = kiosk_core::state::StartupMode::Sessions;
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux = Arc::new(MockTmuxProvider::default());
+        let keys = KeysConfig::default();
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+        let ctx = default_ctx(&git, &tmux, &keys, &matcher, &sender);
+
+        process_action(Action::ShowHelp, &mut state, &ctx);
+        assert!(matches!(state.mode(), Mode::Help { .. }));
+
+        process_app_event(
+            AppEvent::ScanComplete {
+                search_dirs: vec![(PathBuf::from("/home/user/dev"), 1)],
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+        );
+
+        assert!(
+            matches!(state.mode(), Mode::Help { .. }),
+            "ScanComplete should not re-enter sessions and clear the help overlay"
+        );
+        assert_eq!(state.effective_mode(), &Mode::Sessions);
+    }
+
+    #[test]
     fn test_toggle_sessions_cancels_branch_poller() {
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
@@ -5740,6 +5774,46 @@ mod tests {
         assert_eq!(state.sessions_view.list.selected, Some(0));
         assert_eq!(state.sessions_view.sessions[0].session_name, "beta");
         assert_eq!(state.sessions_view.sessions[1].session_name, "alpha");
+    }
+
+    #[test]
+    fn test_session_agent_update_applies_during_help_over_sessions() {
+        let mut state = AppState::new(vec![make_repo("alpha")], None);
+        apply_transition!(state, ModeTransition::Sessions);
+        state.sessions_view.sessions = vec![make_session("alpha", 50)];
+        state.sessions_view.list.filtered = vec![(0, 0)];
+        state.sessions_view.list.selected = Some(0);
+        apply_transition!(
+            state,
+            ModeTransition::OpenHelp {
+                overlay: kiosk_core::state::HelpOverlayState {
+                    list: SearchableList::new(0),
+                    rows: Vec::new(),
+                },
+            },
+        );
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux = Arc::new(MockTmuxProvider::default());
+        let sender = make_sender();
+        let status = kiosk_core::agent::AgentStatus {
+            kind: kiosk_core::agent::AgentKind::Codex,
+            state: kiosk_core::agent::AgentState::Idle,
+        };
+
+        process_app_event(
+            AppEvent::SessionAgentStatesPatched {
+                states: vec![("alpha".to_string(), vec![status])],
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+        );
+
+        assert!(matches!(state.mode(), Mode::Help { .. }));
+        assert_eq!(state.effective_mode(), &Mode::Sessions);
+        assert_eq!(state.sessions_view.sessions[0].agent_statuses, vec![status]);
     }
 
     #[test]

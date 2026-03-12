@@ -117,20 +117,20 @@ pub(super) fn handle_go_back(state: &mut AppState) {
 }
 
 pub(super) fn handle_show_help(state: &mut AppState, keys: &KeysConfig) {
-    if matches!(state.mode(), Mode::Help { .. }) {
-        apply_transition!(state, ModeTransition::CloseHelp);
-    } else {
-        let catalog = keys.catalog_for_mode(state.mode());
-        apply_transition!(
-            state,
-            ModeTransition::OpenHelp {
-                overlay: HelpOverlayState {
-                    list: SearchableList::new(catalog.flattened.len()),
-                    rows: catalog.flattened,
-                },
-            },
-        );
+    if state.is_help_open() {
+        return;
     }
+
+    let catalog = keys.catalog_for_mode(state.mode());
+    apply_transition!(
+        state,
+        ModeTransition::OpenHelp {
+            overlay: HelpOverlayState {
+                list: SearchableList::new(catalog.flattened.len()),
+                rows: catalog.flattened,
+            },
+        },
+    );
 }
 
 pub(super) fn handle_start_new_branch(state: &mut AppState) {

@@ -13,11 +13,11 @@ pub fn resolve_action(
     let mut our_key: KeyEvent = key.into();
     our_key.canonicalize();
 
-    // Help can always be dismissed with Esc
+    // Help can always be dismissed with Esc.
     if matches!(state.mode(), Mode::Help { .. })
         && our_key == KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)
     {
-        return Some(Action::ShowHelp);
+        return Some(Action::GoBack);
     }
 
     let mode_keymap = keys.keymap_for_mode(state.mode());
@@ -147,6 +147,27 @@ mod tests {
         assert!(
             matches!(action, Some(Action::Quit)),
             "Expected Esc in sessions mode to resolve to Quit, got {action:?}"
+        );
+    }
+
+    #[test]
+    fn esc_in_help_resolves_to_go_back() {
+        let mut state = AppState::new(Vec::new(), None);
+        state
+            .transition(&kiosk_core::state::ModeTransition::OpenHelp {
+                overlay: kiosk_core::state::HelpOverlayState {
+                    list: kiosk_core::state::SearchableList::new(0),
+                    rows: Vec::new(),
+                },
+            })
+            .expect("help transition should be valid");
+        let keys = KeysConfig::default();
+
+        let action = resolve_action(CtKeyEvent::new(CtKeyCode::Esc, CtMods::NONE), &state, &keys);
+
+        assert!(
+            matches!(action, Some(Action::GoBack)),
+            "Expected Esc in help mode to resolve to GoBack, got {action:?}"
         );
     }
 }

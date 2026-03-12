@@ -1468,6 +1468,21 @@ impl AppState {
         self.mode.effective()
     }
 
+    #[must_use]
+    pub fn is_help_open(&self) -> bool {
+        matches!(self.mode, Mode::Help { .. })
+    }
+
+    #[must_use]
+    pub fn is_sessions_context(&self) -> bool {
+        self.effective_mode() == &Mode::Sessions
+    }
+
+    #[must_use]
+    pub fn is_branch_select_context(&self) -> bool {
+        self.effective_mode() == &Mode::BranchSelect
+    }
+
     fn reconcile_agent_poller_mode_invariant(&mut self) {
         if self.active_agent_poller.scope() != self.mode.expected_agent_poller_scope() {
             self.cancel_all_agent_pollers();
@@ -3779,6 +3794,39 @@ mod tests {
             ActiveAgentPollerKind::Sessions
         );
     }
+
+    #[test]
+    fn test_sessions_context_looks_through_help_overlay() {
+        let mut state = AppState::new(vec![], None);
+        state.apply_transition(&ModeTransition::Sessions);
+        state.apply_transition(&ModeTransition::OpenHelp {
+            overlay: HelpOverlayState {
+                list: SearchableList::new(0),
+                rows: Vec::new(),
+            },
+        });
+
+        assert!(state.is_help_open());
+        assert!(state.is_sessions_context());
+        assert!(!state.is_branch_select_context());
+    }
+
+    #[test]
+    fn test_branch_select_context_looks_through_help_overlay() {
+        let mut state = AppState::new(vec![], None);
+        state.apply_transition(&ModeTransition::BranchSelect);
+        state.apply_transition(&ModeTransition::OpenHelp {
+            overlay: HelpOverlayState {
+                list: SearchableList::new(0),
+                rows: Vec::new(),
+            },
+        });
+
+        assert!(state.is_help_open());
+        assert!(state.is_branch_select_context());
+        assert!(!state.is_sessions_context());
+    }
+
     #[test]
     fn test_sorted_unique_agent_states_priority_order() {
         use crate::agent::{AgentKind, AgentState, AgentStatus};

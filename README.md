@@ -13,25 +13,37 @@ Worktrees are created in `.kiosk_worktrees/` in the parent directory of the give
 
 ### TUI
 
-Add a keybinding to your `tmux.conf` to open Kiosk in a popup - the following uses `<prefix> f`, but change as appropriate:
+Kiosk has two primary modes, explained below.
+
+#### Repos and branches view
+
+Add a keybinding to your `tmux.conf` to run `kiosk` in a popup (the following uses `<prefix> f`, but change as appropriate):
 
 ```tmux
 bind-key f popup -xC -yC -w90% -h90% -E "kiosk"
 ```
 
-- On first interactive launch (when no config file exists), you'll see a setup wizard to create your config file. If you'd rather do this manually, see the [configuration](#configuration) section.
-- You'll start in the repo view, which shows all repos in the folders defined in your config:
-  - Start typing to fuzzy search across repos
-  - Enter opens the repo with the primary checkout
-  - Tab opens the branch view for that repo
-- From the branch view, you can again fuzzy match across branches:
-  - Enter opens a session in a worktree on that branch, either attaching to an existing session if one exists, or creating a new one otherwise
-- Press `Ctrl-S` to open the sessions view from anywhere in the TUI:
-  - The current session stays pinned first
-  - Remaining sessions are sorted by agent urgency, then recent activity
-  - Enter switches to the selected session
-  - Type to filter by session name, repo name, or branch
-- Run `kiosk --sessions` to open directly into the sessions view
+You'll start in the repo view, which shows all repos in the folders defined in your config:
+- Start typing to fuzzy search across repos
+- Enter opens the repo with the primary checkout
+- Tab opens the branch view for that repo
+
+From the branch view, you can again fuzzy match across branches:
+- Enter opens a session in a worktree on that branch, either attaching to an existing session if one exists, or creating a new one otherwise
+
+#### Sessions view
+
+Add a keybinding to your `tmux.conf` to run `kiosk --sessions` in a popup (the following uses `<prefix> g`, but change as appropriate):
+
+```tmux
+bind-key g popup -xC -yC -w90% -h90% -E "kiosk --sessions"
+```
+
+This view shows all running tmux sessions, along with the status of any agents.
+
+#### Config
+
+On first launch (when no config file exists), you'll see a setup wizard to create your config file. If you'd rather do this manually, see the [configuration](#configuration) section.
 
 ### CLI
 
@@ -180,7 +192,7 @@ cargo install --path kiosk
 
 ## Configuration
 
-You'll need a config file to get started. By default, Kiosk looks for a TOML configuration file at:
+By default, Kiosk looks for a TOML configuration file at:
 
 - Linux or macOS: `~/.config/kiosk/config.toml`
 - Windows: `%AppData%\kiosk\config.toml`

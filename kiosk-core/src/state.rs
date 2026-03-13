@@ -1018,18 +1018,6 @@ pub enum Mode {
     Setup(SetupStep),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ModeKind {
-    RepoSelect,
-    BranchSelect,
-    Sessions,
-    SelectBaseBranch,
-    Loading,
-    ConfirmWorktreeDelete,
-    Help,
-    Setup,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TransitionError {
     Invalid { from: Mode, to: Mode },
@@ -1127,19 +1115,6 @@ impl Mode {
         }
     }
 
-    fn kind(&self) -> ModeKind {
-        match self {
-            Mode::RepoSelect => ModeKind::RepoSelect,
-            Mode::BranchSelect => ModeKind::BranchSelect,
-            Mode::Sessions => ModeKind::Sessions,
-            Mode::SelectBaseBranch => ModeKind::SelectBaseBranch,
-            Mode::Loading(_) => ModeKind::Loading,
-            Mode::ConfirmWorktreeDelete { .. } => ModeKind::ConfirmWorktreeDelete,
-            Mode::Help { .. } => ModeKind::Help,
-            Mode::Setup(_) => ModeKind::Setup,
-        }
-    }
-
     /// The effective mode, looking through overlays like Help.
     pub fn effective(&self) -> &Mode {
         match self {
@@ -1158,6 +1133,7 @@ impl Mode {
                 Command::Quit,
             ],
             Mode::Sessions => &[
+                Command::JumpToPreviousAgentSession,
                 Command::JumpToNextAgentSession,
                 Command::SwitchToSession,
                 Command::ShowHelp,
@@ -1373,16 +1349,15 @@ impl AppState {
 
     #[must_use]
     fn can_transition_to(&self, to: &Mode) -> bool {
-        use ModeKind::{BranchSelect, ConfirmWorktreeDelete, SelectBaseBranch};
         // Look through Help overlays to the underlying mode so that, e.g.,
         // Help opened over Sessions cannot bypass BranchSelect-only guards.
-        let effective_from_kind = self.mode.effective().kind();
-        let to_kind = to.kind();
-        match to_kind {
-            SelectBaseBranch | ConfirmWorktreeDelete => {
+        let effective_from = self.mode.effective();
+        match to {
+            Mode::SelectBaseBranch | Mode::ConfirmWorktreeDelete { .. } => {
                 // Allow from BranchSelect, or when unwinding Help back to the
                 // same mode (e.g. CloseHelp from Help { previous: SelectBaseBranch }).
-                effective_from_kind == BranchSelect || effective_from_kind == to_kind
+                matches!(effective_from, Mode::BranchSelect)
+                    || std::mem::discriminant(effective_from) == std::mem::discriminant(to)
             }
             _ => true,
         }
@@ -1666,6 +1641,15 @@ impl AppState {
     }
 
     fn set_help_overlay(&mut self, overlay: HelpOverlayState) {
+        // Idempotent: if a help overlay is already active, update it in place
+        // rather than nesting a second layer.
+        if let ModeContextState::HelpOverlay {
+            overlay: current, ..
+        } = &mut self.mode_context
+        {
+            *current = overlay;
+            return;
+        }
         let previous = std::mem::replace(&mut self.mode_context, ModeContextState::None);
         self.mode_context = ModeContextState::HelpOverlay {
             overlay,

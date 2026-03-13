@@ -106,6 +106,10 @@ fn command_to_action(command: &Command, state: &AppState) -> Option<Action> {
             Mode::Sessions => Some(Action::JumpToNextAgentSession),
             _ => None,
         },
+        Command::JumpToPreviousAgentSession => match state.mode() {
+            Mode::Sessions => Some(Action::JumpToPreviousAgentSession),
+            _ => None,
+        },
         Command::TabComplete => match state.mode() {
             Mode::Setup(SetupStep::SearchDirs) => Some(Action::SetupTabComplete),
             _ => None,
@@ -151,6 +155,26 @@ mod tests {
         assert!(
             matches!(action, Some(Action::JumpToNextAgentSession)),
             "Expected Tab in sessions mode to resolve to JumpToNextAgentSession, got {action:?}"
+        );
+    }
+
+    #[test]
+    fn shift_tab_in_sessions_resolves_to_jump_to_previous_agent_session() {
+        let mut state = AppState::new(Vec::new(), None);
+        state
+            .transition(&kiosk_core::state::ModeTransition::Sessions)
+            .expect("sessions transition should be valid");
+        let keys = KeysConfig::default();
+
+        let action = resolve_action(
+            CtKeyEvent::new(CtKeyCode::BackTab, CtMods::SHIFT),
+            &state,
+            &keys,
+        );
+
+        assert!(
+            matches!(action, Some(Action::JumpToPreviousAgentSession)),
+            "Expected Shift-Tab in sessions mode to resolve to JumpToPreviousAgentSession, got {action:?}"
         );
     }
 

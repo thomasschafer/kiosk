@@ -50,4 +50,5 @@ pub enum Action {
     ToggleSessions,
     SwitchToSession,
     JumpToNextAgentSession,
+    JumpToPreviousAgentSession,
 }

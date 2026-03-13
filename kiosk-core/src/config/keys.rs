@@ -261,6 +261,11 @@ define_commands! {
         hint: "next agent",
         description: "Jump to next session with an agent",
     },
+    JumpToPreviousAgentSession {
+        config_name: "jump_to_previous_agent_session",
+        hint: "prev agent",
+        description: "Jump to previous session with an agent",
+    },
 }
 
 /// Effective key bindings after composing mode-relevant layers.
@@ -371,7 +376,11 @@ define_layer_commands!(ListNavigationCommand => [
 define_layer_commands!(ModalCommand => [Confirm, Cancel, TabComplete]);
 define_layer_commands!(RepoSelectCommand => [OpenRepo, EnterRepo, Quit]);
 define_layer_commands!(BranchSelectCommand => [OpenBranch, GoBack, NewBranch, DeleteWorktree]);
-define_layer_commands!(SessionsSelectCommand => [SwitchToSession, JumpToNextAgentSession]);
+define_layer_commands!(SessionsSelectCommand => [
+    SwitchToSession,
+    JumpToNextAgentSession,
+    JumpToPreviousAgentSession
+]);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeybindingEntry {
@@ -876,6 +885,10 @@ impl KeysConfig {
         map.insert(
             KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
             SessionsSelectCommand::JumpToNextAgentSession,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT),
+            SessionsSelectCommand::JumpToPreviousAgentSession,
         );
         map
     }
@@ -1469,11 +1482,16 @@ mod tests {
 
         let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         let tab = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
+        let shift_tab = KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT);
         let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
         let ctrl_s = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL);
 
         assert_eq!(keymap.get(&enter), Some(&Command::SwitchToSession));
         assert_eq!(keymap.get(&tab), Some(&Command::JumpToNextAgentSession));
+        assert_eq!(
+            keymap.get(&shift_tab),
+            Some(&Command::JumpToPreviousAgentSession)
+        );
         assert_eq!(keymap.get(&esc), Some(&Command::Quit));
         assert_eq!(keymap.get(&ctrl_s), Some(&Command::ToggleSessions));
     }
@@ -1523,6 +1541,7 @@ mod tests {
             Command::ToggleSessions,
             Command::SwitchToSession,
             Command::JumpToNextAgentSession,
+            Command::JumpToPreviousAgentSession,
         ];
 
         for cmd in &all_commands {
@@ -1575,6 +1594,7 @@ mod tests {
             Command::ToggleSessions,
             Command::SwitchToSession,
             Command::JumpToNextAgentSession,
+            Command::JumpToPreviousAgentSession,
         ];
 
         for cmd in &all_commands {

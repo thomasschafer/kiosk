@@ -317,6 +317,7 @@ Defaults are shown below.
 
 [keys.sessions_select]
 "enter" = "switch_to_session"
+"S-tab" = "jump_to_previous_agent_session"
 "tab" = "jump_to_next_agent_session"
 
 [keys.modal]

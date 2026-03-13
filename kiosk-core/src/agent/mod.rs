@@ -170,11 +170,6 @@ pub fn detect_all_for_sessions_batched(
         .collect()
 }
 
-/// Detect agent status for multiple sessions, returning the highest-priority
-/// result per session.
-///
-/// Convenience wrapper around [`detect_all_for_sessions_batched`].
-
 /// Detect all agent statuses for one session using pre-fetched pane data.
 pub fn detect_all_for_session_from_pane_data(
     tmux: &(impl crate::tmux::TmuxProvider + ?Sized),

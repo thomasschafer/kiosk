@@ -749,42 +749,39 @@ pub fn cmd_sessions(
     let session_activity: std::collections::HashMap<String, u64> =
         tmux.list_sessions_with_activity().into_iter().collect();
     let attached_sessions = tmux.list_attached_sessions();
-    let mut output: Vec<SessionOutput> = kiosk_core::state::active_session_entries(
-        &repos,
-        &session_activity,
-        &attached_sessions,
-    )
-    .into_iter()
-    .map(|session| {
-        let pane_count = tmux.pane_count(&session.session_name).unwrap_or(1);
-        let current_command = tmux
-            .pane_current_command(&session.session_name, "0")
-            .unwrap_or_else(|_| "unknown".to_string());
-        let agent_statuses = if config.agent.enabled {
-            detect_session_statuses(tmux, &session.session_name)
-        } else {
-            Vec::new()
-        };
+    let mut output: Vec<SessionOutput> =
+        kiosk_core::state::active_session_entries(&repos, &session_activity, &attached_sessions)
+            .into_iter()
+            .map(|session| {
+                let pane_count = tmux.pane_count(&session.session_name).unwrap_or(1);
+                let current_command = tmux
+                    .pane_current_command(&session.session_name, "0")
+                    .unwrap_or_else(|_| "unknown".to_string());
+                let agent_statuses = if config.agent.enabled {
+                    detect_session_statuses(tmux, &session.session_name)
+                } else {
+                    Vec::new()
+                };
 
-        SessionOutput {
-            session: session.session_name.clone(),
-            repo: session
-                .repo_name()
-                .expect("active_session_entries should resolve repo metadata")
-                .to_string(),
-            branch: session.branch().map(ToString::to_string),
-            path: session
-                .path()
-                .expect("active_session_entries should resolve path metadata")
-                .to_path_buf(),
-            attached: session.attached,
-            last_activity: session.session_activity,
-            pane_count,
-            current_command,
-            agent_statuses,
-        }
-    })
-    .collect();
+                SessionOutput {
+                    session: session.session_name.clone(),
+                    repo: session
+                        .repo_name()
+                        .expect("active_session_entries should resolve repo metadata")
+                        .to_string(),
+                    branch: session.branch().map(ToString::to_string),
+                    path: session
+                        .path()
+                        .expect("active_session_entries should resolve path metadata")
+                        .to_path_buf(),
+                    attached: session.attached,
+                    last_activity: session.session_activity,
+                    pane_count,
+                    current_command,
+                    agent_statuses,
+                }
+            })
+            .collect();
 
     output.sort_by(|left, right| left.session.cmp(&right.session));
 
@@ -829,17 +826,14 @@ pub fn cmd_next(
         .map(|(name, data)| (name.clone(), data.session_activity))
         .collect();
     let repos = discover_active_repos_with_worktrees(config, git, &active_sessions_set);
-    let session_names: Vec<String> = kiosk_core::state::active_session_entries(
-        &repos,
-        &session_activity,
-        &HashSet::new(),
-    )
-    .into_iter()
-    .filter_map(|session| {
-        (current_session.as_deref() != Some(session.session_name.as_str()))
-            .then_some(session.session_name)
-    })
-    .collect();
+    let session_names: Vec<String> =
+        kiosk_core::state::active_session_entries(&repos, &session_activity, &HashSet::new())
+            .into_iter()
+            .filter_map(|session| {
+                (current_session.as_deref() != Some(session.session_name.as_str()))
+                    .then_some(session.session_name)
+            })
+            .collect();
 
     // Batched agent detection — include any session where at least one agent
     // was detected. Preference order is Waiting > Idle > Running > Unknown.

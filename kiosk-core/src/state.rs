@@ -854,13 +854,6 @@ where
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum StartupMode {
-    #[default]
-    Repos,
-    Sessions,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SessionsLoadState {
     #[default]
     Discovering,
@@ -1320,8 +1313,6 @@ pub struct AppState {
     pub search_dirs: Vec<(PathBuf, u16)>,
     /// Sessions view state. Grouped to reduce invalid cross-mode combinations.
     pub sessions_view: SessionsViewState,
-    /// Which mode the TUI should open into initially.
-    pub startup_mode: StartupMode,
 }
 
 impl AppState {
@@ -1354,7 +1345,6 @@ impl AppState {
             seen_repo_paths: HashSet::new(),
             search_dirs: Vec::new(),
             sessions_view: SessionsViewState::new(),
-            startup_mode: StartupMode::Repos,
         }
     }
 

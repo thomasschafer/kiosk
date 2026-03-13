@@ -108,12 +108,11 @@ pub fn run(
     state.search_dirs = search_dirs.to_vec();
     let mut repo_scan_started = false;
 
-    // Start repo discovery in background unless startup is explicitly sessions-first.
-    // In that case we defer repo scanning until the user leaves sessions mode.
-    let sessions_first_startup = state.startup_mode == kiosk_core::state::StartupMode::Sessions
-        && state.is_sessions_context()
-        && state.sessions_view.is_loading();
-    if !sessions_first_startup && (state.loading_repos || state.repos.is_empty()) {
+    // Defer repo discovery when starting in sessions mode — the sessions view
+    // loads directly from tmux and doesn't need the repo scan. The scan will
+    // start lazily the first time the user switches to the repos view.
+    let defer_repo_scan = state.is_sessions_context() && state.sessions_view.is_loading();
+    if !defer_repo_scan && (state.loading_repos || state.repos.is_empty()) {
         initialize_repo_scan(state);
         spawn_repo_discovery(git, tmux, &event_sender, search_dirs.to_owned());
         repo_scan_started = true;
@@ -688,11 +687,9 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
 
             sort_repos_preserving_selection(state);
 
-            // Only switch to RepoSelect from Loading — don't kick users out of BranchSelect.
-            // In --sessions mode, keep loading UI until we can enter sessions view directly.
-            if state.startup_mode != kiosk_core::state::StartupMode::Sessions
-                && matches!(state.mode(), Mode::Loading(_))
-            {
+            // Only switch to RepoSelect from Loading — don't kick users out of BranchSelect
+            // or Sessions view.
+            if !state.is_sessions_context() && matches!(state.mode(), Mode::Loading(_)) {
                 apply_transition!(state, ModeTransition::RepoSelect);
             }
         }
@@ -705,11 +702,9 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
                 rebuild_filtered_preserving_search(&mut state.repo_list, &names);
             }
 
-            // Switch to RepoSelect from Loading (so user sees repos appearing),
-            // except in --sessions mode where we keep a stable loading screen.
-            if state.startup_mode != kiosk_core::state::StartupMode::Sessions
-                && matches!(state.mode(), Mode::Loading(_))
-            {
+            // Switch to RepoSelect from Loading (so user sees repos appearing).
+            // Don't interrupt the sessions view.
+            if !state.is_sessions_context() && matches!(state.mode(), Mode::Loading(_)) {
                 apply_transition!(state, ModeTransition::RepoSelect);
             }
         }
@@ -723,17 +718,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
 
             state.loading_repos = false;
 
-            // In --sessions startup the mode is set to Sessions before `run`
-            // is called, so a repo scan can only start (and ScanComplete can
-            // only fire) after the user has explicitly navigated away.
-            // Guard with Loading to avoid redirecting when the user has
-            // deliberately pressed Ctrl-S to go to the repo view.
-            if state.startup_mode == kiosk_core::state::StartupMode::Sessions
-                && !state.is_sessions_context()
-                && matches!(state.mode(), Mode::Loading(_))
-            {
-                enter_sessions_view(state, git, tmux, sender);
-            } else if matches!(state.mode(), Mode::Loading(_)) {
+            if !state.is_sessions_context() && matches!(state.mode(), Mode::Loading(_)) {
                 apply_transition!(state, ModeTransition::RepoSelect);
             }
         }
@@ -1314,14 +1299,6 @@ fn process_action<T: TmuxProvider + ?Sized + 'static>(
         }
 
         Action::GoBack => {
-            // Startup sessions mode should only quit from the real sessions view,
-            // not when a help overlay is open over it.
-            if matches!(state.mode(), Mode::Sessions)
-                && state.startup_mode == kiosk_core::state::StartupMode::Sessions
-            {
-                state.cancel_all_agent_pollers();
-                return Some(OpenAction::Quit);
-            }
             handle_go_back(state);
         }
 
@@ -5284,14 +5261,10 @@ mod tests {
 
     #[test]
     fn test_repos_found_does_not_leave_loading_when_sessions_initial() {
+        // When the sessions view is active, ReposFound must not transition to
+        // RepoSelect — the sessions view manages its own loading lifecycle.
         let mut state = AppState::new(vec![], None);
-        apply_transition!(
-            state,
-            ModeTransition::Loading {
-                message: "Discovering repos...".into(),
-            },
-        );
-        state.startup_mode = kiosk_core::state::StartupMode::Sessions;
+        apply_transition!(state, ModeTransition::Sessions);
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux = Arc::new(MockTmuxProvider::default());
@@ -5307,7 +5280,7 @@ mod tests {
             &sender,
         );
 
-        assert!(matches!(state.mode(), Mode::Loading(_)));
+        assert!(matches!(state.mode(), Mode::Sessions));
     }
 
     #[test]
@@ -5592,7 +5565,6 @@ mod tests {
     fn test_scan_complete_does_not_close_help_over_sessions() {
         let mut state = AppState::new(vec![make_repo("alpha")], None);
         apply_transition!(state, ModeTransition::Sessions);
-        state.startup_mode = kiosk_core::state::StartupMode::Sessions;
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux = Arc::new(MockTmuxProvider::default());
@@ -5628,7 +5600,6 @@ mod tests {
         // jump back to sessions view.
         let mut state = AppState::new(vec![make_repo("alpha")], None);
         apply_transition!(state, ModeTransition::Sessions);
-        state.startup_mode = kiosk_core::state::StartupMode::Sessions;
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux = Arc::new(MockTmuxProvider::default());

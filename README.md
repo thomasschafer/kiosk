@@ -316,8 +316,8 @@ Defaults are shown below.
 "esc" = "go_back"
 
 [keys.sessions_select]
-"enter" = "switch_to_session"
 "S-tab" = "jump_to_previous_agent_session"
+"enter" = "switch_to_session"
 "tab" = "jump_to_next_agent_session"
 
 [keys.modal]

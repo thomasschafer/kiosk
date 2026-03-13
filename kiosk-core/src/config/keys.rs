@@ -1,7 +1,7 @@
 use crate::keyboard::{KeyCode, KeyEvent, KeyModifiers};
 use crate::state::Mode;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
 /// Labels for a command: short hint for footer bar, long description for help overlay.
@@ -297,6 +297,18 @@ impl<C> LayerKeyMap<C> {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DefaultBinding<C> {
+    key: KeyEvent,
+    command: C,
+}
+
+impl<C> DefaultBinding<C> {
+    fn new(key: KeyEvent, command: C) -> Self {
+        Self { key, command }
+    }
+}
+
 impl<C> Default for LayerKeyMap<C> {
     fn default() -> Self {
         Self::new()
@@ -409,6 +421,18 @@ pub struct ModeKeybindingCatalog {
     pub mode: Mode,
     pub sections: Vec<KeybindingSection>,
     pub flattened: Vec<FlattenedKeybindingRow>,
+}
+
+fn keybinding_entry<C>(key: KeyEvent, command: C) -> KeybindingEntry
+where
+    C: Into<Command>,
+{
+    let command: Command = command.into();
+    KeybindingEntry {
+        key,
+        description: command.labels().description,
+        command,
+    }
 }
 
 #[repr(u8)]
@@ -532,13 +556,32 @@ impl KeysConfig {
             .map(|layer| KeybindingSection {
                 name: layer.section_name(),
                 entries: match layer {
-                    Layer::General => Self::entries_for_layer(&self.general),
-                    Layer::TextEdit => Self::entries_for_layer(&self.text_edit),
-                    Layer::ListNavigation => Self::entries_for_layer(&self.list_navigation),
-                    Layer::RepoSelect => Self::entries_for_layer(&self.repo_select),
-                    Layer::BranchSelect => Self::entries_for_layer(&self.branch_select),
-                    Layer::SessionsSelect => Self::entries_for_layer(&self.sessions_select),
-                    Layer::Modal => Self::entries_for_layer(&self.modal),
+                    Layer::General => {
+                        Self::entries_for_layer(&self.general, &Self::default_general_bindings())
+                    }
+                    Layer::TextEdit => Self::entries_for_layer(
+                        &self.text_edit,
+                        &Self::default_text_edit_bindings(),
+                    ),
+                    Layer::ListNavigation => Self::entries_for_layer(
+                        &self.list_navigation,
+                        &Self::default_list_navigation_bindings(),
+                    ),
+                    Layer::RepoSelect => Self::entries_for_layer(
+                        &self.repo_select,
+                        &Self::default_repo_select_bindings(),
+                    ),
+                    Layer::BranchSelect => Self::entries_for_layer(
+                        &self.branch_select,
+                        &Self::default_branch_select_bindings(),
+                    ),
+                    Layer::SessionsSelect => Self::entries_for_layer(
+                        &self.sessions_select,
+                        &Self::default_sessions_select_bindings(),
+                    ),
+                    Layer::Modal => {
+                        Self::entries_for_layer(&self.modal, &Self::default_modal_bindings())
+                    }
                 }
                 .into_iter()
                 .filter(|e| effective.get(&e.key) == Some(&e.command))
@@ -584,6 +627,60 @@ impl KeysConfig {
             .into_iter()
             .map(Layer::section_name)
             .collect()
+    }
+
+    pub fn default_keybinding_sections_for_docs() -> Vec<KeybindingSection> {
+        vec![
+            KeybindingSection {
+                name: Layer::General.section_name(),
+                entries: Self::default_general_bindings()
+                    .into_iter()
+                    .map(|binding| keybinding_entry(binding.key, binding.command))
+                    .collect(),
+            },
+            KeybindingSection {
+                name: Layer::TextEdit.section_name(),
+                entries: Self::default_text_edit_bindings()
+                    .into_iter()
+                    .map(|binding| keybinding_entry(binding.key, binding.command))
+                    .collect(),
+            },
+            KeybindingSection {
+                name: Layer::ListNavigation.section_name(),
+                entries: Self::default_list_navigation_bindings()
+                    .into_iter()
+                    .map(|binding| keybinding_entry(binding.key, binding.command))
+                    .collect(),
+            },
+            KeybindingSection {
+                name: Layer::RepoSelect.section_name(),
+                entries: Self::default_repo_select_bindings()
+                    .into_iter()
+                    .map(|binding| keybinding_entry(binding.key, binding.command))
+                    .collect(),
+            },
+            KeybindingSection {
+                name: Layer::BranchSelect.section_name(),
+                entries: Self::default_branch_select_bindings()
+                    .into_iter()
+                    .map(|binding| keybinding_entry(binding.key, binding.command))
+                    .collect(),
+            },
+            KeybindingSection {
+                name: Layer::SessionsSelect.section_name(),
+                entries: Self::default_sessions_select_bindings()
+                    .into_iter()
+                    .map(|binding| keybinding_entry(binding.key, binding.command))
+                    .collect(),
+            },
+            KeybindingSection {
+                name: Layer::Modal.section_name(),
+                entries: Self::default_modal_bindings()
+                    .into_iter()
+                    .map(|binding| keybinding_entry(binding.key, binding.command))
+                    .collect(),
+            },
+        ]
     }
 
     #[cfg(test)]
@@ -635,13 +732,37 @@ impl KeysConfig {
         }
     }
 
-    fn entries_for_layer<C>(layer: &LayerKeyMap<C>) -> Vec<KeybindingEntry>
+    fn entries_for_layer<C>(
+        layer: &LayerKeyMap<C>,
+        defaults: &[DefaultBinding<C>],
+    ) -> Vec<KeybindingEntry>
     where
-        C: Clone + Into<Command>,
+        C: Clone + Into<Command> + PartialEq,
     {
-        let mut entries: Vec<KeybindingEntry> = layer
+        let mut entries = Vec::new();
+        let mut default_keys = HashSet::new();
+
+        for binding in defaults {
+            default_keys.insert(binding.key);
+            let Some(command) = layer.get(&binding.key) else {
+                continue;
+            };
+            let command: Command = command.clone().into();
+            if command != Command::Noop {
+                entries.push(KeybindingEntry {
+                    key: binding.key,
+                    command: command.clone(),
+                    description: command.labels().description,
+                });
+            }
+        }
+
+        let mut extra_entries: Vec<KeybindingEntry> = layer
             .iter()
             .filter_map(|(key, command)| {
+                if default_keys.contains(key) {
+                    return None;
+                }
                 let command: Command = command.clone().into();
                 if command == Command::Noop {
                     None
@@ -655,11 +776,12 @@ impl KeysConfig {
             })
             .collect();
 
-        entries.sort_by(|a, b| {
+        extra_entries.sort_by(|a, b| {
             a.command
                 .cmp(&b.command)
                 .then_with(|| a.key.to_string().cmp(&b.key.to_string()))
         });
+        entries.extend(extra_entries);
         entries
     }
 
@@ -675,222 +797,262 @@ impl KeysConfig {
         }
     }
 
-    fn default_general() -> LayerKeyMap<GeneralCommand> {
+    fn build_default_layer<C>(defaults: &[DefaultBinding<C>]) -> LayerKeyMap<C>
+    where
+        C: Clone,
+    {
         let mut map = LayerKeyMap::new();
-        map.insert(
-            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
-            GeneralCommand::Quit,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-            GeneralCommand::Quit,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL),
-            GeneralCommand::ShowHelp,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
-            GeneralCommand::ToggleSessions,
-        );
+        for binding in defaults {
+            map.insert(binding.key, binding.command.clone());
+        }
         map
+    }
+
+    fn default_general_bindings() -> Vec<DefaultBinding<GeneralCommand>> {
+        vec![
+            DefaultBinding::new(
+                KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+                GeneralCommand::Quit,
+            ),
+            DefaultBinding::new(
+                KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+                GeneralCommand::Quit,
+            ),
+            DefaultBinding::new(
+                KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL),
+                GeneralCommand::ShowHelp,
+            ),
+            DefaultBinding::new(
+                KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+                GeneralCommand::ToggleSessions,
+            ),
+        ]
+    }
+
+    fn default_text_edit_bindings() -> Vec<DefaultBinding<TextEditCommand>> {
+        vec![
+            DefaultBinding::new(
+                KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+                TextEditCommand::DeleteBackwardChar,
+            ),
+            DefaultBinding::new(
+                KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE),
+                TextEditCommand::DeleteForwardChar,
+            ),
+            DefaultBinding::new(
+                KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+                TextEditCommand::DeleteForwardChar,
+            ),
+            DefaultBinding::new(
+                KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
+                TextEditCommand::DeleteBackwardWord,
+            ),
+            DefaultBinding::new(
+                KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT),
+                TextEditCommand::DeleteBackwardWord,
+            ),
+            DefaultBinding::new(
+                KeyEvent::new(KeyCode::Char('d'), KeyModifiers::ALT),
+                TextEditCommand::DeleteForwardWord,
+            ),
+            DefaultBinding::new(
+                KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+                TextEditCommand::DeleteToStart,
+            ),
+            DefaultBinding::new(
+                KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL),
+                TextEditCommand::DeleteToEnd,
+            ),
+            DefaultBinding::new(
+                KeyEvent::new(KeyCode::Left, KeyModifiers::NONE),
+                TextEditCommand::MoveCursorLeft,
+            ),
+            DefaultBinding::new(
+                KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+                TextEditCommand::MoveCursorRight,
+            ),
+            DefaultBinding::new(
+                KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT),
+                TextEditCommand::MoveCursorWordLeft,
+            ),
+            DefaultBinding::new(
+                KeyEvent::new(KeyCode::Left, KeyModifiers::ALT),
+                TextEditCommand::MoveCursorWordLeft,
+            ),
+            DefaultBinding::new(
+                KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT),
+                TextEditCommand::MoveCursorWordRight,
+            ),
+            DefaultBinding::new(
+                KeyEvent::new(KeyCode::Right, KeyModifiers::ALT),
+                TextEditCommand::MoveCursorWordRight,
+            ),
+            DefaultBinding::new(
+                KeyEvent::new(KeyCode::Home, KeyModifiers::NONE),
+                TextEditCommand::MoveCursorStart,
+            ),
+            DefaultBinding::new(
+                KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
+                TextEditCommand::MoveCursorStart,
+            ),
+            DefaultBinding::new(
+                KeyEvent::new(KeyCode::End, KeyModifiers::NONE),
+                TextEditCommand::MoveCursorEnd,
+            ),
+            DefaultBinding::new(
+                KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL),
+                TextEditCommand::MoveCursorEnd,
+            ),
+        ]
+    }
+
+    fn default_list_navigation_bindings() -> Vec<DefaultBinding<ListNavigationCommand>> {
+        vec![
+            DefaultBinding::new(
+                KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+                ListNavigationCommand::MoveUp,
+            ),
+            DefaultBinding::new(
+                KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+                ListNavigationCommand::MoveDown,
+            ),
+            DefaultBinding::new(
+                KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
+                ListNavigationCommand::MoveUp,
+            ),
+            DefaultBinding::new(
+                KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
+                ListNavigationCommand::MoveDown,
+            ),
+            DefaultBinding::new(
+                KeyEvent::new(KeyCode::Char('j'), KeyModifiers::ALT),
+                ListNavigationCommand::HalfPageDown,
+            ),
+            DefaultBinding::new(
+                KeyEvent::new(KeyCode::Char('k'), KeyModifiers::ALT),
+                ListNavigationCommand::HalfPageUp,
+            ),
+            DefaultBinding::new(
+                KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE),
+                ListNavigationCommand::PageUp,
+            ),
+            DefaultBinding::new(
+                KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
+                ListNavigationCommand::PageDown,
+            ),
+            DefaultBinding::new(
+                KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
+                ListNavigationCommand::PageDown,
+            ),
+            DefaultBinding::new(
+                KeyEvent::new(KeyCode::Char('v'), KeyModifiers::ALT),
+                ListNavigationCommand::PageUp,
+            ),
+            DefaultBinding::new(
+                KeyEvent::new(KeyCode::Char('g'), KeyModifiers::ALT),
+                ListNavigationCommand::MoveTop,
+            ),
+            DefaultBinding::new(
+                KeyEvent::new(KeyCode::Char('G'), KeyModifiers::ALT),
+                ListNavigationCommand::MoveBottom,
+            ),
+        ]
+    }
+
+    fn default_modal_bindings() -> Vec<DefaultBinding<ModalCommand>> {
+        vec![
+            DefaultBinding::new(
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                ModalCommand::Confirm,
+            ),
+            DefaultBinding::new(
+                KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+                ModalCommand::Cancel,
+            ),
+            DefaultBinding::new(
+                KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+                ModalCommand::TabComplete,
+            ),
+        ]
+    }
+
+    fn default_repo_select_bindings() -> Vec<DefaultBinding<RepoSelectCommand>> {
+        vec![
+            DefaultBinding::new(
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                RepoSelectCommand::OpenRepo,
+            ),
+            DefaultBinding::new(
+                KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+                RepoSelectCommand::EnterRepo,
+            ),
+        ]
+    }
+
+    fn default_branch_select_bindings() -> Vec<DefaultBinding<BranchSelectCommand>> {
+        vec![
+            DefaultBinding::new(
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                BranchSelectCommand::OpenBranch,
+            ),
+            DefaultBinding::new(
+                KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+                BranchSelectCommand::GoBack,
+            ),
+            DefaultBinding::new(
+                KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
+                BranchSelectCommand::NewBranch,
+            ),
+            DefaultBinding::new(
+                KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
+                BranchSelectCommand::DeleteWorktree,
+            ),
+        ]
+    }
+
+    fn default_sessions_select_bindings() -> Vec<DefaultBinding<SessionsSelectCommand>> {
+        vec![
+            DefaultBinding::new(
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                SessionsSelectCommand::SwitchToSession,
+            ),
+            DefaultBinding::new(
+                KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+                SessionsSelectCommand::JumpToNextAgentSession,
+            ),
+            DefaultBinding::new(
+                KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT),
+                SessionsSelectCommand::JumpToPreviousAgentSession,
+            ),
+        ]
+    }
+
+    fn default_general() -> LayerKeyMap<GeneralCommand> {
+        Self::build_default_layer(&Self::default_general_bindings())
     }
 
     fn default_text_edit() -> LayerKeyMap<TextEditCommand> {
-        let mut map = LayerKeyMap::new();
-        map.insert(
-            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
-            TextEditCommand::DeleteBackwardChar,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE),
-            TextEditCommand::DeleteForwardChar,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
-            TextEditCommand::DeleteForwardChar,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
-            TextEditCommand::DeleteBackwardWord,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT),
-            TextEditCommand::DeleteBackwardWord,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::ALT),
-            TextEditCommand::DeleteForwardWord,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
-            TextEditCommand::DeleteToStart,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL),
-            TextEditCommand::DeleteToEnd,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Left, KeyModifiers::NONE),
-            TextEditCommand::MoveCursorLeft,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
-            TextEditCommand::MoveCursorRight,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT),
-            TextEditCommand::MoveCursorWordLeft,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Left, KeyModifiers::ALT),
-            TextEditCommand::MoveCursorWordLeft,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT),
-            TextEditCommand::MoveCursorWordRight,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Right, KeyModifiers::ALT),
-            TextEditCommand::MoveCursorWordRight,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Home, KeyModifiers::NONE),
-            TextEditCommand::MoveCursorStart,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
-            TextEditCommand::MoveCursorStart,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::End, KeyModifiers::NONE),
-            TextEditCommand::MoveCursorEnd,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL),
-            TextEditCommand::MoveCursorEnd,
-        );
-        map
+        Self::build_default_layer(&Self::default_text_edit_bindings())
     }
 
     fn default_list_navigation() -> LayerKeyMap<ListNavigationCommand> {
-        let mut map = LayerKeyMap::new();
-        map.insert(
-            KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
-            ListNavigationCommand::MoveUp,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
-            ListNavigationCommand::MoveDown,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
-            ListNavigationCommand::MoveUp,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
-            ListNavigationCommand::MoveDown,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::ALT),
-            ListNavigationCommand::HalfPageDown,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Char('k'), KeyModifiers::ALT),
-            ListNavigationCommand::HalfPageUp,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE),
-            ListNavigationCommand::PageUp,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
-            ListNavigationCommand::PageDown,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
-            ListNavigationCommand::PageDown,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Char('v'), KeyModifiers::ALT),
-            ListNavigationCommand::PageUp,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Char('g'), KeyModifiers::ALT),
-            ListNavigationCommand::MoveTop,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Char('G'), KeyModifiers::ALT),
-            ListNavigationCommand::MoveBottom,
-        );
-        map
+        Self::build_default_layer(&Self::default_list_navigation_bindings())
     }
 
     fn default_modal() -> LayerKeyMap<ModalCommand> {
-        let mut map = LayerKeyMap::new();
-        map.insert(
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            ModalCommand::Confirm,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-            ModalCommand::Cancel,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
-            ModalCommand::TabComplete,
-        );
-        map
+        Self::build_default_layer(&Self::default_modal_bindings())
     }
 
     fn default_repo_select() -> LayerKeyMap<RepoSelectCommand> {
-        let mut map = LayerKeyMap::new();
-        map.insert(
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            RepoSelectCommand::OpenRepo,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
-            RepoSelectCommand::EnterRepo,
-        );
-        map
+        Self::build_default_layer(&Self::default_repo_select_bindings())
     }
 
     fn default_branch_select() -> LayerKeyMap<BranchSelectCommand> {
-        let mut map = LayerKeyMap::new();
-        map.insert(
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            BranchSelectCommand::OpenBranch,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-            BranchSelectCommand::GoBack,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
-            BranchSelectCommand::NewBranch,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
-            BranchSelectCommand::DeleteWorktree,
-        );
-        map
+        Self::build_default_layer(&Self::default_branch_select_bindings())
     }
+
     fn default_sessions_select() -> LayerKeyMap<SessionsSelectCommand> {
-        let mut map = LayerKeyMap::new();
-        map.insert(
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            SessionsSelectCommand::SwitchToSession,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
-            SessionsSelectCommand::JumpToNextAgentSession,
-        );
-        map.insert(
-            KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT),
-            SessionsSelectCommand::JumpToPreviousAgentSession,
-        );
-        map
+        Self::build_default_layer(&Self::default_sessions_select_bindings())
     }
 
     /// Parse a string representation of keybindings into a `KeyMap`
@@ -1234,6 +1396,36 @@ mod tests {
     }
 
     #[test]
+    fn test_default_keybinding_sections_for_docs_preserve_source_order() {
+        let sections = KeysConfig::default_keybinding_sections_for_docs();
+        let sessions = sections
+            .iter()
+            .find(|section| section.name == "sessions_select")
+            .expect("sessions_select section should exist");
+
+        let keys: Vec<String> = sessions
+            .entries
+            .iter()
+            .map(|entry| entry.key.to_string())
+            .collect();
+        let commands: Vec<Command> = sessions
+            .entries
+            .iter()
+            .map(|entry| entry.command.clone())
+            .collect();
+
+        assert_eq!(keys, vec!["enter", "tab", "S-tab"]);
+        assert_eq!(
+            commands,
+            vec![
+                Command::SwitchToSession,
+                Command::JumpToNextAgentSession,
+                Command::JumpToPreviousAgentSession,
+            ]
+        );
+    }
+
+    #[test]
     fn test_sections_for_mode_uses_layer_precedence_order() {
         let config = KeysConfig::default();
         let section_names: Vec<&str> = config
@@ -1377,22 +1569,26 @@ mod tests {
             section_names,
             vec!["repo_select", "list_navigation", "text_edit", "general"]
         );
+        let flattened_repo_select: Vec<(usize, String, Command)> = catalog
+            .flattened
+            .iter()
+            .filter(|row| row.section_name == "repo_select")
+            .map(|row| {
+                (
+                    row.section_index,
+                    row.key_display.clone(),
+                    row.command.clone(),
+                )
+            })
+            .collect();
 
-        let mut previous_section_index = 0;
-        let mut previous_command: Option<Command> = None;
-        let mut previous_key = String::new();
-        for row in &catalog.flattened {
-            if row.section_index != previous_section_index {
-                assert_eq!(row.section_index, previous_section_index + 1);
-                previous_section_index = row.section_index;
-            } else if previous_command.as_ref() == Some(&row.command) {
-                assert!(previous_key <= row.key_display);
-            } else {
-                assert!(previous_command.as_ref() <= Some(&row.command));
-            }
-            previous_command = Some(row.command.clone());
-            previous_key = row.key_display.clone();
-        }
+        assert_eq!(
+            flattened_repo_select,
+            vec![
+                (0, "enter".to_string(), Command::OpenRepo),
+                (0, "tab".to_string(), Command::EnterRepo),
+            ]
+        );
     }
 
     #[test]

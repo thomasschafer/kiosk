@@ -1092,6 +1092,36 @@ fn rebuild_sessions_list(state: &mut AppState, selected_session_name: Option<Str
     }
 }
 
+fn next_agent_session_selection(state: &AppState) -> Option<usize> {
+    let filtered = &state.sessions_view.list.filtered;
+    if filtered.is_empty() {
+        return None;
+    }
+
+    let current = state.sessions_view.list.selected.unwrap_or(0);
+    let len = filtered.len();
+
+    (1..=len).find_map(|offset| {
+        let filtered_idx = (current + offset) % len;
+        let session_idx = filtered.get(filtered_idx)?.0;
+        state
+            .sessions_view
+            .sessions
+            .get(session_idx)
+            .filter(|session| !session.agent_statuses.is_empty())
+            .map(|_| filtered_idx)
+    })
+}
+
+fn jump_to_next_agent_session(state: &mut AppState) {
+    let Some(next_selection) = next_agent_session_selection(state) else {
+        return;
+    };
+
+    state.sessions_view.list.selected = Some(next_selection);
+    update_active_list_scroll_offset(state, state.active_list_page_rows());
+}
+
 fn merge_session_agent_states(
     sessions: &mut [kiosk_core::state::SessionEntry],
     states: &[(String, Vec<kiosk_core::agent::AgentStatus>)],
@@ -1381,6 +1411,11 @@ fn process_action<T: TmuxProvider + ?Sized + 'static>(
                 });
             }
         }
+        Action::JumpToNextAgentSession => {
+            if state.mode() == &Mode::Sessions {
+                jump_to_next_agent_session(state);
+            }
+        }
 
         // Movement, cursor, and cancel actions are handled by helper functions above.
         // If we reach here, it means the action wasn't applicable in the current mode
@@ -1459,6 +1494,13 @@ mod tests {
             attached: false,
             is_current,
         })
+    }
+
+    fn idle_status() -> kiosk_core::agent::AgentStatus {
+        kiosk_core::agent::AgentStatus {
+            kind: kiosk_core::agent::AgentKind::Codex,
+            state: kiosk_core::agent::AgentState::Idle,
+        }
     }
 
     fn filtered_session_names(state: &AppState) -> Vec<&str> {
@@ -6021,11 +6063,68 @@ mod tests {
         assert_eq!(
             hints,
             vec![
+                ("tab".to_string(), "next agent"),
                 ("enter".to_string(), "open"),
                 ("C-h".to_string(), "help"),
                 ("C-c".to_string(), "quit"),
             ]
         );
+    }
+
+    #[test]
+    fn test_jump_to_next_agent_session_skips_non_agent_rows_and_wraps() {
+        let mut state = AppState::new(vec![make_repo("alpha")], None);
+        apply_transition!(state, ModeTransition::Sessions);
+        state.set_active_list_page_rows(20);
+        state.sessions_view.sessions = vec![
+            make_session_with("session-a", 30, vec![idle_status()], false),
+            make_session("session-b", 20),
+            make_session_with("session-c", 10, vec![idle_status()], false),
+        ];
+        state.sessions_view.list = SearchableList::new(state.sessions_view.sessions.len());
+        state.sessions_view.list.selected = Some(1);
+
+        jump_to_next_agent_session(&mut state);
+        assert_eq!(state.sessions_view.list.selected, Some(2));
+
+        jump_to_next_agent_session(&mut state);
+        assert_eq!(state.sessions_view.list.selected, Some(0));
+
+        jump_to_next_agent_session(&mut state);
+        assert_eq!(state.sessions_view.list.selected, Some(2));
+    }
+
+    #[test]
+    fn test_jump_to_next_agent_session_respects_filtered_rows() {
+        let mut state = AppState::new(vec![make_repo("alpha")], None);
+        apply_transition!(state, ModeTransition::Sessions);
+        state.set_active_list_page_rows(20);
+        state.sessions_view.sessions = vec![
+            make_session_with("session-a", 30, vec![idle_status()], false),
+            make_session("session-b", 20),
+            make_session_with("session-c", 10, vec![idle_status()], false),
+        ];
+        state.sessions_view.list.filtered = vec![(0, 0), (1, 0)];
+        state.sessions_view.list.selected = Some(0);
+
+        jump_to_next_agent_session(&mut state);
+
+        assert_eq!(state.sessions_view.list.selected, Some(0));
+    }
+
+    #[test]
+    fn test_jump_to_next_agent_session_is_noop_without_agent_sessions() {
+        let mut state = AppState::new(vec![make_repo("alpha")], None);
+        apply_transition!(state, ModeTransition::Sessions);
+        state.set_active_list_page_rows(20);
+        state.sessions_view.sessions =
+            vec![make_session("session-a", 30), make_session("session-b", 20)];
+        state.sessions_view.list = SearchableList::new(state.sessions_view.sessions.len());
+        state.sessions_view.list.selected = Some(1);
+
+        jump_to_next_agent_session(&mut state);
+
+        assert_eq!(state.sessions_view.list.selected, Some(1));
     }
 
     #[test]

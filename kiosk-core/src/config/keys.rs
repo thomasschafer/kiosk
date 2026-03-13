@@ -256,6 +256,11 @@ define_commands! {
         hint: "open",
         description: "Open selected session",
     },
+    JumpToNextAgentSession {
+        config_name: "jump_to_next_agent_session",
+        hint: "next agent",
+        description: "Jump to next session with an agent",
+    },
 }
 
 /// Effective key bindings after composing mode-relevant layers.
@@ -366,7 +371,7 @@ define_layer_commands!(ListNavigationCommand => [
 define_layer_commands!(ModalCommand => [Confirm, Cancel, TabComplete]);
 define_layer_commands!(RepoSelectCommand => [OpenRepo, EnterRepo, Quit]);
 define_layer_commands!(BranchSelectCommand => [OpenBranch, GoBack, NewBranch, DeleteWorktree]);
-define_layer_commands!(SessionsSelectCommand => [SwitchToSession]);
+define_layer_commands!(SessionsSelectCommand => [SwitchToSession, JumpToNextAgentSession]);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeybindingEntry {
@@ -867,6 +872,10 @@ impl KeysConfig {
         map.insert(
             KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
             SessionsSelectCommand::SwitchToSession,
+        );
+        map.insert(
+            KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+            SessionsSelectCommand::JumpToNextAgentSession,
         );
         map
     }
@@ -1459,10 +1468,12 @@ mod tests {
         let keymap = config.keymap_for_mode(&Mode::Sessions);
 
         let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        let tab = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
         let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
         let ctrl_s = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL);
 
         assert_eq!(keymap.get(&enter), Some(&Command::SwitchToSession));
+        assert_eq!(keymap.get(&tab), Some(&Command::JumpToNextAgentSession));
         assert_eq!(keymap.get(&esc), Some(&Command::Quit));
         assert_eq!(keymap.get(&ctrl_s), Some(&Command::ToggleSessions));
     }
@@ -1511,6 +1522,7 @@ mod tests {
             Command::TabComplete,
             Command::ToggleSessions,
             Command::SwitchToSession,
+            Command::JumpToNextAgentSession,
         ];
 
         for cmd in &all_commands {
@@ -1562,6 +1574,7 @@ mod tests {
             Command::TabComplete,
             Command::ToggleSessions,
             Command::SwitchToSession,
+            Command::JumpToNextAgentSession,
         ];
 
         for cmd in &all_commands {

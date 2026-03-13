@@ -317,6 +317,7 @@ Defaults are shown below.
 
 [keys.sessions_select]
 "enter" = "switch_to_session"
+"tab" = "jump_to_next_agent_session"
 
 [keys.modal]
 "enter" = "confirm"

@@ -102,6 +102,10 @@ fn command_to_action(command: &Command, state: &AppState) -> Option<Action> {
         },
         Command::ToggleSessions => Some(Action::ToggleSessions),
         Command::SwitchToSession => Some(Action::SwitchToSession),
+        Command::JumpToNextAgentSession => match state.mode() {
+            Mode::Sessions => Some(Action::JumpToNextAgentSession),
+            _ => None,
+        },
         Command::TabComplete => match state.mode() {
             Mode::Setup(SetupStep::SearchDirs) => Some(Action::SetupTabComplete),
             _ => None,
@@ -131,6 +135,22 @@ mod tests {
         assert!(
             matches!(action, Some(Action::ToggleSessions)),
             "Expected Ctrl+S in sessions mode to resolve to ToggleSessions, got {action:?}"
+        );
+    }
+
+    #[test]
+    fn tab_in_sessions_resolves_to_jump_to_next_agent_session() {
+        let mut state = AppState::new(Vec::new(), None);
+        state
+            .transition(&kiosk_core::state::ModeTransition::Sessions)
+            .expect("sessions transition should be valid");
+        let keys = KeysConfig::default();
+
+        let action = resolve_action(CtKeyEvent::new(CtKeyCode::Tab, CtMods::NONE), &state, &keys);
+
+        assert!(
+            matches!(action, Some(Action::JumpToNextAgentSession)),
+            "Expected Tab in sessions mode to resolve to JumpToNextAgentSession, got {action:?}"
         );
     }
 

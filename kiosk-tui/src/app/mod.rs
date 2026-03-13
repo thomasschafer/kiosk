@@ -723,8 +723,14 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
 
             state.loading_repos = false;
 
+            // In --sessions startup the mode is set to Sessions before `run`
+            // is called, so a repo scan can only start (and ScanComplete can
+            // only fire) after the user has explicitly navigated away.
+            // Guard with Loading to avoid redirecting when the user has
+            // deliberately pressed Ctrl-S to go to the repo view.
             if state.startup_mode == kiosk_core::state::StartupMode::Sessions
                 && !state.is_sessions_context()
+                && matches!(state.mode(), Mode::Loading(_))
             {
                 enter_sessions_view(state, git, tmux, sender);
             } else if matches!(state.mode(), Mode::Loading(_)) {
@@ -5613,6 +5619,48 @@ mod tests {
             "ScanComplete should not re-enter sessions and clear the help overlay"
         );
         assert_eq!(state.effective_mode(), &Mode::Sessions);
+    }
+
+    #[test]
+    fn test_scan_complete_does_not_redirect_to_sessions_after_ctrl_s() {
+        // Regression: pressing Ctrl-S from sessions view triggers a lazy repo
+        // scan; when ScanComplete fires the app must stay in RepoSelect, not
+        // jump back to sessions view.
+        let mut state = AppState::new(vec![make_repo("alpha")], None);
+        apply_transition!(state, ModeTransition::Sessions);
+        state.startup_mode = kiosk_core::state::StartupMode::Sessions;
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux = Arc::new(MockTmuxProvider::default());
+        let keys = KeysConfig::default();
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+        let ctx = default_ctx(&git, &tmux, &keys, &matcher, &sender);
+
+        // Simulate the user pressing Ctrl-S to go to repos view
+        process_action(Action::ToggleSessions, &mut state, &ctx);
+        assert!(
+            matches!(state.mode(), Mode::RepoSelect),
+            "expected RepoSelect after ToggleSessions, got {:?}",
+            state.mode()
+        );
+
+        // Simulate the lazy repo scan completing
+        process_app_event(
+            AppEvent::ScanComplete {
+                search_dirs: vec![(PathBuf::from("/home/user/dev"), 1)],
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+        );
+
+        assert!(
+            matches!(state.mode(), Mode::RepoSelect),
+            "ScanComplete should not redirect back to sessions after user navigated away; got {:?}",
+            state.mode()
+        );
     }
 
     #[test]

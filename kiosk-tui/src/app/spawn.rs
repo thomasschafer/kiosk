@@ -509,7 +509,6 @@ fn detect_agent_statuses<T: TmuxProvider + ?Sized>(
 fn build_session_discovered_snapshot(
     sessions_with_activity: &[(String, u64)],
     attached_sessions: &HashSet<String>,
-    current_session_name: Option<&str>,
 ) -> Vec<kiosk_core::state::SessionEntry> {
     let mut sessions_with_activity = sessions_with_activity.to_vec();
     sessions_with_activity
@@ -523,7 +522,6 @@ fn build_session_discovered_snapshot(
                 Vec::new(),
                 session_activity,
                 attached_sessions.contains(&session_name),
-                current_session_name == Some(session_name.as_str()),
             )
         })
         .collect()
@@ -692,12 +690,7 @@ fn refresh_sessions_view<T: TmuxProvider + ?Sized + 'static>(
 ) -> Vec<kiosk_core::state::SessionEntry> {
     let sessions_with_activity = tmux.list_sessions_with_activity();
     let attached_sessions = tmux.list_attached_sessions();
-    let current_session_name = tmux.current_session_name();
-    let sessions = build_session_discovered_snapshot(
-        &sessions_with_activity,
-        &attached_sessions,
-        current_session_name.as_deref(),
-    );
+    let sessions = build_session_discovered_snapshot(&sessions_with_activity, &attached_sessions);
     sender.send(AppEvent::SessionsDiscovered {
         sessions: sessions.clone(),
     });
@@ -936,7 +929,7 @@ mod tests {
 
         let attached = tmux.list_attached_sessions();
         let sessions =
-            build_session_discovered_snapshot(&tmux.list_sessions_with_activity(), &attached, None);
+            build_session_discovered_snapshot(&tmux.list_sessions_with_activity(), &attached);
         let session_names: Vec<String> = sessions
             .iter()
             .map(|session| session.session_name.clone())
@@ -964,7 +957,6 @@ mod tests {
                 ("gamma".to_string(), 150),
             ],
             &std::collections::HashSet::new(),
-            Some("alpha"),
         );
 
         let session_names: Vec<&str> = sessions
@@ -972,7 +964,6 @@ mod tests {
             .map(|session| session.session_name.as_str())
             .collect();
         assert_eq!(session_names, vec!["beta", "gamma", "alpha"]);
-        assert!(sessions[2].is_current);
     }
 
     #[test]

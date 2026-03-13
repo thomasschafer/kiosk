@@ -753,7 +753,6 @@ pub fn cmd_sessions(
         &repos,
         &session_activity,
         &attached_sessions,
-        None,
     )
     .into_iter()
     .map(|session| {
@@ -834,7 +833,6 @@ pub fn cmd_next(
         &repos,
         &session_activity,
         &HashSet::new(),
-        current_session.as_deref(),
     )
     .into_iter()
     .filter_map(|session| {

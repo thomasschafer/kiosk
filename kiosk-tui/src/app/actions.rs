@@ -836,7 +836,6 @@ mod tests {
                 agent_statuses: Vec::new(),
                 session_activity: 10,
                 attached: false,
-                is_current: false,
             }),
             SessionEntry::resolved(ResolvedSessionParams {
                 session_name: "scooter--main".to_string(),
@@ -846,7 +845,6 @@ mod tests {
                 agent_statuses: Vec::new(),
                 session_activity: 20,
                 attached: false,
-                is_current: false,
             }),
             SessionEntry::resolved(ResolvedSessionParams {
                 session_name: "kiosk--feat-agent-session-switcher".to_string(),
@@ -856,7 +854,6 @@ mod tests {
                 agent_statuses: Vec::new(),
                 session_activity: 30,
                 attached: false,
-                is_current: false,
             }),
         ];
         state.sessions_view.list = SearchableList::new(state.sessions_view.sessions.len());
@@ -884,7 +881,6 @@ mod tests {
                 agent_statuses: Vec::new(),
                 session_activity: 30,
                 attached: true,
-                is_current: false,
             }),
             SessionEntry::resolved(ResolvedSessionParams {
                 session_name: "scooter--main".to_string(),
@@ -894,7 +890,6 @@ mod tests {
                 agent_statuses: Vec::new(),
                 session_activity: 20,
                 attached: false,
-                is_current: false,
             }),
             SessionEntry::resolved(ResolvedSessionParams {
                 session_name: "dotfiles--main".to_string(),
@@ -904,7 +899,6 @@ mod tests {
                 agent_statuses: Vec::new(),
                 session_activity: 10,
                 attached: false,
-                is_current: false,
             }),
         ];
         state.sessions_view.list = SearchableList::new(state.sessions_view.sessions.len());

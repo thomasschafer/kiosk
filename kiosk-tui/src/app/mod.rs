@@ -1454,18 +1454,13 @@ mod tests {
     }
 
     fn make_session(session_name: &str, ts: u64) -> kiosk_core::state::SessionEntry {
-        make_session_with(session_name, ts, Vec::new(), false)
-    }
-
-    fn make_current_session(session_name: &str, ts: u64) -> kiosk_core::state::SessionEntry {
-        make_session_with(session_name, ts, Vec::new(), true)
+        make_session_with(session_name, ts, Vec::new())
     }
 
     fn make_session_with(
         session_name: &str,
         ts: u64,
         agent_statuses: Vec<kiosk_core::agent::AgentStatus>,
-        is_current: bool,
     ) -> kiosk_core::state::SessionEntry {
         kiosk_core::state::SessionEntry::resolved(kiosk_core::state::ResolvedSessionParams {
             session_name: session_name.to_string(),
@@ -1475,7 +1470,6 @@ mod tests {
             agent_statuses,
             session_activity: ts,
             attached: false,
-            is_current,
         })
     }
 
@@ -5729,7 +5723,6 @@ mod tests {
                             kind: kiosk_core::agent::AgentKind::Codex,
                             state: kiosk_core::agent::AgentState::Running,
                         }],
-                        false,
                     ),
                 ],
             },
@@ -5763,7 +5756,7 @@ mod tests {
 
         process_app_event(
             AppEvent::SessionsDiscovered {
-                sessions: vec![make_current_session("alpha", 5), make_session("beta", 50)],
+                sessions: vec![make_session("alpha", 5), make_session("beta", 50)],
             },
             &mut state,
             &git,
@@ -5961,7 +5954,7 @@ mod tests {
             AppEvent::SessionsDiscovered {
                 sessions: vec![
                     make_session("scooter--main", 20),
-                    make_current_session("kiosk--feat-agent-session-switcher", 50),
+                    make_session("kiosk--feat-agent-session-switcher", 50),
                     make_session("dotfiles--main", 10),
                 ],
             },
@@ -5985,7 +5978,7 @@ mod tests {
                 sessions: vec![
                     make_session("dotfiles--main", 5),
                     make_session("scooter--main", 25),
-                    make_current_session("kiosk--feat-agent-session-switcher", 60),
+                    make_session("kiosk--feat-agent-session-switcher", 60),
                 ],
             },
             &mut state,
@@ -6016,7 +6009,7 @@ mod tests {
 
         process_app_event(
             AppEvent::SessionsDiscovered {
-                sessions: vec![make_current_session("alpha", 50), make_session("beta", 5)],
+                sessions: vec![make_session("alpha", 50), make_session("beta", 5)],
             },
             &mut state,
             &git,
@@ -6096,9 +6089,9 @@ mod tests {
         apply_transition!(state, ModeTransition::Sessions);
         state.set_active_list_page_rows(20);
         state.sessions_view.sessions = vec![
-            make_session_with("session-a", 30, vec![idle_status()], false),
+            make_session_with("session-a", 30, vec![idle_status()]),
             make_session("session-b", 20),
-            make_session_with("session-c", 10, vec![idle_status()], false),
+            make_session_with("session-c", 10, vec![idle_status()]),
         ];
         state.sessions_view.list = SearchableList::new(state.sessions_view.sessions.len());
         state.sessions_view.list.selected = Some(1);
@@ -6119,9 +6112,9 @@ mod tests {
         apply_transition!(state, ModeTransition::Sessions);
         state.set_active_list_page_rows(20);
         state.sessions_view.sessions = vec![
-            make_session_with("session-a", 30, vec![idle_status()], false),
+            make_session_with("session-a", 30, vec![idle_status()]),
             make_session("session-b", 20),
-            make_session_with("session-c", 10, vec![idle_status()], false),
+            make_session_with("session-c", 10, vec![idle_status()]),
         ];
         state.sessions_view.list.filtered = vec![(0, 0), (1, 0)];
         state.sessions_view.list.selected = Some(0);

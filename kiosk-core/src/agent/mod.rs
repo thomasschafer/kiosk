@@ -174,20 +174,6 @@ pub fn detect_all_for_sessions_batched(
 /// result per session.
 ///
 /// Convenience wrapper around [`detect_all_for_sessions_batched`].
-pub fn detect_for_sessions_batched(
-    tmux: &(impl crate::tmux::TmuxProvider + ?Sized),
-    session_names: &[String],
-    all_pane_data: &std::collections::HashMap<
-        String,
-        crate::tmux::provider::SessionPaneData,
-        impl std::hash::BuildHasher,
-    >,
-) -> Vec<(String, Option<DetectionResult>)> {
-    detect_all_for_sessions_batched(tmux, session_names, all_pane_data)
-        .into_iter()
-        .map(|(name, results)| (name, results.into_iter().next()))
-        .collect()
-}
 
 /// Detect all agent statuses for one session using pre-fetched pane data.
 pub fn detect_all_for_session_from_pane_data(
@@ -1285,7 +1271,10 @@ mod tests {
 
         // Batched detection
         let all_pane_data = tmux.list_all_panes_with_activity();
-        let batched = super::detect_for_sessions_batched(&tmux, &session_names, &all_pane_data);
+        let batched = super::detect_all_for_sessions_batched(&tmux, &session_names, &all_pane_data)
+            .into_iter()
+            .map(|(n, rs)| (n, rs.into_iter().next()))
+            .collect::<Vec<_>>();
 
         // Results should match
         for (i, session) in session_names.iter().enumerate() {
@@ -1307,7 +1296,10 @@ mod tests {
         let session_names = vec!["nonexistent".to_string()];
         let all_pane_data = tmux.list_all_panes_with_activity();
 
-        let results = super::detect_for_sessions_batched(&tmux, &session_names, &all_pane_data);
+        let results = super::detect_all_for_sessions_batched(&tmux, &session_names, &all_pane_data)
+            .into_iter()
+            .map(|(n, rs)| (n, rs.into_iter().next()))
+            .collect::<Vec<_>>();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].0, "nonexistent");
         assert!(results[0].1.is_none());
@@ -1336,7 +1328,10 @@ mod tests {
             .map(ToString::to_string)
             .collect();
         let all_pane_data = tmux.list_all_panes_with_activity();
-        let results = super::detect_for_sessions_batched(&tmux, &session_names, &all_pane_data);
+        let results = super::detect_all_for_sessions_batched(&tmux, &session_names, &all_pane_data)
+            .into_iter()
+            .map(|(n, rs)| (n, rs.into_iter().next()))
+            .collect::<Vec<_>>();
 
         assert_eq!(results[0].0, "z-session");
         assert_eq!(results[1].0, "a-session");
@@ -1373,7 +1368,10 @@ mod tests {
 
         let session_names = vec![session.to_string()];
         let all_pane_data = tmux.list_all_panes_with_activity();
-        let results = super::detect_for_sessions_batched(&tmux, &session_names, &all_pane_data);
+        let results = super::detect_all_for_sessions_batched(&tmux, &session_names, &all_pane_data)
+            .into_iter()
+            .map(|(n, rs)| (n, rs.into_iter().next()))
+            .collect::<Vec<_>>();
 
         assert_eq!(
             results[0].1.as_ref().unwrap().status.state,
@@ -1407,7 +1405,10 @@ mod tests {
 
         let session_names = vec![session.to_string()];
         let all_pane_data = tmux.list_all_panes_with_activity();
-        let results = super::detect_for_sessions_batched(&tmux, &session_names, &all_pane_data);
+        let results = super::detect_all_for_sessions_batched(&tmux, &session_names, &all_pane_data)
+            .into_iter()
+            .map(|(n, rs)| (n, rs.into_iter().next()))
+            .collect::<Vec<_>>();
 
         assert_eq!(results[0].1.as_ref().unwrap().status.kind, AgentKind::Codex);
         assert_eq!(
@@ -1439,7 +1440,10 @@ mod tests {
 
         let session_names = vec![session.to_string()];
         let all_pane_data = tmux.list_all_panes_with_activity();
-        let results = super::detect_for_sessions_batched(&tmux, &session_names, &all_pane_data);
+        let results = super::detect_all_for_sessions_batched(&tmux, &session_names, &all_pane_data)
+            .into_iter()
+            .map(|(n, rs)| (n, rs.into_iter().next()))
+            .collect::<Vec<_>>();
 
         assert_eq!(results.len(), 1);
         assert!(results[0].1.is_none());
@@ -1449,7 +1453,10 @@ mod tests {
     fn batched_empty_sessions_list() {
         let tmux = MockTmuxProvider::default();
         let all_pane_data = tmux.list_all_panes_with_activity();
-        let results = super::detect_for_sessions_batched(&tmux, &[], &all_pane_data);
+        let results = super::detect_all_for_sessions_batched(&tmux, &[], &all_pane_data)
+            .into_iter()
+            .map(|(n, rs)| (n, rs.into_iter().next()))
+            .collect::<Vec<_>>();
         assert!(results.is_empty());
     }
 
@@ -1484,7 +1491,10 @@ mod tests {
 
         let session_names = vec!["dev-kiosk".to_string(), "dev-other".to_string()];
         let all_pane_data = tmux.list_all_panes_with_activity();
-        let results = super::detect_for_sessions_batched(&tmux, &session_names, &all_pane_data);
+        let results = super::detect_all_for_sessions_batched(&tmux, &session_names, &all_pane_data)
+            .into_iter()
+            .map(|(n, rs)| (n, rs.into_iter().next()))
+            .collect::<Vec<_>>();
 
         assert!(results[0].1.is_some(), "Should detect agent in dev-kiosk");
         assert!(
@@ -1519,7 +1529,10 @@ mod tests {
 
         let session_names = vec!["multi".to_string()];
         let all_pane_data = tmux.list_all_panes_with_activity();
-        let results = super::detect_for_sessions_batched(&tmux, &session_names, &all_pane_data);
+        let results = super::detect_all_for_sessions_batched(&tmux, &session_names, &all_pane_data)
+            .into_iter()
+            .map(|(n, rs)| (n, rs.into_iter().next()))
+            .collect::<Vec<_>>();
 
         assert_eq!(
             results[0].1.as_ref().unwrap().status.state,

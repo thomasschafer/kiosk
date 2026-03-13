@@ -551,7 +551,7 @@ impl BranchEntry {
 /// Delegates to [`crate::AgentState::attention_priority`] so there is a single
 /// source of truth for state ranking. Returns 0 only for an empty slice (no
 /// detected agent), which is strictly less than any detected state (minimum 1).
-pub fn agent_statuses_sort_priority(statuses: &[crate::agent::AgentStatus]) -> u8 {
+fn agent_statuses_sort_priority(statuses: &[crate::agent::AgentStatus]) -> u8 {
     statuses
         .iter()
         .map(|s| s.state.attention_priority())
@@ -606,13 +606,6 @@ pub fn sorted_unique_agent_states(
 /// Returns `Unknown` when the input slice is empty as a convenience default;
 /// callers that need to distinguish "no agent" from "unknown agent" should
 /// check for an empty slice before calling.
-pub fn primary_agent_state(statuses: &[crate::agent::AgentStatus]) -> crate::AgentState {
-    sorted_unique_agent_states(statuses)
-        .first()
-        .copied()
-        .unwrap_or(crate::AgentState::Unknown)
-}
-
 /// Shared ordering for session-like rows: higher-priority agent state first,
 /// then oldest activity first.
 pub fn cmp_by_agent_priority_then_oldest_activity(
@@ -741,7 +734,6 @@ pub struct ResolvedSessionParams {
     pub agent_statuses: Vec<AgentStatus>,
     pub session_activity: u64,
     pub attached: bool,
-    pub is_current: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -758,7 +750,6 @@ pub struct SessionEntry {
     pub agent_statuses: Vec<AgentStatus>,
     pub session_activity: u64,
     pub attached: bool,
-    pub is_current: bool,
 }
 
 impl SessionEntry {
@@ -768,7 +759,6 @@ impl SessionEntry {
         agent_statuses: Vec<AgentStatus>,
         session_activity: u64,
         attached: bool,
-        is_current: bool,
     ) -> Self {
         Self {
             session_name,
@@ -776,7 +766,6 @@ impl SessionEntry {
             agent_statuses,
             session_activity,
             attached,
-            is_current,
         }
     }
 
@@ -792,7 +781,6 @@ impl SessionEntry {
             agent_statuses: params.agent_statuses,
             session_activity: params.session_activity,
             attached: params.attached,
-            is_current: params.is_current,
         }
     }
 
@@ -825,7 +813,6 @@ pub fn active_session_entries<S1, S2>(
     repos: &[Repo],
     session_activity: &HashMap<String, u64, S1>,
     attached_sessions: &HashSet<String, S2>,
-    current_session_name: Option<&str>,
 ) -> Vec<SessionEntry>
 where
     S1: std::hash::BuildHasher,
@@ -846,7 +833,6 @@ where
                 agent_statuses: Vec::new(),
                 session_activity: activity,
                 attached: attached_sessions.contains(&session_name),
-                is_current: current_session_name == Some(session_name.as_str()),
             }));
         }
     }
@@ -3845,7 +3831,6 @@ mod tests {
             states,
             vec![AgentState::Waiting, AgentState::Idle, AgentState::Running]
         );
-        assert_eq!(primary_agent_state(&statuses), AgentState::Waiting);
     }
 
     #[test]

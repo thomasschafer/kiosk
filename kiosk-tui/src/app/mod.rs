@@ -6104,7 +6104,6 @@ mod tests {
         assert_eq!(
             hints,
             vec![
-                ("S-tab".to_string(), "prev agent"),
                 ("tab".to_string(), "next agent"),
                 ("enter".to_string(), "open"),
                 ("C-h".to_string(), "help"),

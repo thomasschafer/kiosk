@@ -1133,7 +1133,6 @@ impl Mode {
                 Command::Quit,
             ],
             Mode::Sessions => &[
-                Command::JumpToPreviousAgentSession,
                 Command::JumpToNextAgentSession,
                 Command::SwitchToSession,
                 Command::ShowHelp,

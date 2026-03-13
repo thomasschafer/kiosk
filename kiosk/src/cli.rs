@@ -798,6 +798,13 @@ pub fn cmd_sessions(
     Ok(())
 }
 
+/// Returns true if a session with these agent statuses should be considered by
+/// `kiosk next`. Any detected agent qualifies — including Unknown, which is
+/// the lowest-priority fallback. Sessions with no detected agents are excluded.
+fn needs_attention(statuses: &[kiosk_core::AgentStatus]) -> bool {
+    !statuses.is_empty()
+}
+
 pub fn cmd_next(
     config: &Config,
     git: &dyn GitProvider,
@@ -836,8 +843,8 @@ pub fn cmd_next(
     })
     .collect();
 
-    // Batched agent detection — include sessions with Waiting/Idle/Running
-    // agents. Preference order is Waiting > Idle > Running.
+    // Batched agent detection — include any session where at least one agent
+    // was detected. Preference order is Waiting > Idle > Running > Unknown.
     let detection_results =
         kiosk_core::agent::detect_all_for_sessions_batched(tmux, &session_names, &all_pane_data);
 
@@ -850,15 +857,7 @@ pub fn cmd_next(
                     .map(|det| det.status)
                     .collect::<Vec<_>>(),
             );
-            let needs_attention = statuses.iter().any(|s| {
-                matches!(
-                    s.state,
-                    kiosk_core::AgentState::Waiting
-                        | kiosk_core::AgentState::Idle
-                        | kiosk_core::AgentState::Running
-                )
-            });
-            if needs_attention {
+            if needs_attention(&statuses) {
                 // session_names is derived from the same all_pane_data map, so
                 // every candidate session is guaranteed to have an entry here.
                 let activity = all_pane_data.get(&session).map_or_else(
@@ -908,7 +907,7 @@ pub fn cmd_next(
         }
         Ok(())
     } else {
-        Err(CliError::user("No other agent sessions need attention"))
+        Err(CliError::user("No other sessions with detected agents"))
     }
 }
 
@@ -3549,7 +3548,7 @@ mod tests {
         assert!(
             error
                 .message()
-                .contains("No other agent sessions need attention")
+                .contains("No other sessions with detected agents")
         );
         assert!(tmux.switched_sessions.lock().unwrap().is_empty());
     }
@@ -3618,7 +3617,7 @@ mod tests {
         assert!(
             error
                 .message()
-                .contains("No other agent sessions need attention"),
+                .contains("No other sessions with detected agents"),
             "Should return error when only eligible session is the current one"
         );
         assert!(tmux.switched_sessions.lock().unwrap().is_empty());

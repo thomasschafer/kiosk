@@ -1245,8 +1245,8 @@ fn test_e2e_help_rapid_down_only_hits_visual_bottom_at_true_end() {
             // Help opened from BranchSelect: the last entry in the General
             // layer (lowest precedence, shown last) is always "Toggle sessions".
             assert!(
-                selected_line.contains("Toggle sessions"),
-                "Bottom row in branch-select help should be 'Toggle sessions', got: {selected_line}"
+                selected_line.contains("C-s") && selected_line.contains("Toggle sessions"),
+                "Bottom row in branch-select help should be 'C-s … Toggle sessions', got: {selected_line}"
             );
         }
     }

@@ -14,10 +14,11 @@ Three features that work together to make kiosk an effective agent session manag
 
 ### ✅ Part 1: `kiosk next` CLI Command (Done)
 
-- Attemps to choose session (other than current) as follows (essentially round robin with Waiting > Idle, ignore other statuses):
+- Attempts to choose session (other than current) as follows (round robin with Waiting > Idle > Running > Unknown):
   - If there is a Waiting session, jump to the oldest by `session_activity`
   - Else, if there is an Idle session, jump to the oldest by `session_activity`
   - Else, if there is a Running session, jump to the oldest by `session_activity`
+  - Else, if there is an Unknown session (detected agent, unclassified), jump to the oldest by `session_activity`
   - Else, don't change, show an error or message
 - Never switches to the current session if there is another session that is either Waiting or Idle
 - `--json` output supported
@@ -64,7 +65,7 @@ Three features that work together to make kiosk an effective agent session manag
 - **Round-robin strategy**: Stateless, using tmux `session_activity` timestamps (oldest first within priority group)
 - **Skip current session**: `kiosk next` only switches to a *different* session, if one exists, otherwise shows message saying no session to jump to
 - **Sessions view architecture**: New standalone component (not branch picker reuse)
-- **`Running` and `Unknown` states**: Not eligible for `kiosk next`
+- **`Running` and `Unknown` states**: Both eligible for `kiosk next` as lower-priority fallbacks (Running before Unknown)
 - **Session preview rollout**: Ship monochrome first (3.1), then full-color ANSI rendering (3.2)
 - **Session preview polling**: Refresh on selection changes and poll selected session every 1 second by default
 - **Preview poll config policy**: configurable interval in milliseconds; any value `> 0` is accepted; no clamping

@@ -42,12 +42,16 @@ pub enum AgentState {
 
 impl AgentState {
     /// Attention priority: higher means the user should look at this agent first.
-    fn attention_priority(self) -> u8 {
+    ///
+    /// Values start at 1 so that any detected agent (including Unknown) can be
+    /// distinguished from "no agent detected" callers that use 0 as a sentinel.
+    /// Ordering: Waiting(4) > Idle(3) > Running(2) > Unknown(1) > no agent(0).
+    pub fn attention_priority(self) -> u8 {
         match self {
-            AgentState::Waiting => 3,
-            AgentState::Idle => 2,
-            AgentState::Running => 1,
-            AgentState::Unknown => 0,
+            AgentState::Waiting => 4,
+            AgentState::Idle => 3,
+            AgentState::Running => 2,
+            AgentState::Unknown => 1,
         }
     }
 }

@@ -546,22 +546,15 @@ impl BranchEntry {
     }
 }
 
-/// Sort priority for an individual agent state: higher = sorts first.
-pub fn agent_state_sort_priority(state: crate::AgentState) -> u8 {
-    match state {
-        crate::AgentState::Waiting => 3,
-        crate::AgentState::Idle => 2,
-        crate::AgentState::Running => 1,
-        crate::AgentState::Unknown => 0,
-    }
-}
-
 /// Sort priority for agent statuses: higher = sorts first.
-/// Uses the highest-priority status from the vec.
+///
+/// Delegates to [`crate::AgentState::attention_priority`] so there is a single
+/// source of truth for state ranking. Returns 0 only for an empty slice (no
+/// detected agent), which is strictly less than any detected state (minimum 1).
 pub fn agent_statuses_sort_priority(statuses: &[crate::agent::AgentStatus]) -> u8 {
     statuses
         .iter()
-        .map(|s| agent_state_sort_priority(s.state))
+        .map(|s| s.state.attention_priority())
         .max()
         .unwrap_or(0)
 }
@@ -583,8 +576,10 @@ pub fn normalized_agent_statuses(
 ) -> Vec<crate::agent::AgentStatus> {
     let mut normalized = statuses.to_vec();
     normalized.sort_by(|left, right| {
-        agent_state_sort_priority(right.state)
-            .cmp(&agent_state_sort_priority(left.state))
+        right
+            .state
+            .attention_priority()
+            .cmp(&left.state.attention_priority())
             .then(agent_kind_sort_priority(left.kind).cmp(&agent_kind_sort_priority(right.kind)))
     });
     normalized.dedup();

@@ -2,11 +2,25 @@ use kiosk_core::config::{NamedColor, ThemeColor};
 use ratatui::style::Color;
 
 /// Runtime status badge colors derived from theme config.
+///
+/// Keep field list in sync with [`kiosk_core::config::ThemeStatusConfig`] —
+/// add new agent states to both structs together.
 pub struct ThemeStatus {
     pub running: Color,
     pub waiting: Color,
     pub idle: Color,
     pub unknown: Color,
+}
+
+impl From<&kiosk_core::config::ThemeStatusConfig> for ThemeStatus {
+    fn from(cfg: &kiosk_core::config::ThemeStatusConfig) -> Self {
+        Self {
+            running: to_ratatui_color(&cfg.running),
+            waiting: to_ratatui_color(&cfg.waiting),
+            idle: to_ratatui_color(&cfg.idle),
+            unknown: to_ratatui_color(&cfg.unknown),
+        }
+    }
 }
 
 /// Generates `Theme` and `from_config` from a list of field names,
@@ -22,12 +36,7 @@ macro_rules! define_theme {
             pub fn from_config(config: &kiosk_core::config::ThemeConfig) -> Self {
                 Self {
                     $($field: to_ratatui_color(&config.$field),)*
-                    status: ThemeStatus {
-                        running: to_ratatui_color(&config.status.running),
-                        waiting: to_ratatui_color(&config.status.waiting),
-                        idle: to_ratatui_color(&config.status.idle),
-                        unknown: to_ratatui_color(&config.status.unknown),
-                    },
+                    status: ThemeStatus::from(&config.status),
                 }
             }
         }

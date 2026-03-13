@@ -3703,4 +3703,65 @@ mod tests {
             "Should pick running over non-agent session"
         );
     }
+
+    #[test]
+    fn next_switches_to_unknown_when_only_unknown() {
+        // Unrecognised terminal content → Unknown state; should still be eligible
+        let (config, git, tmux) = mock_with_sessions_and_agents(
+            "demo",
+            &[
+                ("demo--feat-old", "claude", "some unrecognised output", 500),
+                ("demo--feat-new", "claude", "some unrecognised output", 1500),
+            ],
+        );
+
+        let result = cmd_next(&config, &git, &tmux, false);
+        assert!(result.is_ok());
+        let switched = tmux.switched_sessions.lock().unwrap();
+        assert_eq!(
+            switched.as_slice(),
+            &["demo--feat-old"],
+            "Should pick the oldest Unknown session"
+        );
+    }
+
+    #[test]
+    fn next_picks_running_over_unknown() {
+        let (config, git, tmux) = mock_with_sessions_and_agents(
+            "demo",
+            &[
+                ("demo--feat-unk", "claude", "some unrecognised output", 500),
+                ("demo--feat-run", "claude", "⠋ Reading file", 1000),
+            ],
+        );
+
+        let result = cmd_next(&config, &git, &tmux, false);
+        assert!(result.is_ok());
+        let switched = tmux.switched_sessions.lock().unwrap();
+        assert_eq!(
+            switched.as_slice(),
+            &["demo--feat-run"],
+            "Should prefer Running over Unknown even if Unknown is older"
+        );
+    }
+
+    #[test]
+    fn next_picks_unknown_over_non_agent_session() {
+        let (config, git, tmux) = mock_with_sessions_and_agents(
+            "demo",
+            &[
+                ("demo--feat-shell", "bash", "$ ls -la", 300),
+                ("demo--feat-unk", "claude", "some unrecognised output", 900),
+            ],
+        );
+
+        let result = cmd_next(&config, &git, &tmux, false);
+        assert!(result.is_ok());
+        let switched = tmux.switched_sessions.lock().unwrap();
+        assert_eq!(
+            switched.as_slice(),
+            &["demo--feat-unk"],
+            "Should pick Unknown over a non-agent session"
+        );
+    }
 }

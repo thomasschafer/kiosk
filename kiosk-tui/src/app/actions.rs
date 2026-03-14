@@ -44,24 +44,36 @@ fn fuzzy_match_indices(
 pub(super) fn rebuild_session_filter_preserving_search(
     list: &mut SearchableList,
     sessions: &[SessionEntry],
+    pinned_name: Option<&str>,
 ) {
+    let previous_scroll = list.scroll_offset;
     let matcher = SkimMatcherV2::default();
     let items = session_search_items(sessions);
     list.filtered = compute_session_filtered(&list.input.text, &items, &matcher);
 
-    // Clamp selection and scroll to the new filtered bounds.
-    if list.filtered.is_empty() {
-        list.selected = None;
-        list.scroll_offset = 0;
+    // Restore selection: prefer stable identity (session name) over index clamping so
+    // that a background refresh or re-sort doesn't silently move the cursor to a
+    // different session.
+    let name_idx = pinned_name.and_then(|name| {
+        let session_idx = sessions.iter().position(|s| s.session_name == name)?;
+        list.filtered.iter().position(|(idx, _)| *idx == session_idx)
+    });
+
+    list.selected = if let Some(filtered_idx) = name_idx {
+        Some(filtered_idx)
+    } else if list.filtered.is_empty() {
+        None
     } else {
+        // Pinned session is gone; clamp to valid range.
         let max = list.filtered.len() - 1;
-        if let Some(sel) = list.selected
-            && sel > max
-        {
-            list.selected = Some(max);
-        }
-        list.scroll_offset = list.scroll_offset.min(max);
-    }
+        list.selected.map(|sel| sel.min(max))
+    };
+
+    list.scroll_offset = if list.filtered.is_empty() {
+        0
+    } else {
+        previous_scroll.min(list.filtered.len() - 1)
+    };
 }
 
 fn compute_session_filtered(
@@ -923,5 +935,51 @@ mod tests {
             ]
         );
         assert_eq!(state.sessions_view.list.selected, Some(0));
+    }
+
+    #[test]
+    fn rebuild_preserves_selection_by_name_after_resort() {
+        // Simulate a background refresh that re-orders sessions by agent priority.
+        // The user had "scooter--main" selected (index 1 in the old order).
+        // After the refresh a higher-priority session moves to position 0, so the
+        // old index 1 would point at the wrong session without stable-identity logic.
+        let make_session = |name: &str, activity: u64| {
+            SessionEntry::resolved(ResolvedSessionParams {
+                session_name: name.to_string(),
+                repo_name: name.to_string(),
+                branch: None,
+                path: PathBuf::from("/tmp"),
+                agent_statuses: Vec::new(),
+                session_activity: activity,
+                attached: false,
+            })
+        };
+
+        let sessions_before = vec![
+            make_session("session-a", 30),
+            make_session("session-b", 20),
+            make_session("session-c", 10),
+        ];
+
+        // Build a list with "session-b" selected (filtered index 1).
+        let mut list = SearchableList::new(sessions_before.len());
+        rebuild_session_filter_preserving_search(&mut list, &sessions_before, None);
+        list.selected = Some(1); // user moves cursor to session-b
+
+        // Now sessions are re-sorted: session-b jumps to position 0.
+        let sessions_after = vec![
+            make_session("session-b", 20),
+            make_session("session-a", 30),
+            make_session("session-c", 10),
+        ];
+
+        rebuild_session_filter_preserving_search(&mut list, &sessions_after, Some("session-b"));
+
+        // Cursor should follow session-b to its new position (0), not stay at index 1.
+        assert_eq!(
+            list.selected,
+            Some(0),
+            "selection should track session-b to its new position"
+        );
     }
 }

@@ -902,7 +902,11 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             if state.is_sessions_context() {
                 let selected_session_name = selected_session_name(state);
                 merge_session_agent_states(&mut state.sessions_view.sessions, &states);
-                rebuild_sessions_list(state, selected_session_name);
+                rebuild_session_filter_preserving_search(
+                    &mut state.sessions_view.list,
+                    &state.sessions_view.sessions,
+                    selected_session_name.as_deref(),
+                );
                 state.sessions_view.apply_pin_first_selection();
             }
         }
@@ -1051,37 +1055,6 @@ struct ActionContext<'a, T: TmuxProvider + ?Sized + 'static> {
     sender: &'a EventSender,
 }
 
-fn rebuild_sessions_list(state: &mut AppState, selected_session_name: Option<String>) {
-    let previous_scroll = state.sessions_view.list.scroll_offset;
-
-    rebuild_session_filter_preserving_search(
-        &mut state.sessions_view.list,
-        &state.sessions_view.sessions,
-    );
-
-    if let Some(selected_session_name) = selected_session_name
-        && let Some(session_idx) = state
-            .sessions_view
-            .sessions
-            .iter()
-            .position(|session| session.session_name == selected_session_name)
-        && let Some(filtered_idx) = state
-            .sessions_view
-            .list
-            .filtered
-            .iter()
-            .position(|(idx, _)| *idx == session_idx)
-    {
-        state.sessions_view.list.selected = Some(filtered_idx);
-    }
-
-    if state.sessions_view.list.filtered.is_empty() {
-        state.sessions_view.list.scroll_offset = 0;
-    } else {
-        let max_scroll = state.sessions_view.list.filtered.len() - 1;
-        state.sessions_view.list.scroll_offset = previous_scroll.min(max_scroll);
-    }
-}
 
 #[derive(Clone, Copy)]
 enum AgentSessionDirection {
@@ -1240,7 +1213,11 @@ fn apply_sessions_discovered(
             .then_with(|| left.session_name.cmp(&right.session_name))
     });
     state.sessions_view.sessions = sessions;
-    rebuild_sessions_list(state, selected_session_name);
+    rebuild_session_filter_preserving_search(
+        &mut state.sessions_view.list,
+        &state.sessions_view.sessions,
+        selected_session_name.as_deref(),
+    );
     state.sessions_view.apply_pin_first_selection();
     if state.sessions_view.is_loading() {
         if state.sessions_view.sessions.is_empty() {
@@ -1258,7 +1235,11 @@ fn apply_session_metadata(
 ) {
     let selected_session_name = selected_session_name(state);
     merge_session_metadata(&mut state.sessions_view.sessions, patches);
-    rebuild_sessions_list(state, selected_session_name);
+    rebuild_session_filter_preserving_search(
+        &mut state.sessions_view.list,
+        &state.sessions_view.sessions,
+        selected_session_name.as_deref(),
+    );
     state.sessions_view.apply_pin_first_selection();
     if complete {
         state.sessions_view.mark_ready();

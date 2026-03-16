@@ -138,7 +138,7 @@ pub fn run(
 
         // Check background channel (non-blocking)
         if let Ok(app_event) = rx.try_recv() {
-            let result = process_app_event(app_event, state, git, tmux, &event_sender);
+            let result = process_app_event(app_event, state, git, tmux, &event_sender, &matcher);
             if let Some(result) = result {
                 break result;
             }
@@ -660,6 +660,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
     git: &Arc<dyn GitProvider>,
     tmux: &Arc<T>,
     sender: &EventSender,
+    matcher: &SkimMatcherV2,
 ) -> Option<OpenAction> {
     match event {
         AppEvent::ReposDiscovered {
@@ -891,11 +892,11 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             }
         }
         AppEvent::SessionsDiscovered { sessions } => {
-            apply_sessions_discovered(state, sessions);
+            apply_sessions_discovered(state, sessions, matcher);
         }
 
         AppEvent::SessionMetadataPatched { patches, complete } => {
-            apply_session_metadata(state, patches, complete);
+            apply_session_metadata(state, patches, complete, matcher);
         }
 
         AppEvent::SessionAgentStatesPatched { states } => {
@@ -906,6 +907,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
                     &mut state.sessions_view.list,
                     &state.sessions_view.sessions,
                     selected_session_name.as_deref(),
+                    matcher,
                 );
                 state.sessions_view.apply_pin_first_selection();
             }
@@ -1195,6 +1197,7 @@ fn merge_session_metadata(
 fn apply_sessions_discovered(
     state: &mut AppState,
     mut sessions: Vec<kiosk_core::state::SessionEntry>,
+    matcher: &SkimMatcherV2,
 ) {
     let selected_session_name =
         if state.sessions_view.is_loading() || state.sessions_view.sessions.is_empty() {
@@ -1217,6 +1220,7 @@ fn apply_sessions_discovered(
         &mut state.sessions_view.list,
         &state.sessions_view.sessions,
         selected_session_name.as_deref(),
+        matcher,
     );
     state.sessions_view.apply_pin_first_selection();
     if state.sessions_view.is_loading() {
@@ -1232,6 +1236,7 @@ fn apply_session_metadata(
     state: &mut AppState,
     patches: Vec<kiosk_core::event::SessionMetadataPatch>,
     complete: bool,
+    matcher: &SkimMatcherV2,
 ) {
     let selected_session_name = selected_session_name(state);
     merge_session_metadata(&mut state.sessions_view.sessions, patches);
@@ -1239,6 +1244,7 @@ fn apply_session_metadata(
         &mut state.sessions_view.list,
         &state.sessions_view.sessions,
         selected_session_name.as_deref(),
+        matcher,
     );
     state.sessions_view.apply_pin_first_selection();
     if complete {
@@ -1450,6 +1456,10 @@ mod tests {
         }
     }
 
+    fn make_matcher() -> SkimMatcherV2 {
+        SkimMatcherV2::default()
+    }
+
     fn make_repo(name: &str) -> Repo {
         Repo {
             name: name.to_string(),
@@ -1544,7 +1554,7 @@ mod tests {
 
         // Wait for the background thread to send the event
         let event = rx.recv_timeout(std::time::Duration::from_secs(1)).unwrap();
-        process_app_event(event, &mut state, &git, &tmux, &sender);
+        process_app_event(event, &mut state, &git, &tmux, &sender, &make_matcher());
         assert_eq!(state.mode(), &Mode::BranchSelect);
         assert!(!state.loading_branches);
         assert_eq!(state.branches.len(), 2);
@@ -1617,6 +1627,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         assert!(!state.branches[0].has_session);
@@ -1690,6 +1701,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         assert_eq!(state.branches.len(), 3);
@@ -1745,6 +1757,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         // "feat" should match "feature-x" but not "main"
@@ -2524,6 +2537,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         assert!(state.pending_worktree_deletes.is_empty());
@@ -2553,6 +2567,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         assert!(state.pending_worktree_deletes.is_empty());
@@ -3245,6 +3260,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         // Search text and cursor must be preserved
@@ -3286,6 +3302,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         // Should stay in BranchSelect
@@ -4424,6 +4441,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         assert_eq!(state.branches[0].agent_statuses, vec![status]);
@@ -4470,6 +4488,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         assert!(state.branches[0].agent_statuses.is_empty());
@@ -4518,6 +4537,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         assert!(state.branches[0].has_session);
@@ -4582,6 +4602,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         // Search and selection must be preserved
@@ -4631,6 +4652,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         // Should be ignored when not in BranchSelect
@@ -4690,6 +4712,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         // Agent status should be applied even though Help overlay is active
@@ -4735,6 +4758,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         assert!(!state.fetching_remotes);
@@ -4774,6 +4798,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         assert_eq!(state.branches.len(), 3);
@@ -4809,6 +4834,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         assert_eq!(state.branch_list.input.text, "feat");
@@ -4842,6 +4868,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         // Stale event should clear fetching flag but not touch branches
@@ -4882,6 +4909,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         assert!(
@@ -4922,6 +4950,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         assert_eq!(state.branches.len(), 2);
@@ -4949,6 +4978,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
         process_app_event(
             AppEvent::ReposFound {
@@ -4958,6 +4988,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         assert_eq!(state.repos.len(), 2, "alpha should not be duplicated");
@@ -4987,6 +5018,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         assert_eq!(
@@ -5020,6 +5052,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         // Stale event should clear fetching flag but not touch branches
@@ -5051,6 +5084,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         assert!(
@@ -5087,6 +5121,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         assert!(!state.fetching_remotes);
@@ -5112,6 +5147,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         assert_eq!(state.mode(), &Mode::BranchSelect);
@@ -5141,7 +5177,7 @@ mod tests {
 
         // Process BranchesLoaded — should set fetching_remotes
         let event = rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
-        process_app_event(event, &mut state, &git, &tmux, &sender);
+        process_app_event(event, &mut state, &git, &tmux, &sender, &make_matcher());
         assert!(
             state.fetching_remotes,
             "fetching_remotes should be true after BranchesLoaded"
@@ -5158,6 +5194,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
         assert!(
             !state.fetching_remotes,
@@ -5194,6 +5231,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
         process_app_event(
             AppEvent::ReposFound {
@@ -5203,6 +5241,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
         assert_eq!(state.repo_list.input.text, "al");
         assert_eq!(state.repo_list.input.cursor, 2);
@@ -5234,6 +5273,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
         assert_eq!(state.repos.len(), 1);
         assert_eq!(state.mode(), &Mode::RepoSelect);
@@ -5247,6 +5287,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
         assert_eq!(state.repos.len(), 2);
 
@@ -5259,6 +5300,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
         assert_eq!(state.repos.len(), 3);
     }
@@ -5282,6 +5324,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         assert!(matches!(state.mode(), Mode::Sessions));
@@ -5315,6 +5358,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         let session_names: Vec<&str> = state
@@ -5357,6 +5401,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         assert_eq!(state.repos[0].session_name, "alpha");
@@ -5385,6 +5430,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         // Should not panic or add anything
@@ -5422,6 +5468,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         // Worktrees updated
@@ -5456,6 +5503,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         // Activity should be stored
@@ -5487,6 +5535,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         assert!(state.repos.is_empty());
@@ -5527,6 +5576,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         assert!(state.branches[0].has_session);
@@ -5554,6 +5604,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         let selected_filtered_idx = state.sessions_view.list.selected.expect("selected row");
@@ -5588,6 +5639,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         assert!(
@@ -5629,6 +5681,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         assert!(
@@ -5697,6 +5750,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         assert!(
@@ -5740,6 +5794,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         let beta = state
@@ -5772,6 +5827,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         assert_eq!(state.sessions_view.sessions[0].session_name, "beta");
@@ -5799,6 +5855,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         assert_eq!(state.sessions_view.list.selected, Some(0));
@@ -5833,6 +5890,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         assert_eq!(state.sessions_view.list.selected, Some(0));
@@ -5873,6 +5931,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         assert!(matches!(state.mode(), Mode::Help { .. }));
@@ -5909,6 +5968,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         let names: Vec<&str> = state
@@ -5943,6 +6003,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         assert_eq!(state.sessions_view.list.input.text, "beta");
@@ -5972,6 +6033,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         assert_eq!(
@@ -5995,6 +6057,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         assert_eq!(
@@ -6025,6 +6088,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         assert!(!state.sessions_view.is_loading());
@@ -6063,6 +6127,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         let names: Vec<&str> = state
@@ -6227,6 +6292,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         assert_eq!(state.mode(), &Mode::RepoSelect);

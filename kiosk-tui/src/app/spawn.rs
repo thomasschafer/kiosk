@@ -23,8 +23,6 @@ use super::EventSender;
 
 /// Maximum number of concurrent `git worktree list` enrichment calls.
 const ENRICHMENT_POOL_SIZE: usize = 8;
-/// Maximum number of concurrent session agent detections.
-const SESSION_STATUS_POOL_SIZE: usize = 8;
 
 /// Maximum number of concurrent per-remote `git fetch` calls.
 const FETCH_POOL_SIZE: usize = 4;

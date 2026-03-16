@@ -45,9 +45,9 @@ pub(super) fn rebuild_session_filter_preserving_search(
     list: &mut SearchableList,
     sessions: &[SessionEntry],
     pinned_name: Option<&str>,
+    matcher: &SkimMatcherV2,
 ) {
     let previous_scroll = list.scroll_offset;
-    let matcher = SkimMatcherV2::default();
     let items = session_search_items(sessions);
     list.filtered = compute_session_filtered(&list.input.text, &items, &matcher);
 
@@ -965,7 +965,8 @@ mod tests {
 
         // Build a list with "session-b" selected (filtered index 1).
         let mut list = SearchableList::new(sessions_before.len());
-        rebuild_session_filter_preserving_search(&mut list, &sessions_before, None);
+        let matcher = SkimMatcherV2::default();
+        rebuild_session_filter_preserving_search(&mut list, &sessions_before, None, &matcher);
         list.selected = Some(1); // user moves cursor to session-b
 
         // Now sessions are re-sorted: session-b jumps to position 0.
@@ -975,7 +976,7 @@ mod tests {
             make_session("session-c", 10),
         ];
 
-        rebuild_session_filter_preserving_search(&mut list, &sessions_after, Some("session-b"));
+        rebuild_session_filter_preserving_search(&mut list, &sessions_after, Some("session-b"), &matcher);
 
         // Cursor should follow session-b to its new position (0), not stay at index 1.
         assert_eq!(

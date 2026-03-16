@@ -21,7 +21,9 @@ pub(super) fn session_search_items(sessions: &[SessionEntry]) -> Vec<String> {
     sessions
         .iter()
         .map(|session| {
-            let repo_name = session.repo_name().unwrap_or(session.session_name.as_str());
+            // Use empty string for unresolved sessions to avoid double-counting
+            // the session name (e.g., "{name} {name} " when repo_name is None).
+            let repo_name = session.repo_name().unwrap_or("");
             let branch = session.branch().unwrap_or("");
             format!("{} {} {}", session.session_name, repo_name, branch)
         })

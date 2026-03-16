@@ -901,15 +901,9 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
 
         AppEvent::SessionAgentStatesPatched { states } => {
             if state.is_sessions_context() {
-                let selected_session_name = selected_session_name(state);
+                let pinned_name = selected_session_name(state);
                 merge_session_agent_states(&mut state.sessions_view.sessions, &states);
-                rebuild_session_filter_preserving_search(
-                    &mut state.sessions_view.list,
-                    &state.sessions_view.sessions,
-                    selected_session_name.as_deref(),
-                    matcher,
-                );
-                state.sessions_view.apply_pin_first_selection();
+                reconcile_sessions_view(state, pinned_name.as_deref(), matcher);
             }
         }
 
@@ -1194,12 +1188,23 @@ fn merge_session_metadata(
     }
 }
 
+/// Rebuild filtered list and pin the first selection after sessions data changes.
+fn reconcile_sessions_view(state: &mut AppState, pinned_name: Option<&str>, matcher: &SkimMatcherV2) {
+    rebuild_session_filter_preserving_search(
+        &mut state.sessions_view.list,
+        &state.sessions_view.sessions,
+        pinned_name,
+        matcher,
+    );
+    state.sessions_view.apply_pin_first_selection();
+}
+
 fn apply_sessions_discovered(
     state: &mut AppState,
     mut sessions: Vec<kiosk_core::state::SessionEntry>,
     matcher: &SkimMatcherV2,
 ) {
-    let selected_session_name =
+    let pinned_name =
         if state.sessions_view.is_loading() || state.sessions_view.sessions.is_empty() {
             None
         } else {
@@ -1216,13 +1221,7 @@ fn apply_sessions_discovered(
             .then_with(|| left.session_name.cmp(&right.session_name))
     });
     state.sessions_view.sessions = sessions;
-    rebuild_session_filter_preserving_search(
-        &mut state.sessions_view.list,
-        &state.sessions_view.sessions,
-        selected_session_name.as_deref(),
-        matcher,
-    );
-    state.sessions_view.apply_pin_first_selection();
+    reconcile_sessions_view(state, pinned_name.as_deref(), matcher);
     if state.sessions_view.is_loading() {
         if state.sessions_view.sessions.is_empty() {
             state.sessions_view.mark_ready();
@@ -1238,15 +1237,9 @@ fn apply_session_metadata(
     complete: bool,
     matcher: &SkimMatcherV2,
 ) {
-    let selected_session_name = selected_session_name(state);
+    let pinned_name = selected_session_name(state);
     merge_session_metadata(&mut state.sessions_view.sessions, patches);
-    rebuild_session_filter_preserving_search(
-        &mut state.sessions_view.list,
-        &state.sessions_view.sessions,
-        selected_session_name.as_deref(),
-        matcher,
-    );
-    state.sessions_view.apply_pin_first_selection();
+    reconcile_sessions_view(state, pinned_name.as_deref(), matcher);
     if complete {
         state.sessions_view.mark_ready();
     }

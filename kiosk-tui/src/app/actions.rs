@@ -51,14 +51,16 @@ pub(super) fn rebuild_session_filter_preserving_search(
 ) {
     let previous_scroll = list.scroll_offset;
     let items = session_search_items(sessions);
-    list.filtered = compute_session_filtered(&list.input.text, &items, &matcher);
+    list.filtered = compute_session_filtered(&list.input.text, &items, matcher);
 
     // Restore selection: prefer stable identity (session name) over index clamping so
     // that a background refresh or re-sort doesn't silently move the cursor to a
     // different session.
     let name_idx = pinned_name.and_then(|name| {
         let session_idx = sessions.iter().position(|s| s.session_name == name)?;
-        list.filtered.iter().position(|(idx, _)| *idx == session_idx)
+        list.filtered
+            .iter()
+            .position(|(idx, _)| *idx == session_idx)
     });
 
     list.selected = if let Some(filtered_idx) = name_idx {
@@ -978,7 +980,12 @@ mod tests {
             make_session("session-c", 10),
         ];
 
-        rebuild_session_filter_preserving_search(&mut list, &sessions_after, Some("session-b"), &matcher);
+        rebuild_session_filter_preserving_search(
+            &mut list,
+            &sessions_after,
+            Some("session-b"),
+            &matcher,
+        );
 
         // Cursor should follow session-b to its new position (0), not stay at index 1.
         assert_eq!(

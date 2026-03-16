@@ -854,7 +854,9 @@ pub fn cmd_next(
                     .collect::<Vec<_>>(),
             );
             if has_detected_agent(&statuses) {
-                // session_names is derived from the same all_pane_data map, so
+                // Invariant: session_names ⊆ all_pane_data.keys()
+                // session_names is derived from active_session_entries which uses
+                // session_activity, which is built from all_pane_data. Therefore
                 // every candidate session is guaranteed to have an entry here.
                 let activity = all_pane_data.get(&session).map_or_else(
                     || unreachable!("session {session:?} must exist in all_pane_data"),

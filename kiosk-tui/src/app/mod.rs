@@ -1051,7 +1051,6 @@ struct ActionContext<'a, T: TmuxProvider + ?Sized + 'static> {
     sender: &'a EventSender,
 }
 
-
 #[derive(Clone, Copy)]
 enum AgentSessionDirection {
     Next,
@@ -1189,7 +1188,11 @@ fn merge_session_metadata(
 }
 
 /// Rebuild filtered list and pin the first selection after sessions data changes.
-fn reconcile_sessions_view(state: &mut AppState, pinned_name: Option<&str>, matcher: &SkimMatcherV2) {
+fn reconcile_sessions_view(
+    state: &mut AppState,
+    pinned_name: Option<&str>,
+    matcher: &SkimMatcherV2,
+) {
     rebuild_session_filter_preserving_search(
         &mut state.sessions_view.list,
         &state.sessions_view.sessions,
@@ -1204,12 +1207,12 @@ fn apply_sessions_discovered(
     mut sessions: Vec<kiosk_core::state::SessionEntry>,
     matcher: &SkimMatcherV2,
 ) {
-    let pinned_name =
-        if state.sessions_view.is_loading() || state.sessions_view.sessions.is_empty() {
-            None
-        } else {
-            selected_session_name(state)
-        };
+    let pinned_name = if state.sessions_view.is_loading() || state.sessions_view.sessions.is_empty()
+    {
+        None
+    } else {
+        selected_session_name(state)
+    };
 
     preserve_existing_session_agent_states(&state.sessions_view.sessions, &mut sessions);
     preserve_existing_session_metadata(&state.sessions_view.sessions, &mut sessions);

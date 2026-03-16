@@ -124,7 +124,9 @@ pub(super) fn handle_go_back(state: &mut AppState) {
         Mode::Help { .. } => {
             apply_transition!(state, ModeTransition::CloseHelp);
         }
-        Mode::Sessions | Mode::Setup(_) | Mode::RepoSelect | Mode::Loading(_) => {}
+        // GoBack is not in the keymap for these modes, so these arms are
+        // unreachable in practice. Keep them for exhaustiveness.
+        Mode::Setup(_) | Mode::RepoSelect | Mode::Loading(_) | Mode::Sessions => {}
     }
 }
 

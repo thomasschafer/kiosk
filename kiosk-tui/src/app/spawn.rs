@@ -527,6 +527,11 @@ fn build_session_discovered_snapshot(
         .collect()
 }
 
+/// Spawn agent detection threads for all sessions.
+///
+/// Uses plain `thread::spawn` rather than a thread pool because this is pure
+/// I/O (tmux subprocess calls with latency ~5-50ms). Creating a rayon pool on
+/// every ~2s poll would spin up and tear down 8 OS threads constantly.
 fn stream_session_agent_states<T: TmuxProvider + ?Sized + 'static>(
     tmux: &Arc<T>,
     session_names: Vec<String>,
@@ -540,12 +545,12 @@ fn stream_session_agent_states<T: TmuxProvider + ?Sized + 'static>(
     let all_pane_data = tmux.list_all_panes_with_activity();
     let (tx, rx) = mpsc::channel::<(String, Vec<kiosk_core::agent::AgentStatus>)>();
 
-    spawn_work_parallel(SESSION_STATUS_POOL_SIZE, session_names, |session_name| {
+    for session_name in session_names {
         let tx = tx.clone();
         let tmux = Arc::clone(tmux);
         let pane_data = all_pane_data.get(&session_name).cloned();
         let cancel = Arc::clone(cancel);
-        move || {
+        thread::spawn(move || {
             if cancel.load(Ordering::Relaxed) {
                 return;
             }
@@ -560,8 +565,8 @@ fn stream_session_agent_states<T: TmuxProvider + ?Sized + 'static>(
                 })
                 .unwrap_or_default();
             let _ = tx.send((session_name, statuses));
-        }
-    });
+        });
+    }
     drop(tx);
 
     for state in rx {

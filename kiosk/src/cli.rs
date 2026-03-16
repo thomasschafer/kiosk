@@ -794,10 +794,12 @@ pub fn cmd_sessions(
     Ok(())
 }
 
-/// Returns true if a session with these agent statuses should be considered by
-/// `kiosk next`. Any detected agent qualifies — including Unknown, which is
-/// the lowest-priority fallback. Sessions with no detected agents are excluded.
-fn needs_attention(statuses: &[kiosk_core::AgentStatus]) -> bool {
+/// Returns true if at least one agent was detected in the session.
+///
+/// Any detected agent qualifies — including `Unknown`, which is intentionally
+/// included as a low-priority fallback. Sessions with no detected agents are
+/// excluded from `kiosk next`.
+fn has_detected_agent(statuses: &[kiosk_core::AgentStatus]) -> bool {
     !statuses.is_empty()
 }
 
@@ -849,7 +851,7 @@ pub fn cmd_next(
                     .map(|det| det.status)
                     .collect::<Vec<_>>(),
             );
-            if needs_attention(&statuses) {
+            if has_detected_agent(&statuses) {
                 // session_names is derived from the same all_pane_data map, so
                 // every candidate session is guaranteed to have an entry here.
                 let activity = all_pane_data.get(&session).map_or_else(

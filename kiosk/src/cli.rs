@@ -822,7 +822,9 @@ pub fn cmd_next(
 
     let current_session = tmux.current_session_name();
     let all_pane_data = tmux.list_all_panes_with_activity();
-    let active_sessions_set: HashSet<String> = tmux.list_session_names().into_iter().collect();
+    // Derive active sessions from all_pane_data (one tmux call) instead of
+    // calling list_session_names() separately (second tmux call).
+    let active_sessions_set: HashSet<String> = all_pane_data.keys().cloned().collect();
     let session_activity: std::collections::HashMap<String, u64> = all_pane_data
         .iter()
         .map(|(name, data)| (name.clone(), data.session_activity))

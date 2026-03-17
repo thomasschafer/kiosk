@@ -9,6 +9,7 @@ use actions::{
     handle_search_delete_word_forward, handle_search_pop, handle_search_push, handle_setup_add_dir,
     handle_setup_cancel, handle_setup_continue, handle_setup_move_selection,
     handle_setup_tab_complete, handle_show_help, handle_start_new_branch,
+    rebuild_session_filter_preserving_search,
 };
 use crossterm::event::{self, Event, KeyEventKind};
 use fuzzy_matcher::{FuzzyMatcher, skim::SkimMatcherV2};
@@ -19,9 +20,12 @@ use kiosk_core::{
         keys::{Command, GeneralCommand, ModalCommand},
     },
     event::{AppEvent, SessionRuntimeUpdate},
-    git::GitProvider,
+    git::{GitProvider, apply_repo_name_collision_resolution},
     pending_delete::save_pending_worktree_deletes,
-    state::{AppState, BranchEntry, Mode, SearchableList, SessionRuntimeState},
+    state::{
+        AppState, BranchEntry, Mode, ModeTransition, PollerHandle, SearchableList,
+        SessionRuntimeState,
+    },
     tmux::TmuxProvider,
 };
 use ratatui::{
@@ -31,7 +35,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Padding, Paragraph},
 };
-use spawn::{spawn_agent_status_poller, spawn_repo_discovery};
+use spawn::{spawn_agent_status_poller, spawn_repo_discovery, spawn_sessions_discovery};
 use std::{
     fmt::Write as _,
     path::PathBuf,
@@ -46,11 +50,11 @@ use std::{
 /// What to do after the TUI exits
 pub enum OpenAction {
     Open {
-        path: PathBuf,
+        path: Option<PathBuf>,
         session_name: String,
         split_command: Option<String>,
     },
-    /// Setup wizard completed — dirs are stored in `AppState.setup`
+    /// Setup wizard completed — dirs are stored in `AppState` setup state
     SetupComplete,
     Quit,
 }
@@ -76,6 +80,14 @@ fn initialize_repo_scan(state: &mut AppState) {
     state.seen_repo_paths = state.repos.iter().map(|repo| repo.path.clone()).collect();
 }
 
+macro_rules! apply_transition {
+    ($state:expr, $transition:expr $(,)?) => {
+        if let Err(error) = $state.transition(&$transition) {
+            $state.set_error(&format!("Internal state transition error: {error:?}"));
+        }
+    };
+}
+
 pub fn run(
     terminal: &mut DefaultTerminal,
     state: &mut AppState,
@@ -83,7 +95,7 @@ pub fn run(
     tmux: &Arc<dyn TmuxProvider>,
     theme: &crate::theme::Theme,
     keys: &kiosk_core::config::KeysConfig,
-    search_dirs: Vec<(std::path::PathBuf, u16)>,
+    search_dirs: &[(std::path::PathBuf, u16)],
 ) -> anyhow::Result<Option<OpenAction>> {
     let matcher = SkimMatcherV2::default();
     let (tx, rx) = mpsc::channel::<AppEvent>();
@@ -93,19 +105,41 @@ pub fn run(
         cancel: Arc::clone(&cancel),
     };
     let spinner_start = Instant::now();
+    state.search_dirs = search_dirs.to_vec();
+    let mut repo_scan_started = false;
 
-    // Start repo discovery in background
-    if state.loading_repos || state.repos.is_empty() {
+    // Defer repo discovery when starting in sessions mode — the sessions view
+    // loads directly from tmux and doesn't need the repo scan. The scan will
+    // start lazily the first time the user switches to the repos view.
+    let defer_repo_scan = state.is_sessions_context() && state.sessions_view.is_loading();
+    if !defer_repo_scan && (state.loading_repos || state.repos.is_empty()) {
         initialize_repo_scan(state);
-        spawn_repo_discovery(git, tmux, &event_sender, search_dirs);
+        spawn_repo_discovery(git, tmux, &event_sender, search_dirs.to_owned());
+        repo_scan_started = true;
+    }
+
+    // Sessions mode runs its own tmux-first discovery path and should not wait
+    // for repo scan completion.
+    if state.is_sessions_context() && state.sessions_view.is_loading() {
+        spawn_sessions_discovery(git, tmux, &event_sender, state);
     }
 
     let result = loop {
+        if !repo_scan_started
+            && !state.is_sessions_context()
+            && (state.loading_repos || state.repos.is_empty())
+        {
+            initialize_repo_scan(state);
+            spawn_repo_discovery(git, tmux, &event_sender, search_dirs.to_owned());
+            repo_scan_started = true;
+        }
+
         terminal.draw(|f| draw(f, state, theme, keys, &spinner_start))?;
 
         // Check background channel (non-blocking)
         if let Ok(app_event) = rx.try_recv() {
-            if let Some(result) = process_app_event(app_event, state, git, tmux, &event_sender) {
+            let result = process_app_event(app_event, state, git, tmux, &event_sender, &matcher);
+            if let Some(result) = result {
                 break result;
             }
             continue;
@@ -120,7 +154,7 @@ pub fn run(
             }
 
             // In loading mode, only allow Ctrl+C
-            if matches!(state.mode, Mode::Loading(_)) {
+            if matches!(state.mode(), Mode::Loading(_)) {
                 if key.code == crossterm::event::KeyCode::Char('c')
                     && key
                         .modifiers
@@ -141,7 +175,7 @@ pub fn run(
                     state.clear_error();
                 } else if keys.general.get(&our_key) == Some(&GeneralCommand::Quit) {
                     cancel.store(true, Ordering::Relaxed);
-                    return Ok(Some(OpenAction::Quit));
+                    break OpenAction::Quit;
                 }
                 continue;
             }
@@ -153,16 +187,18 @@ pub fn run(
                 matcher: &matcher,
                 sender: &event_sender,
             };
-            if let Some(action) = keymap::resolve_action(key, state, keys)
-                && let Some(result) = process_action(action, state, &ctx)
-            {
-                break result;
+            if let Some(action) = keymap::resolve_action(key, state, keys) {
+                let result = process_action(action, state, &ctx);
+                if let Some(result) = result {
+                    break result;
+                }
             }
         }
     };
 
-    // Ensure background agent poller is cancelled before exiting
-    state.cancel_agent_poller();
+    // Ensure all background pollers are cancelled before exiting.
+    cancel.store(true, Ordering::Relaxed);
+    state.cancel_all_agent_pollers();
     Ok(Some(result))
 }
 
@@ -174,7 +210,7 @@ fn draw(
     spinner_start: &Instant,
 ) {
     // Loading mode: full-screen spinner
-    if let Mode::Loading(ref msg) = state.mode {
+    if let Mode::Loading(msg) = state.mode() {
         draw_loading(f, f.area(), msg, theme, spinner_start);
         return;
     }
@@ -184,14 +220,14 @@ fn draw(
     let main_area = outer[0];
     let footer_area = outer[1];
 
-    let page_rows = active_list_page_rows(f.area(), main_area, &state.mode);
+    let page_rows = active_list_page_rows(f.area(), main_area, state.mode());
     state.set_active_list_page_rows(page_rows);
 
     // Determine the effective mode for footer hints
-    let effective_mode = state.mode.effective();
+    let effective_mode = state.effective_mode();
 
     // Clone mode to avoid borrow conflict with state
-    let mode = state.mode.clone();
+    let mode = state.mode().clone();
     draw_mode(f, main_area, &mode, state, theme, keys, true);
 
     if state.error.is_some() {
@@ -243,6 +279,9 @@ fn draw_mode(
         Mode::RepoSelect => {
             components::repo_list::draw(f, main_area, state, theme, keys, show_selection);
         }
+        Mode::Sessions => {
+            components::sessions_view::draw(f, main_area, state, theme, keys, show_selection);
+        }
         Mode::BranchSelect => {
             components::branch_picker::draw(f, main_area, state, theme, keys, show_selection);
         }
@@ -287,7 +326,10 @@ fn list_rows_from_list_area(list_area: Rect) -> usize {
 
 fn active_list_page_rows(full_area: Rect, main_area: Rect, mode: &Mode) -> usize {
     match mode {
-        Mode::RepoSelect | Mode::BranchSelect | Mode::ConfirmWorktreeDelete { .. } => {
+        Mode::RepoSelect
+        | Mode::Sessions
+        | Mode::BranchSelect
+        | Mode::ConfirmWorktreeDelete { .. } => {
             let chunks =
                 Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(main_area);
             list_rows_from_list_area(chunks[1])
@@ -471,8 +513,16 @@ fn sort_repos_preserving_selection(state: &mut AppState) {
     rebuild_filtered_preserving_search(&mut state.repo_list, &names);
 }
 
-/// Handle events from background tasks
-#[allow(clippy::too_many_lines)]
+fn selected_session_name(state: &AppState) -> Option<String> {
+    state
+        .sessions_view
+        .list
+        .selected
+        .and_then(|selected| state.sessions_view.list.filtered.get(selected))
+        .and_then(|(idx, _)| state.sessions_view.sessions.get(*idx))
+        .map(|session| session.session_name.clone())
+}
+
 /// Deduplicate `incoming` branches against `state.branches`, append any new ones,
 /// and rebuild the filtered list preserving search.
 ///
@@ -548,7 +598,7 @@ fn seed_session_runtime_from_branches(
                 activity_ts,
                 // Fresh branch snapshots are authoritative for existence/activity,
                 // but not for agent status; let poller refresh it.
-                agent_status: None,
+                agent_statuses: Vec::new(),
             },
         );
     }
@@ -568,11 +618,13 @@ fn apply_session_runtime_updates(state: &mut AppState, updates: Vec<SessionRunti
         let runtime = SessionRuntimeState {
             exists: update.session_exists,
             activity_ts: update.session_activity_ts,
-            agent_status: update.agent_status,
+            agent_statuses: update.agent_statuses,
         };
+        let runtime_exists = runtime.exists;
+        let runtime_activity_ts = runtime.activity_ts;
         state.session_runtime.insert(session_name.clone(), runtime);
-        match runtime.activity_ts {
-            Some(ts) if runtime.exists => {
+        match runtime_activity_ts {
+            Some(ts) if runtime_exists => {
                 state.session_activity.insert(session_name, ts);
             }
             _ => {
@@ -593,9 +645,9 @@ fn reconcile_branch_runtime_state(state: &mut AppState) {
             continue;
         };
         let session_name = repo.tmux_session_name(worktree_path);
-        if let Some(runtime) = state.session_runtime.get(&session_name).copied() {
+        if let Some(runtime) = state.session_runtime.get(&session_name) {
             branch.has_session = runtime.exists;
-            branch.agent_status = runtime.agent_status;
+            branch.agent_statuses.clone_from(&runtime.agent_statuses);
             branch.session_activity_ts = runtime.activity_ts;
         }
     }
@@ -608,6 +660,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
     git: &Arc<dyn GitProvider>,
     tmux: &Arc<T>,
     sender: &EventSender,
+    matcher: &SkimMatcherV2,
 ) -> Option<OpenAction> {
     match event {
         AppEvent::ReposDiscovered {
@@ -636,8 +689,9 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             sort_repos_preserving_selection(state);
 
             // Only switch to RepoSelect from Loading — don't kick users out of BranchSelect
-            if matches!(state.mode, Mode::Loading(_)) {
-                state.mode = Mode::RepoSelect;
+            // or Sessions view.
+            if !state.is_sessions_context() && matches!(state.mode(), Mode::Loading(_)) {
+                apply_transition!(state, ModeTransition::RepoSelect);
             }
         }
         AppEvent::ReposFound { repo } => {
@@ -649,48 +703,24 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
                 rebuild_filtered_preserving_search(&mut state.repo_list, &names);
             }
 
-            // Switch to RepoSelect from Loading (so user sees repos appearing)
-            if matches!(state.mode, Mode::Loading(_)) {
-                state.mode = Mode::RepoSelect;
+            // Switch to RepoSelect from Loading (so user sees repos appearing).
+            // Don't interrupt the sessions view.
+            if !state.is_sessions_context() && matches!(state.mode(), Mode::Loading(_)) {
+                apply_transition!(state, ModeTransition::RepoSelect);
             }
         }
         AppEvent::ScanComplete { search_dirs } => {
             // Scan is done — clear dedup set (no longer needed until next scan)
             state.seen_repo_paths.clear();
-
-            // Run collision resolution: disambiguate repos with the same name
-            // by appending the search dir name to session_name.
-            // Uses `path.starts_with(dir)` with longest-prefix matching, which
-            // is equivalent to the batch-mode `apply_collision_resolution` that
-            // pairs each repo with its direct search dir — a repo found under
-            // `dir` always has `path.starts_with(dir)` true, and the longest
-            // matching dir is the one that discovered it.
-            let mut name_counts = std::collections::HashMap::<String, usize>::new();
-            for repo in &state.repos {
-                *name_counts.entry(repo.name.clone()).or_insert(0) += 1;
-            }
-            if name_counts.values().any(|&count| count > 1) {
-                for repo in &mut state.repos {
-                    if name_counts[&repo.name] > 1 {
-                        let search_dir_name = search_dirs
-                            .iter()
-                            .filter(|(dir, _)| repo.path.starts_with(dir))
-                            .max_by_key(|(dir, _)| dir.components().count())
-                            .and_then(|(dir, _)| dir.file_name())
-                            .map(|n| n.to_string_lossy().into_owned())
-                            .unwrap_or_default();
-                        repo.session_name = format!("{}--({search_dir_name})", repo.name);
-                    }
-                }
-            }
+            apply_repo_name_collision_resolution(&mut state.repos, &search_dirs);
 
             // Sort repos now that all have been discovered
             sort_repos_preserving_selection(state);
 
             state.loading_repos = false;
 
-            if matches!(state.mode, Mode::Loading(_)) {
-                state.mode = Mode::RepoSelect;
+            if !state.is_sessions_context() && matches!(state.mode(), Mode::Loading(_)) {
+                apply_transition!(state, ModeTransition::RepoSelect);
             }
         }
         AppEvent::SessionActivityLoaded { session_activity } => {
@@ -726,7 +756,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
         }
         AppEvent::WorktreeCreated { path, session_name } => {
             return Some(OpenAction::Open {
-                path,
+                path: Some(path),
                 session_name,
                 split_command: state.split_command.clone(),
             });
@@ -743,7 +773,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             if let Some(repo_idx) = state.selected_repo_idx {
                 enter_branch_select_with_loading(state, repo_idx, git, tmux, sender, false);
             } else {
-                state.mode = Mode::BranchSelect;
+                apply_transition!(state, ModeTransition::BranchSelect);
             }
         }
         AppEvent::WorktreeRemoveFailed {
@@ -765,7 +795,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             }
             state.set_error(&error_message);
             state.loading_branches = false;
-            state.mode = Mode::BranchSelect;
+            apply_transition!(state, ModeTransition::BranchSelect);
         }
         AppEvent::BranchesLoaded {
             branches,
@@ -790,7 +820,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             {
                 state.set_error(&format!("Failed to persist pending deletes: {e}"));
             }
-            state.mode = Mode::BranchSelect;
+            apply_transition!(state, ModeTransition::BranchSelect);
 
             // Kick off remote branch loading and background fetch
             if let Some(repo_path) = state
@@ -815,22 +845,23 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
                 // Always cancel the previous poller before deciding whether
                 // to spawn a new one — avoids leaking stale pollers when
                 // navigating to repos with no sessions or agent disabled.
-                state.cancel_agent_poller();
+                state.cancel_all_agent_pollers();
                 if !session_names.is_empty() && state.agent_enabled {
-                    let cancel = Arc::new(AtomicBool::new(false));
-                    spawn_agent_status_poller(
-                        tmux,
-                        sender,
-                        Arc::clone(&cancel),
-                        state.agent_poll_interval,
-                        session_names,
-                    );
-                    state.agent_poller_cancel = Some(cancel);
+                    let handle = PollerHandle::new();
+                    if state.install_branch_poller(handle.clone()).is_ok() {
+                        spawn_agent_status_poller(
+                            tmux,
+                            sender,
+                            handle.cancel_token(),
+                            state.agent_poll_interval,
+                            session_names,
+                        );
+                    }
                 }
             }
         }
         AppEvent::RemoteBranchesLoaded { branches } => {
-            if *state.mode.effective() == Mode::BranchSelect {
+            if state.is_branch_select_context() {
                 extend_branches_deduped(state, branches);
             }
         }
@@ -848,28 +879,37 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             let current_repo_path = state
                 .selected_repo_idx
                 .and_then(|idx| state.repos.get(idx).map(|r| &r.path));
-            if *state.mode.effective() == Mode::BranchSelect
-                && current_repo_path == Some(&repo_path)
-            {
+            if state.is_branch_select_context() && current_repo_path == Some(&repo_path) {
                 extend_branches_deduped(state, branches);
             }
         }
         AppEvent::AgentStatesUpdated { states } => {
-            if *state.mode.effective() == Mode::BranchSelect {
+            if state.is_branch_select_context() {
                 // Update runtime state in-place — no re-sorting or filter changes.
                 // Missing agent status clears stale badges and session_activity is
                 // refreshed from the same snapshot.
                 apply_session_runtime_updates(state, states);
             }
         }
-        AppEvent::GitError(msg) => {
-            // Return to the appropriate mode
-            if state.base_branch_selection.is_some() {
-                state.base_branch_selection = None;
-                state.mode = Mode::BranchSelect;
-            } else {
-                state.mode = Mode::BranchSelect;
+        AppEvent::SessionsDiscovered { sessions } => {
+            apply_sessions_discovered(state, sessions, matcher);
+        }
+
+        AppEvent::SessionMetadataPatched { patches, complete } => {
+            apply_session_metadata(state, patches, complete, matcher);
+        }
+
+        AppEvent::SessionAgentStatesPatched { states } => {
+            if state.is_sessions_context() {
+                let pinned_name = selected_session_name(state);
+                merge_session_agent_states(&mut state.sessions_view.sessions, &states);
+                reconcile_sessions_view(state, pinned_name.as_deref(), matcher);
             }
+        }
+
+        AppEvent::GitError(msg) => {
+            // Return to branch selection; transition reconciliation clears incompatible context.
+            apply_transition!(state, ModeTransition::BranchSelect);
             state.loading_branches = false;
             state.set_error(&msg);
         }
@@ -912,10 +952,12 @@ fn handle_movement_actions(action: &Action, state: &mut AppState) -> bool {
 }
 
 fn update_active_list_scroll_offset(state: &mut AppState, viewport_rows: usize) {
-    if let Mode::Help { .. } = state.mode {
-        if let Some(overlay) = &mut state.help_overlay {
-            update_help_scroll_offset(overlay, viewport_rows);
-        }
+    if let Mode::Help { .. } = state.mode() {
+        state
+            .update_help_overlay(|overlay| {
+                update_help_scroll_offset(overlay, viewport_rows);
+            })
+            .expect("help overlay context must exist in Help mode");
     } else if let Some(list) = state.active_list_mut() {
         list.update_scroll_offset_for_selection(viewport_rows);
     }
@@ -994,7 +1036,7 @@ fn handle_simple_actions(action: &Action, state: &mut AppState) -> bool {
             true
         }
         Action::CancelDeleteWorktree => {
-            state.mode = Mode::BranchSelect;
+            apply_transition!(state, ModeTransition::BranchSelect);
             true
         }
         _ => false,
@@ -1009,6 +1051,214 @@ struct ActionContext<'a, T: TmuxProvider + ?Sized + 'static> {
     sender: &'a EventSender,
 }
 
+#[derive(Clone, Copy)]
+enum AgentSessionDirection {
+    Next,
+    Previous,
+}
+
+fn adjacent_agent_session_selection(
+    state: &AppState,
+    direction: AgentSessionDirection,
+) -> Option<usize> {
+    let filtered = &state.sessions_view.list.filtered;
+    if filtered.is_empty() {
+        return None;
+    }
+
+    let current = state.sessions_view.list.selected.unwrap_or(0);
+    let len = filtered.len();
+
+    (1..=len).find_map(|offset| {
+        let filtered_idx = match direction {
+            AgentSessionDirection::Next => (current + offset) % len,
+            AgentSessionDirection::Previous => (current + len - (offset % len)) % len,
+        };
+        let session_idx = filtered.get(filtered_idx)?.0;
+        state
+            .sessions_view
+            .sessions
+            .get(session_idx)
+            .filter(|session| !session.agent_statuses.is_empty())
+            .map(|_| filtered_idx)
+    })
+}
+
+fn jump_to_next_agent_session(state: &mut AppState) {
+    let Some(next_selection) = adjacent_agent_session_selection(state, AgentSessionDirection::Next)
+    else {
+        return;
+    };
+
+    state.sessions_view.list.selected = Some(next_selection);
+    update_active_list_scroll_offset(state, state.active_list_page_rows());
+}
+
+fn jump_to_previous_agent_session(state: &mut AppState) {
+    let Some(previous_selection) =
+        adjacent_agent_session_selection(state, AgentSessionDirection::Previous)
+    else {
+        return;
+    };
+
+    state.sessions_view.list.selected = Some(previous_selection);
+    update_active_list_scroll_offset(state, state.active_list_page_rows());
+}
+
+fn merge_session_agent_states(
+    sessions: &mut [kiosk_core::state::SessionEntry],
+    states: &[(String, Vec<kiosk_core::agent::AgentStatus>)],
+) {
+    if states.is_empty() {
+        return;
+    }
+
+    let by_session: std::collections::HashMap<&str, &Vec<kiosk_core::agent::AgentStatus>> = states
+        .iter()
+        .map(|(session_name, agent_statuses)| (session_name.as_str(), agent_statuses))
+        .collect();
+
+    for session in sessions {
+        if let Some(agent_statuses) = by_session.get(session.session_name.as_str()) {
+            session.agent_statuses = kiosk_core::state::normalized_agent_statuses(agent_statuses);
+        }
+    }
+}
+
+fn preserve_existing_session_agent_states(
+    previous_sessions: &[kiosk_core::state::SessionEntry],
+    sessions: &mut [kiosk_core::state::SessionEntry],
+) {
+    let by_session: std::collections::HashMap<&str, &Vec<kiosk_core::agent::AgentStatus>> =
+        previous_sessions
+            .iter()
+            .map(|session| (session.session_name.as_str(), &session.agent_statuses))
+            .collect();
+
+    for session in sessions {
+        if session.agent_statuses.is_empty()
+            && let Some(agent_statuses) = by_session.get(session.session_name.as_str())
+        {
+            // Previous values are already normalized, so clone directly.
+            session.agent_statuses = (*agent_statuses).clone();
+        }
+    }
+}
+
+fn preserve_existing_session_metadata(
+    previous_sessions: &[kiosk_core::state::SessionEntry],
+    sessions: &mut [kiosk_core::state::SessionEntry],
+) {
+    let by_session: std::collections::HashMap<&str, &kiosk_core::state::SessionMetadata> =
+        previous_sessions
+            .iter()
+            .map(|session| (session.session_name.as_str(), &session.metadata))
+            .collect();
+
+    for session in sessions {
+        if matches!(
+            session.metadata,
+            kiosk_core::state::SessionMetadata::Unresolved
+        ) && let Some(metadata) = by_session.get(session.session_name.as_str())
+            && matches!(metadata, kiosk_core::state::SessionMetadata::Resolved(_))
+        {
+            session.metadata = (*metadata).clone();
+        }
+    }
+}
+
+fn merge_session_metadata(
+    sessions: &mut [kiosk_core::state::SessionEntry],
+    patches: Vec<kiosk_core::event::SessionMetadataPatch>,
+) {
+    if patches.is_empty() {
+        return;
+    }
+
+    let by_session: std::collections::HashMap<String, kiosk_core::state::SessionMetadata> = patches
+        .into_iter()
+        .map(|patch| (patch.session_name, patch.metadata))
+        .collect();
+
+    for session in sessions {
+        if let Some(metadata) = by_session.get(session.session_name.as_str()) {
+            session.metadata = metadata.clone();
+        }
+    }
+}
+
+/// Rebuild filtered list and pin the first selection after sessions data changes.
+fn reconcile_sessions_view(
+    state: &mut AppState,
+    pinned_name: Option<&str>,
+    matcher: &SkimMatcherV2,
+) {
+    rebuild_session_filter_preserving_search(
+        &mut state.sessions_view.list,
+        &state.sessions_view.sessions,
+        pinned_name,
+        matcher,
+    );
+    state.sessions_view.apply_pin_first_selection();
+}
+
+fn apply_sessions_discovered(
+    state: &mut AppState,
+    mut sessions: Vec<kiosk_core::state::SessionEntry>,
+    matcher: &SkimMatcherV2,
+) {
+    let pinned_name = if state.sessions_view.is_loading() || state.sessions_view.sessions.is_empty()
+    {
+        None
+    } else {
+        selected_session_name(state)
+    };
+
+    preserve_existing_session_agent_states(&state.sessions_view.sessions, &mut sessions);
+    preserve_existing_session_metadata(&state.sessions_view.sessions, &mut sessions);
+    // Sort by tmux recency: most recently used session first.
+    sessions.sort_by(|left, right| {
+        right
+            .session_activity
+            .cmp(&left.session_activity)
+            .then_with(|| left.session_name.cmp(&right.session_name))
+    });
+    state.sessions_view.sessions = sessions;
+    reconcile_sessions_view(state, pinned_name.as_deref(), matcher);
+    if state.sessions_view.is_loading() {
+        if state.sessions_view.sessions.is_empty() {
+            state.sessions_view.mark_ready();
+        } else {
+            state.sessions_view.mark_shell_ready();
+        }
+    }
+}
+
+fn apply_session_metadata(
+    state: &mut AppState,
+    patches: Vec<kiosk_core::event::SessionMetadataPatch>,
+    complete: bool,
+    matcher: &SkimMatcherV2,
+) {
+    let pinned_name = selected_session_name(state);
+    merge_session_metadata(&mut state.sessions_view.sessions, patches);
+    reconcile_sessions_view(state, pinned_name.as_deref(), matcher);
+    if complete {
+        state.sessions_view.mark_ready();
+    }
+}
+
+fn enter_sessions_view<T: TmuxProvider + ?Sized + 'static>(
+    state: &mut AppState,
+    git: &Arc<dyn GitProvider>,
+    tmux: &Arc<T>,
+    sender: &EventSender,
+) {
+    apply_transition!(state, ModeTransition::Sessions);
+    state.sessions_view.begin_loading();
+    spawn_sessions_discovery(git, tmux, sender, state);
+}
+
 #[allow(clippy::needless_pass_by_value)]
 #[allow(clippy::too_many_lines)]
 fn process_action<T: TmuxProvider + ?Sized + 'static>(
@@ -1016,6 +1266,15 @@ fn process_action<T: TmuxProvider + ?Sized + 'static>(
     state: &mut AppState,
     ctx: &ActionContext<'_, T>,
 ) -> Option<OpenAction> {
+    if state.is_sessions_context()
+        && !matches!(
+            action,
+            Action::ToggleSessions | Action::ShowHelp | Action::Quit
+        )
+    {
+        state.sessions_view.pin_first_selection = false;
+    }
+
     // Handle movement and simple actions first
     if handle_movement_actions(&action, state) || handle_simple_actions(&action, state) {
         return None;
@@ -1031,7 +1290,7 @@ fn process_action<T: TmuxProvider + ?Sized + 'static>(
                 let repo = &state.repos[idx];
                 let session_name = repo.tmux_session_name(&repo.path);
                 return Some(OpenAction::Open {
-                    path: repo.path.clone(),
+                    path: Some(repo.path.clone()),
                     session_name,
                     split_command: state.split_command.clone(),
                 });
@@ -1046,7 +1305,9 @@ fn process_action<T: TmuxProvider + ?Sized + 'static>(
             }
         }
 
-        Action::GoBack => handle_go_back(state),
+        Action::GoBack => {
+            handle_go_back(state);
+        }
 
         Action::OpenBranch => {
             if let Some(result) = handle_open_branch(state, ctx.git, ctx.sender) {
@@ -1060,7 +1321,7 @@ fn process_action<T: TmuxProvider + ?Sized + 'static>(
 
         Action::MoveSelection(delta) => {
             if matches!(
-                state.mode,
+                state.mode(),
                 Mode::Setup(kiosk_core::state::SetupStep::SearchDirs)
             ) {
                 handle_setup_move_selection(state, delta);
@@ -1116,6 +1377,40 @@ fn process_action<T: TmuxProvider + ?Sized + 'static>(
                 return Some(result);
             }
         }
+        Action::ToggleSessions => {
+            if state.is_sessions_context() {
+                apply_transition!(state, ModeTransition::RepoSelect);
+            } else {
+                enter_sessions_view(state, ctx.git, ctx.tmux, ctx.sender);
+            }
+        }
+
+        Action::SwitchToSession => {
+            // Switching sessions is disabled while help is open.
+            if state.mode() == &Mode::Sessions
+                && let Some(selected) = state.sessions_view.list.selected
+                && let Some((idx, _)) = state.sessions_view.list.filtered.get(selected)
+            {
+                let session = &state.sessions_view.sessions[*idx];
+                let session_name = session.session_name.clone();
+                state.cancel_all_agent_pollers();
+                return Some(OpenAction::Open {
+                    path: None,
+                    session_name,
+                    split_command: None,
+                });
+            }
+        }
+        Action::JumpToNextAgentSession => {
+            if state.mode() == &Mode::Sessions {
+                jump_to_next_agent_session(state);
+            }
+        }
+        Action::JumpToPreviousAgentSession => {
+            if state.mode() == &Mode::Sessions {
+                jump_to_previous_agent_session(state);
+            }
+        }
 
         // Movement, cursor, and cancel actions are handled by helper functions above.
         // If we reach here, it means the action wasn't applicable in the current mode
@@ -1157,6 +1452,10 @@ mod tests {
         }
     }
 
+    fn make_matcher() -> SkimMatcherV2 {
+        SkimMatcherV2::default()
+    }
+
     fn make_repo(name: &str) -> Repo {
         Repo {
             name: name.to_string(),
@@ -1170,13 +1469,50 @@ mod tests {
         }
     }
 
-    fn default_ctx<'a>(
+    fn make_session(session_name: &str, ts: u64) -> kiosk_core::state::SessionEntry {
+        make_session_with(session_name, ts, Vec::new())
+    }
+
+    fn make_session_with(
+        session_name: &str,
+        ts: u64,
+        agent_statuses: Vec<kiosk_core::agent::AgentStatus>,
+    ) -> kiosk_core::state::SessionEntry {
+        kiosk_core::state::SessionEntry::resolved(kiosk_core::state::ResolvedSessionParams {
+            session_name: session_name.to_string(),
+            repo_name: session_name.to_string(),
+            branch: Some("main".to_string()),
+            path: PathBuf::from(format!("/tmp/{session_name}")),
+            agent_statuses,
+            session_activity: ts,
+            attached: false,
+        })
+    }
+
+    fn idle_status() -> kiosk_core::agent::AgentStatus {
+        kiosk_core::agent::AgentStatus {
+            kind: kiosk_core::agent::AgentKind::Codex,
+            state: kiosk_core::agent::AgentState::Idle,
+        }
+    }
+
+    fn filtered_session_names(state: &AppState) -> Vec<&str> {
+        state
+            .sessions_view
+            .list
+            .filtered
+            .iter()
+            .map(|(idx, _)| state.sessions_view.sessions[*idx].session_name.as_str())
+            .collect()
+    }
+
+    fn default_ctx<'a, T: TmuxProvider + ?Sized + 'static>(
         git: &'a Arc<dyn GitProvider>,
-        tmux: &'a Arc<dyn TmuxProvider>,
+        tmux: &'a Arc<T>,
         keys: &'a KeysConfig,
         matcher: &'a SkimMatcherV2,
         sender: &'a EventSender,
-    ) -> ActionContext<'a, dyn TmuxProvider> {
+    ) -> ActionContext<'a, T> {
         ActionContext {
             git,
             tmux,
@@ -1196,7 +1532,7 @@ mod tests {
             branches: vec!["main".into(), "dev".into()],
             ..Default::default()
         });
-        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let tmux = Arc::new(MockTmuxProvider::default());
         let keys = KeysConfig::default();
         let matcher = SkimMatcherV2::default();
         let (tx, rx) = std::sync::mpsc::channel();
@@ -1208,14 +1544,14 @@ mod tests {
 
         let result = process_action(Action::EnterRepo, &mut state, &ctx);
         assert!(result.is_none());
-        assert_eq!(state.mode, Mode::BranchSelect);
+        assert_eq!(state.mode(), &Mode::BranchSelect);
         assert!(state.loading_branches);
         assert!(state.branches.is_empty());
 
         // Wait for the background thread to send the event
         let event = rx.recv_timeout(std::time::Duration::from_secs(1)).unwrap();
-        process_app_event(event, &mut state, &git, &tmux, &sender);
-        assert_eq!(state.mode, Mode::BranchSelect);
+        process_app_event(event, &mut state, &git, &tmux, &sender, &make_matcher());
+        assert_eq!(state.mode(), &Mode::BranchSelect);
         assert!(!state.loading_branches);
         assert_eq!(state.branches.len(), 2);
     }
@@ -1227,7 +1563,7 @@ mod tests {
         let repos = vec![make_repo("my-repo")];
         let mut state = AppState::new(repos, None);
         state.selected_repo_idx = Some(0);
-        state.mode = Mode::BranchSelect;
+        apply_transition!(state, ModeTransition::BranchSelect);
 
         let wt_path = std::path::PathBuf::from("/tmp/worktrees/my-repo--feat-test");
         let session_name = state.repos[0].tmux_session_name(&wt_path);
@@ -1238,10 +1574,10 @@ mod tests {
             SessionRuntimeState {
                 exists: true,
                 activity_ts: Some(9999),
-                agent_status: Some(kiosk_core::agent::AgentStatus {
+                agent_statuses: vec![kiosk_core::agent::AgentStatus {
                     kind: kiosk_core::agent::AgentKind::OpenCode,
                     state: kiosk_core::agent::AgentState::Running,
-                }),
+                }],
             },
         );
         state.session_runtime.insert(
@@ -1249,7 +1585,7 @@ mod tests {
             SessionRuntimeState {
                 exists: true,
                 activity_ts: Some(1111),
-                agent_status: None,
+                agent_statuses: Vec::new(),
             },
         );
         state.session_runtime.insert(
@@ -1257,7 +1593,7 @@ mod tests {
             SessionRuntimeState {
                 exists: true,
                 activity_ts: Some(2222),
-                agent_status: None,
+                agent_statuses: Vec::new(),
             },
         );
 
@@ -1269,11 +1605,11 @@ mod tests {
             is_default: false,
             remote: None,
             session_activity_ts: None,
-            agent_status: None,
+            agent_statuses: Vec::new(),
         };
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
-        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let tmux = Arc::new(MockTmuxProvider::default());
         let sender = make_sender();
 
         process_app_event(
@@ -1287,12 +1623,17 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         assert!(!state.branches[0].has_session);
-        assert_eq!(state.branches[0].agent_status, None);
+        assert!(state.branches[0].agent_statuses.is_empty());
         assert!(!state.session_runtime[&session_name].exists);
-        assert_eq!(state.session_runtime[&session_name].agent_status, None);
+        assert!(
+            state.session_runtime[&session_name]
+                .agent_statuses
+                .is_empty()
+        );
         assert!(!state.session_runtime.contains_key(&stale_session_name));
         assert_eq!(
             state.session_runtime[&other_repo_session].activity_ts,
@@ -1307,7 +1648,7 @@ mod tests {
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
         state.selected_repo_idx = Some(0);
-        state.mode = Mode::BranchSelect;
+        apply_transition!(state, ModeTransition::BranchSelect);
         state.branches = vec![BranchEntry {
             name: "main".to_string(),
             worktree_path: None,
@@ -1316,7 +1657,7 @@ mod tests {
             remote: None,
             is_default: false,
             session_activity_ts: None,
-            agent_status: None,
+            agent_statuses: Vec::new(),
         }];
         state.branch_list.reset(1);
 
@@ -1334,7 +1675,7 @@ mod tests {
                 remote: Some("origin".to_string()),
                 is_default: false,
                 session_activity_ts: None,
-                agent_status: None,
+                agent_statuses: Vec::new(),
             },
             BranchEntry {
                 name: "feature-y".to_string(),
@@ -1344,7 +1685,7 @@ mod tests {
                 remote: Some("origin".to_string()),
                 is_default: false,
                 session_activity_ts: None,
-                agent_status: None,
+                agent_statuses: Vec::new(),
             },
         ];
 
@@ -1356,6 +1697,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         assert_eq!(state.branches.len(), 3);
@@ -1372,7 +1714,7 @@ mod tests {
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
         state.selected_repo_idx = Some(0);
-        state.mode = Mode::BranchSelect;
+        apply_transition!(state, ModeTransition::BranchSelect);
         state.branches = vec![BranchEntry {
             name: "main".to_string(),
             worktree_path: None,
@@ -1381,7 +1723,7 @@ mod tests {
             remote: None,
             is_default: false,
             session_activity_ts: None,
-            agent_status: None,
+            agent_statuses: Vec::new(),
         }];
         state.branch_list.reset(1);
         state.branch_list.input.text = "feat".to_string();
@@ -1404,13 +1746,14 @@ mod tests {
                     remote: Some("origin".to_string()),
                     is_default: false,
                     session_activity_ts: None,
-                    agent_status: None,
+                    agent_statuses: Vec::new(),
                 }],
             },
             &mut state,
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         // "feat" should match "feature-x" but not "main"
@@ -1424,49 +1767,54 @@ mod tests {
     fn test_go_back_from_branch_to_repo() {
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
-        state.mode = Mode::BranchSelect;
+        apply_transition!(state, ModeTransition::BranchSelect);
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
-        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let tmux = Arc::new(MockTmuxProvider::default());
         let keys = KeysConfig::default();
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
         let ctx = default_ctx(&git, &tmux, &keys, &matcher, &sender);
 
         process_action(Action::GoBack, &mut state, &ctx);
-        assert_eq!(state.mode, Mode::RepoSelect);
+        assert_eq!(state.mode(), &Mode::RepoSelect);
     }
 
     #[test]
     fn test_go_back_from_new_branch_to_branch() {
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
-        state.mode = Mode::SelectBaseBranch;
-        state.base_branch_selection = Some(kiosk_core::state::BaseBranchSelection {
-            new_name: "feat".into(),
-            bases: vec!["main".into()],
-            list: SearchableList::new(1),
-        });
+        apply_transition!(state, ModeTransition::BranchSelect);
+        apply_transition!(
+            state,
+            ModeTransition::SelectBaseBranch {
+                flow: kiosk_core::state::BaseBranchSelection {
+                    new_name: "feat".into(),
+                    bases: vec!["main".into()],
+                    list: SearchableList::new(1),
+                },
+            },
+        );
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
-        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let tmux = Arc::new(MockTmuxProvider::default());
         let keys = KeysConfig::default();
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
         let ctx = default_ctx(&git, &tmux, &keys, &matcher, &sender);
 
         process_action(Action::GoBack, &mut state, &ctx);
-        assert_eq!(state.mode, Mode::BranchSelect);
-        assert!(state.base_branch_selection.is_none());
+        assert_eq!(state.mode(), &Mode::BranchSelect);
+        assert!(state.require_base_branch_selection().is_err());
     }
 
     #[test]
-    fn test_show_help_initializes_overlay_and_toggles_back() {
+    fn test_show_help_initializes_overlay_and_is_idempotent() {
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
-        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let tmux = Arc::new(MockTmuxProvider::default());
         let keys = KeysConfig::default();
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
@@ -1474,15 +1822,15 @@ mod tests {
 
         process_action(Action::ShowHelp, &mut state, &ctx);
 
-        assert!(matches!(state.mode, Mode::Help { .. }));
-        let overlay = state.help_overlay.as_ref().unwrap();
+        assert!(matches!(state.mode(), Mode::Help { .. }));
+        let overlay = state.require_help_overlay().expect("help overlay");
         assert!(!overlay.rows.is_empty());
         assert_eq!(overlay.list.filtered.len(), overlay.rows.len());
 
         process_action(Action::ShowHelp, &mut state, &ctx);
 
-        assert_eq!(state.mode, Mode::RepoSelect);
-        assert!(state.help_overlay.is_none());
+        assert!(matches!(state.mode(), Mode::Help { .. }));
+        assert!(state.require_help_overlay().is_ok());
     }
 
     #[test]
@@ -1491,7 +1839,7 @@ mod tests {
         let mut state = AppState::new(repos, None);
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
-        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let tmux = Arc::new(MockTmuxProvider::default());
         let keys = KeysConfig::default();
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
@@ -1500,28 +1848,28 @@ mod tests {
         process_action(Action::ShowHelp, &mut state, &ctx);
 
         let initial_count = state
-            .help_overlay
-            .as_ref()
+            .require_help_overlay()
+            .ok()
             .map_or(0, |overlay| overlay.list.filtered.len());
         process_action(Action::SearchPush('d'), &mut state, &ctx);
         process_action(Action::SearchPush('e'), &mut state, &ctx);
 
         let filtered_count = state
-            .help_overlay
-            .as_ref()
+            .require_help_overlay()
+            .ok()
             .map_or(0, |overlay| overlay.list.filtered.len());
         assert!(filtered_count > 0);
         assert!(filtered_count <= initial_count);
 
         let before = state
-            .help_overlay
-            .as_ref()
+            .require_help_overlay()
+            .ok()
             .and_then(|overlay| overlay.list.selected)
             .unwrap_or(0);
         process_action(Action::MoveSelection(1), &mut state, &ctx);
         let after = state
-            .help_overlay
-            .as_ref()
+            .require_help_overlay()
+            .ok()
             .and_then(|overlay| overlay.list.selected)
             .unwrap_or(0);
         assert!(after >= before);
@@ -1534,7 +1882,7 @@ mod tests {
         state.set_active_list_page_rows(20);
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
-        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let tmux = Arc::new(MockTmuxProvider::default());
         let keys = KeysConfig::default();
         let matcher = SkimMatcherV2::default();
         let sender = make_sender();
@@ -1546,14 +1894,14 @@ mod tests {
             process_action(Action::MoveSelection(1), &mut state, &ctx);
         }
         let offset_before = state
-            .help_overlay
-            .as_ref()
+            .require_help_overlay()
+            .ok()
             .map_or(0, |overlay| overlay.list.scroll_offset);
 
         process_action(Action::MoveSelection(-1), &mut state, &ctx);
         let offset_after = state
-            .help_overlay
-            .as_ref()
+            .require_help_overlay()
+            .ok()
             .map_or(0, |overlay| overlay.list.scroll_offset);
 
         assert_eq!(offset_before, offset_after);
@@ -1578,7 +1926,7 @@ mod tests {
             process_action(Action::MoveSelection(1), &mut state, &ctx);
         }
 
-        let overlay = state.help_overlay.as_ref().expect("help overlay");
+        let overlay = state.require_help_overlay().expect("help overlay");
         let (indices, _total) = components::help::help_visual_metrics(overlay);
         let selected_logical = overlay.list.selected.expect("selected logical");
         let selected_visual = indices
@@ -1598,7 +1946,7 @@ mod tests {
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
         state.selected_repo_idx = Some(0);
-        state.mode = Mode::BranchSelect;
+        apply_transition!(state, ModeTransition::BranchSelect);
         state.branches = vec![BranchEntry {
             name: "main".into(),
             worktree_path: Some(PathBuf::from("/tmp/alpha")),
@@ -1607,7 +1955,7 @@ mod tests {
             remote: None,
             is_default: false,
             session_activity_ts: None,
-            agent_status: None,
+            agent_statuses: Vec::new(),
         }];
         state.branch_list.filtered = vec![(0, 0)];
         state.branch_list.selected = Some(0);
@@ -1625,10 +1973,12 @@ mod tests {
             OpenAction::Open {
                 path, session_name, ..
             } => {
-                assert_eq!(path, PathBuf::from("/tmp/alpha"));
+                assert_eq!(path, Some(PathBuf::from("/tmp/alpha")));
                 assert_eq!(session_name, "alpha");
             }
-            OpenAction::Quit | OpenAction::SetupComplete => panic!("Expected OpenAction::Open"),
+            OpenAction::Quit | OpenAction::SetupComplete => {
+                panic!("Expected OpenAction::Open")
+            }
         }
     }
 
@@ -1637,7 +1987,7 @@ mod tests {
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
         state.selected_repo_idx = Some(0);
-        state.mode = Mode::BranchSelect;
+        apply_transition!(state, ModeTransition::BranchSelect);
         state.branches = vec![BranchEntry {
             name: "dev".into(),
             worktree_path: None,
@@ -1646,7 +1996,7 @@ mod tests {
             remote: None,
             is_default: false,
             session_activity_ts: None,
-            agent_status: None,
+            agent_statuses: Vec::new(),
         }];
         state.branch_list.filtered = vec![(0, 0)];
         state.branch_list.selected = Some(0);
@@ -1660,7 +2010,7 @@ mod tests {
 
         let result = process_action(Action::OpenBranch, &mut state, &ctx);
         assert!(result.is_none());
-        assert!(matches!(state.mode, Mode::Loading(_)));
+        assert!(matches!(state.mode(), Mode::Loading(_)));
     }
 
     #[test]
@@ -1832,11 +2182,13 @@ mod tests {
                 session_name,
                 split_command,
             } => {
-                assert_eq!(path, PathBuf::from("/tmp/beta"));
+                assert_eq!(path, Some(PathBuf::from("/tmp/beta")));
                 assert_eq!(session_name, "beta");
                 assert_eq!(split_command.as_deref(), Some("hx"));
             }
-            OpenAction::Quit | OpenAction::SetupComplete => panic!("Expected OpenAction::Open"),
+            OpenAction::Quit | OpenAction::SetupComplete => {
+                panic!("Expected OpenAction::Open")
+            }
         }
     }
 
@@ -1844,7 +2196,7 @@ mod tests {
     fn test_new_branch_empty_name_shows_error() {
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
-        state.mode = Mode::BranchSelect;
+        apply_transition!(state, ModeTransition::BranchSelect);
         state.selected_repo_idx = Some(0);
         state.branch_list.input.text = String::new(); // empty
 
@@ -1861,8 +2213,8 @@ mod tests {
         process_action(Action::StartNewBranchFlow, &mut state, &ctx);
 
         assert_eq!(
-            state.mode,
-            Mode::BranchSelect,
+            state.mode(),
+            &Mode::BranchSelect,
             "Should stay in BranchSelect"
         );
         assert!(
@@ -1876,7 +2228,7 @@ mod tests {
     fn test_new_branch_with_name_enters_flow() {
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
-        state.mode = Mode::BranchSelect;
+        apply_transition!(state, ModeTransition::BranchSelect);
         state.selected_repo_idx = Some(0);
         state.branch_list.input.text = "feat/new".to_string();
         state.branches = vec![BranchEntry {
@@ -1887,7 +2239,7 @@ mod tests {
             remote: None,
             is_default: true,
             session_activity_ts: None,
-            agent_status: None,
+            agent_statuses: Vec::new(),
         }];
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider {
@@ -1902,16 +2254,22 @@ mod tests {
 
         process_action(Action::StartNewBranchFlow, &mut state, &ctx);
 
-        assert_eq!(state.mode, Mode::SelectBaseBranch);
-        assert!(state.base_branch_selection.is_some());
-        assert_eq!(state.base_branch_selection.unwrap().new_name, "feat/new");
+        assert_eq!(state.mode(), &Mode::SelectBaseBranch);
+        assert!(state.require_base_branch_selection().is_ok());
+        assert_eq!(
+            state
+                .require_base_branch_selection()
+                .expect("base branch selection")
+                .new_name,
+            "feat/new"
+        );
     }
 
     #[test]
     fn test_delete_worktree_no_worktree_shows_error() {
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
-        state.mode = Mode::BranchSelect;
+        apply_transition!(state, ModeTransition::BranchSelect);
         state.branches = vec![BranchEntry {
             name: "dev".to_string(),
             worktree_path: None,
@@ -1920,7 +2278,7 @@ mod tests {
             remote: None,
             is_default: false,
             session_activity_ts: None,
-            agent_status: None,
+            agent_statuses: Vec::new(),
         }];
         state.branch_list.filtered = vec![(0, 0)];
         state.branch_list.selected = Some(0);
@@ -1934,7 +2292,7 @@ mod tests {
 
         process_action(Action::DeleteWorktree, &mut state, &ctx);
 
-        assert_eq!(state.mode, Mode::BranchSelect);
+        assert_eq!(state.mode(), &Mode::BranchSelect);
         assert!(state.error.is_some());
         assert!(state.error.unwrap().contains("No worktree"));
     }
@@ -1943,7 +2301,7 @@ mod tests {
     fn test_delete_worktree_current_branch_shows_error() {
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
-        state.mode = Mode::BranchSelect;
+        apply_transition!(state, ModeTransition::BranchSelect);
         state.branches = vec![BranchEntry {
             name: "main".to_string(),
             worktree_path: Some(PathBuf::from("/tmp/alpha")),
@@ -1952,7 +2310,7 @@ mod tests {
             remote: None,
             is_default: false,
             session_activity_ts: None,
-            agent_status: None,
+            agent_statuses: Vec::new(),
         }];
         state.branch_list.filtered = vec![(0, 0)];
         state.branch_list.selected = Some(0);
@@ -1966,7 +2324,7 @@ mod tests {
 
         process_action(Action::DeleteWorktree, &mut state, &ctx);
 
-        assert_eq!(state.mode, Mode::BranchSelect);
+        assert_eq!(state.mode(), &Mode::BranchSelect);
         assert!(state.error.is_some());
         assert!(state.error.unwrap().contains("current branch"));
     }
@@ -1975,7 +2333,7 @@ mod tests {
     fn test_delete_worktree_valid_shows_confirm() {
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
-        state.mode = Mode::BranchSelect;
+        apply_transition!(state, ModeTransition::BranchSelect);
         state.branches = vec![BranchEntry {
             name: "dev".to_string(),
             worktree_path: Some(PathBuf::from("/tmp/alpha-dev")),
@@ -1984,7 +2342,7 @@ mod tests {
             remote: None,
             is_default: false,
             session_activity_ts: None,
-            agent_status: None,
+            agent_statuses: Vec::new(),
         }];
         state.branch_list.filtered = vec![(0, 0)];
         state.branch_list.selected = Some(0);
@@ -1999,8 +2357,8 @@ mod tests {
         process_action(Action::DeleteWorktree, &mut state, &ctx);
 
         assert_eq!(
-            state.mode,
-            Mode::ConfirmWorktreeDelete {
+            state.mode(),
+            &Mode::ConfirmWorktreeDelete {
                 branch_name: "dev".to_string(),
                 has_session: false,
             }
@@ -2012,7 +2370,7 @@ mod tests {
     fn test_delete_worktree_with_session_shows_session_warning() {
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
-        state.mode = Mode::BranchSelect;
+        apply_transition!(state, ModeTransition::BranchSelect);
         state.branches = vec![BranchEntry {
             name: "dev".to_string(),
             worktree_path: Some(PathBuf::from("/tmp/alpha-dev")),
@@ -2021,7 +2379,7 @@ mod tests {
             remote: None,
             is_default: false,
             session_activity_ts: None,
-            agent_status: None,
+            agent_statuses: Vec::new(),
         }];
         state.branch_list.filtered = vec![(0, 0)];
         state.branch_list.selected = Some(0);
@@ -2036,8 +2394,8 @@ mod tests {
         process_action(Action::DeleteWorktree, &mut state, &ctx);
 
         assert_eq!(
-            state.mode,
-            Mode::ConfirmWorktreeDelete {
+            state.mode(),
+            &Mode::ConfirmWorktreeDelete {
                 branch_name: "dev".to_string(),
                 has_session: true,
             }
@@ -2054,10 +2412,14 @@ mod tests {
         });
         let mut state = AppState::new(repos, None);
         state.selected_repo_idx = Some(0);
-        state.mode = Mode::ConfirmWorktreeDelete {
-            branch_name: "dev".to_string(),
-            has_session: true,
-        };
+        apply_transition!(state, ModeTransition::BranchSelect);
+        apply_transition!(
+            state,
+            ModeTransition::ConfirmWorktreeDelete {
+                branch_name: "dev".to_string(),
+                has_session: true,
+            },
+        );
         state.branches = vec![BranchEntry {
             name: "dev".to_string(),
             worktree_path: Some(PathBuf::from("/tmp/alpha-dev")),
@@ -2066,7 +2428,7 @@ mod tests {
             remote: None,
             is_default: false,
             session_activity_ts: None,
-            agent_status: None,
+            agent_statuses: Vec::new(),
         }];
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
@@ -2086,7 +2448,7 @@ mod tests {
 
         let killed = tmux.killed_sessions.lock().unwrap();
         assert_eq!(killed.as_slice(), &["alpha-dev"]);
-        assert!(matches!(state.mode, Mode::BranchSelect));
+        assert!(matches!(state.mode(), Mode::BranchSelect));
         assert_eq!(state.pending_worktree_deletes.len(), 1);
     }
 
@@ -2100,10 +2462,14 @@ mod tests {
         });
         let mut state = AppState::new(repos, None);
         state.selected_repo_idx = Some(0);
-        state.mode = Mode::ConfirmWorktreeDelete {
-            branch_name: "dev".to_string(),
-            has_session: false,
-        };
+        apply_transition!(state, ModeTransition::BranchSelect);
+        apply_transition!(
+            state,
+            ModeTransition::ConfirmWorktreeDelete {
+                branch_name: "dev".to_string(),
+                has_session: false,
+            },
+        );
         state.branches = vec![BranchEntry {
             name: "dev".to_string(),
             worktree_path: Some(PathBuf::from("/tmp/alpha-dev")),
@@ -2112,7 +2478,7 @@ mod tests {
             remote: None,
             is_default: false,
             session_activity_ts: None,
-            agent_status: None,
+            agent_statuses: Vec::new(),
         }];
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
@@ -2132,7 +2498,7 @@ mod tests {
 
         let killed = tmux.killed_sessions.lock().unwrap();
         assert!(killed.is_empty());
-        assert!(matches!(state.mode, Mode::BranchSelect));
+        assert!(matches!(state.mode(), Mode::BranchSelect));
         assert_eq!(state.pending_worktree_deletes.len(), 1);
     }
 
@@ -2167,6 +2533,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         assert!(state.pending_worktree_deletes.is_empty());
@@ -2196,6 +2563,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         assert!(state.pending_worktree_deletes.is_empty());
@@ -2435,16 +2803,16 @@ mod tests {
         process_action(Action::ShowHelp, &mut state, &ctx);
 
         let initial_selected = state
-            .help_overlay
-            .as_ref()
+            .require_help_overlay()
+            .ok()
             .and_then(|o| o.list.selected)
             .unwrap_or(0);
 
         process_action(Action::PageDown, &mut state, &ctx);
 
         let after = state
-            .help_overlay
-            .as_ref()
+            .require_help_overlay()
+            .ok()
             .and_then(|o| o.list.selected)
             .unwrap_or(0);
         assert!(
@@ -2474,16 +2842,16 @@ mod tests {
             process_action(Action::MoveSelection(1), &mut state, &ctx);
         }
         let before = state
-            .help_overlay
-            .as_ref()
+            .require_help_overlay()
+            .ok()
             .and_then(|o| o.list.selected)
             .unwrap_or(0);
 
         process_action(Action::PageUp, &mut state, &ctx);
 
         let after = state
-            .help_overlay
-            .as_ref()
+            .require_help_overlay()
+            .ok()
             .and_then(|o| o.list.selected)
             .unwrap_or(0);
         assert!(
@@ -2510,8 +2878,8 @@ mod tests {
         process_action(Action::HalfPageDown, &mut state, &ctx);
 
         let after = state
-            .help_overlay
-            .as_ref()
+            .require_help_overlay()
+            .ok()
             .and_then(|o| o.list.selected)
             .unwrap_or(0);
         assert_eq!(after, 10, "HalfPageDown should move by half the viewport");
@@ -2533,43 +2901,42 @@ mod tests {
         process_action(Action::ShowHelp, &mut state, &ctx);
 
         let total = state
-            .help_overlay
-            .as_ref()
+            .require_help_overlay()
             .map_or(0, |o| o.list.filtered.len());
         assert!(total > 1, "Help overlay should have multiple rows");
 
         process_action(Action::MoveBottom, &mut state, &ctx);
         let after_bottom = state
-            .help_overlay
-            .as_ref()
+            .require_help_overlay()
+            .ok()
             .and_then(|o| o.list.selected)
             .unwrap_or(0);
         assert_eq!(after_bottom, total - 1, "MoveBottom should go to last item");
 
         process_action(Action::MoveTop, &mut state, &ctx);
         let after_top = state
-            .help_overlay
-            .as_ref()
+            .require_help_overlay()
+            .ok()
             .and_then(|o| o.list.selected)
             .unwrap_or(usize::MAX);
         assert_eq!(after_top, 0, "MoveTop should go to first item");
         assert_eq!(
             state
-                .help_overlay
-                .as_ref()
+                .require_help_overlay()
+                .ok()
                 .map_or(usize::MAX, |o| o.list.scroll_offset),
             0,
             "MoveTop should reset scroll offset to 0"
         );
     }
 
-    // ── Help toggle + parent mode round-trip tests ──
+    // ── Help open-only + parent mode round-trip tests ──
 
     #[test]
-    fn test_help_toggle_from_branch_select_restores_mode() {
+    fn test_help_from_branch_select_restores_mode_on_go_back() {
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
-        state.mode = Mode::BranchSelect;
+        apply_transition!(state, ModeTransition::BranchSelect);
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
@@ -2579,27 +2946,32 @@ mod tests {
         let ctx = default_ctx(&git, &tmux, &keys, &matcher, &sender);
 
         process_action(Action::ShowHelp, &mut state, &ctx);
-        assert!(matches!(state.mode, Mode::Help { .. }));
-        assert!(state.help_overlay.is_some());
+        assert!(matches!(state.mode(), Mode::Help { .. }));
+        assert!(state.require_help_overlay().is_ok());
 
-        process_action(Action::ShowHelp, &mut state, &ctx);
-        assert_eq!(state.mode, Mode::BranchSelect);
+        process_action(Action::GoBack, &mut state, &ctx);
+        assert_eq!(state.mode(), &Mode::BranchSelect);
         assert!(
-            state.help_overlay.is_none(),
-            "Toggle off should clear help_overlay"
+            state.require_help_overlay().is_err(),
+            "GoBack should clear help_overlay"
         );
     }
 
     #[test]
-    fn test_help_toggle_from_select_base_branch_restores_mode() {
+    fn test_help_from_select_base_branch_restores_mode_on_go_back() {
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
-        state.mode = Mode::SelectBaseBranch;
-        state.base_branch_selection = Some(kiosk_core::state::BaseBranchSelection {
-            new_name: "feat".into(),
-            bases: vec!["main".into()],
-            list: SearchableList::new(1),
-        });
+        apply_transition!(state, ModeTransition::BranchSelect);
+        apply_transition!(
+            state,
+            ModeTransition::SelectBaseBranch {
+                flow: kiosk_core::state::BaseBranchSelection {
+                    new_name: "feat".into(),
+                    bases: vec!["main".into()],
+                    list: SearchableList::new(1),
+                },
+            },
+        );
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
@@ -2609,25 +2981,29 @@ mod tests {
         let ctx = default_ctx(&git, &tmux, &keys, &matcher, &sender);
 
         process_action(Action::ShowHelp, &mut state, &ctx);
-        assert!(matches!(state.mode, Mode::Help { .. }));
+        assert!(matches!(state.mode(), Mode::Help { .. }));
 
-        process_action(Action::ShowHelp, &mut state, &ctx);
-        assert_eq!(state.mode, Mode::SelectBaseBranch);
-        assert!(state.help_overlay.is_none());
+        process_action(Action::GoBack, &mut state, &ctx);
+        assert_eq!(state.mode(), &Mode::SelectBaseBranch);
+        assert!(state.require_help_overlay().is_err());
         assert!(
-            state.base_branch_selection.is_some(),
+            state.require_base_branch_selection().is_ok(),
             "Base branch selection should survive help round-trip"
         );
     }
 
     #[test]
-    fn test_help_toggle_from_confirm_worktree_delete_restores_mode() {
+    fn test_help_from_confirm_worktree_delete_restores_mode_on_go_back() {
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
-        state.mode = Mode::ConfirmWorktreeDelete {
-            branch_name: "dev".to_string(),
-            has_session: true,
-        };
+        apply_transition!(state, ModeTransition::BranchSelect);
+        apply_transition!(
+            state,
+            ModeTransition::ConfirmWorktreeDelete {
+                branch_name: "dev".to_string(),
+                has_session: true,
+            },
+        );
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
@@ -2637,17 +3013,17 @@ mod tests {
         let ctx = default_ctx(&git, &tmux, &keys, &matcher, &sender);
 
         process_action(Action::ShowHelp, &mut state, &ctx);
-        assert!(matches!(state.mode, Mode::Help { .. }));
+        assert!(matches!(state.mode(), Mode::Help { .. }));
 
-        process_action(Action::ShowHelp, &mut state, &ctx);
+        process_action(Action::GoBack, &mut state, &ctx);
         assert_eq!(
-            state.mode,
-            Mode::ConfirmWorktreeDelete {
+            state.mode(),
+            &Mode::ConfirmWorktreeDelete {
                 branch_name: "dev".to_string(),
                 has_session: true,
             }
         );
-        assert!(state.help_overlay.is_none());
+        assert!(state.require_help_overlay().is_err());
     }
 
     // ── Help search filtering tests ──
@@ -2671,7 +3047,7 @@ mod tests {
             process_action(Action::SearchPush(c), &mut state, &ctx);
         }
 
-        let overlay = state.help_overlay.as_ref().expect("overlay");
+        let overlay = state.require_help_overlay().expect("overlay");
         assert!(
             overlay.list.filtered.is_empty(),
             "Nonsense search should yield zero results"
@@ -2702,14 +3078,13 @@ mod tests {
             process_action(Action::MoveSelection(1), &mut state, &ctx);
         }
         let offset_before_search = state
-            .help_overlay
-            .as_ref()
+            .require_help_overlay()
             .map_or(0, |o| o.list.scroll_offset);
         assert!(offset_before_search > 0, "Should have scrolled down");
 
         // Type a search query — scroll_offset and selection should reset
         process_action(Action::SearchPush('q'), &mut state, &ctx);
-        let overlay = state.help_overlay.as_ref().expect("overlay");
+        let overlay = state.require_help_overlay().expect("overlay");
         assert_eq!(
             overlay.list.scroll_offset, 0,
             "Search should reset scroll offset"
@@ -2722,13 +3097,13 @@ mod tests {
 
         // Clear search — should restore full list with offset reset
         process_action(Action::SearchPop, &mut state, &ctx);
-        let overlay = state.help_overlay.as_ref().expect("overlay");
+        let overlay = state.require_help_overlay().expect("overlay");
         assert_eq!(
             overlay.list.scroll_offset, 0,
             "Clearing search should keep offset at 0"
         );
         assert_eq!(overlay.list.selected, Some(0));
-        let initial_count = state.help_overlay.as_ref().map_or(0, |o| o.rows.len());
+        let initial_count = state.require_help_overlay().map_or(0, |o| o.rows.len());
         assert_eq!(
             overlay.list.filtered.len(),
             initial_count,
@@ -2757,7 +3132,8 @@ mod tests {
             process_action(Action::SearchPush(c), &mut state, &ctx);
         }
 
-        let help_cursor = |s: &AppState| s.help_overlay.as_ref().map_or(0, |o| o.list.input.cursor);
+        let help_cursor =
+            |s: &AppState| s.require_help_overlay().map_or(0, |o| o.list.input.cursor);
         assert_eq!(help_cursor(&state), 11); // at end
 
         // Cursor left
@@ -2809,32 +3185,30 @@ mod tests {
             process_action(Action::SearchPush(c), &mut state, &ctx);
         }
 
-        let overlay = state.help_overlay.as_ref().expect("overlay");
+        let overlay = state.require_help_overlay().expect("overlay");
         assert_eq!(overlay.list.input.text, "café");
         assert_eq!(overlay.list.input.cursor, "café".len()); // 5 bytes
 
         // Backspace should remove 'é' (2 bytes)
         process_action(Action::SearchPop, &mut state, &ctx);
-        let overlay = state.help_overlay.as_ref().expect("overlay");
+        let overlay = state.require_help_overlay().expect("overlay");
         assert_eq!(overlay.list.input.text, "caf");
         assert_eq!(overlay.list.input.cursor, 3);
 
         // Cursor left and right should handle multibyte correctly
         process_action(Action::SearchPush('ñ'), &mut state, &ctx);
-        let overlay = state.help_overlay.as_ref().expect("overlay");
+        let overlay = state.require_help_overlay().expect("overlay");
         assert_eq!(overlay.list.input.text, "cafñ");
 
         process_action(Action::CursorLeft, &mut state, &ctx);
         let cursor = state
-            .help_overlay
-            .as_ref()
+            .require_help_overlay()
             .map_or(0, |o| o.list.input.cursor);
         assert_eq!(cursor, 3, "Cursor should be before 'ñ'");
 
         process_action(Action::CursorRight, &mut state, &ctx);
         let cursor = state
-            .help_overlay
-            .as_ref()
+            .require_help_overlay()
             .map_or(0, |o| o.list.input.cursor);
         assert_eq!(cursor, "cafñ".len(), "Cursor should be after 'ñ'");
     }
@@ -2843,7 +3217,7 @@ mod tests {
     fn test_repos_discovered_preserves_search_state() {
         let repos = vec![make_repo("alpha"), make_repo("beta"), make_repo("gamma")];
         let mut state = AppState::new(repos, None);
-        state.mode = Mode::RepoSelect;
+        apply_transition!(state, ModeTransition::RepoSelect);
 
         // Simulate user typing "al" in search
         state.repo_list.input.text = "al".to_string();
@@ -2882,6 +3256,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         // Search text and cursor must be preserved
@@ -2900,14 +3275,14 @@ mod tests {
         }
         assert_eq!(state.repos.len(), 4);
         // Mode should stay RepoSelect, not get reset to Loading
-        assert_eq!(state.mode, Mode::RepoSelect);
+        assert_eq!(state.mode(), &Mode::RepoSelect);
     }
 
     #[test]
     fn test_repos_discovered_does_not_kick_from_branch_select() {
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
-        state.mode = Mode::BranchSelect;
+        apply_transition!(state, ModeTransition::BranchSelect);
         state.selected_repo_idx = Some(0);
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
@@ -2923,10 +3298,11 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         // Should stay in BranchSelect
-        assert_eq!(state.mode, Mode::BranchSelect);
+        assert_eq!(state.mode(), &Mode::BranchSelect);
         assert_eq!(state.repos.len(), 2);
     }
 
@@ -3233,7 +3609,7 @@ mod tests {
     fn test_help_overlay_hides_background_selection_but_keeps_help_selection() {
         let repos = vec![make_repo("alpha"), make_repo("beta")];
         let mut state = AppState::new(repos, None);
-        state.mode = Mode::RepoSelect;
+        apply_transition!(state, ModeTransition::RepoSelect);
         state.repo_list.selected = Some(0);
         show_help(&mut state);
 
@@ -3251,7 +3627,7 @@ mod tests {
     fn test_error_toast_hides_selection_in_repo_list() {
         let repos = vec![make_repo("alpha"), make_repo("beta")];
         let mut state = AppState::new(repos, None);
-        state.mode = Mode::RepoSelect;
+        apply_transition!(state, ModeTransition::RepoSelect);
         state.repo_list.selected = Some(0);
         state.error = Some("boom".to_string());
 
@@ -3270,7 +3646,7 @@ mod tests {
     fn test_error_toast_hides_help_selection() {
         let repos = vec![make_repo("alpha"), make_repo("beta")];
         let mut state = AppState::new(repos, None);
-        state.mode = Mode::RepoSelect;
+        apply_transition!(state, ModeTransition::RepoSelect);
         show_help(&mut state);
         state.error = Some("boom".to_string());
 
@@ -3289,7 +3665,7 @@ mod tests {
     fn test_help_overlay_dims_background_main_area() {
         let repos = vec![make_repo("alpha"), make_repo("beta")];
         let mut state = AppState::new(repos, None);
-        state.mode = Mode::RepoSelect;
+        apply_transition!(state, ModeTransition::RepoSelect);
         show_help(&mut state);
 
         let buf = render_app_to_buffer(&mut state, 100, 30);
@@ -3304,7 +3680,7 @@ mod tests {
     fn test_error_toast_dims_background_main_area() {
         let repos = vec![make_repo("alpha"), make_repo("beta")];
         let mut state = AppState::new(repos, None);
-        state.mode = Mode::RepoSelect;
+        apply_transition!(state, ModeTransition::RepoSelect);
         state.error = Some("boom".to_string());
 
         let buf = render_app_to_buffer(&mut state, 100, 30);
@@ -3319,12 +3695,23 @@ mod tests {
     fn test_draw_mode_confirm_delete_renders_when_state_mode_is_help() {
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
-        state.mode = Mode::Help {
-            previous: Box::new(Mode::ConfirmWorktreeDelete {
+        apply_transition!(state, ModeTransition::BranchSelect);
+        apply_transition!(
+            state,
+            ModeTransition::ConfirmWorktreeDelete {
                 branch_name: "main".to_string(),
                 has_session: true,
-            }),
-        };
+            },
+        );
+        apply_transition!(
+            state,
+            ModeTransition::OpenHelp {
+                overlay: kiosk_core::state::HelpOverlayState {
+                    list: SearchableList::new(0),
+                    rows: Vec::new(),
+                },
+            },
+        );
 
         let backend = TestBackend::new(100, 30);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -3344,7 +3731,7 @@ mod tests {
         let rendered = buf_to_string(terminal.backend().buffer());
         assert!(
             rendered.contains("Confirm delete"),
-            "confirm delete dialog should render from mode argument while state.mode is Help:\n{rendered}"
+            "confirm delete dialog should render from mode argument while state.mode() is Help:\n{rendered}"
         );
         assert!(
             rendered.contains("\"main\""),
@@ -3356,7 +3743,18 @@ mod tests {
 
     fn make_setup_state() -> AppState {
         let mut state = AppState::new_setup();
-        state.mode = Mode::Setup(kiosk_core::state::SetupStep::SearchDirs);
+        let setup = state
+            .require_setup()
+            .ok()
+            .cloned()
+            .unwrap_or_else(kiosk_core::state::SetupState::new);
+        apply_transition!(
+            state,
+            ModeTransition::Setup {
+                step: kiosk_core::state::SetupStep::SearchDirs,
+                setup,
+            },
+        );
         state
     }
 
@@ -3378,13 +3776,16 @@ mod tests {
         let (_tmp, base) = setup_temp_dirs(&["alpha", "beta"]);
 
         let mut state = make_setup_state();
-        let setup = state.setup.as_mut().unwrap();
-        setup.input.text = base;
-        setup.input.cursor = setup.input.text.len();
+        state
+            .update_setup(|setup| {
+                setup.input.text = base;
+                setup.input.cursor = setup.input.text.len();
+            })
+            .unwrap();
 
         handle_setup_tab_complete(&mut state);
 
-        let setup = state.setup.as_ref().unwrap();
+        let setup = state.require_setup().expect("setup context");
         assert_eq!(setup.completions.len(), 2);
         assert_eq!(setup.selected_completion, None);
     }
@@ -3394,18 +3795,28 @@ mod tests {
         let (_tmp, base) = setup_temp_dirs(&["only_dir"]);
 
         let mut state = make_setup_state();
-        let setup = state.setup.as_mut().unwrap();
-        setup.input.text = format!("{base}on");
-        setup.input.cursor = setup.input.text.len();
+        state
+            .update_setup(|setup| {
+                setup.input.text = format!("{base}on");
+                setup.input.cursor = setup.input.text.len();
+            })
+            .unwrap();
 
         // First Tab generates completions
         handle_setup_tab_complete(&mut state);
-        assert_eq!(state.setup.as_ref().unwrap().completions.len(), 1);
+        assert_eq!(
+            state
+                .require_setup()
+                .expect("setup context")
+                .completions
+                .len(),
+            1
+        );
 
         // Second Tab fills in the single completion
         handle_setup_tab_complete(&mut state);
 
-        let setup = state.setup.as_ref().unwrap();
+        let setup = state.require_setup().expect("setup context");
         assert_eq!(setup.input.text, format!("{base}only_dir/"));
     }
 
@@ -3414,18 +3825,28 @@ mod tests {
         let (_tmp, base) = setup_temp_dirs(&["Desktop", "Development"]);
 
         let mut state = make_setup_state();
-        let setup = state.setup.as_mut().unwrap();
-        setup.input.text = format!("{base}D");
-        setup.input.cursor = setup.input.text.len();
+        state
+            .update_setup(|setup| {
+                setup.input.text = format!("{base}D");
+                setup.input.cursor = setup.input.text.len();
+            })
+            .unwrap();
 
         // First Tab generates completions
         handle_setup_tab_complete(&mut state);
-        assert_eq!(state.setup.as_ref().unwrap().completions.len(), 2);
+        assert_eq!(
+            state
+                .require_setup()
+                .expect("setup context")
+                .completions
+                .len(),
+            2
+        );
 
         // Second Tab fills to common prefix
         handle_setup_tab_complete(&mut state);
 
-        let setup = state.setup.as_ref().unwrap();
+        let setup = state.require_setup().expect("setup context");
         assert_eq!(setup.input.text, format!("{base}De"));
         assert_eq!(setup.completions.len(), 2);
         assert_eq!(setup.selected_completion, None);
@@ -3436,15 +3857,18 @@ mod tests {
         let (_tmp, base) = setup_temp_dirs(&["Desktop", "Development"]);
 
         let mut state = make_setup_state();
-        let setup = state.setup.as_mut().unwrap();
-        setup.input.text = format!("{base}De");
-        setup.input.cursor = setup.input.text.len();
-        setup.completions = vec![format!("{base}Desktop"), format!("{base}Development")];
-        setup.selected_completion = Some(1);
+        state
+            .update_setup(|setup| {
+                setup.input.text = format!("{base}De");
+                setup.input.cursor = setup.input.text.len();
+                setup.completions = vec![format!("{base}Desktop"), format!("{base}Development")];
+                setup.selected_completion = Some(1);
+            })
+            .unwrap();
 
         handle_setup_tab_complete(&mut state);
 
-        let setup = state.setup.as_ref().unwrap();
+        let setup = state.require_setup().expect("setup context");
         assert_eq!(setup.input.text, format!("{base}Development/"));
     }
 
@@ -3453,15 +3877,18 @@ mod tests {
         let (_tmp, base) = setup_temp_dirs(&["Desktop", "Development"]);
 
         let mut state = make_setup_state();
-        let setup = state.setup.as_mut().unwrap();
-        setup.input.text = format!("{base}De");
-        setup.input.cursor = setup.input.text.len();
-        setup.completions = vec![format!("{base}Desktop"), format!("{base}Development")];
-        setup.selected_completion = None;
+        state
+            .update_setup(|setup| {
+                setup.input.text = format!("{base}De");
+                setup.input.cursor = setup.input.text.len();
+                setup.completions = vec![format!("{base}Desktop"), format!("{base}Development")];
+                setup.selected_completion = None;
+            })
+            .unwrap();
 
         handle_setup_tab_complete(&mut state);
 
-        let setup = state.setup.as_ref().unwrap();
+        let setup = state.require_setup().expect("setup context");
         assert_eq!(setup.input.text, format!("{base}Desktop/"));
     }
 
@@ -3470,67 +3897,121 @@ mod tests {
     #[test]
     fn setup_move_down_from_none_selects_first() {
         let mut state = make_setup_state();
-        let setup = state.setup.as_mut().unwrap();
-        setup.completions = vec!["a".into(), "b".into()];
-        setup.selected_completion = None;
+        state
+            .update_setup(|setup| {
+                setup.completions = vec!["a".into(), "b".into()];
+                setup.selected_completion = None;
+            })
+            .unwrap();
 
         handle_setup_move_selection(&mut state, 1);
-        assert_eq!(state.setup.as_ref().unwrap().selected_completion, Some(0));
+        assert_eq!(
+            state
+                .require_setup()
+                .expect("setup context")
+                .selected_completion,
+            Some(0)
+        );
     }
 
     #[test]
     fn setup_move_up_from_none_selects_last() {
         let mut state = make_setup_state();
-        let setup = state.setup.as_mut().unwrap();
-        setup.completions = vec!["a".into(), "b".into(), "c".into()];
-        setup.selected_completion = None;
+        state
+            .update_setup(|setup| {
+                setup.completions = vec!["a".into(), "b".into(), "c".into()];
+                setup.selected_completion = None;
+            })
+            .unwrap();
 
         handle_setup_move_selection(&mut state, -1);
-        assert_eq!(state.setup.as_ref().unwrap().selected_completion, Some(2));
+        assert_eq!(
+            state
+                .require_setup()
+                .expect("setup context")
+                .selected_completion,
+            Some(2)
+        );
     }
 
     #[test]
     fn setup_move_down_increments_selection() {
         let mut state = make_setup_state();
-        let setup = state.setup.as_mut().unwrap();
-        setup.completions = vec!["a".into(), "b".into(), "c".into()];
-        setup.selected_completion = Some(0);
+        state
+            .update_setup(|setup| {
+                setup.completions = vec!["a".into(), "b".into(), "c".into()];
+                setup.selected_completion = Some(0);
+            })
+            .unwrap();
 
         handle_setup_move_selection(&mut state, 1);
-        assert_eq!(state.setup.as_ref().unwrap().selected_completion, Some(1));
+        assert_eq!(
+            state
+                .require_setup()
+                .expect("setup context")
+                .selected_completion,
+            Some(1)
+        );
     }
 
     #[test]
     fn setup_move_down_past_last_deselects() {
         let mut state = make_setup_state();
-        let setup = state.setup.as_mut().unwrap();
-        setup.completions = vec!["a".into(), "b".into()];
-        setup.selected_completion = Some(1);
+        state
+            .update_setup(|setup| {
+                setup.completions = vec!["a".into(), "b".into()];
+                setup.selected_completion = Some(1);
+            })
+            .unwrap();
 
         handle_setup_move_selection(&mut state, 1);
-        assert_eq!(state.setup.as_ref().unwrap().selected_completion, None);
+        assert_eq!(
+            state
+                .require_setup()
+                .expect("setup context")
+                .selected_completion,
+            None
+        );
     }
 
     #[test]
     fn setup_move_up_from_first_deselects() {
         let mut state = make_setup_state();
-        let setup = state.setup.as_mut().unwrap();
-        setup.completions = vec!["a".into(), "b".into()];
-        setup.selected_completion = Some(0);
+        state
+            .update_setup(|setup| {
+                setup.completions = vec!["a".into(), "b".into()];
+                setup.selected_completion = Some(0);
+            })
+            .unwrap();
 
         handle_setup_move_selection(&mut state, -1);
-        assert_eq!(state.setup.as_ref().unwrap().selected_completion, None);
+        assert_eq!(
+            state
+                .require_setup()
+                .expect("setup context")
+                .selected_completion,
+            None
+        );
     }
 
     #[test]
     fn setup_move_on_empty_completions_is_noop() {
         let mut state = make_setup_state();
-        let setup = state.setup.as_mut().unwrap();
-        setup.completions = Vec::new();
-        setup.selected_completion = None;
+        state
+            .update_setup(|setup| {
+                setup.completions = Vec::new();
+                setup.selected_completion = None;
+            })
+            .unwrap();
 
         handle_setup_move_selection(&mut state, 1);
-        assert_eq!(state.setup.as_ref().unwrap().selected_completion, None);
+        assert_eq!(
+            state
+                .require_setup()
+                .expect("setup context")
+                .selected_completion,
+            None
+        );
     }
 
     // ── Enter / add directory ──
@@ -3538,16 +4019,19 @@ mod tests {
     #[test]
     fn setup_enter_no_selection_adds_typed_text() {
         let mut state = make_setup_state();
-        let setup = state.setup.as_mut().unwrap();
-        setup.input.text = "~/my-projects".into();
-        setup.input.cursor = setup.input.text.len();
-        setup.completions = vec!["~/my-projects-extra".into()];
-        setup.selected_completion = None;
+        state
+            .update_setup(|setup| {
+                setup.input.text = "~/my-projects".into();
+                setup.input.cursor = setup.input.text.len();
+                setup.completions = vec!["~/my-projects-extra".into()];
+                setup.selected_completion = None;
+            })
+            .unwrap();
 
         let result = handle_setup_add_dir(&mut state);
         assert!(result.is_none());
 
-        let setup = state.setup.as_ref().unwrap();
+        let setup = state.require_setup().expect("setup context");
         assert!(setup.dirs.contains(&"~/my-projects".to_string()));
         assert!(setup.input.text.is_empty());
     }
@@ -3557,16 +4041,19 @@ mod tests {
         let (_tmp, base) = setup_temp_dirs(&["Desktop", "Development"]);
 
         let mut state = make_setup_state();
-        let setup = state.setup.as_mut().unwrap();
-        setup.input.text = format!("{base}De");
-        setup.input.cursor = setup.input.text.len();
-        setup.completions = vec![format!("{base}Desktop"), format!("{base}Development")];
-        setup.selected_completion = Some(1);
+        state
+            .update_setup(|setup| {
+                setup.input.text = format!("{base}De");
+                setup.input.cursor = setup.input.text.len();
+                setup.completions = vec![format!("{base}Desktop"), format!("{base}Development")];
+                setup.selected_completion = Some(1);
+            })
+            .unwrap();
 
         let result = handle_setup_add_dir(&mut state);
         assert!(result.is_none());
 
-        let setup = state.setup.as_ref().unwrap();
+        let setup = state.require_setup().expect("setup context");
         assert_eq!(setup.input.text, format!("{base}Development/"));
         assert!(setup.dirs.is_empty());
     }
@@ -3574,9 +4061,12 @@ mod tests {
     #[test]
     fn setup_enter_empty_with_dirs_completes_setup() {
         let mut state = make_setup_state();
-        let setup = state.setup.as_mut().unwrap();
-        setup.input.text = String::new();
-        setup.dirs = vec!["~/Projects".into()];
+        state
+            .update_setup(|setup| {
+                setup.input.text = String::new();
+                setup.dirs = vec!["~/Projects".into()];
+            })
+            .unwrap();
 
         let result = handle_setup_add_dir(&mut state);
         assert!(matches!(result, Some(OpenAction::SetupComplete)));
@@ -3585,9 +4075,12 @@ mod tests {
     #[test]
     fn setup_enter_empty_without_dirs_shows_error() {
         let mut state = make_setup_state();
-        let setup = state.setup.as_mut().unwrap();
-        setup.input.text = String::new();
-        setup.dirs = Vec::new();
+        state
+            .update_setup(|setup| {
+                setup.input.text = String::new();
+                setup.dirs = Vec::new();
+            })
+            .unwrap();
 
         let result = handle_setup_add_dir(&mut state);
         assert!(result.is_none());
@@ -3598,14 +4091,17 @@ mod tests {
     #[test]
     fn setup_enter_does_not_add_duplicate_dirs() {
         let mut state = make_setup_state();
-        let setup = state.setup.as_mut().unwrap();
-        setup.dirs = vec!["~/Projects".into()];
-        setup.input.text = "~/Projects".into();
-        setup.input.cursor = setup.input.text.len();
+        state
+            .update_setup(|setup| {
+                setup.dirs = vec!["~/Projects".into()];
+                setup.input.text = "~/Projects".into();
+                setup.input.cursor = setup.input.text.len();
+            })
+            .unwrap();
 
         handle_setup_add_dir(&mut state);
 
-        let setup = state.setup.as_ref().unwrap();
+        let setup = state.require_setup().expect("setup context");
         assert_eq!(setup.dirs.len(), 1);
     }
 
@@ -3616,16 +4112,19 @@ mod tests {
         let (_tmp, base) = setup_temp_dirs(&["Desktop"]);
 
         let mut state = make_setup_state();
-        let setup = state.setup.as_mut().unwrap();
-        setup.input.text = format!("{base}D");
-        setup.input.cursor = setup.input.text.len();
-        setup.completions = vec![format!("{base}Desktop")];
-        setup.selected_completion = Some(0);
+        state
+            .update_setup(|setup| {
+                setup.input.text = format!("{base}D");
+                setup.input.cursor = setup.input.text.len();
+                setup.completions = vec![format!("{base}Desktop")];
+                setup.selected_completion = Some(0);
+            })
+            .unwrap();
 
         let matcher = SkimMatcherV2::default();
         handle_search_push(&mut state, &matcher, 'e');
 
-        let setup = state.setup.as_ref().unwrap();
+        let setup = state.require_setup().expect("setup context");
         assert_eq!(setup.selected_completion, None);
         assert!(setup.input.text.ends_with("De"));
     }
@@ -3635,14 +4134,17 @@ mod tests {
         let (_tmp, base) = setup_temp_dirs(&["Desktop", "Development", "Documents"]);
 
         let mut state = make_setup_state();
-        let setup = state.setup.as_mut().unwrap();
-        setup.input.text = format!("{base}D");
-        setup.input.cursor = setup.input.text.len();
+        state
+            .update_setup(|setup| {
+                setup.input.text = format!("{base}D");
+                setup.input.cursor = setup.input.text.len();
+            })
+            .unwrap();
 
         let matcher = SkimMatcherV2::default();
         handle_search_push(&mut state, &matcher, 'e');
 
-        let setup = state.setup.as_ref().unwrap();
+        let setup = state.require_setup().expect("setup context");
         assert_eq!(setup.completions.len(), 2);
         let names: Vec<&str> = setup
             .completions
@@ -3658,14 +4160,17 @@ mod tests {
         let (_tmp, base) = setup_temp_dirs(&["Desktop", "Development", "Documents"]);
 
         let mut state = make_setup_state();
-        let setup = state.setup.as_mut().unwrap();
-        setup.input.text = format!("{base}De");
-        setup.input.cursor = setup.input.text.len();
+        state
+            .update_setup(|setup| {
+                setup.input.text = format!("{base}De");
+                setup.input.cursor = setup.input.text.len();
+            })
+            .unwrap();
 
         let matcher = SkimMatcherV2::default();
         handle_search_pop(&mut state, &matcher);
 
-        let setup = state.setup.as_ref().unwrap();
+        let setup = state.require_setup().expect("setup context");
         assert_eq!(setup.completions.len(), 3);
         assert_eq!(setup.selected_completion, None);
     }
@@ -3676,30 +4181,33 @@ mod tests {
     fn setup_continue_transitions_to_search_dirs() {
         let mut state = AppState::new_setup();
         assert_eq!(
-            state.mode,
-            Mode::Setup(kiosk_core::state::SetupStep::Welcome)
+            state.mode(),
+            &Mode::Setup(kiosk_core::state::SetupStep::Welcome)
         );
 
         handle_setup_continue(&mut state);
         assert_eq!(
-            state.mode,
-            Mode::Setup(kiosk_core::state::SetupStep::SearchDirs)
+            state.mode(),
+            &Mode::Setup(kiosk_core::state::SetupStep::SearchDirs)
         );
-        assert!(state.setup.is_some());
+        assert!(state.require_setup().is_ok());
     }
 
     #[test]
     fn setup_continue_preserves_existing_state() {
         let mut state = make_setup_state();
-        let setup = state.setup.as_mut().unwrap();
-        setup.dirs.push("~/existing".to_string());
+        state
+            .update_setup(|setup| {
+                setup.dirs.push("~/existing".to_string());
+            })
+            .unwrap();
 
         handle_setup_continue(&mut state);
         assert_eq!(
-            state.mode,
-            Mode::Setup(kiosk_core::state::SetupStep::SearchDirs)
+            state.mode(),
+            &Mode::Setup(kiosk_core::state::SetupStep::SearchDirs)
         );
-        assert_eq!(state.setup.as_ref().unwrap().dirs.len(), 1);
+        assert_eq!(state.require_setup().expect("setup context").dirs.len(), 1);
     }
 
     // ── Full flow integration ──
@@ -3716,34 +4224,49 @@ mod tests {
             handle_search_push(&mut state, &matcher, c);
         }
 
-        let setup = state.setup.as_ref().unwrap();
+        let setup = state.require_setup().expect("setup context");
         assert_eq!(setup.completions.len(), 2);
         assert_eq!(setup.selected_completion, None);
 
         // Navigate down to highlight first completion
         handle_setup_move_selection(&mut state, 1);
-        assert_eq!(state.setup.as_ref().unwrap().selected_completion, Some(0));
+        assert_eq!(
+            state
+                .require_setup()
+                .expect("setup context")
+                .selected_completion,
+            Some(0)
+        );
 
         // Navigate down again to highlight second completion (Development)
         handle_setup_move_selection(&mut state, 1);
-        assert_eq!(state.setup.as_ref().unwrap().selected_completion, Some(1));
+        assert_eq!(
+            state
+                .require_setup()
+                .expect("setup context")
+                .selected_completion,
+            Some(1)
+        );
 
         // Press Enter to navigate into Development/
         handle_setup_add_dir(&mut state);
-        let setup = state.setup.as_ref().unwrap();
+        let setup = state.require_setup().expect("setup context");
         assert!(setup.input.text.ends_with("Development/"));
         assert!(setup.dirs.is_empty());
 
         // Clear input and type the path directly, then add it
-        let setup = state.setup.as_mut().unwrap();
-        setup.input.clear();
-        setup.completions.clear();
-        setup.selected_completion = None;
-        setup.input.text = format!("{base}Development");
-        setup.input.cursor = setup.input.text.len();
+        state
+            .update_setup(|setup| {
+                setup.input.clear();
+                setup.completions.clear();
+                setup.selected_completion = None;
+                setup.input.text = format!("{base}Development");
+                setup.input.cursor = setup.input.text.len();
+            })
+            .unwrap();
 
         handle_setup_add_dir(&mut state);
-        let setup = state.setup.as_ref().unwrap();
+        let setup = state.require_setup().expect("setup context");
         assert_eq!(setup.dirs.len(), 1);
         assert!(setup.dirs[0].ends_with("Development"));
 
@@ -3757,21 +4280,33 @@ mod tests {
     #[test]
     fn setup_cancel_deselects_when_selected() {
         let mut state = make_setup_state();
-        let setup = state.setup.as_mut().unwrap();
-        setup.completions = vec!["a".into(), "b".into()];
-        setup.selected_completion = Some(1);
+        state
+            .update_setup(|setup| {
+                setup.completions = vec!["a".into(), "b".into()];
+                setup.selected_completion = Some(1);
+            })
+            .unwrap();
 
         let result = handle_setup_cancel(&mut state);
         assert!(result.is_none());
-        assert_eq!(state.setup.as_ref().unwrap().selected_completion, None);
+        assert_eq!(
+            state
+                .require_setup()
+                .expect("setup context")
+                .selected_completion,
+            None
+        );
     }
 
     #[test]
     fn setup_cancel_quits_when_no_selection() {
         let mut state = make_setup_state();
-        let setup = state.setup.as_mut().unwrap();
-        setup.completions = vec!["a".into(), "b".into()];
-        setup.selected_completion = None;
+        state
+            .update_setup(|setup| {
+                setup.completions = vec!["a".into(), "b".into()];
+                setup.selected_completion = None;
+            })
+            .unwrap();
 
         let result = handle_setup_cancel(&mut state);
         assert!(matches!(result, Some(OpenAction::Quit)));
@@ -3790,33 +4325,72 @@ mod tests {
     #[test]
     fn setup_move_down_up_cycle_through_and_back() {
         let mut state = make_setup_state();
-        let setup = state.setup.as_mut().unwrap();
-        setup.completions = vec!["a".into(), "b".into()];
-        setup.selected_completion = None;
+        state
+            .update_setup(|setup| {
+                setup.completions = vec!["a".into(), "b".into()];
+                setup.selected_completion = None;
+            })
+            .unwrap();
 
         // Down from None → first
         handle_setup_move_selection(&mut state, 1);
-        assert_eq!(state.setup.as_ref().unwrap().selected_completion, Some(0));
+        assert_eq!(
+            state
+                .require_setup()
+                .expect("setup context")
+                .selected_completion,
+            Some(0)
+        );
 
         // Down → second
         handle_setup_move_selection(&mut state, 1);
-        assert_eq!(state.setup.as_ref().unwrap().selected_completion, Some(1));
+        assert_eq!(
+            state
+                .require_setup()
+                .expect("setup context")
+                .selected_completion,
+            Some(1)
+        );
 
         // Down past last → None (back to text)
         handle_setup_move_selection(&mut state, 1);
-        assert_eq!(state.setup.as_ref().unwrap().selected_completion, None);
+        assert_eq!(
+            state
+                .require_setup()
+                .expect("setup context")
+                .selected_completion,
+            None
+        );
 
         // Up from None → last
         handle_setup_move_selection(&mut state, -1);
-        assert_eq!(state.setup.as_ref().unwrap().selected_completion, Some(1));
+        assert_eq!(
+            state
+                .require_setup()
+                .expect("setup context")
+                .selected_completion,
+            Some(1)
+        );
 
         // Up → first
         handle_setup_move_selection(&mut state, -1);
-        assert_eq!(state.setup.as_ref().unwrap().selected_completion, Some(0));
+        assert_eq!(
+            state
+                .require_setup()
+                .expect("setup context")
+                .selected_completion,
+            Some(0)
+        );
 
         // Up past first → None (back to text)
         handle_setup_move_selection(&mut state, -1);
-        assert_eq!(state.setup.as_ref().unwrap().selected_completion, None);
+        assert_eq!(
+            state
+                .require_setup()
+                .expect("setup context")
+                .selected_completion,
+            None
+        );
     }
 
     #[test]
@@ -3826,7 +4400,7 @@ mod tests {
         let repos = vec![make_repo("my-repo")];
         let mut state = AppState::new(repos, None);
         state.selected_repo_idx = Some(0);
-        state.mode = Mode::BranchSelect;
+        apply_transition!(state, ModeTransition::BranchSelect);
         state.branches = vec![BranchEntry {
             name: "feat/test".to_string(),
             worktree_path: Some(std::path::PathBuf::from("/tmp/wt")),
@@ -3835,7 +4409,7 @@ mod tests {
             is_default: false,
             remote: None,
             session_activity_ts: None,
-            agent_status: None,
+            agent_statuses: Vec::new(),
         }];
         state.branch_list.filtered = vec![(0, 0)];
         state.branch_list.selected = Some(0);
@@ -3856,16 +4430,17 @@ mod tests {
                     session_name,
                     session_exists: true,
                     session_activity_ts: Some(123),
-                    agent_status: Some(status),
+                    agent_statuses: vec![status],
                 }],
             },
             &mut state,
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
-        assert_eq!(state.branches[0].agent_status, Some(status));
+        assert_eq!(state.branches[0].agent_statuses, vec![status]);
         assert_eq!(state.branches[0].session_activity_ts, Some(123));
     }
 
@@ -3876,7 +4451,7 @@ mod tests {
         let repos = vec![make_repo("my-repo")];
         let mut state = AppState::new(repos, None);
         state.selected_repo_idx = Some(0);
-        state.mode = Mode::BranchSelect;
+        apply_transition!(state, ModeTransition::BranchSelect);
         state.branches = vec![BranchEntry {
             name: "feat/test".to_string(),
             worktree_path: Some(std::path::PathBuf::from("/tmp/wt")),
@@ -3885,7 +4460,7 @@ mod tests {
             is_default: false,
             remote: None,
             session_activity_ts: None,
-            agent_status: None,
+            agent_statuses: Vec::new(),
         }];
         state.branch_list.filtered = vec![(0, 0)];
 
@@ -3899,19 +4474,20 @@ mod tests {
                     session_name: "nonexistent-session".to_string(),
                     session_exists: true,
                     session_activity_ts: Some(999),
-                    agent_status: Some(AgentStatus {
+                    agent_statuses: vec![AgentStatus {
                         kind: AgentKind::ClaudeCode,
                         state: AgentState::Running,
-                    }),
+                    }],
                 }],
             },
             &mut state,
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
-        assert_eq!(state.branches[0].agent_status, None);
+        assert!(state.branches[0].agent_statuses.is_empty());
     }
 
     #[test]
@@ -3921,7 +4497,7 @@ mod tests {
         let repos = vec![make_repo("my-repo")];
         let mut state = AppState::new(repos, None);
         state.selected_repo_idx = Some(0);
-        state.mode = Mode::BranchSelect;
+        apply_transition!(state, ModeTransition::BranchSelect);
         state.branches = vec![BranchEntry {
             name: "feat/test".to_string(),
             worktree_path: Some(std::path::PathBuf::from("/tmp/wt")),
@@ -3930,7 +4506,7 @@ mod tests {
             is_default: false,
             remote: None,
             session_activity_ts: None,
-            agent_status: None,
+            agent_statuses: Vec::new(),
         }];
         state.branch_list.filtered = vec![(0, 0)];
 
@@ -3950,17 +4526,18 @@ mod tests {
                     session_name,
                     session_exists: true,
                     session_activity_ts: Some(77),
-                    agent_status: Some(status),
+                    agent_statuses: vec![status],
                 }],
             },
             &mut state,
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         assert!(state.branches[0].has_session);
-        assert_eq!(state.branches[0].agent_status, Some(status));
+        assert_eq!(state.branches[0].agent_statuses, vec![status]);
     }
 
     #[test]
@@ -3970,7 +4547,7 @@ mod tests {
         let repos = vec![make_repo("my-repo")];
         let mut state = AppState::new(repos, None);
         state.selected_repo_idx = Some(0);
-        state.mode = Mode::BranchSelect;
+        apply_transition!(state, ModeTransition::BranchSelect);
         state.branches = vec![
             BranchEntry {
                 name: "feat/alpha".to_string(),
@@ -3980,7 +4557,7 @@ mod tests {
                 is_default: false,
                 remote: None,
                 session_activity_ts: None,
-                agent_status: None,
+                agent_statuses: Vec::new(),
             },
             BranchEntry {
                 name: "feat/beta".to_string(),
@@ -3990,7 +4567,7 @@ mod tests {
                 is_default: false,
                 remote: None,
                 session_activity_ts: None,
-                agent_status: None,
+                agent_statuses: Vec::new(),
             },
         ];
         // Simulate a search filter that only shows feat/beta
@@ -4011,16 +4588,17 @@ mod tests {
                     session_name,
                     session_exists: true,
                     session_activity_ts: Some(42),
-                    agent_status: Some(AgentStatus {
+                    agent_statuses: vec![AgentStatus {
                         kind: AgentKind::ClaudeCode,
                         state: AgentState::Running,
-                    }),
+                    }],
                 }],
             },
             &mut state,
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         // Search and selection must be preserved
@@ -4028,7 +4606,7 @@ mod tests {
         assert_eq!(state.branch_list.filtered, vec![(1, 100)]);
         assert_eq!(state.branch_list.selected, Some(0));
         // But the agent status was still applied to the underlying branch
-        assert!(state.branches[0].agent_status.is_some());
+        assert!(!state.branches[0].agent_statuses.is_empty());
     }
 
     #[test]
@@ -4038,7 +4616,7 @@ mod tests {
         let repos = vec![make_repo("my-repo")];
         let mut state = AppState::new(repos, None);
         state.selected_repo_idx = Some(0);
-        state.mode = Mode::RepoSelect; // Not in BranchSelect
+        apply_transition!(state, ModeTransition::RepoSelect); // Not in BranchSelect
         state.branches = vec![BranchEntry {
             name: "feat/test".to_string(),
             worktree_path: Some(std::path::PathBuf::from("/tmp/wt")),
@@ -4047,7 +4625,7 @@ mod tests {
             is_default: false,
             remote: None,
             session_activity_ts: None,
-            agent_status: None,
+            agent_statuses: Vec::new(),
         }];
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
@@ -4060,20 +4638,21 @@ mod tests {
                     session_name: "whatever".to_string(),
                     session_exists: true,
                     session_activity_ts: Some(1),
-                    agent_status: Some(AgentStatus {
+                    agent_statuses: vec![AgentStatus {
                         kind: AgentKind::ClaudeCode,
                         state: AgentState::Waiting,
-                    }),
+                    }],
                 }],
             },
             &mut state,
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         // Should be ignored when not in BranchSelect
-        assert_eq!(state.branches[0].agent_status, None);
+        assert!(state.branches[0].agent_statuses.is_empty());
     }
 
     #[test]
@@ -4083,10 +4662,17 @@ mod tests {
         let repos = vec![make_repo("my-repo")];
         let mut state = AppState::new(repos, None);
         state.selected_repo_idx = Some(0);
+        apply_transition!(state, ModeTransition::BranchSelect);
         // Help overlay wrapping BranchSelect — effective() should still be BranchSelect
-        state.mode = Mode::Help {
-            previous: Box::new(Mode::BranchSelect),
-        };
+        apply_transition!(
+            state,
+            ModeTransition::OpenHelp {
+                overlay: kiosk_core::state::HelpOverlayState {
+                    list: SearchableList::new(0),
+                    rows: Vec::new(),
+                },
+            },
+        );
         state.branches = vec![BranchEntry {
             name: "feat/test".to_string(),
             worktree_path: Some(std::path::PathBuf::from("/tmp/wt")),
@@ -4095,7 +4681,7 @@ mod tests {
             is_default: false,
             remote: None,
             session_activity_ts: None,
-            agent_status: None,
+            agent_statuses: Vec::new(),
         }];
         state.branch_list.filtered = vec![(0, 0)];
 
@@ -4115,17 +4701,18 @@ mod tests {
                     session_name,
                     session_exists: true,
                     session_activity_ts: Some(9),
-                    agent_status: Some(status),
+                    agent_statuses: vec![status],
                 }],
             },
             &mut state,
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         // Agent status should be applied even though Help overlay is active
-        assert_eq!(state.branches[0].agent_status, Some(status));
+        assert_eq!(state.branches[0].agent_statuses, vec![status]);
     }
 
     // ── GitFetchCompleted tests ──
@@ -4139,7 +4726,7 @@ mod tests {
             is_default: false,
             remote: remote.map(String::from),
             session_activity_ts: None,
-            agent_status: None,
+            agent_statuses: Vec::new(),
         }
     }
 
@@ -4148,7 +4735,7 @@ mod tests {
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
         state.selected_repo_idx = Some(0);
-        state.mode = Mode::BranchSelect;
+        apply_transition!(state, ModeTransition::BranchSelect);
         state.branches = vec![make_branch("main", None)];
         state.branch_list.reset(1);
         state.fetching_remotes = true;
@@ -4167,6 +4754,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         assert!(!state.fetching_remotes);
@@ -4181,7 +4769,7 @@ mod tests {
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
         state.selected_repo_idx = Some(0);
-        state.mode = Mode::BranchSelect;
+        apply_transition!(state, ModeTransition::BranchSelect);
         state.branches = vec![
             make_branch("main", None),
             make_branch("existing-remote", Some("origin")),
@@ -4206,6 +4794,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         assert_eq!(state.branches.len(), 3);
@@ -4218,7 +4807,7 @@ mod tests {
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
         state.selected_repo_idx = Some(0);
-        state.mode = Mode::BranchSelect;
+        apply_transition!(state, ModeTransition::BranchSelect);
         state.branches = vec![make_branch("main", None)];
         state.branch_list.reset(1);
         state.branch_list.input.text = "feat".to_string();
@@ -4241,6 +4830,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         assert_eq!(state.branch_list.input.text, "feat");
@@ -4256,7 +4846,7 @@ mod tests {
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
         state.selected_repo_idx = Some(0);
-        state.mode = Mode::RepoSelect;
+        apply_transition!(state, ModeTransition::RepoSelect);
         state.branches = vec![make_branch("main", None)];
         state.fetching_remotes = true;
 
@@ -4274,6 +4864,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         // Stale event should clear fetching flag but not touch branches
@@ -4286,9 +4877,16 @@ mod tests {
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
         state.selected_repo_idx = Some(0);
-        state.mode = Mode::Help {
-            previous: Box::new(Mode::BranchSelect),
-        };
+        apply_transition!(state, ModeTransition::BranchSelect);
+        apply_transition!(
+            state,
+            ModeTransition::OpenHelp {
+                overlay: kiosk_core::state::HelpOverlayState {
+                    list: SearchableList::new(0),
+                    rows: Vec::new(),
+                },
+            },
+        );
         state.branches = vec![make_branch("main", None)];
         state.branch_list.reset(1);
         state.fetching_remotes = true;
@@ -4307,6 +4905,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         assert!(
@@ -4322,9 +4921,16 @@ mod tests {
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
         state.selected_repo_idx = Some(0);
-        state.mode = Mode::Help {
-            previous: Box::new(Mode::BranchSelect),
-        };
+        apply_transition!(state, ModeTransition::BranchSelect);
+        apply_transition!(
+            state,
+            ModeTransition::OpenHelp {
+                overlay: kiosk_core::state::HelpOverlayState {
+                    list: SearchableList::new(0),
+                    rows: Vec::new(),
+                },
+            },
+        );
         state.branches = vec![make_branch("main", None)];
         state.branch_list.reset(1);
 
@@ -4340,6 +4946,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         assert_eq!(state.branches.len(), 2);
@@ -4353,7 +4960,7 @@ mod tests {
         // CWD repo is pre-loaded; scan finds it again — should not duplicate
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
-        state.mode = Mode::RepoSelect;
+        apply_transition!(state, ModeTransition::RepoSelect);
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux = Arc::new(MockTmuxProvider::default());
@@ -4367,6 +4974,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
         process_app_event(
             AppEvent::ReposFound {
@@ -4376,6 +4984,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         assert_eq!(state.repos.len(), 2, "alpha should not be duplicated");
@@ -4389,7 +4998,7 @@ mod tests {
         // initial repo is preloaded from CWD.
         let repos = vec![make_repo("kiosk")];
         let mut state = AppState::new(repos, None);
-        state.mode = Mode::RepoSelect;
+        apply_transition!(state, ModeTransition::RepoSelect);
 
         initialize_repo_scan(&mut state);
 
@@ -4405,6 +5014,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         assert_eq!(
@@ -4419,7 +5029,7 @@ mod tests {
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
         state.selected_repo_idx = Some(0);
-        state.mode = Mode::BranchSelect;
+        apply_transition!(state, ModeTransition::BranchSelect);
         state.branches = vec![make_branch("main", None)];
         state.branch_list.reset(1);
         state.fetching_remotes = true;
@@ -4438,6 +5048,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         // Stale event should clear fetching flag but not touch branches
@@ -4450,7 +5061,7 @@ mod tests {
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
         state.selected_repo_idx = Some(0);
-        state.mode = Mode::BranchSelect;
+        apply_transition!(state, ModeTransition::BranchSelect);
         state.branches = vec![make_branch("main", None)];
         state.branch_list.reset(1);
         state.fetching_remotes = true;
@@ -4469,6 +5080,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         assert!(
@@ -4488,7 +5100,7 @@ mod tests {
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
         state.selected_repo_idx = Some(0);
-        state.mode = Mode::BranchSelect;
+        apply_transition!(state, ModeTransition::BranchSelect);
         state.fetching_remotes = true;
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
@@ -4505,6 +5117,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         assert!(!state.fetching_remotes);
@@ -4515,7 +5128,7 @@ mod tests {
     fn test_repos_found_does_not_kick_from_branch_select() {
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
-        state.mode = Mode::BranchSelect;
+        apply_transition!(state, ModeTransition::BranchSelect);
         state.selected_repo_idx = Some(0);
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
@@ -4530,9 +5143,10 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
-        assert_eq!(state.mode, Mode::BranchSelect);
+        assert_eq!(state.mode(), &Mode::BranchSelect);
         assert_eq!(state.repos.len(), 2);
     }
 
@@ -4559,7 +5173,7 @@ mod tests {
 
         // Process BranchesLoaded — should set fetching_remotes
         let event = rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
-        process_app_event(event, &mut state, &git, &tmux, &sender);
+        process_app_event(event, &mut state, &git, &tmux, &sender, &make_matcher());
         assert!(
             state.fetching_remotes,
             "fetching_remotes should be true after BranchesLoaded"
@@ -4576,6 +5190,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
         assert!(
             !state.fetching_remotes,
@@ -4587,7 +5202,7 @@ mod tests {
     fn test_repos_found_preserves_search_state() {
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
-        state.mode = Mode::RepoSelect;
+        apply_transition!(state, ModeTransition::RepoSelect);
         state.repo_list.input.text = "al".to_string();
         state.repo_list.input.cursor = 2;
 
@@ -4612,6 +5227,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
         process_app_event(
             AppEvent::ReposFound {
@@ -4621,6 +5237,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
         assert_eq!(state.repo_list.input.text, "al");
         assert_eq!(state.repo_list.input.cursor, 2);
@@ -4632,7 +5249,12 @@ mod tests {
     #[test]
     fn test_repos_found_multiple_batches_build_list() {
         let mut state = AppState::new(vec![], None);
-        state.mode = Mode::Loading("Discovering repos...".into());
+        apply_transition!(
+            state,
+            ModeTransition::Loading {
+                message: "Discovering repos...".into(),
+            },
+        );
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux = Arc::new(MockTmuxProvider::default());
@@ -4647,9 +5269,10 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
         assert_eq!(state.repos.len(), 1);
-        assert_eq!(state.mode, Mode::RepoSelect);
+        assert_eq!(state.mode(), &Mode::RepoSelect);
 
         // Second repo
         process_app_event(
@@ -4660,6 +5283,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
         assert_eq!(state.repos.len(), 2);
 
@@ -4672,14 +5296,40 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
         assert_eq!(state.repos.len(), 3);
     }
 
     #[test]
+    fn test_repos_found_does_not_leave_loading_when_sessions_initial() {
+        // When the sessions view is active, ReposFound must not transition to
+        // RepoSelect — the sessions view manages its own loading lifecycle.
+        let mut state = AppState::new(vec![], None);
+        apply_transition!(state, ModeTransition::Sessions);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux = Arc::new(MockTmuxProvider::default());
+        let sender = make_sender();
+
+        process_app_event(
+            AppEvent::ReposFound {
+                repo: make_repo("alpha"),
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+            &make_matcher(),
+        );
+
+        assert!(matches!(state.mode(), Mode::Sessions));
+    }
+
+    #[test]
     fn test_scan_complete_collision_resolution() {
         let mut state = AppState::new(vec![], None);
-        state.mode = Mode::RepoSelect;
+        apply_transition!(state, ModeTransition::RepoSelect);
 
         // Two repos with same name from different search dirs
         let mut repo1 = make_repo("api");
@@ -4704,6 +5354,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         let session_names: Vec<&str> = state
@@ -4732,7 +5383,7 @@ mod tests {
     #[test]
     fn test_scan_complete_no_collisions_preserves_names() {
         let mut state = AppState::new(vec![make_repo("alpha"), make_repo("beta")], None);
-        state.mode = Mode::RepoSelect;
+        apply_transition!(state, ModeTransition::RepoSelect);
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux = Arc::new(MockTmuxProvider::default());
@@ -4746,6 +5397,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         assert_eq!(state.repos[0].session_name, "alpha");
@@ -4774,6 +5426,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         // Should not panic or add anything
@@ -4811,6 +5464,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         // Worktrees updated
@@ -4826,7 +5480,7 @@ mod tests {
     fn test_session_activity_loaded_resorts_and_preserves_selection() {
         let repos = vec![make_repo("alpha"), make_repo("beta"), make_repo("gamma")];
         let mut state = AppState::new(repos, None);
-        state.mode = Mode::RepoSelect;
+        apply_transition!(state, ModeTransition::RepoSelect);
         state.repo_list.selected = Some(1); // beta selected
         state.selected_repo_idx = Some(1);
 
@@ -4845,6 +5499,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         // Activity should be stored
@@ -4861,7 +5516,7 @@ mod tests {
     #[test]
     fn test_session_activity_loaded_empty_state_no_panic() {
         let mut state = AppState::new(vec![], None);
-        state.mode = Mode::RepoSelect;
+        apply_transition!(state, ModeTransition::RepoSelect);
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux = Arc::new(MockTmuxProvider::default());
@@ -4876,6 +5531,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         assert!(state.repos.is_empty());
@@ -4885,7 +5541,7 @@ mod tests {
     fn test_session_activity_loaded_reconciles_branch_runtime_state() {
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
-        state.mode = Mode::BranchSelect;
+        apply_transition!(state, ModeTransition::BranchSelect);
         state.selected_repo_idx = Some(0);
         state.branches = vec![BranchEntry {
             name: "feat/test".to_string(),
@@ -4895,7 +5551,7 @@ mod tests {
             is_default: false,
             remote: None,
             session_activity_ts: None,
-            agent_status: None,
+            agent_statuses: Vec::new(),
         }];
         state.branch_list.filtered = vec![(0, 0)];
         state.branch_list.selected = Some(0);
@@ -4916,6 +5572,7 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
         assert!(state.branches[0].has_session);
@@ -4923,9 +5580,701 @@ mod tests {
     }
 
     #[test]
+    fn test_sessions_loaded_preserves_selected_session_when_order_changes() {
+        let mut state = AppState::new(vec![make_repo("alpha")], None);
+        apply_transition!(state, ModeTransition::Sessions);
+        state.sessions_view.sessions = vec![make_session("alpha", 10), make_session("beta", 20)];
+        state.sessions_view.list.filtered = vec![(0, 0), (1, 0)];
+        state.sessions_view.list.selected = Some(1); // beta
+        state.sessions_view.list.scroll_offset = 1;
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux = Arc::new(MockTmuxProvider::default());
+        let sender = make_sender();
+
+        process_app_event(
+            AppEvent::SessionsDiscovered {
+                sessions: vec![make_session("alpha", 50), make_session("beta", 5)],
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+            &make_matcher(),
+        );
+
+        let selected_filtered_idx = state.sessions_view.list.selected.expect("selected row");
+        let selected_session_idx = state.sessions_view.list.filtered[selected_filtered_idx].0;
+        assert_eq!(
+            state.sessions_view.sessions[selected_session_idx].session_name,
+            "beta"
+        );
+        assert_eq!(state.sessions_view.list.scroll_offset, 1);
+    }
+
+    #[test]
+    fn test_scan_complete_does_not_close_help_over_sessions() {
+        let mut state = AppState::new(vec![make_repo("alpha")], None);
+        apply_transition!(state, ModeTransition::Sessions);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux = Arc::new(MockTmuxProvider::default());
+        let keys = KeysConfig::default();
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+        let ctx = default_ctx(&git, &tmux, &keys, &matcher, &sender);
+
+        process_action(Action::ShowHelp, &mut state, &ctx);
+        assert!(matches!(state.mode(), Mode::Help { .. }));
+
+        process_app_event(
+            AppEvent::ScanComplete {
+                search_dirs: vec![(PathBuf::from("/home/user/dev"), 1)],
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+            &make_matcher(),
+        );
+
+        assert!(
+            matches!(state.mode(), Mode::Help { .. }),
+            "ScanComplete should not re-enter sessions and clear the help overlay"
+        );
+        assert_eq!(state.effective_mode(), &Mode::Sessions);
+    }
+
+    #[test]
+    fn test_scan_complete_does_not_redirect_to_sessions_after_ctrl_s() {
+        // Regression: pressing Ctrl-S from sessions view triggers a lazy repo
+        // scan; when ScanComplete fires the app must stay in RepoSelect, not
+        // jump back to sessions view.
+        let mut state = AppState::new(vec![make_repo("alpha")], None);
+        apply_transition!(state, ModeTransition::Sessions);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux = Arc::new(MockTmuxProvider::default());
+        let keys = KeysConfig::default();
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+        let ctx = default_ctx(&git, &tmux, &keys, &matcher, &sender);
+
+        // Simulate the user pressing Ctrl-S to go to repos view
+        process_action(Action::ToggleSessions, &mut state, &ctx);
+        assert!(
+            matches!(state.mode(), Mode::RepoSelect),
+            "expected RepoSelect after ToggleSessions, got {:?}",
+            state.mode()
+        );
+
+        // Simulate the lazy repo scan completing
+        process_app_event(
+            AppEvent::ScanComplete {
+                search_dirs: vec![(PathBuf::from("/home/user/dev"), 1)],
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+            &make_matcher(),
+        );
+
+        assert!(
+            matches!(state.mode(), Mode::RepoSelect),
+            "ScanComplete should not redirect back to sessions after user navigated away; got {:?}",
+            state.mode()
+        );
+    }
+
+    #[test]
+    fn test_toggle_sessions_cancels_branch_poller() {
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+        apply_transition!(state, ModeTransition::BranchSelect);
+
+        let branch_poller = PollerHandle::new();
+        assert!(state.install_branch_poller(branch_poller.clone()).is_ok());
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux = Arc::new(MockTmuxProvider::default());
+        let keys = KeysConfig::default();
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+        let ctx = default_ctx(&git, &tmux, &keys, &matcher, &sender);
+
+        process_action(Action::ToggleSessions, &mut state, &ctx);
+
+        assert_eq!(state.mode(), &Mode::Sessions);
+        assert!(
+            branch_poller.is_cancelled(),
+            "Entering sessions mode should stop branch poller"
+        );
+        assert_eq!(
+            state.active_agent_poller_kind(),
+            kiosk_core::state::ActiveAgentPollerKind::Sessions
+        );
+    }
+
+    #[test]
+    fn test_repo_enriched_does_not_restart_sessions_discovery_when_in_sessions_mode() {
+        let mut state = AppState::new(vec![make_repo("alpha")], None);
+        apply_transition!(state, ModeTransition::Sessions);
+        state.sessions_view.load_state = kiosk_core::state::SessionsLoadState::Ready;
+
+        let sessions_poller = PollerHandle::new();
+        assert!(
+            state
+                .install_sessions_poller(sessions_poller.clone())
+                .is_ok()
+        );
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux = Arc::new(MockTmuxProvider::default());
+        let sender = make_sender();
+
+        process_app_event(
+            AppEvent::RepoEnriched {
+                repo_path: PathBuf::from("/tmp/alpha"),
+                worktrees: vec![Worktree {
+                    path: PathBuf::from("/tmp/alpha"),
+                    branch: Some("main".to_string()),
+                    is_main: true,
+                }],
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+            &make_matcher(),
+        );
+
+        assert!(
+            !sessions_poller.is_cancelled(),
+            "repo enrichment should not restart sessions discovery in sessions mode"
+        );
+        assert_eq!(
+            state.active_agent_poller_kind(),
+            kiosk_core::state::ActiveAgentPollerKind::Sessions
+        );
+        assert!(
+            state.active_agent_poller_matches(&sessions_poller),
+            "sessions poller token should not be replaced by repo enrichment"
+        );
+    }
+
+    #[test]
+    fn test_sessions_snapshot_applies_states_in_single_update() {
+        let mut state = AppState::new(vec![make_repo("alpha")], None);
+        apply_transition!(state, ModeTransition::Sessions);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux = Arc::new(MockTmuxProvider::default());
+        let sender = make_sender();
+
+        process_app_event(
+            AppEvent::SessionsDiscovered {
+                sessions: vec![
+                    make_session("alpha", 10),
+                    make_session_with(
+                        "beta",
+                        20,
+                        vec![kiosk_core::agent::AgentStatus {
+                            kind: kiosk_core::agent::AgentKind::Codex,
+                            state: kiosk_core::agent::AgentState::Running,
+                        }],
+                    ),
+                ],
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+            &make_matcher(),
+        );
+
+        let beta = state
+            .sessions_view
+            .sessions
+            .iter()
+            .find(|s| s.session_name == "beta")
+            .expect("beta session should exist");
+        assert_eq!(beta.agent_statuses.len(), 1);
+        assert_eq!(
+            beta.agent_statuses[0].state,
+            kiosk_core::agent::AgentState::Running
+        );
+    }
+
+    #[test]
+    fn test_sessions_discovered_keeps_tmux_recency_order() {
+        let mut state = AppState::new(vec![make_repo("alpha")], None);
+        apply_transition!(state, ModeTransition::Sessions);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux = Arc::new(MockTmuxProvider::default());
+        let sender = make_sender();
+
+        process_app_event(
+            AppEvent::SessionsDiscovered {
+                sessions: vec![make_session("alpha", 5), make_session("beta", 50)],
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+            &make_matcher(),
+        );
+
+        assert_eq!(state.sessions_view.sessions[0].session_name, "beta");
+    }
+
+    #[test]
+    fn test_sessions_loaded_initial_load_selects_first_item() {
+        let mut state = AppState::new(vec![make_repo("alpha")], None);
+        apply_transition!(state, ModeTransition::Sessions);
+        state.sessions_view.load_state = kiosk_core::state::SessionsLoadState::Discovering;
+        state.sessions_view.pin_first_selection = true;
+        state.sessions_view.sessions = vec![make_session("alpha", 10), make_session("beta", 20)];
+        state.sessions_view.list.filtered = vec![(0, 0), (1, 0)];
+        state.sessions_view.list.selected = Some(1);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux = Arc::new(MockTmuxProvider::default());
+        let sender = make_sender();
+
+        process_app_event(
+            AppEvent::SessionsDiscovered {
+                sessions: vec![make_session("alpha", 50), make_session("beta", 5)],
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+            &make_matcher(),
+        );
+
+        assert_eq!(state.sessions_view.list.selected, Some(0));
+        assert!(!state.sessions_view.is_loading());
+        assert!(state.sessions_view.is_resolving());
+    }
+
+    #[test]
+    fn test_session_agent_update_keeps_existing_order_and_selection() {
+        let mut state = AppState::new(vec![make_repo("alpha")], None);
+        apply_transition!(state, ModeTransition::Sessions);
+        state.sessions_view.pin_first_selection = true;
+        state.sessions_view.sessions = vec![make_session("beta", 5), make_session("alpha", 50)];
+        state.sessions_view.list.filtered = vec![(0, 0), (1, 0)];
+        state.sessions_view.list.selected = Some(0);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux = Arc::new(MockTmuxProvider::default());
+        let sender = make_sender();
+
+        process_app_event(
+            AppEvent::SessionAgentStatesPatched {
+                states: vec![(
+                    "alpha".to_string(),
+                    vec![kiosk_core::agent::AgentStatus {
+                        kind: kiosk_core::agent::AgentKind::Codex,
+                        state: kiosk_core::agent::AgentState::Idle,
+                    }],
+                )],
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+            &make_matcher(),
+        );
+
+        assert_eq!(state.sessions_view.list.selected, Some(0));
+        assert_eq!(state.sessions_view.sessions[0].session_name, "beta");
+        assert_eq!(state.sessions_view.sessions[1].session_name, "alpha");
+    }
+
+    #[test]
+    fn test_session_agent_update_applies_during_help_over_sessions() {
+        let mut state = AppState::new(vec![make_repo("alpha")], None);
+        apply_transition!(state, ModeTransition::Sessions);
+        state.sessions_view.sessions = vec![make_session("alpha", 50)];
+        state.sessions_view.list.filtered = vec![(0, 0)];
+        state.sessions_view.list.selected = Some(0);
+        apply_transition!(
+            state,
+            ModeTransition::OpenHelp {
+                overlay: kiosk_core::state::HelpOverlayState {
+                    list: SearchableList::new(0),
+                    rows: Vec::new(),
+                },
+            },
+        );
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux = Arc::new(MockTmuxProvider::default());
+        let sender = make_sender();
+        let status = kiosk_core::agent::AgentStatus {
+            kind: kiosk_core::agent::AgentKind::Codex,
+            state: kiosk_core::agent::AgentState::Idle,
+        };
+
+        process_app_event(
+            AppEvent::SessionAgentStatesPatched {
+                states: vec![("alpha".to_string(), vec![status])],
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+            &make_matcher(),
+        );
+
+        assert!(matches!(state.mode(), Mode::Help { .. }));
+        assert_eq!(state.effective_mode(), &Mode::Sessions);
+        assert_eq!(state.sessions_view.sessions[0].agent_statuses, vec![status]);
+    }
+
+    #[test]
+    fn test_sessions_discovered_updates_membership_using_incoming_tmux_order() {
+        let mut state = AppState::new(vec![make_repo("alpha")], None);
+        apply_transition!(state, ModeTransition::Sessions);
+        state.sessions_view.load_state = kiosk_core::state::SessionsLoadState::Ready;
+        state.sessions_view.sessions = vec![
+            make_session("alpha--main", 100),
+            make_session("beta--feat", 90),
+            make_session("gamma--dev", 80),
+        ];
+        state.sessions_view.list.filtered = vec![(0, 0), (1, 0), (2, 0)];
+        state.sessions_view.list.selected = Some(1);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux = Arc::new(MockTmuxProvider::default());
+        let sender = make_sender();
+
+        process_app_event(
+            AppEvent::SessionsDiscovered {
+                sessions: vec![
+                    make_session("beta--feat", 95),
+                    make_session("alpha--main", 110),
+                    make_session("delta--new", 70),
+                ],
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+            &make_matcher(),
+        );
+
+        let names: Vec<&str> = state
+            .sessions_view
+            .sessions
+            .iter()
+            .map(|session| session.session_name.as_str())
+            .collect();
+        assert_eq!(names, vec!["alpha--main", "beta--feat", "delta--new"]);
+        assert_eq!(state.sessions_view.list.selected, Some(1));
+    }
+
+    #[test]
+    fn test_sessions_loaded_preserves_search_query() {
+        let mut state = AppState::new(vec![make_repo("alpha")], None);
+        apply_transition!(state, ModeTransition::Sessions);
+        state.sessions_view.sessions = vec![make_session("alpha", 10), make_session("beta", 20)];
+        state.sessions_view.list.input.text = "beta".to_string();
+        state.sessions_view.list.input.cursor = 4;
+        state.sessions_view.list.filtered = vec![(1, 100)];
+        state.sessions_view.list.selected = Some(0);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux = Arc::new(MockTmuxProvider::default());
+        let sender = make_sender();
+
+        process_app_event(
+            AppEvent::SessionsDiscovered {
+                sessions: vec![make_session("beta", 5), make_session("alpha", 50)],
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+            &make_matcher(),
+        );
+
+        assert_eq!(state.sessions_view.list.input.text, "beta");
+        assert_eq!(state.sessions_view.list.input.cursor, 4);
+    }
+
+    #[test]
+    fn test_sessions_discovered_preserves_filtered_order_with_active_search() {
+        let mut state = AppState::new(vec![make_repo("alpha")], None);
+        apply_transition!(state, ModeTransition::Sessions);
+        state.sessions_view.list.input.text = "o".to_string();
+        state.sessions_view.list.input.cursor = 1;
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux = Arc::new(MockTmuxProvider::default());
+        let sender = make_sender();
+
+        process_app_event(
+            AppEvent::SessionsDiscovered {
+                sessions: vec![
+                    make_session("scooter--main", 20),
+                    make_session("kiosk--feat-agent-session-switcher", 50),
+                    make_session("dotfiles--main", 10),
+                ],
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+            &make_matcher(),
+        );
+
+        assert_eq!(
+            filtered_session_names(&state),
+            vec![
+                "kiosk--feat-agent-session-switcher",
+                "scooter--main",
+                "dotfiles--main",
+            ]
+        );
+
+        process_app_event(
+            AppEvent::SessionsDiscovered {
+                sessions: vec![
+                    make_session("dotfiles--main", 5),
+                    make_session("scooter--main", 25),
+                    make_session("kiosk--feat-agent-session-switcher", 60),
+                ],
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+            &make_matcher(),
+        );
+
+        assert_eq!(
+            filtered_session_names(&state),
+            vec![
+                "kiosk--feat-agent-session-switcher",
+                "scooter--main",
+                "dotfiles--main",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_sessions_discovered_exits_blocking_load_before_metadata_resolves() {
+        let mut state = AppState::new(vec![make_repo("alpha")], None);
+        apply_transition!(state, ModeTransition::Sessions);
+        state.sessions_view.begin_loading();
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux = Arc::new(MockTmuxProvider::default());
+        let sender = make_sender();
+
+        process_app_event(
+            AppEvent::SessionsDiscovered {
+                sessions: vec![make_session("alpha", 50), make_session("beta", 5)],
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+            &make_matcher(),
+        );
+
+        assert!(!state.sessions_view.is_loading());
+        assert!(state.sessions_view.is_resolving());
+        assert_eq!(filtered_session_names(&state), vec!["alpha", "beta"]);
+    }
+
+    #[test]
+    fn test_session_metadata_patch_updates_rows_in_place_without_reordering() {
+        let mut state = AppState::new(vec![make_repo("alpha")], None);
+        apply_transition!(state, ModeTransition::Sessions);
+        state.sessions_view.load_state = kiosk_core::state::SessionsLoadState::MetadataPending;
+        state.sessions_view.sessions = vec![make_session("beta", 50), make_session("alpha", 5)];
+        state.sessions_view.list.filtered = vec![(0, 0), (1, 0)];
+        state.sessions_view.list.selected = Some(1);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux = Arc::new(MockTmuxProvider::default());
+        let sender = make_sender();
+
+        process_app_event(
+            AppEvent::SessionMetadataPatched {
+                patches: vec![kiosk_core::event::SessionMetadataPatch {
+                    session_name: "alpha".to_string(),
+                    metadata: kiosk_core::state::SessionMetadata::Resolved(
+                        kiosk_core::state::ResolvedSessionMetadata {
+                            repo_name: "alpha".to_string(),
+                            branch: Some("main".to_string()),
+                            path: PathBuf::from("/tmp/alpha"),
+                        },
+                    ),
+                }],
+                complete: false,
+            },
+            &mut state,
+            &git,
+            &tmux,
+            &sender,
+            &make_matcher(),
+        );
+
+        let names: Vec<&str> = state
+            .sessions_view
+            .sessions
+            .iter()
+            .map(|session| session.session_name.as_str())
+            .collect();
+        assert_eq!(names, vec!["beta", "alpha"]);
+        assert_eq!(state.sessions_view.list.selected, Some(1));
+        assert_eq!(state.sessions_view.sessions[1].repo_name(), Some("alpha"));
+        assert!(state.sessions_view.is_resolving());
+    }
+
+    #[test]
+    fn test_sessions_footer_shows_open_help_quit_without_sessions_toggle() {
+        let keys = KeysConfig::default();
+        let hints = build_footer_hints(&Mode::Sessions, &keys);
+
+        assert_eq!(
+            hints,
+            vec![
+                ("tab".to_string(), "next agent"),
+                ("enter".to_string(), "open"),
+                ("C-h".to_string(), "help"),
+                ("C-c".to_string(), "quit"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_jump_to_next_agent_session_skips_non_agent_rows_and_wraps() {
+        let mut state = AppState::new(vec![make_repo("alpha")], None);
+        apply_transition!(state, ModeTransition::Sessions);
+        state.set_active_list_page_rows(20);
+        state.sessions_view.sessions = vec![
+            make_session_with("session-a", 30, vec![idle_status()]),
+            make_session("session-b", 20),
+            make_session_with("session-c", 10, vec![idle_status()]),
+        ];
+        state.sessions_view.list = SearchableList::new(state.sessions_view.sessions.len());
+        state.sessions_view.list.selected = Some(1);
+
+        jump_to_next_agent_session(&mut state);
+        assert_eq!(state.sessions_view.list.selected, Some(2));
+
+        jump_to_next_agent_session(&mut state);
+        assert_eq!(state.sessions_view.list.selected, Some(0));
+
+        jump_to_next_agent_session(&mut state);
+        assert_eq!(state.sessions_view.list.selected, Some(2));
+    }
+
+    #[test]
+    fn test_jump_to_previous_agent_session_skips_non_agent_rows_and_wraps() {
+        let mut state = AppState::new(vec![make_repo("alpha")], None);
+        apply_transition!(state, ModeTransition::Sessions);
+        state.set_active_list_page_rows(20);
+        state.sessions_view.sessions = vec![
+            make_session_with("session-a", 30, vec![idle_status()]),
+            make_session("session-b", 20),
+            make_session_with("session-c", 10, vec![idle_status()]),
+        ];
+        state.sessions_view.list = SearchableList::new(state.sessions_view.sessions.len());
+        state.sessions_view.list.selected = Some(1);
+
+        jump_to_previous_agent_session(&mut state);
+        assert_eq!(state.sessions_view.list.selected, Some(0));
+
+        jump_to_previous_agent_session(&mut state);
+        assert_eq!(state.sessions_view.list.selected, Some(2));
+
+        jump_to_previous_agent_session(&mut state);
+        assert_eq!(state.sessions_view.list.selected, Some(0));
+    }
+
+    #[test]
+    fn test_jump_to_previous_agent_session_respects_filtered_rows() {
+        let mut state = AppState::new(vec![make_repo("alpha")], None);
+        apply_transition!(state, ModeTransition::Sessions);
+        state.set_active_list_page_rows(20);
+        state.sessions_view.sessions = vec![
+            make_session_with("session-a", 30, vec![idle_status()]),
+            make_session("session-b", 20),
+            make_session_with("session-c", 10, vec![idle_status()]),
+        ];
+        state.sessions_view.list.filtered = vec![(1, 0), (2, 0)];
+        state.sessions_view.list.selected = Some(1);
+
+        jump_to_previous_agent_session(&mut state);
+
+        assert_eq!(state.sessions_view.list.selected, Some(1));
+    }
+
+    #[test]
+    fn test_jump_to_previous_agent_session_is_noop_without_agent_sessions() {
+        let mut state = AppState::new(vec![make_repo("alpha")], None);
+        apply_transition!(state, ModeTransition::Sessions);
+        state.set_active_list_page_rows(20);
+        state.sessions_view.sessions =
+            vec![make_session("session-a", 30), make_session("session-b", 20)];
+        state.sessions_view.list = SearchableList::new(state.sessions_view.sessions.len());
+        state.sessions_view.list.selected = Some(1);
+
+        jump_to_previous_agent_session(&mut state);
+
+        assert_eq!(state.sessions_view.list.selected, Some(1));
+    }
+
+    #[test]
+    fn test_jump_to_next_agent_session_respects_filtered_rows() {
+        let mut state = AppState::new(vec![make_repo("alpha")], None);
+        apply_transition!(state, ModeTransition::Sessions);
+        state.set_active_list_page_rows(20);
+        state.sessions_view.sessions = vec![
+            make_session_with("session-a", 30, vec![idle_status()]),
+            make_session("session-b", 20),
+            make_session_with("session-c", 10, vec![idle_status()]),
+        ];
+        state.sessions_view.list.filtered = vec![(0, 0), (1, 0)];
+        state.sessions_view.list.selected = Some(0);
+
+        jump_to_next_agent_session(&mut state);
+
+        assert_eq!(state.sessions_view.list.selected, Some(0));
+    }
+
+    #[test]
+    fn test_jump_to_next_agent_session_is_noop_without_agent_sessions() {
+        let mut state = AppState::new(vec![make_repo("alpha")], None);
+        apply_transition!(state, ModeTransition::Sessions);
+        state.set_active_list_page_rows(20);
+        state.sessions_view.sessions =
+            vec![make_session("session-a", 30), make_session("session-b", 20)];
+        state.sessions_view.list = SearchableList::new(state.sessions_view.sessions.len());
+        state.sessions_view.list.selected = Some(1);
+
+        jump_to_next_agent_session(&mut state);
+
+        assert_eq!(state.sessions_view.list.selected, Some(1));
+    }
+
+    #[test]
     fn test_repos_found_switches_from_loading_to_repo_select() {
         let mut state = AppState::new(vec![], None);
-        state.mode = Mode::Loading("Discovering repos...".into());
+        apply_transition!(
+            state,
+            ModeTransition::Loading {
+                message: "Discovering repos...".into(),
+            },
+        );
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
         let tmux = Arc::new(MockTmuxProvider::default());
@@ -4939,8 +6288,9 @@ mod tests {
             &git,
             &tmux,
             &sender,
+            &make_matcher(),
         );
 
-        assert_eq!(state.mode, Mode::RepoSelect);
+        assert_eq!(state.mode(), &Mode::RepoSelect);
     }
 }

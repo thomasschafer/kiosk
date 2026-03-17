@@ -8,7 +8,7 @@ use kiosk_core::{
     constants::{GIT_DIR_ENTRY, GITDIR_FILE_PREFIX, WORKTREE_DIR_NAME},
     git::{CliGitProvider, GitProvider},
     pending_delete::load_pending_worktree_deletes,
-    state::AppState,
+    state::{AppState, ModeTransition},
     tmux::{CliTmuxProvider, TmuxProvider},
 };
 use kiosk_tui::{OpenAction, Theme};
@@ -27,6 +27,10 @@ struct Cli {
     /// Logging level (trace, debug, info, warn, error)
     #[arg(long, default_value = logging::DEFAULT_LOG_LEVEL)]
     log_level: log::LevelFilter,
+
+    /// Open directly into sessions view
+    #[arg(short, long)]
+    sessions: bool,
 
     #[command(subcommand)]
     command: Option<Commands>,
@@ -198,6 +202,12 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Switch to the next agent session needing attention
+    Next {
+        /// Output result as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Show configuration
     Config {
         #[command(subcommand)]
@@ -228,7 +238,8 @@ impl Commands {
             | Self::Send { json, .. }
             | Self::Panes { json, .. }
             | Self::Wait { json, .. }
-            | Self::Log { json, .. } => *json,
+            | Self::Log { json, .. }
+            | Self::Next { json } => *json,
             Self::Config { command } => command.as_ref().is_some_and(ConfigCommands::wants_json),
         }
     }
@@ -269,7 +280,7 @@ fn main() -> ExitCode {
     let git: Arc<dyn GitProvider> = Arc::new(CliGitProvider);
     let tmux: Arc<dyn TmuxProvider> = Arc::new(CliTmuxProvider);
 
-    let result = dispatch_command(cli.command, &config, &git, &tmux);
+    let result = dispatch_command(cli.sessions, cli.command, &config, &git, &tmux);
 
     match result {
         Ok(()) => ExitCode::from(0),
@@ -286,6 +297,7 @@ fn main() -> ExitCode {
 
 #[allow(clippy::too_many_lines)]
 fn dispatch_command(
+    sessions_startup: bool,
     command: Option<Commands>,
     config: &config::Config,
     git: &Arc<dyn GitProvider>,
@@ -367,6 +379,9 @@ fn dispatch_command(
             };
             crate::cli::cmd_send(config, git.as_ref(), tmux.as_ref(), &args)
         }
+        Some(Commands::Next { json }) => {
+            crate::cli::cmd_next(config, git.as_ref(), tmux.as_ref(), json)
+        }
         Some(Commands::Sessions { json }) => {
             crate::cli::cmd_sessions(config, git.as_ref(), tmux.as_ref(), json)
         }
@@ -428,11 +443,12 @@ fn dispatch_command(
                 Err(crate::cli::CliError::user("config subcommand required"))
             }
         },
-        None => run_tui(config, git, tmux).map_err(crate::cli::CliError::from),
+        None => run_tui(sessions_startup, config, git, tmux).map_err(crate::cli::CliError::from),
     }
 }
 
 fn run_tui(
+    sessions_startup: bool,
     config: &config::Config,
     git: &Arc<dyn GitProvider>,
     tmux: &Arc<dyn TmuxProvider>,
@@ -481,6 +497,13 @@ fn run_tui(
     state.agent_enabled = config.agent.enabled;
     state.agent_poll_interval = std::time::Duration::from_millis(config.agent.poll_interval_ms);
     state.agent_labels = config.agent.labels.clone();
+    if sessions_startup {
+        if let Err(error) = state.transition(&ModeTransition::Sessions) {
+            state.set_error(&format!("Internal state transition error: {error:?}"));
+        } else {
+            state.sessions_view.begin_loading();
+        }
+    }
 
     let theme = Theme::from_config(&config.theme);
 
@@ -500,7 +523,7 @@ fn run_tui(
         tmux,
         &theme,
         &config.keys,
-        search_dirs,
+        &search_dirs,
     );
     ratatui::restore();
 
@@ -510,7 +533,9 @@ fn run_tui(
             session_name,
             split_command,
         }) => {
-            if !tmux.session_exists(&session_name) {
+            if let Some(path) = path
+                && !tmux.session_exists(&session_name)
+            {
                 tmux.create_session(&session_name, &path, split_command.as_deref())?;
             }
 
@@ -538,22 +563,14 @@ fn run_setup_then_tui() -> ExitCode {
         ratatui::init()
     };
 
-    let result = kiosk_tui::run(
-        &mut terminal,
-        &mut state,
-        &git,
-        &tmux,
-        &theme,
-        &keys,
-        vec![],
-    );
+    let result = kiosk_tui::run(&mut terminal, &mut state, &git, &tmux, &theme, &keys, &[]);
     ratatui::restore();
 
     match result {
         Ok(Some(kiosk_tui::OpenAction::SetupComplete)) => {
             let dirs: Vec<String> = state
-                .setup
-                .as_ref()
+                .require_setup()
+                .ok()
                 .map(|s| s.dirs.clone())
                 .unwrap_or_default();
             if dirs.is_empty() {
@@ -571,7 +588,7 @@ fn run_setup_then_tui() -> ExitCode {
             }
             // Load the newly written config and continue into normal TUI
             match config::load_config(None) {
-                Ok(config) => match run_tui(&config, &git, &tmux) {
+                Ok(config) => match run_tui(false, &config, &git, &tmux) {
                     Ok(()) => ExitCode::from(0),
                     Err(e) => {
                         eprintln!("Error: {e}");

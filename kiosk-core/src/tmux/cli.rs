@@ -358,6 +358,22 @@ impl TmuxProvider for CliTmuxProvider {
             .collect()
     }
 
+    fn list_attached_sessions(&self) -> std::collections::HashSet<String> {
+        let output = tmux_command()
+            .args(["list-clients", "-F", "#{session_name}"])
+            .output();
+        let Ok(output) = output else {
+            return std::collections::HashSet::new();
+        };
+        if !output.status.success() {
+            return std::collections::HashSet::new();
+        }
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(ToString::to_string)
+            .collect()
+    }
+
     fn switch_to_session(&self, name: &str) {
         if self.is_inside_tmux() {
             let _ = tmux_command()
@@ -425,6 +441,21 @@ impl TmuxProvider for CliTmuxProvider {
         } else {
             None
         }
+    }
+
+    fn current_session_name(&self) -> Option<String> {
+        if !self.is_inside_tmux() {
+            return None;
+        }
+        let output = tmux_command()
+            .args(["display-message", "-p", "#S"])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if name.is_empty() { None } else { Some(name) }
     }
 }
 

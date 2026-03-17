@@ -4,8 +4,8 @@ use kiosk_core::{
     git::GitProvider,
     pending_delete::{PendingWorktreeDelete, save_pending_worktree_deletes},
     state::{
-        AppState, BaseBranchSelection, HelpOverlayState, Mode, SearchableList, SetupStep,
-        worktree_dir,
+        AppState, BaseBranchSelection, HelpOverlayState, Mode, ModeTransition, SearchableList,
+        SessionEntry, SetupStep, worktree_dir,
     },
     tmux::TmuxProvider,
 };
@@ -17,42 +17,138 @@ use super::spawn::{
 };
 use super::{EventSender, OpenAction};
 
+pub(super) fn session_search_items(sessions: &[SessionEntry]) -> Vec<String> {
+    sessions
+        .iter()
+        .map(|session| {
+            // Use empty string for unresolved sessions to avoid double-counting
+            // the session name (e.g., "{name} {name} " when repo_name is None).
+            let repo_name = session.repo_name().unwrap_or("");
+            let branch = session.branch().unwrap_or("");
+            format!("{} {} {}", session.session_name, repo_name, branch)
+        })
+        .collect()
+}
+
+/// Collect fuzzy matches as (index, score) pairs, preserving source order.
+fn fuzzy_match_indices(
+    query: &str,
+    items: &[String],
+    matcher: &SkimMatcherV2,
+) -> Vec<(usize, i64)> {
+    items
+        .iter()
+        .enumerate()
+        .filter_map(|(i, item)| matcher.fuzzy_match(item, query).map(|score| (i, score)))
+        .collect()
+}
+
+pub(super) fn rebuild_session_filter_preserving_search(
+    list: &mut SearchableList,
+    sessions: &[SessionEntry],
+    pinned_name: Option<&str>,
+    matcher: &SkimMatcherV2,
+) {
+    let previous_scroll = list.scroll_offset;
+    let items = session_search_items(sessions);
+    list.filtered = compute_session_filtered(&list.input.text, &items, matcher);
+
+    // Restore selection: prefer stable identity (session name) over index clamping so
+    // that a background refresh or re-sort doesn't silently move the cursor to a
+    // different session.
+    let name_idx = pinned_name.and_then(|name| {
+        let session_idx = sessions.iter().position(|s| s.session_name == name)?;
+        list.filtered
+            .iter()
+            .position(|(idx, _)| *idx == session_idx)
+    });
+
+    list.selected = if let Some(filtered_idx) = name_idx {
+        Some(filtered_idx)
+    } else if list.filtered.is_empty() {
+        None
+    } else {
+        // Pinned session is gone; clamp to valid range.
+        let max = list.filtered.len() - 1;
+        list.selected.map(|sel| sel.min(max))
+    };
+
+    list.scroll_offset = if list.filtered.is_empty() {
+        0
+    } else {
+        previous_scroll.min(list.filtered.len() - 1)
+    };
+}
+
+fn compute_session_filtered(
+    query: &str,
+    items: &[String],
+    matcher: &SkimMatcherV2,
+) -> Vec<(usize, i64)> {
+    if query.is_empty() {
+        (0..items.len()).map(|i| (i, 0)).collect()
+    } else {
+        // Sessions preserve source order (by recency) rather than sorting by score
+        fuzzy_match_indices(query, items, matcher)
+    }
+}
+
+fn apply_session_filter(
+    list: &mut SearchableList,
+    sessions: &[SessionEntry],
+    matcher: &SkimMatcherV2,
+) {
+    let items = session_search_items(sessions);
+    list.filtered = compute_session_filtered(&list.input.text, &items, matcher);
+    list.selected = if list.filtered.is_empty() {
+        None
+    } else {
+        Some(0)
+    };
+    list.scroll_offset = 0;
+}
+
+macro_rules! apply_transition {
+    ($state:expr, $transition:expr $(,)?) => {
+        if let Err(error) = $state.transition(&$transition) {
+            $state.set_error(&format!("Internal state transition error: {error:?}"));
+        }
+    };
+}
+
 pub(super) fn handle_go_back(state: &mut AppState) {
-    match state.mode.clone() {
+    match state.mode().clone() {
         Mode::BranchSelect => {
-            state.mode = Mode::RepoSelect;
+            apply_transition!(state, ModeTransition::RepoSelect);
             state.branch_list.input.clear();
-            state.cancel_agent_poller();
         }
-        Mode::SelectBaseBranch => {
-            state.base_branch_selection = None;
-            state.mode = Mode::BranchSelect;
+        Mode::SelectBaseBranch | Mode::ConfirmWorktreeDelete { .. } => {
+            apply_transition!(state, ModeTransition::BranchSelect);
         }
-        Mode::ConfirmWorktreeDelete { .. } => {
-            state.mode = Mode::BranchSelect;
+        Mode::Help { .. } => {
+            apply_transition!(state, ModeTransition::CloseHelp);
         }
-        Mode::Help { previous } => {
-            state.help_overlay = None;
-            state.mode = *previous;
-        }
-        Mode::Setup(_) | Mode::RepoSelect | Mode::Loading(_) => {}
+        // GoBack is not in the keymap for these modes, so these arms are
+        // unreachable in practice. Keep them for exhaustiveness.
+        Mode::Setup(_) | Mode::RepoSelect | Mode::Loading(_) | Mode::Sessions => {}
     }
 }
 
 pub(super) fn handle_show_help(state: &mut AppState, keys: &KeysConfig) {
-    if let Mode::Help { previous } = state.mode.clone() {
-        state.help_overlay = None;
-        state.mode = *previous;
-    } else {
-        let catalog = keys.catalog_for_mode(&state.mode);
-        state.help_overlay = Some(HelpOverlayState {
-            list: SearchableList::new(catalog.flattened.len()),
-            rows: catalog.flattened,
-        });
-        state.mode = Mode::Help {
-            previous: Box::new(state.mode.clone()),
-        };
+    if state.is_help_open() {
+        return;
     }
+
+    let catalog = keys.catalog_for_mode(state.mode());
+    apply_transition!(
+        state,
+        ModeTransition::OpenHelp {
+            overlay: HelpOverlayState {
+                list: SearchableList::new(catalog.flattened.len()),
+                rows: catalog.flattened,
+            },
+        },
+    );
 }
 
 pub(super) fn handle_start_new_branch(state: &mut AppState) {
@@ -77,12 +173,16 @@ pub(super) fn handle_start_new_branch(state: &mut AppState) {
     }
     let list = SearchableList::new(bases.len());
 
-    state.base_branch_selection = Some(BaseBranchSelection {
-        new_name: state.branch_list.input.text.clone(),
-        bases,
-        list,
-    });
-    state.mode = Mode::SelectBaseBranch;
+    apply_transition!(
+        state,
+        ModeTransition::SelectBaseBranch {
+            flow: BaseBranchSelection {
+                new_name: state.branch_list.input.text.clone(),
+                bases,
+                list,
+            },
+        },
+    );
 }
 
 pub(super) fn handle_delete_worktree(state: &mut AppState) {
@@ -102,10 +202,13 @@ pub(super) fn handle_delete_worktree(state: &mut AppState) {
         } else if branch.is_current {
             state.set_error("Cannot delete the current branch's worktree");
         } else {
-            state.mode = Mode::ConfirmWorktreeDelete {
-                branch_name: branch.name.clone(),
-                has_session: branch.has_session,
-            };
+            apply_transition!(
+                state,
+                ModeTransition::ConfirmWorktreeDelete {
+                    branch_name: branch.name.clone(),
+                    has_session: branch.has_session,
+                },
+            );
         }
     }
 }
@@ -119,7 +222,7 @@ pub(super) fn handle_confirm_delete<T: TmuxProvider + ?Sized>(
     if let Mode::ConfirmWorktreeDelete {
         branch_name,
         has_session,
-    } = &state.mode
+    } = state.mode()
     {
         let branch_name = branch_name.clone();
         let has_session = *has_session;
@@ -146,18 +249,19 @@ pub(super) fn handle_confirm_delete<T: TmuxProvider + ?Sized>(
                     state.set_error(&format!("Failed to persist pending deletes: {e}"));
                 }
             }
-            state.mode = Mode::BranchSelect;
+            apply_transition!(state, ModeTransition::BranchSelect);
             spawn_worktree_removal(git, sender, worktree_path, branch_name);
         }
     }
 }
 
+#[allow(clippy::too_many_lines)]
 pub(super) fn handle_open_branch(
     state: &mut AppState,
     git: &Arc<dyn GitProvider>,
     sender: &EventSender,
 ) -> Option<OpenAction> {
-    match state.mode {
+    match state.mode() {
         Mode::BranchSelect => {
             if let Some(sel) = state.branch_list.selected
                 && let Some(&(idx, _)) = state.branch_list.filtered.get(sel)
@@ -169,7 +273,7 @@ pub(super) fn handle_open_branch(
                 if let Some(wt_path) = &branch.worktree_path {
                     let session_name = repo.tmux_session_name(wt_path);
                     return Some(OpenAction::Open {
-                        path: wt_path.clone(),
+                        path: Some(wt_path.clone()),
                         session_name,
                         split_command: state.split_command.clone(),
                     });
@@ -178,26 +282,34 @@ pub(super) fn handle_open_branch(
                 match worktree_dir(repo, &branch.name) {
                     Ok(wt_path) => {
                         let branch_name = branch.name.clone();
+                        let repo_path = repo.path.clone();
                         let session_name = repo.tmux_session_name(&wt_path);
                         if is_remote {
-                            state.mode = Mode::Loading(format!(
-                                "Checking out remote branch {branch_name}..."
-                            ));
+                            apply_transition!(
+                                state,
+                                ModeTransition::Loading {
+                                    message: format!("Checking out remote branch {branch_name}..."),
+                                },
+                            );
                             spawn_tracking_worktree_creation(
                                 git,
                                 sender,
-                                repo.path.clone(),
+                                repo_path,
                                 branch_name,
                                 wt_path,
                                 session_name,
                             );
                         } else {
-                            state.mode =
-                                Mode::Loading(format!("Creating worktree for {branch_name}..."));
+                            apply_transition!(
+                                state,
+                                ModeTransition::Loading {
+                                    message: format!("Creating worktree for {branch_name}..."),
+                                },
+                            );
                             spawn_worktree_creation(
                                 git,
                                 sender,
-                                repo.path.clone(),
+                                repo_path,
                                 branch_name,
                                 wt_path,
                                 session_name,
@@ -212,8 +324,10 @@ pub(super) fn handle_open_branch(
             }
         }
         Mode::SelectBaseBranch => {
-            if let Some(flow) = &state.base_branch_selection
-                && let Some(sel) = flow.list.selected
+            let flow = state
+                .require_base_branch_selection()
+                .expect("base branch selection context must exist in SelectBaseBranch mode");
+            if let Some(sel) = flow.list.selected
                 && let Some(&(idx, _)) = flow.list.filtered.get(sel)
             {
                 let base = flow.bases[idx].clone();
@@ -222,13 +336,18 @@ pub(super) fn handle_open_branch(
                 let repo = &state.repos[repo_idx];
                 match worktree_dir(repo, &new_name) {
                     Ok(wt_path) => {
+                        let repo_path = repo.path.clone();
                         let session_name = repo.tmux_session_name(&wt_path);
-                        state.mode =
-                            Mode::Loading(format!("Creating branch {new_name} from {base}..."));
+                        apply_transition!(
+                            state,
+                            ModeTransition::Loading {
+                                message: format!("Creating branch {new_name} from {base}..."),
+                            },
+                        );
                         spawn_branch_and_worktree_creation(
                             git,
                             sender,
-                            repo.path.clone(),
+                            repo_path,
                             new_name,
                             base,
                             wt_path,
@@ -243,6 +362,7 @@ pub(super) fn handle_open_branch(
             }
         }
         Mode::RepoSelect
+        | Mode::Sessions
         | Mode::ConfirmWorktreeDelete { .. }
         | Mode::Loading(_)
         | Mode::Help { .. }
@@ -273,7 +393,7 @@ pub(super) fn enter_branch_select_with_loading<T: TmuxProvider + ?Sized + 'stati
     let repo = state.repos[repo_idx].clone();
     let cwd = state.cwd_worktree_path.clone();
     if show_loading {
-        state.mode = Mode::BranchSelect;
+        apply_transition!(state, ModeTransition::BranchSelect);
         state.branches.clear();
         state.branch_list.reset(0);
     }
@@ -333,7 +453,7 @@ pub(super) fn handle_search_delete_to_end(state: &mut AppState, matcher: &SkimMa
 
 /// Dispatch post-edit updates: setup completions or fuzzy filter.
 fn post_text_edit(state: &mut AppState, matcher: &SkimMatcherV2) {
-    if matches!(state.mode, Mode::Setup(SetupStep::SearchDirs)) {
+    if matches!(state.mode(), Mode::Setup(SetupStep::SearchDirs)) {
         update_setup_completions(state);
     } else {
         update_active_filter(state, matcher);
@@ -343,14 +463,24 @@ fn post_text_edit(state: &mut AppState, matcher: &SkimMatcherV2) {
 // ── Setup action handlers ──
 
 pub(super) fn handle_setup_continue(state: &mut AppState) {
-    state.mode = Mode::Setup(SetupStep::SearchDirs);
-    if state.setup.is_none() {
-        state.setup = Some(kiosk_core::state::SetupState::new());
-    }
+    let setup = state
+        .require_setup()
+        .ok()
+        .cloned()
+        .unwrap_or_else(kiosk_core::state::SetupState::new);
+    apply_transition!(
+        state,
+        ModeTransition::Setup {
+            step: SetupStep::SearchDirs,
+            setup,
+        },
+    );
 }
 
 pub(super) fn handle_setup_add_dir(state: &mut AppState) -> Option<super::OpenAction> {
-    let setup = state.setup.as_ref()?;
+    let Ok(setup) = state.require_setup() else {
+        return None;
+    };
 
     // If a completion is selected, navigate into it instead of adding
     if let Some(sel) = setup.selected_completion {
@@ -367,23 +497,27 @@ pub(super) fn handle_setup_add_dir(state: &mut AppState) -> Option<super::OpenAc
         return Some(super::OpenAction::SetupComplete);
     }
 
-    let setup = state.setup.as_mut()?;
-    if !setup.dirs.contains(&input_text) {
-        setup.dirs.push(input_text);
-    }
-    setup.input.clear();
-    setup.completions.clear();
-    setup.selected_completion = None;
+    state
+        .update_setup(|setup| {
+            if !setup.dirs.contains(&input_text) {
+                setup.dirs.push(input_text);
+            }
+            setup.input.clear();
+            setup.completions.clear();
+            setup.selected_completion = None;
+        })
+        .ok()?;
     None
 }
 
 /// Fill the selected (or first) completion into the input and re-generate.
 /// Shared by Tab-complete and Enter-with-selection flows.
 fn fill_setup_completion(state: &mut AppState, index: usize) {
-    let Some(setup) = &mut state.setup else {
-        return;
-    };
-    let Some(completion) = setup.completions.get(index).cloned() else {
+    let Some(completion) = state
+        .require_setup()
+        .ok()
+        .and_then(|setup| setup.completions.get(index).cloned())
+    else {
         return;
     };
     let with_slash = if completion.ends_with('/') {
@@ -391,65 +525,94 @@ fn fill_setup_completion(state: &mut AppState, index: usize) {
     } else {
         format!("{completion}/")
     };
-    setup.input.text = with_slash;
-    setup.input.cursor = setup.input.text.len();
-    setup.completions.clear();
-    setup.selected_completion = None;
+    state
+        .update_setup(|setup| {
+            setup.input.text = with_slash;
+            setup.input.cursor = setup.input.text.len();
+            setup.completions.clear();
+            setup.selected_completion = None;
+        })
+        .expect("setup context must exist while applying setup completion");
     update_setup_completions(state);
 }
 
 pub(super) fn handle_setup_tab_complete(state: &mut AppState) {
-    let Some(setup) = &mut state.setup else {
+    let Ok(setup) = state.require_setup() else {
         return;
     };
+    let (completion_count, input_text, selected_completion) = (
+        setup.completions.len(),
+        setup.input.text.clone(),
+        setup.selected_completion,
+    );
 
     // Generate completions if not already present
-    if setup.completions.is_empty() {
-        setup.completions = crate::components::path_input::complete(&setup.input.text);
-        setup.selected_completion = None;
+    if completion_count == 0 {
+        state
+            .update_setup(|setup| {
+                setup.completions = crate::components::path_input::complete(&input_text);
+                setup.selected_completion = None;
+            })
+            .expect("setup context must exist when generating setup completions");
         return;
     }
 
-    if setup.completions.len() == 1 {
+    if completion_count == 1 {
         fill_setup_completion(state, 0);
         return;
     }
 
     // Multiple: fill to common prefix if it extends the input
-    let common = crate::components::path_input::common_prefix(&setup.completions);
-    if !common.is_empty() && common != setup.input.text {
-        setup.input.text = common;
-        setup.input.cursor = setup.input.text.len();
-        setup.completions = crate::components::path_input::complete(&setup.input.text);
-        setup.selected_completion = None;
+    let completions = state
+        .require_setup()
+        .ok()
+        .map(|setup| setup.completions.clone())
+        .unwrap_or_default();
+    let common = crate::components::path_input::common_prefix(&completions);
+    if !common.is_empty() && common != input_text {
+        state
+            .update_setup(|setup| {
+                setup.input.text = common;
+                setup.input.cursor = setup.input.text.len();
+                setup.completions = crate::components::path_input::complete(&setup.input.text);
+                setup.selected_completion = None;
+            })
+            .expect("setup context must exist when filling setup common prefix");
         return;
     }
 
     // Common prefix already matches input: fill in the selected (or first) completion
-    let sel = setup.selected_completion.unwrap_or(0);
+    let sel = selected_completion.unwrap_or(0);
     fill_setup_completion(state, sel);
 }
 
 pub(super) fn handle_setup_move_selection(state: &mut AppState, delta: i32) {
-    let Some(setup) = &mut state.setup else {
+    let Some((completions_len, selected_completion)) = state
+        .require_setup()
+        .ok()
+        .map(|setup| (setup.completions.len(), setup.selected_completion))
+    else {
         return;
     };
-    if setup.completions.is_empty() {
+    if completions_len == 0 {
         return;
     }
-    let len = setup.completions.len();
-    setup.selected_completion = match setup.selected_completion {
+    let next_selection = match selected_completion {
         None => {
             if delta > 0 {
                 Some(0)
             } else {
-                Some(len - 1)
+                Some(completions_len - 1)
             }
         }
         Some(current) => {
             if delta > 0 {
                 let next = current.saturating_add(delta.unsigned_abs() as usize);
-                if next >= len { None } else { Some(next) }
+                if next >= completions_len {
+                    None
+                } else {
+                    Some(next)
+                }
             } else if current == 0 {
                 None
             } else {
@@ -457,15 +620,28 @@ pub(super) fn handle_setup_move_selection(state: &mut AppState, delta: i32) {
             }
         }
     };
+    state
+        .update_setup(|setup| {
+            setup.selected_completion = next_selection;
+        })
+        .expect("setup context must exist while moving setup selection");
 }
 
 /// Cancel in setup: deselect completion if one is highlighted, otherwise quit.
 pub(super) fn handle_setup_cancel(state: &mut AppState) -> Option<super::OpenAction> {
-    let Some(setup) = &mut state.setup else {
+    let Some(has_selection) = state
+        .require_setup()
+        .ok()
+        .map(|setup| setup.selected_completion.is_some())
+    else {
         return Some(super::OpenAction::Quit);
     };
-    if setup.selected_completion.is_some() {
-        setup.selected_completion = None;
+    if has_selection {
+        state
+            .update_setup(|setup| {
+                setup.selected_completion = None;
+            })
+            .expect("setup context must exist while cancelling setup selection");
         None
     } else {
         Some(super::OpenAction::Quit)
@@ -473,15 +649,16 @@ pub(super) fn handle_setup_cancel(state: &mut AppState) -> Option<super::OpenAct
 }
 
 fn update_setup_completions(state: &mut AppState) {
-    let Some(setup) = &mut state.setup else {
-        return;
-    };
-    setup.completions = crate::components::path_input::complete(&setup.input.text);
-    setup.selected_completion = None;
+    state
+        .update_setup(|setup| {
+            setup.completions = crate::components::path_input::complete(&setup.input.text);
+            setup.selected_completion = None;
+        })
+        .expect("setup context must exist while updating setup completions");
 }
 
 fn update_active_filter(state: &mut AppState, matcher: &SkimMatcherV2) {
-    match state.mode {
+    match state.mode() {
         Mode::RepoSelect => {
             let names: Vec<String> = state.repos.iter().map(|r| r.name.clone()).collect();
             apply_fuzzy_filter(&mut state.repo_list, &names, matcher);
@@ -490,32 +667,43 @@ fn update_active_filter(state: &mut AppState, matcher: &SkimMatcherV2) {
             let names: Vec<String> = state.branches.iter().map(|b| b.name.clone()).collect();
             apply_fuzzy_filter(&mut state.branch_list, &names, matcher);
         }
+        Mode::Sessions => {
+            apply_session_filter(
+                &mut state.sessions_view.list,
+                &state.sessions_view.sessions,
+                matcher,
+            );
+        }
         Mode::SelectBaseBranch => {
-            if let Some(flow) = &mut state.base_branch_selection {
-                let bases = flow.bases.clone();
-                apply_fuzzy_filter(&mut flow.list, &bases, matcher);
-            }
+            state
+                .update_base_branch_selection(|flow| {
+                    let bases = flow.bases.clone();
+                    apply_fuzzy_filter(&mut flow.list, &bases, matcher);
+                })
+                .expect("base branch selection context must exist in SelectBaseBranch mode");
         }
         Mode::Help { .. } => {
-            if let Some(overlay) = &mut state.help_overlay {
-                let search_items: Vec<String> = overlay
-                    .rows
-                    .iter()
-                    .map(|row| {
-                        format!(
-                            "{} {} {} {}",
-                            row.section_name, row.key_display, row.command, row.description
-                        )
-                    })
-                    .collect();
-                apply_fuzzy_filter(&mut overlay.list, &search_items, matcher);
-                // Stable-sort filtered results by section_index so that
-                // compute_help_layout never emits duplicate section headers
-                // when fuzzy scoring reorders items across sections.
-                overlay.list.filtered.sort_by_key(|(row_idx, _score)| {
-                    overlay.rows.get(*row_idx).map_or(0, |r| r.section_index)
-                });
-            }
+            state
+                .update_help_overlay(|overlay| {
+                    let search_items: Vec<String> = overlay
+                        .rows
+                        .iter()
+                        .map(|row| {
+                            format!(
+                                "{} {} {} {}",
+                                row.section_name, row.key_display, row.command, row.description
+                            )
+                        })
+                        .collect();
+                    apply_fuzzy_filter(&mut overlay.list, &search_items, matcher);
+                    // Stable-sort filtered results by section_index so that
+                    // compute_help_layout never emits duplicate section headers
+                    // when fuzzy scoring reorders items across sections.
+                    overlay.list.filtered.sort_by_key(|(row_idx, _score)| {
+                        overlay.rows.get(*row_idx).map_or(0, |r| r.section_index)
+                    });
+                })
+                .expect("help overlay context must exist in Help mode");
         }
         _ => {}
     }
@@ -525,15 +713,8 @@ fn apply_fuzzy_filter(list: &mut SearchableList, items: &[String], matcher: &Ski
     if list.input.text.is_empty() {
         list.filtered = items.iter().enumerate().map(|(i, _)| (i, 0)).collect();
     } else {
-        let mut scored: Vec<(usize, i64)> = items
-            .iter()
-            .enumerate()
-            .filter_map(|(i, item)| {
-                matcher
-                    .fuzzy_match(item, &list.input.text)
-                    .map(|score| (i, score))
-            })
-            .collect();
+        // Branches/repos sort by score desc, length asc, alphabetical
+        let mut scored = fuzzy_match_indices(&list.input.text, items, matcher);
         scored.sort_by(|a, b| {
             b.1.cmp(&a.1)
                 .then_with(|| items[a.0].len().cmp(&items[b.0].len()))
@@ -552,6 +733,8 @@ fn apply_fuzzy_filter(list: &mut SearchableList, items: &[String], matcher: &Ski
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kiosk_core::state::ResolvedSessionParams;
+    use std::path::PathBuf;
 
     fn make_list(search: &str) -> SearchableList {
         SearchableList {
@@ -656,5 +839,159 @@ mod tests {
 
         let names = filtered_names(&list, &items);
         assert_eq!(names, vec!["afoo", "bfoo", "cfoo"]);
+    }
+
+    #[test]
+    fn sessions_mode_search_filters_session_list() {
+        let mut state = AppState::new(Vec::new(), None);
+        apply_transition!(state, ModeTransition::Sessions);
+        state.sessions_view.sessions = vec![
+            SessionEntry::resolved(ResolvedSessionParams {
+                session_name: "scooter--add-scoop-to-readme".to_string(),
+                repo_name: "scooter".to_string(),
+                branch: Some("add-scoop-to-readme".to_string()),
+                path: PathBuf::from("/tmp/scooter-add-scoop"),
+                agent_statuses: Vec::new(),
+                session_activity: 10,
+                attached: false,
+            }),
+            SessionEntry::resolved(ResolvedSessionParams {
+                session_name: "scooter--main".to_string(),
+                repo_name: "scooter".to_string(),
+                branch: Some("main".to_string()),
+                path: PathBuf::from("/tmp/scooter-main"),
+                agent_statuses: Vec::new(),
+                session_activity: 20,
+                attached: false,
+            }),
+            SessionEntry::resolved(ResolvedSessionParams {
+                session_name: "kiosk--feat-agent-session-switcher".to_string(),
+                repo_name: "kiosk".to_string(),
+                branch: Some("feat-agent-session-switcher".to_string()),
+                path: PathBuf::from("/tmp/kiosk-feat"),
+                agent_statuses: Vec::new(),
+                session_activity: 30,
+                attached: false,
+            }),
+        ];
+        state.sessions_view.list = SearchableList::new(state.sessions_view.sessions.len());
+
+        let matcher = SkimMatcherV2::default();
+        for c in "add-scoop".chars() {
+            handle_search_push(&mut state, &matcher, c);
+        }
+
+        assert_eq!(state.sessions_view.list.filtered.len(), 1);
+        assert_eq!(state.sessions_view.list.filtered[0].0, 0);
+        assert_eq!(state.sessions_view.list.selected, Some(0));
+    }
+
+    #[test]
+    fn sessions_mode_search_preserves_canonical_session_order() {
+        let mut state = AppState::new(Vec::new(), None);
+        apply_transition!(state, ModeTransition::Sessions);
+        state.sessions_view.sessions = vec![
+            SessionEntry::resolved(ResolvedSessionParams {
+                session_name: "kiosk--feat-agent-session-switcher".to_string(),
+                repo_name: "kiosk".to_string(),
+                branch: Some("feat-agent-session-switcher".to_string()),
+                path: PathBuf::from("/tmp/kiosk-feat"),
+                agent_statuses: Vec::new(),
+                session_activity: 30,
+                attached: true,
+            }),
+            SessionEntry::resolved(ResolvedSessionParams {
+                session_name: "scooter--main".to_string(),
+                repo_name: "scooter".to_string(),
+                branch: Some("main".to_string()),
+                path: PathBuf::from("/tmp/scooter-main"),
+                agent_statuses: Vec::new(),
+                session_activity: 20,
+                attached: false,
+            }),
+            SessionEntry::resolved(ResolvedSessionParams {
+                session_name: "dotfiles--main".to_string(),
+                repo_name: "dotfiles".to_string(),
+                branch: Some("main".to_string()),
+                path: PathBuf::from("/tmp/dotfiles-main"),
+                agent_statuses: Vec::new(),
+                session_activity: 10,
+                attached: false,
+            }),
+        ];
+        state.sessions_view.list = SearchableList::new(state.sessions_view.sessions.len());
+
+        let matcher = SkimMatcherV2::default();
+        handle_search_push(&mut state, &matcher, 'o');
+
+        let filtered_names = state
+            .sessions_view
+            .list
+            .filtered
+            .iter()
+            .map(|(idx, _)| state.sessions_view.sessions[*idx].session_name.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            filtered_names,
+            vec![
+                "kiosk--feat-agent-session-switcher",
+                "scooter--main",
+                "dotfiles--main",
+            ]
+        );
+        assert_eq!(state.sessions_view.list.selected, Some(0));
+    }
+
+    #[test]
+    fn rebuild_preserves_selection_by_name_after_resort() {
+        // Simulate a background refresh that re-orders sessions by agent priority.
+        // The user had "scooter--main" selected (index 1 in the old order).
+        // After the refresh a higher-priority session moves to position 0, so the
+        // old index 1 would point at the wrong session without stable-identity logic.
+        let make_session = |name: &str, activity: u64| {
+            SessionEntry::resolved(ResolvedSessionParams {
+                session_name: name.to_string(),
+                repo_name: name.to_string(),
+                branch: None,
+                path: PathBuf::from("/tmp"),
+                agent_statuses: Vec::new(),
+                session_activity: activity,
+                attached: false,
+            })
+        };
+
+        let sessions_before = vec![
+            make_session("session-a", 30),
+            make_session("session-b", 20),
+            make_session("session-c", 10),
+        ];
+
+        // Build a list with "session-b" selected (filtered index 1).
+        let mut list = SearchableList::new(sessions_before.len());
+        let matcher = SkimMatcherV2::default();
+        rebuild_session_filter_preserving_search(&mut list, &sessions_before, None, &matcher);
+        list.selected = Some(1); // user moves cursor to session-b
+
+        // Now sessions are re-sorted: session-b jumps to position 0.
+        let sessions_after = vec![
+            make_session("session-b", 20),
+            make_session("session-a", 30),
+            make_session("session-c", 10),
+        ];
+
+        rebuild_session_filter_preserving_search(
+            &mut list,
+            &sessions_after,
+            Some("session-b"),
+            &matcher,
+        );
+
+        // Cursor should follow session-b to its new position (0), not stay at index 1.
+        assert_eq!(
+            list.selected,
+            Some(0),
+            "selection should track session-b to its new position"
+        );
     }
 }

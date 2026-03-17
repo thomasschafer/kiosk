@@ -1,18 +1,42 @@
 use kiosk_core::config::{NamedColor, ThemeColor};
 use ratatui::style::Color;
 
+/// Runtime status badge colors derived from theme config.
+///
+/// Keep field list in sync with [`kiosk_core::config::ThemeStatusConfig`] —
+/// add new agent states to both structs together.
+pub struct ThemeStatus {
+    pub running: Color,
+    pub waiting: Color,
+    pub idle: Color,
+    pub unknown: Color,
+}
+
+impl From<&kiosk_core::config::ThemeStatusConfig> for ThemeStatus {
+    fn from(cfg: &kiosk_core::config::ThemeStatusConfig) -> Self {
+        Self {
+            running: to_ratatui_color(&cfg.running),
+            waiting: to_ratatui_color(&cfg.waiting),
+            idle: to_ratatui_color(&cfg.idle),
+            unknown: to_ratatui_color(&cfg.unknown),
+        }
+    }
+}
+
 /// Generates `Theme` and `from_config` from a list of field names,
 /// mirroring `ThemeConfig` without manual repetition.
 macro_rules! define_theme {
     ($($field:ident),* $(,)?) => {
         pub struct Theme {
             $(pub $field: Color,)*
+            pub status: ThemeStatus,
         }
 
         impl Theme {
             pub fn from_config(config: &kiosk_core::config::ThemeConfig) -> Self {
                 Self {
                     $($field: to_ratatui_color(&config.$field),)*
+                    status: ThemeStatus::from(&config.status),
                 }
             }
         }
@@ -67,7 +91,11 @@ mod tests {
         assert_eq!(theme.muted, Color::DarkGray);
         assert_eq!(theme.border, Color::DarkGray);
         assert_eq!(theme.hint, Color::Blue);
-        assert_eq!(theme.highlight_fg, Color::Rgb(0, 0, 0));
+        assert_eq!(theme.highlight_fg, Color::Black);
+        assert_eq!(theme.status.running, Color::Green);
+        assert_eq!(theme.status.waiting, Color::Yellow);
+        assert_eq!(theme.status.idle, Color::Cyan);
+        assert_eq!(theme.status.unknown, Color::Blue);
     }
 
     #[test]
@@ -85,6 +113,25 @@ mod tests {
         assert_eq!(theme.success, Color::Green); // default
         assert_eq!(theme.error, Color::Magenta);
         assert_eq!(theme.highlight_fg, Color::Yellow);
+        assert_eq!(theme.status.running, Color::Green); // default
+        assert_eq!(theme.status.waiting, Color::Yellow); // default
+        assert_eq!(theme.status.idle, Color::Cyan); // default
+        assert_eq!(theme.status.unknown, Color::Blue); // default
+    }
+
+    #[test]
+    fn test_theme_custom_status_colors() {
+        let mut config = ThemeConfig::default();
+        config.status.running = ThemeColor::Rgb(10, 20, 30);
+        config.status.waiting = ThemeColor::Named(NamedColor::Red);
+        config.status.idle = ThemeColor::Named(NamedColor::White);
+        config.status.unknown = ThemeColor::Rgb(200, 210, 220);
+
+        let theme = Theme::from_config(&config);
+        assert_eq!(theme.status.running, Color::Rgb(10, 20, 30));
+        assert_eq!(theme.status.waiting, Color::Red);
+        assert_eq!(theme.status.idle, Color::White);
+        assert_eq!(theme.status.unknown, Color::Rgb(200, 210, 220));
     }
 
     #[test]

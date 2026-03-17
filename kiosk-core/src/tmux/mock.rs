@@ -27,6 +27,8 @@ pub struct MockTmuxProvider {
     pub pane_content: HashMap<String, String>,
     /// Session activity timestamps keyed by session name
     pub session_activity_ts: HashMap<String, u64>,
+    /// Current session name for `current_session_name()` mock
+    pub current_session: Option<String>,
 }
 
 impl TmuxProvider for MockTmuxProvider {
@@ -138,6 +140,13 @@ impl TmuxProvider for MockTmuxProvider {
         self.clients.get(session).cloned().unwrap_or_default()
     }
 
+    fn list_attached_sessions(&self) -> std::collections::HashSet<String> {
+        self.clients
+            .iter()
+            .filter_map(|(session, clients)| (!clients.is_empty()).then_some(session.clone()))
+            .collect()
+    }
+
     fn switch_to_session(&self, name: &str) {
         self.switched_sessions
             .lock()
@@ -200,5 +209,14 @@ impl TmuxProvider for MockTmuxProvider {
 
     fn capture_pane_content(&self, pane_id: &str, _lines: u32) -> Option<String> {
         self.pane_content.get(pane_id).cloned()
+    }
+
+    fn current_session_name(&self) -> Option<String> {
+        // Mirror CliTmuxProvider: return None when not inside tmux.
+        if self.inside_tmux {
+            self.current_session.clone()
+        } else {
+            None
+        }
     }
 }

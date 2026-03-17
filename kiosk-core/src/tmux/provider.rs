@@ -67,9 +67,19 @@ pub trait TmuxProvider: Send + Sync {
     fn send_text_raw(&self, session: &str, pane: &str, text: &str) -> anyhow::Result<()>;
     fn pipe_pane(&self, session: &str, log_path: &Path) -> anyhow::Result<()>;
     fn list_clients(&self, session: &str) -> Vec<String>;
+    /// List sessions that currently have one or more attached clients.
+    fn list_attached_sessions(&self) -> std::collections::HashSet<String> {
+        self.list_session_names()
+            .into_iter()
+            .filter(|session| !self.list_clients(session).is_empty())
+            .collect()
+    }
     fn switch_to_session(&self, name: &str);
     fn kill_session(&self, name: &str);
     fn is_inside_tmux(&self) -> bool;
     fn list_panes_detailed(&self, session: &str) -> Vec<PaneInfo>;
     fn capture_pane_content(&self, pane_id: &str, lines: u32) -> Option<String>;
+    /// Get the name of the current tmux session.
+    /// Returns `None` if not inside tmux or if the command fails.
+    fn current_session_name(&self) -> Option<String>;
 }

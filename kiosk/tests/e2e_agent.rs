@@ -651,31 +651,6 @@ impl AgentTestEnvDefault {
             .unwrap();
     }
 
-    /// Poll `kiosk branches --json` until the given state appears, or panic.
-    #[allow(dead_code)]
-    fn poll_for_cli_state(&self, expected_state: &str, timeout_secs: u64) {
-        let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
-        let needle = format!("\"{expected_state}\"");
-        loop {
-            let output = Command::new(kiosk_binary())
-                .args(["branches", &self.repo_name, "--json"])
-                .env("XDG_CONFIG_HOME", &self.config_dir)
-                .env("XDG_STATE_HOME", &self.state_dir)
-                .env("KIOSK_TMUX_SOCKET", &self.tmux_socket)
-                .output()
-                .unwrap();
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            if stdout.contains(&needle) {
-                return;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "Agent never reached {expected_state} within {timeout_secs}s (last: {stdout})"
-            );
-            wait_ms(1000);
-        }
-    }
-
     #[allow(clippy::too_many_lines)]
     fn launch_real_agent(&self, agent: AgentKind, state: FakeState) {
         // Step 1: Start the agent and wait for it to reach idle.
@@ -963,14 +938,14 @@ fn test_e2e_agent_branches_json_claude_running() {
         .find(|b| b["name"] == "main")
         .expect("should have main branch");
 
-    let agent = &main_branch["agent_status"];
+    let agent = &main_branch["agent_statuses"];
     assert!(
-        !agent.is_null(),
-        "main branch should have agent_status: {main_branch}"
+        agent.is_array() && !agent.as_array().unwrap().is_empty(),
+        "main branch should have agent_statuses: {main_branch}"
     );
-    assert_eq!(agent["kind"], "ClaudeCode");
+    assert_eq!(agent[0]["kind"], "ClaudeCode");
 
-    assert_eq!(agent["state"], "Running");
+    assert_eq!(agent[0]["state"], "Running");
 }
 
 #[test]
@@ -986,8 +961,8 @@ fn test_e2e_agent_branches_json_claude_waiting() {
     let branches = json.as_array().unwrap();
     let main_branch = branches.iter().find(|b| b["name"] == "main").unwrap();
 
-    assert_eq!(main_branch["agent_status"]["kind"], "ClaudeCode");
-    assert_eq!(main_branch["agent_status"]["state"], "Waiting");
+    assert_eq!(main_branch["agent_statuses"][0]["kind"], "ClaudeCode");
+    assert_eq!(main_branch["agent_statuses"][0]["state"], "Waiting");
 }
 
 #[test]
@@ -1003,8 +978,8 @@ fn test_e2e_agent_branches_json_claude_idle() {
     let branches = json.as_array().unwrap();
     let main_branch = branches.iter().find(|b| b["name"] == "main").unwrap();
 
-    assert_eq!(main_branch["agent_status"]["kind"], "ClaudeCode");
-    assert_eq!(main_branch["agent_status"]["state"], "Idle");
+    assert_eq!(main_branch["agent_statuses"][0]["kind"], "ClaudeCode");
+    assert_eq!(main_branch["agent_statuses"][0]["state"], "Idle");
 }
 
 #[test]
@@ -1020,11 +995,14 @@ fn test_e2e_agent_branches_json_codex_running() {
     let branches = json.as_array().unwrap();
     let main_branch = branches.iter().find(|b| b["name"] == "main").unwrap();
 
-    let agent = &main_branch["agent_status"];
-    assert!(!agent.is_null(), "should detect codex: {main_branch}");
-    assert_eq!(agent["kind"], "Codex");
+    let agent = &main_branch["agent_statuses"];
+    assert!(
+        agent.is_array() && !agent.as_array().unwrap().is_empty(),
+        "should detect codex: {main_branch}"
+    );
+    assert_eq!(agent[0]["kind"], "Codex");
 
-    assert_eq!(agent["state"], "Running");
+    assert_eq!(agent[0]["state"], "Running");
 }
 
 #[test]
@@ -1051,10 +1029,10 @@ fn test_e2e_agent_branches_json_no_agent() {
     let branches = json.as_array().unwrap();
     let main_branch = branches.iter().find(|b| b["name"] == "main").unwrap();
 
-    // agent_status should be absent (skip_serializing_if = None)
+    // agent_statuses should be absent (skip_serializing_if = empty)
     assert!(
-        main_branch.get("agent_status").is_none(),
-        "shell-only session should not have agent_status: {main_branch}"
+        main_branch.get("agent_statuses").is_none(),
+        "shell-only session should not have agent_statuses: {main_branch}"
     );
 }
 
@@ -1170,14 +1148,14 @@ fn test_e2e_agent_sessions_json_includes_agent() {
         .find(|s| s["session"] == env.kiosk_session)
         .expect("should find our session in sessions list");
 
-    let agent = &our_session["agent_status"];
+    let agent = &our_session["agent_statuses"];
     assert!(
-        !agent.is_null(),
-        "session should have agent_status: {our_session}"
+        agent.is_array() && !agent.as_array().unwrap().is_empty(),
+        "session should have agent_statuses: {our_session}"
     );
-    assert_eq!(agent["kind"], "ClaudeCode");
+    assert_eq!(agent[0]["kind"], "ClaudeCode");
 
-    assert_eq!(agent["state"], "Waiting");
+    assert_eq!(agent[0]["state"], "Waiting");
 }
 
 #[test]
@@ -1206,8 +1184,8 @@ fn test_e2e_agent_sessions_json_no_agent() {
 
     if let Some(session) = our_session {
         assert!(
-            session.get("agent_status").is_none(),
-            "plain session should not have agent_status: {session}"
+            session.get("agent_statuses").is_none(),
+            "plain session should not have agent_statuses: {session}"
         );
     }
 }
@@ -1229,13 +1207,13 @@ fn test_e2e_agent_branches_json_cursor_running() {
     let branches = json.as_array().unwrap();
     let main_branch = branches.iter().find(|b| b["name"] == "main").unwrap();
 
-    let agent = &main_branch["agent_status"];
+    let agent = &main_branch["agent_statuses"];
     assert!(
-        !agent.is_null(),
+        agent.is_array() && !agent.as_array().unwrap().is_empty(),
         "should detect cursor agent: {main_branch}"
     );
-    assert_eq!(agent["kind"], "CursorAgent");
-    assert_eq!(agent["state"], "Running");
+    assert_eq!(agent[0]["kind"], "CursorAgent");
+    assert_eq!(agent[0]["state"], "Running");
 }
 
 #[test]
@@ -1251,8 +1229,8 @@ fn test_e2e_agent_branches_json_cursor_waiting() {
     let branches = json.as_array().unwrap();
     let main_branch = branches.iter().find(|b| b["name"] == "main").unwrap();
 
-    assert_eq!(main_branch["agent_status"]["kind"], "CursorAgent");
-    assert_eq!(main_branch["agent_status"]["state"], "Waiting");
+    assert_eq!(main_branch["agent_statuses"][0]["kind"], "CursorAgent");
+    assert_eq!(main_branch["agent_statuses"][0]["state"], "Waiting");
 }
 
 #[test]
@@ -1268,8 +1246,8 @@ fn test_e2e_agent_branches_json_cursor_idle() {
     let branches = json.as_array().unwrap();
     let main_branch = branches.iter().find(|b| b["name"] == "main").unwrap();
 
-    assert_eq!(main_branch["agent_status"]["kind"], "CursorAgent");
-    assert_eq!(main_branch["agent_status"]["state"], "Idle");
+    assert_eq!(main_branch["agent_statuses"][0]["kind"], "CursorAgent");
+    assert_eq!(main_branch["agent_statuses"][0]["state"], "Idle");
 }
 
 #[test]
@@ -1307,13 +1285,13 @@ fn test_e2e_agent_sessions_json_cursor() {
         .find(|s| s["session"] == env.kiosk_session)
         .expect("should find our session");
 
-    let agent = &our_session["agent_status"];
+    let agent = &our_session["agent_statuses"];
     assert!(
-        !agent.is_null(),
-        "session should have agent_status: {our_session}"
+        agent.is_array() && !agent.as_array().unwrap().is_empty(),
+        "session should have agent_statuses: {our_session}"
     );
-    assert_eq!(agent["kind"], "CursorAgent");
-    assert_eq!(agent["state"], "Running");
+    assert_eq!(agent[0]["kind"], "CursorAgent");
+    assert_eq!(agent[0]["state"], "Running");
 }
 
 #[test]
@@ -1375,7 +1353,7 @@ fn test_e2e_agent_codex_stale_content_waiting_then_idle() {
     let branches = json.as_array().unwrap();
     let main_branch = branches.iter().find(|b| b["name"] == "main").unwrap();
     assert_eq!(
-        main_branch["agent_status"]["state"], "Waiting",
+        main_branch["agent_statuses"][0]["state"], "Waiting",
         "should initially detect Waiting"
     );
 
@@ -1422,7 +1400,7 @@ fn test_e2e_agent_codex_stale_content_waiting_then_idle() {
     let branches = json.as_array().unwrap();
     let main_branch = branches.iter().find(|b| b["name"] == "main").unwrap();
     assert_eq!(
-        main_branch["agent_status"]["state"], "Idle",
+        main_branch["agent_statuses"][0]["state"], "Idle",
         "should detect Idle after transitioning from Waiting (idle tail overrides stale content)"
     );
 }
@@ -1508,7 +1486,7 @@ fn test_e2e_agent_codex_bare_prompt_without_footer_is_idle() {
     let branches = json.as_array().unwrap();
     let main_branch = branches.iter().find(|b| b["name"] == "main").unwrap();
     assert_eq!(
-        main_branch["agent_status"]["state"], "Idle",
+        main_branch["agent_statuses"][0]["state"], "Idle",
         "prompt-only Codex tail should classify as Idle"
     );
 }
@@ -1541,7 +1519,7 @@ fn test_e2e_agent_codex_prompt_with_user_text_without_footer_is_unknown() {
     let branches = json.as_array().unwrap();
     let main_branch = branches.iter().find(|b| b["name"] == "main").unwrap();
     assert_eq!(
-        main_branch["agent_status"]["state"], "Unknown",
+        main_branch["agent_statuses"][0]["state"], "Unknown",
         "prompt line with user text should not classify as Idle"
     );
 }
@@ -1575,7 +1553,7 @@ fn test_e2e_agent_codex_prompt_with_user_text_and_footer_is_idle() {
     let branches = json.as_array().unwrap();
     let main_branch = branches.iter().find(|b| b["name"] == "main").unwrap();
     assert_eq!(
-        main_branch["agent_status"]["state"], "Idle",
+        main_branch["agent_statuses"][0]["state"], "Idle",
         "prompt line with Codex footer should classify as Idle"
     );
 }
@@ -1704,10 +1682,13 @@ fn test_e2e_agent_branches_json_gemini_running() {
     let branches = json.as_array().unwrap();
     let main_branch = branches.iter().find(|b| b["name"] == "main").unwrap();
 
-    let agent = &main_branch["agent_status"];
-    assert!(!agent.is_null(), "should detect gemini: {main_branch}");
-    assert_eq!(agent["kind"], "Gemini");
-    assert_eq!(agent["state"], "Running");
+    let agent = &main_branch["agent_statuses"];
+    assert!(
+        agent.is_array() && !agent.as_array().unwrap().is_empty(),
+        "should detect gemini: {main_branch}"
+    );
+    assert_eq!(agent[0]["kind"], "Gemini");
+    assert_eq!(agent[0]["state"], "Running");
 }
 
 #[test]
@@ -1723,8 +1704,8 @@ fn test_e2e_agent_branches_json_gemini_waiting() {
     let branches = json.as_array().unwrap();
     let main_branch = branches.iter().find(|b| b["name"] == "main").unwrap();
 
-    assert_eq!(main_branch["agent_status"]["kind"], "Gemini");
-    assert_eq!(main_branch["agent_status"]["state"], "Waiting");
+    assert_eq!(main_branch["agent_statuses"][0]["kind"], "Gemini");
+    assert_eq!(main_branch["agent_statuses"][0]["state"], "Waiting");
 }
 
 #[test]
@@ -1740,8 +1721,8 @@ fn test_e2e_agent_branches_json_gemini_idle() {
     let branches = json.as_array().unwrap();
     let main_branch = branches.iter().find(|b| b["name"] == "main").unwrap();
 
-    assert_eq!(main_branch["agent_status"]["kind"], "Gemini");
-    assert_eq!(main_branch["agent_status"]["state"], "Idle");
+    assert_eq!(main_branch["agent_statuses"][0]["kind"], "Gemini");
+    assert_eq!(main_branch["agent_statuses"][0]["state"], "Idle");
 }
 
 #[test]
@@ -1779,13 +1760,13 @@ fn test_e2e_agent_sessions_json_gemini() {
         .find(|s| s["session"] == env.kiosk_session)
         .expect("should find our session");
 
-    let agent = &our_session["agent_status"];
+    let agent = &our_session["agent_statuses"];
     assert!(
-        !agent.is_null(),
-        "session should have agent_status: {our_session}"
+        agent.is_array() && !agent.as_array().unwrap().is_empty(),
+        "session should have agent_statuses: {our_session}"
     );
-    assert_eq!(agent["kind"], "Gemini");
-    assert_eq!(agent["state"], "Running");
+    assert_eq!(agent[0]["kind"], "Gemini");
+    assert_eq!(agent[0]["state"], "Running");
 }
 
 // ---------------------------------------------------------------------------
@@ -1883,12 +1864,22 @@ fn test_e2e_agent_multi_pane_highest_priority_wins() {
     let branches = json.as_array().unwrap();
     let main_branch = branches.iter().find(|b| b["name"] == "main").unwrap();
 
-    let agent = &main_branch["agent_status"];
-    assert!(!agent.is_null(), "should detect an agent: {main_branch}");
+    let agent = &main_branch["agent_statuses"];
+    let agent_arr = agent.as_array().expect("agent_statuses should be an array");
+    assert!(
+        agent_arr.len() >= 2,
+        "expected at least two agent statuses (Waiting + Idle), got {}: {agent}",
+        agent_arr.len()
+    );
     // Waiting (Codex) should win over Idle (Claude)
     assert_eq!(
-        agent["state"], "Waiting",
-        "Waiting should have higher priority than Idle: {agent}"
+        agent[0]["state"], "Waiting",
+        "highest-priority entry should be Waiting: {agent}"
+    );
+    // The lower-priority pane should still be reported
+    assert_eq!(
+        agent[1]["state"], "Idle",
+        "second entry should be Idle: {agent}"
     );
 }
 
@@ -1907,8 +1898,8 @@ fn test_e2e_agent_branches_json_opencode_running() {
     let branches = env.run_cli_json(&["branches", "--json", &env.repo_name]);
     let branches = branches.as_array().unwrap();
     let main = &branches[0];
-    assert_eq!(main["agent_status"]["kind"], "OpenCode");
-    assert_eq!(main["agent_status"]["state"], "Running");
+    assert_eq!(main["agent_statuses"][0]["kind"], "OpenCode");
+    assert_eq!(main["agent_statuses"][0]["state"], "Running");
 }
 
 #[test]
@@ -1924,8 +1915,8 @@ fn test_e2e_agent_branches_json_opencode_waiting() {
     let branches = json.as_array().unwrap();
     let main_branch = branches.iter().find(|b| b["name"] == "main").unwrap();
 
-    assert_eq!(main_branch["agent_status"]["kind"], "OpenCode");
-    assert_eq!(main_branch["agent_status"]["state"], "Waiting");
+    assert_eq!(main_branch["agent_statuses"][0]["kind"], "OpenCode");
+    assert_eq!(main_branch["agent_statuses"][0]["state"], "Waiting");
 }
 
 #[test]
@@ -1939,8 +1930,8 @@ fn test_e2e_agent_branches_json_opencode_idle() {
     let branches = env.run_cli_json(&["branches", "--json", &env.repo_name]);
     let branches = branches.as_array().unwrap();
     let main = &branches[0];
-    assert_eq!(main["agent_status"]["kind"], "OpenCode");
-    assert_eq!(main["agent_status"]["state"], "Idle");
+    assert_eq!(main["agent_statuses"][0]["kind"], "OpenCode");
+    assert_eq!(main["agent_statuses"][0]["state"], "Idle");
 }
 
 #[test]
@@ -1956,7 +1947,7 @@ fn test_e2e_agent_sessions_json_opencode() {
     let session = sessions.iter().find(|s| s["session"] == env.kiosk_session);
     assert!(session.is_some(), "expected session in output");
     let s = session.unwrap();
-    assert_eq!(s["agent_status"]["kind"], "OpenCode");
+    assert_eq!(s["agent_statuses"][0]["kind"], "OpenCode");
 }
 
 #[test]
@@ -1995,7 +1986,9 @@ use std::collections::HashSet;
 fn current_agent_state(env: &AgentTestEnvDefault) -> Option<String> {
     let json = env.run_cli_json(&["branches", &env.repo_name, "--json"]);
     let main = find_main_branch(&json);
-    main["agent_status"]["state"].as_str().map(String::from)
+    main["agent_statuses"][0]["state"]
+        .as_str()
+        .map(String::from)
 }
 
 /// Helper: find the main branch entry in `kiosk branches --json` output.
@@ -2046,6 +2039,53 @@ fn poll_for_any_startup_state(
     current_agent_state(env)
 }
 
+/// Handles Cursor Agent's quirky startup sequence: it may show a trust dialog
+/// (surfacing as `Waiting`) between the initial idle detection and our first
+/// CLI poll. Returns once the trust dialog has been dismissed (if present).
+fn handle_cursor_startup(env: &AgentTestEnvDefault, state: Option<String>, agent_name: &str) {
+    let state = if state.is_none() {
+        // On some versions, agent_status can be briefly absent right after
+        // startup while trust UI is still initializing. Nudge trust accept
+        // once more, then repoll.
+        env.tmux_cmd()
+            .args(["send-keys", "-t", &env.kiosk_session, "a"])
+            .status()
+            .unwrap();
+        wait_ms(300);
+        env.tmux_cmd()
+            .args(["send-keys", "-t", &env.kiosk_session, "Enter"])
+            .status()
+            .unwrap();
+        wait_ms(1500);
+        poll_for_any_startup_state(env, &["Idle", "Waiting", "Unknown"], 10)
+    } else {
+        state
+    };
+
+    assert!(
+        state.is_none() || state.as_deref() == Some("Idle") || state.as_deref() == Some("Waiting"),
+        "{agent_name}: expected None/Idle/Waiting after startup, got {state:?}"
+    );
+
+    if state.as_deref() == Some("Waiting") {
+        // Trust dialog is showing — we've already verified Idle during
+        // start_real_agent (it found the idle marker). The trust dialog
+        // appeared between idle detection and our kiosk CLI poll. We can
+        // still test Running by dismissing and proceeding.
+        eprintln!("{agent_name}: trust dialog still visible, dismissing before task");
+        env.tmux_cmd()
+            .args(["send-keys", "-t", &env.kiosk_session, "a"])
+            .status()
+            .unwrap();
+        wait_ms(3000);
+    } else if state.is_none() {
+        eprintln!(
+            "{agent_name}: startup state unavailable (None), continuing; this can happen during \
+             trust-screen transitions."
+        );
+    }
+}
+
 /// Core test logic shared by all real-agent tests.
 ///
 /// 1. Starts the agent and asserts Idle.
@@ -2053,6 +2093,7 @@ fn poll_for_any_startup_state(
 /// 3. Polls for Running (agent thinking) and Waiting (approval prompt).
 ///
 /// The delete prompt is chosen because:
+///
 /// - It's cheap (~200 tokens round-trip).
 /// - All agents show a Running phase while the API processes.
 /// - All agents in their default/test configurations ask for approval
@@ -2082,47 +2123,7 @@ fn run_real_agent_all_states(agent: AgentKind) {
 
     // Cursor may still be showing a trust dialog (Waiting) after startup.
     if agent == AgentKind::CursorAgent {
-        let state = if state.is_none() {
-            // On some versions, agent_status can be briefly absent right after
-            // startup while trust UI is still initializing. Nudge trust accept
-            // once more, then repoll.
-            env.tmux_cmd()
-                .args(["send-keys", "-t", &env.kiosk_session, "a"])
-                .status()
-                .unwrap();
-            wait_ms(300);
-            env.tmux_cmd()
-                .args(["send-keys", "-t", &env.kiosk_session, "Enter"])
-                .status()
-                .unwrap();
-            wait_ms(1500);
-            poll_for_any_startup_state(&env, &["Idle", "Waiting", "Unknown"], 10)
-        } else {
-            state
-        };
-        assert!(
-            state.is_none()
-                || state.as_deref() == Some("Idle")
-                || state.as_deref() == Some("Waiting"),
-            "{agent_name}: expected None/Idle/Waiting after startup, got {state:?}"
-        );
-        if state.as_deref() == Some("Waiting") {
-            // Trust dialog is showing — we've already verified Idle during
-            // start_real_agent (it found the idle marker). The trust dialog
-            // appeared between idle detection and our kiosk CLI poll. We can
-            // still test Running by dismissing and proceeding.
-            eprintln!("{agent_name}: trust dialog still visible, dismissing before task");
-            env.tmux_cmd()
-                .args(["send-keys", "-t", &env.kiosk_session, "a"])
-                .status()
-                .unwrap();
-            wait_ms(3000);
-        } else if state.is_none() {
-            eprintln!(
-                "{agent_name}: startup state unavailable (None), continuing; this can happen during \
-                 trust-screen transitions."
-            );
-        }
+        handle_cursor_startup(&env, state, &agent_name);
     } else if agent == AgentKind::Gemini || agent == AgentKind::ClaudeCode {
         assert!(
             state.as_deref() == Some("Idle")
@@ -2181,7 +2182,7 @@ fn run_real_agent_all_states(agent: AgentKind) {
         .iter()
         .find(|s| s["session"] == env.kiosk_session)
         .expect("should find session in sessions list");
-    let kind = session["agent_status"]["kind"]
+    let kind = session["agent_statuses"][0]["kind"]
         .as_str()
         .unwrap_or("missing");
     assert_eq!(

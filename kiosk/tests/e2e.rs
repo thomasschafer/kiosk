@@ -1242,9 +1242,11 @@ fn test_e2e_help_rapid_down_only_hits_visual_bottom_at_true_end() {
         wait_ms(20);
         let (selected_row, body_rows, selected_line) = help_view_detail(&env.capture());
         if selected_row + 1 == body_rows {
+            // Help opened from BranchSelect: the last entry in the General
+            // layer (lowest precedence, shown last) is always "Toggle sessions".
             assert!(
-                selected_line.contains("Show help"),
-                "Bottom row should only be the true end in branch help, got: {selected_line}"
+                selected_line.contains("C-s") && selected_line.contains("Toggle sessions"),
+                "Bottom row in branch-select help should be 'C-s … Toggle sessions', got: {selected_line}"
             );
         }
     }
@@ -1338,6 +1340,52 @@ fn test_e2e_dynamic_hints() {
     assert!(
         screen.contains("enter: open/create branch") && screen.contains("C-x: delete worktree"),
         "Branch hints should show dynamic bindings: {screen}"
+    );
+}
+
+#[test]
+fn test_e2e_sessions_view_search_filters_sessions() {
+    let env = TestEnv::new("sessions-search-filters");
+    let search_dir = env.search_dir();
+
+    let scooter_repo = search_dir.join("scooter");
+    let falcon_repo = search_dir.join("falcon");
+    fs::create_dir_all(&scooter_repo).unwrap();
+    fs::create_dir_all(&falcon_repo).unwrap();
+    init_test_repo(&scooter_repo);
+    init_test_repo(&falcon_repo);
+
+    env.write_config(&search_dir);
+
+    // Create active tmux sessions that map to the two main worktrees.
+    env.tmux_cmd()
+        .args(["new-session", "-d", "-s", "scooter", "sleep 1000"])
+        .output()
+        .unwrap();
+    env.tmux_cmd()
+        .args(["new-session", "-d", "-s", "falcon", "sleep 1000"])
+        .output()
+        .unwrap();
+
+    env.launch_kiosk();
+
+    env.send_special("C-s");
+    wait_for_screen(&env, 2500, |s| s.contains("kiosk — sessions"));
+
+    let screen = wait_for_screen(&env, 4000, |s| s.contains("2 sessions"));
+    assert!(
+        screen.contains("scooter"),
+        "Should include scooter: {screen}"
+    );
+    assert!(screen.contains("falcon"), "Should include falcon: {screen}");
+
+    env.send("sco");
+    let screen = wait_for_screen(&env, 4000, |s| {
+        s.contains("1 session") && s.contains("scooter")
+    });
+    assert!(
+        !screen.contains("falcon"),
+        "Search should filter out falcon session: {screen}"
     );
 }
 

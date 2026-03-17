@@ -82,7 +82,7 @@ fn process_struct(
     if struct_item.ident == "KeysConfig" && toml_prefix == "keys" {
         docs.push_str("Defaults are shown below.\n\n");
         docs.push_str("```toml\n");
-        docs.push_str(&generate_default_keys_toml()?);
+        docs.push_str(&generate_default_keys_toml());
         docs.push_str("```\n\n");
         return Ok(());
     }
@@ -259,63 +259,26 @@ fn generate_default_theme_toml() -> Result<String> {
     Ok(toml_str)
 }
 
-fn generate_default_keys_toml() -> Result<String> {
-    #[derive(serde::Serialize)]
-    struct KeysWrapper<'a> {
-        keys: &'a KeysConfig,
-    }
-
-    let keys = KeysConfig::default();
-    let wrapped = KeysWrapper { keys: &keys };
-    let value =
-        toml::Value::try_from(&wrapped).context("Failed to serialize default keys config")?;
-    let section_table = value
-        .get("keys")
-        .and_then(toml::Value::as_table)
-        .context("Serialized keys config is missing [keys] table")?;
+fn generate_default_keys_toml() -> String {
     let mut out = String::new();
-    let ordered_sections = KeysConfig::docs_section_order_asc();
-
-    for section in ordered_sections {
-        let section_value = section_table
-            .get(section)
-            .with_context(|| format!("Missing serialized key section: [keys.{section}]"))?;
-        write_keymap_section(&mut out, section, section_value)?;
+    for section in KeysConfig::default_keybinding_sections_for_docs() {
+        write_keymap_section(&mut out, &section);
     }
 
-    Ok(out)
+    out
 }
 
-fn write_keymap_section(
-    out: &mut String,
-    section: &str,
-    section_value: &toml::Value,
-) -> Result<()> {
-    let _ = writeln!(out, "[keys.{section}]");
-    let mut entries: Vec<_> = section_value
-        .as_table()
-        .with_context(|| format!("Expected [keys.{section}] to serialize as a TOML table"))?
-        .iter()
-        .map(|(key, command)| {
-            command
-                .as_str()
-                .with_context(|| {
-                    format!("Expected [keys.{section}] \"{key}\" value to serialize as string")
-                })
-                .map(|value| (key.clone(), value.to_string()))
-        })
-        .collect::<Result<Vec<_>>>()?;
-    entries.sort_unstable();
-    for (key, command) in entries {
+fn write_keymap_section(out: &mut String, section: &kiosk_core::config::keys::KeybindingSection) {
+    let _ = writeln!(out, "[keys.{}]", section.name);
+    for entry in &section.entries {
         let _ = writeln!(
             out,
             "\"{}\" = \"{}\"",
-            escape_toml_string(&key),
-            escape_toml_string(&command)
+            escape_toml_string(&entry.key.to_string()),
+            escape_toml_string(&entry.command.to_string())
         );
     }
     out.push('\n');
-    Ok(())
 }
 
 fn escape_toml_string(input: &str) -> String {

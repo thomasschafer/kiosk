@@ -13,14 +13,14 @@ pub fn resolve_action(
     let mut our_key: KeyEvent = key.into();
     our_key.canonicalize();
 
-    // Help can always be dismissed with Esc
-    if matches!(state.mode, Mode::Help { .. })
+    // Help can always be dismissed with Esc.
+    if matches!(state.mode(), Mode::Help { .. })
         && our_key == KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)
     {
-        return Some(Action::ShowHelp);
+        return Some(Action::GoBack);
     }
 
-    let mode_keymap = keys.keymap_for_mode(&state.mode);
+    let mode_keymap = keys.keymap_for_mode(state.mode());
     if let Some(command) = mode_keymap.get(&our_key)
         && let Some(action) = command_to_action(command, state)
     {
@@ -28,9 +28,10 @@ pub fn resolve_action(
     }
 
     // Handle printable characters for search in search-enabled modes
-    if state.mode.supports_text_edit()
+    if state.mode().supports_text_edit()
         && let KeyCode::Char(c) = our_key.code
-        && (our_key.modifiers == KeyModifiers::NONE && c.is_ascii_graphic() || c == ' ')
+        && our_key.modifiers == KeyModifiers::NONE
+        && (c.is_ascii_graphic() || c == ' ')
     {
         return Some(Action::SearchPush(c));
     }
@@ -48,7 +49,7 @@ fn command_to_action(command: &Command, state: &AppState) -> Option<Action> {
         Command::EnterRepo => Some(Action::EnterRepo),
         Command::OpenBranch => {
             // In branch-select mode, Enter with non-empty search and no matches starts new branch flow.
-            if let Mode::BranchSelect = state.mode
+            if let Mode::BranchSelect = state.mode()
                 && !state.branch_list.input.text.is_empty()
                 && state.branch_list.filtered.is_empty()
             {
@@ -59,7 +60,7 @@ fn command_to_action(command: &Command, state: &AppState) -> Option<Action> {
         Command::GoBack => Some(Action::GoBack),
         Command::NewBranch => Some(Action::StartNewBranchFlow),
         Command::DeleteWorktree => {
-            if let Mode::BranchSelect = state.mode {
+            if let Mode::BranchSelect = state.mode() {
                 Some(Action::DeleteWorktree)
             } else {
                 None
@@ -85,23 +86,132 @@ fn command_to_action(command: &Command, state: &AppState) -> Option<Action> {
         Command::MoveCursorWordRight => Some(Action::CursorWordRight),
         Command::MoveCursorStart => Some(Action::CursorStart),
         Command::MoveCursorEnd => Some(Action::CursorEnd),
-        Command::Confirm => match state.mode {
+        Command::Confirm => match state.mode() {
             Mode::ConfirmWorktreeDelete { .. } => Some(Action::ConfirmDeleteWorktree),
             Mode::SelectBaseBranch => Some(Action::OpenBranch),
             Mode::Setup(SetupStep::Welcome) => Some(Action::SetupContinue),
             Mode::Setup(SetupStep::SearchDirs) => Some(Action::SetupAddDir),
             _ => None,
         },
-        Command::Cancel => match state.mode {
+        Command::Cancel => match state.mode() {
             Mode::ConfirmWorktreeDelete { .. } => Some(Action::CancelDeleteWorktree),
             Mode::SelectBaseBranch => Some(Action::GoBack),
             Mode::Setup(SetupStep::Welcome) => Some(Action::Quit),
             Mode::Setup(SetupStep::SearchDirs) => Some(Action::SetupCancel),
             _ => None,
         },
-        Command::TabComplete => match state.mode {
+        Command::ToggleSessions => Some(Action::ToggleSessions),
+        Command::SwitchToSession => Some(Action::SwitchToSession),
+        Command::JumpToNextAgentSession => match state.mode() {
+            Mode::Sessions => Some(Action::JumpToNextAgentSession),
+            _ => None,
+        },
+        Command::JumpToPreviousAgentSession => match state.mode() {
+            Mode::Sessions => Some(Action::JumpToPreviousAgentSession),
+            _ => None,
+        },
+        Command::TabComplete => match state.mode() {
             Mode::Setup(SetupStep::SearchDirs) => Some(Action::SetupTabComplete),
             _ => None,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode as CtKeyCode, KeyEvent as CtKeyEvent, KeyModifiers as CtMods};
+
+    #[test]
+    fn ctrl_s_in_sessions_resolves_to_toggle_sessions() {
+        let mut state = AppState::new(Vec::new(), None);
+        state
+            .transition(&kiosk_core::state::ModeTransition::Sessions)
+            .expect("sessions transition should be valid");
+        let keys = KeysConfig::default();
+
+        let action = resolve_action(
+            CtKeyEvent::new(CtKeyCode::Char('s'), CtMods::CONTROL),
+            &state,
+            &keys,
+        );
+
+        assert!(
+            matches!(action, Some(Action::ToggleSessions)),
+            "Expected Ctrl+S in sessions mode to resolve to ToggleSessions, got {action:?}"
+        );
+    }
+
+    #[test]
+    fn tab_in_sessions_resolves_to_jump_to_next_agent_session() {
+        let mut state = AppState::new(Vec::new(), None);
+        state
+            .transition(&kiosk_core::state::ModeTransition::Sessions)
+            .expect("sessions transition should be valid");
+        let keys = KeysConfig::default();
+
+        let action = resolve_action(CtKeyEvent::new(CtKeyCode::Tab, CtMods::NONE), &state, &keys);
+
+        assert!(
+            matches!(action, Some(Action::JumpToNextAgentSession)),
+            "Expected Tab in sessions mode to resolve to JumpToNextAgentSession, got {action:?}"
+        );
+    }
+
+    #[test]
+    fn shift_tab_in_sessions_resolves_to_jump_to_previous_agent_session() {
+        let mut state = AppState::new(Vec::new(), None);
+        state
+            .transition(&kiosk_core::state::ModeTransition::Sessions)
+            .expect("sessions transition should be valid");
+        let keys = KeysConfig::default();
+
+        let action = resolve_action(
+            CtKeyEvent::new(CtKeyCode::BackTab, CtMods::SHIFT),
+            &state,
+            &keys,
+        );
+
+        assert!(
+            matches!(action, Some(Action::JumpToPreviousAgentSession)),
+            "Expected Shift-Tab in sessions mode to resolve to JumpToPreviousAgentSession, got {action:?}"
+        );
+    }
+
+    #[test]
+    fn esc_in_sessions_resolves_to_quit() {
+        let mut state = AppState::new(Vec::new(), None);
+        state
+            .transition(&kiosk_core::state::ModeTransition::Sessions)
+            .expect("sessions transition should be valid");
+        let keys = KeysConfig::default();
+
+        let action = resolve_action(CtKeyEvent::new(CtKeyCode::Esc, CtMods::NONE), &state, &keys);
+
+        assert!(
+            matches!(action, Some(Action::Quit)),
+            "Expected Esc in sessions mode to resolve to Quit, got {action:?}"
+        );
+    }
+
+    #[test]
+    fn esc_in_help_resolves_to_go_back() {
+        let mut state = AppState::new(Vec::new(), None);
+        state
+            .transition(&kiosk_core::state::ModeTransition::OpenHelp {
+                overlay: kiosk_core::state::HelpOverlayState {
+                    list: kiosk_core::state::SearchableList::new(0),
+                    rows: Vec::new(),
+                },
+            })
+            .expect("help transition should be valid");
+        let keys = KeysConfig::default();
+
+        let action = resolve_action(CtKeyEvent::new(CtKeyCode::Esc, CtMods::NONE), &state, &keys);
+
+        assert!(
+            matches!(action, Some(Action::GoBack)),
+            "Expected Esc in help mode to resolve to GoBack, got {action:?}"
+        );
     }
 }

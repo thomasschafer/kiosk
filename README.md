@@ -13,19 +13,37 @@ Worktrees are created in `.kiosk_worktrees/` in the parent directory of the give
 
 ### TUI
 
-Add a keybinding to your `tmux.conf` to open Kiosk in a popup - the following uses `<prefix> f`, but change as appropriate:
+Kiosk has two primary modes, explained below.
+
+#### Repos and branches view
+
+Add a keybinding to your `tmux.conf` to run `kiosk` in a popup (the following uses `<prefix> f`, but change as appropriate):
 
 ```tmux
 bind-key f popup -xC -yC -w90% -h90% -E "kiosk"
 ```
 
-- On first interactive launch (when no config file exists), you'll see a setup wizard to create your config file. If you'd rather do this manually, see the [configuration](#configuration) section.
-- You'll start in the repo view, which shows all repos in the folders defined in your config:
-  - Start typing to fuzzy search across repos
-  - Enter opens the repo with the primary checkout
-  - Tab opens the branch view for that repo
-- From the branch view, you can again fuzzy match across branches:
-  - Enter opens a session in a worktree on that branch, either attaching to an existing session if one exists, or creating a new one otherwise
+You'll start in the repo view, which shows all repos in the folders defined in your config:
+- Start typing to fuzzy search across repos
+- Enter opens the repo with the primary checkout
+- Tab opens the branch view for that repo
+
+From the branch view, you can again fuzzy match across branches:
+- Enter opens a session in a worktree on that branch, either attaching to an existing session if one exists, or creating a new one otherwise
+
+#### Sessions view
+
+Add a keybinding to your `tmux.conf` to run `kiosk --sessions` in a popup (the following uses `<prefix> g`, but change as appropriate):
+
+```tmux
+bind-key g popup -xC -yC -w90% -h90% -E "kiosk --sessions"
+```
+
+This view shows all running tmux sessions, along with the status of any agents.
+
+#### Config
+
+On first launch (when no config file exists), you'll see a setup wizard to create your config file. If you'd rather do this manually, see the [configuration](#configuration) section.
 
 ### CLI
 
@@ -73,6 +91,9 @@ kiosk status my-project feat/thing --json --debug-agent
 
 # List active kiosk sessions (includes last_activity, pane_count, current_command)
 kiosk sessions --json
+
+# Switch to the next session with a detected agent (Waiting > Idle > Running > Unknown)
+kiosk next --json
 
 # Read session logs
 kiosk log my-project feat/thing --tail 100 --json
@@ -171,7 +192,7 @@ cargo install --path kiosk
 
 ## Configuration
 
-You'll need a config file to get started. By default, Kiosk looks for a TOML configuration file at:
+By default, Kiosk looks for a TOML configuration file at:
 
 - Linux or macOS: `~/.config/kiosk/config.toml`
 - Windows: `%AppData%\kiosk\config.toml`
@@ -227,7 +248,13 @@ warning = "yellow"
 muted = "dark_gray"
 border = "dark_gray"
 hint = "blue"
-highlight_fg = "#000000"
+highlight_fg = "black"
+
+[theme.status]
+running = "green"
+waiting = "yellow"
+idle = "cyan"
+unknown = "blue"
 ```
 
 ### `[keys]` section
@@ -240,52 +267,58 @@ Defaults are shown below.
 ```toml
 [keys.general]
 "C-c" = "quit"
+"esc" = "quit"
 "C-h" = "show_help"
+"C-s" = "toggle_sessions"
 
 [keys.text_edit]
-"A-b" = "move_cursor_word_left"
-"A-backspace" = "delete_backward_word"
-"A-d" = "delete_forward_word"
-"A-f" = "move_cursor_word_right"
-"A-left" = "move_cursor_word_left"
-"A-right" = "move_cursor_word_right"
-"C-a" = "move_cursor_start"
-"C-d" = "delete_forward_char"
-"C-e" = "move_cursor_end"
-"C-k" = "delete_to_end"
-"C-u" = "delete_to_start"
-"C-w" = "delete_backward_word"
 "backspace" = "delete_backward_char"
 "del" = "delete_forward_char"
-"end" = "move_cursor_end"
-"home" = "move_cursor_start"
+"C-d" = "delete_forward_char"
+"C-w" = "delete_backward_word"
+"A-backspace" = "delete_backward_word"
+"A-d" = "delete_forward_word"
+"C-u" = "delete_to_start"
+"C-k" = "delete_to_end"
 "left" = "move_cursor_left"
 "right" = "move_cursor_right"
+"A-b" = "move_cursor_word_left"
+"A-left" = "move_cursor_word_left"
+"A-f" = "move_cursor_word_right"
+"A-right" = "move_cursor_word_right"
+"home" = "move_cursor_start"
+"C-a" = "move_cursor_start"
+"end" = "move_cursor_end"
+"C-e" = "move_cursor_end"
 
 [keys.list_navigation]
-"A-G" = "move_bottom"
-"A-g" = "move_top"
+"up" = "move_up"
+"down" = "move_down"
+"C-p" = "move_up"
+"C-n" = "move_down"
 "A-j" = "half_page_down"
 "A-k" = "half_page_up"
-"A-v" = "page_up"
-"C-n" = "move_down"
-"C-p" = "move_up"
-"C-v" = "page_down"
-"down" = "move_down"
-"pagedown" = "page_down"
 "pageup" = "page_up"
-"up" = "move_up"
+"pagedown" = "page_down"
+"C-v" = "page_down"
+"A-v" = "page_up"
+"A-g" = "move_top"
+"A-G" = "move_bottom"
 
 [keys.repo_select]
 "enter" = "open_repo"
-"esc" = "quit"
 "tab" = "enter_repo"
 
 [keys.branch_select]
-"C-o" = "new_branch"
-"C-x" = "delete_worktree"
 "enter" = "open_branch"
 "esc" = "go_back"
+"C-o" = "new_branch"
+"C-x" = "delete_worktree"
+
+[keys.sessions_select]
+"enter" = "switch_to_session"
+"tab" = "jump_to_next_agent_session"
+"S-tab" = "jump_to_previous_agent_session"
 
 [keys.modal]
 "enter" = "confirm"

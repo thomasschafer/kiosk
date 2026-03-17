@@ -1,7 +1,7 @@
 use anyhow::Context;
 use kiosk_core::{
     config::Config,
-    git::{GitProvider, Repo},
+    git::{GitProvider, Repo, apply_repo_name_collision_resolution, repo_matches_active_session},
     pending_delete::{
         PendingWorktreeDelete, load_pending_worktree_deletes, save_pending_worktree_deletes,
     },
@@ -144,8 +144,8 @@ struct BranchOutput {
     has_session: bool,
     is_current: bool,
     remote: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    agent_status: Option<kiosk_core::AgentStatus>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    agent_statuses: Vec<kiosk_core::AgentStatus>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -190,8 +190,16 @@ struct SessionOutput {
     last_activity: u64,
     pane_count: usize,
     current_command: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    agent_status: Option<kiosk_core::AgentStatus>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    agent_statuses: Vec<kiosk_core::AgentStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct NextOutput {
+    switched: bool,
+    session: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    agent_states: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -279,6 +287,36 @@ fn discover_all_with_worktrees(config: &Config, git: &dyn GitProvider) -> Vec<Re
     repos
 }
 
+fn discover_active_repos_with_worktrees(
+    config: &Config,
+    git: &dyn GitProvider,
+    active_sessions: &HashSet<String>,
+) -> Vec<Repo> {
+    let search_dirs = config.resolved_search_dirs();
+    let mut repos = git.scan_repos(&search_dirs);
+    apply_repo_name_collision_resolution(&mut repos, &search_dirs);
+    repos
+        .into_iter()
+        .filter(|repo| repo_matches_active_session(repo, active_sessions))
+        .map(|mut repo| {
+            repo.worktrees = git.list_worktrees(&repo.path);
+            repo
+        })
+        .collect()
+}
+
+fn detect_session_statuses(
+    tmux: &dyn TmuxProvider,
+    session_name: &str,
+) -> Vec<kiosk_core::AgentStatus> {
+    kiosk_core::state::normalized_agent_statuses(
+        &kiosk_core::agent::detect_all_for_session(tmux, session_name)
+            .into_iter()
+            .map(|result| result.status)
+            .collect::<Vec<_>>(),
+    )
+}
+
 pub fn cmd_list(config: &Config, git: &dyn GitProvider, json: bool) -> CliResult<()> {
     let repos = git.discover_repos(&config.resolved_search_dirs());
     let output: Vec<RepoOutput> = repos
@@ -325,8 +363,7 @@ pub fn cmd_branches(
                 && let Some(ref wt_path) = entry.worktree_path
             {
                 let session_name = repo.tmux_session_name(wt_path);
-                entry.agent_status =
-                    kiosk_core::agent::detect_for_session(tmux, &session_name).map(|r| r.status);
+                entry.agent_statuses = detect_session_statuses(tmux, &session_name);
             }
         }
     }
@@ -709,39 +746,42 @@ pub fn cmd_sessions(
     json: bool,
 ) -> CliResult<()> {
     let repos = discover_all_with_worktrees(config, git);
-    let active_sessions: HashSet<String> = tmux.list_session_names().into_iter().collect();
-    let mut output = Vec::new();
+    let session_activity: std::collections::HashMap<String, u64> =
+        tmux.list_sessions_with_activity().into_iter().collect();
+    let attached_sessions = tmux.list_attached_sessions();
+    let mut output: Vec<SessionOutput> =
+        kiosk_core::state::active_session_entries(&repos, &session_activity, &attached_sessions)
+            .into_iter()
+            .map(|session| {
+                let pane_count = tmux.pane_count(&session.session_name).unwrap_or(1);
+                let current_command = tmux
+                    .pane_current_command(&session.session_name, "0")
+                    .unwrap_or_else(|_| "unknown".to_string());
+                let agent_statuses = if config.agent.enabled {
+                    detect_session_statuses(tmux, &session.session_name)
+                } else {
+                    Vec::new()
+                };
 
-    for repo in &repos {
-        for worktree in &repo.worktrees {
-            let session = repo.tmux_session_name(&worktree.path);
-            if !active_sessions.contains(&session) {
-                continue;
-            }
-            let last_activity = tmux.session_activity(&session).unwrap_or(0);
-            let pane_count = tmux.pane_count(&session).unwrap_or(1);
-            let current_command = tmux
-                .pane_current_command(&session, "0")
-                .unwrap_or_else(|_| "unknown".to_string());
-            let agent_status = if config.agent.enabled {
-                kiosk_core::agent::detect_for_session(tmux, &session).map(|r| r.status)
-            } else {
-                None
-            };
-
-            output.push(SessionOutput {
-                session: session.clone(),
-                repo: repo.name.clone(),
-                branch: worktree.branch.clone(),
-                path: worktree.path.clone(),
-                attached: !tmux.list_clients(&session).is_empty(),
-                last_activity,
-                pane_count,
-                current_command,
-                agent_status,
-            });
-        }
-    }
+                SessionOutput {
+                    session: session.session_name.clone(),
+                    repo: session
+                        .repo_name()
+                        .expect("active_session_entries should resolve repo metadata")
+                        .to_string(),
+                    branch: session.branch().map(ToString::to_string),
+                    path: session
+                        .path()
+                        .expect("active_session_entries should resolve path metadata")
+                        .to_path_buf(),
+                    attached: session.attached,
+                    last_activity: session.session_activity,
+                    pane_count,
+                    current_command,
+                    agent_statuses,
+                }
+            })
+            .collect();
 
     output.sort_by(|left, right| left.session.cmp(&right.session));
 
@@ -752,6 +792,121 @@ pub fn cmd_sessions(
     }
 
     Ok(())
+}
+
+/// Returns true if at least one agent was detected in the session.
+///
+/// Any detected agent qualifies — including `Unknown`, which is intentionally
+/// included as a low-priority fallback. Sessions with no detected agents are
+/// excluded from `kiosk next`.
+fn has_detected_agent(statuses: &[kiosk_core::AgentStatus]) -> bool {
+    !statuses.is_empty()
+}
+
+pub fn cmd_next(
+    config: &Config,
+    git: &dyn GitProvider,
+    tmux: &dyn TmuxProvider,
+    json: bool,
+) -> CliResult<()> {
+    if !config.agent.enabled {
+        return Err(CliError::user(
+            "agent detection is disabled. Enable it in config to use kiosk next",
+        ));
+    }
+    if !tmux.is_inside_tmux() {
+        return Err(CliError::user(
+            "not inside tmux. kiosk next must be run from within a tmux session",
+        ));
+    }
+
+    let current_session = tmux.current_session_name();
+    let all_pane_data = tmux.list_all_panes_with_activity();
+    // Derive active sessions from all_pane_data (one tmux call) instead of
+    // calling list_session_names() separately (second tmux call).
+    let active_sessions_set: HashSet<String> = all_pane_data.keys().cloned().collect();
+    let session_activity: std::collections::HashMap<String, u64> = all_pane_data
+        .iter()
+        .map(|(name, data)| (name.clone(), data.session_activity))
+        .collect();
+    let repos = discover_active_repos_with_worktrees(config, git, &active_sessions_set);
+    let session_names: Vec<String> =
+        kiosk_core::state::active_session_entries(&repos, &session_activity, &HashSet::new())
+            .into_iter()
+            .filter_map(|session| {
+                (current_session.as_deref() != Some(session.session_name.as_str()))
+                    .then_some(session.session_name)
+            })
+            .collect();
+
+    // Batched agent detection — include any session where at least one agent
+    // was detected. Preference order is Waiting > Idle > Running > Unknown.
+    let detection_results =
+        kiosk_core::agent::detect_all_for_sessions_batched(tmux, &session_names, &all_pane_data);
+
+    let mut candidates: Vec<(String, Vec<kiosk_core::AgentStatus>, u64)> = detection_results
+        .into_iter()
+        .filter_map(|(session, detection)| {
+            let statuses = kiosk_core::state::normalized_agent_statuses(
+                &detection
+                    .into_iter()
+                    .map(|det| det.status)
+                    .collect::<Vec<_>>(),
+            );
+            if has_detected_agent(&statuses) {
+                // Invariant: session_names ⊆ all_pane_data.keys()
+                // session_names is derived from active_session_entries which uses
+                // session_activity, which is built from all_pane_data. Therefore
+                // every candidate session is guaranteed to have an entry here.
+                let activity = all_pane_data.get(&session).map_or_else(
+                    || unreachable!("session {session:?} must exist in all_pane_data"),
+                    |d| d.session_activity,
+                );
+                Some((session, statuses, activity))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // Sort eligible candidates by shared state priority and oldest activity first.
+    candidates.sort_by(|a, b| {
+        kiosk_core::state::cmp_by_agent_priority_then_oldest_activity(&a.1, a.2, &b.1, b.2)
+    });
+
+    if let Some((session, statuses, _)) = candidates.first() {
+        let agent_states: Vec<String> = kiosk_core::state::sorted_unique_agent_states(statuses)
+            .into_iter()
+            .map(|state| state.to_string())
+            .collect();
+        // primary_state is always present: candidates only contain sessions with
+        // at least one detected agent, so agent_states is guaranteed non-empty.
+        let primary_state = agent_states
+            .first()
+            .expect("candidate has at least one agent state")
+            .clone();
+
+        tmux.switch_to_session(session);
+        let output = NextOutput {
+            switched: true,
+            session: session.clone(),
+            agent_states,
+        };
+        if json {
+            print_json(&output)?;
+        } else if output.agent_states.len() > 1 {
+            println!(
+                "Switched to: {session} ({}; agents: {})",
+                primary_state,
+                output.agent_states.join(", ")
+            );
+        } else {
+            println!("Switched to: {session} ({primary_state})");
+        }
+        Ok(())
+    } else {
+        Err(CliError::user("No other sessions with detected agents"))
+    }
 }
 
 pub fn cmd_delete(
@@ -921,7 +1076,7 @@ impl From<&BranchEntry> for BranchOutput {
             has_session: entry.has_session,
             is_current: entry.is_current,
             remote: entry.remote.clone(),
-            agent_status: entry.agent_status,
+            agent_statuses: entry.agent_statuses.clone(),
         }
     }
 }
@@ -1047,11 +1202,26 @@ fn format_table_with_optional_agent(
     out
 }
 
+fn format_agent_badges(
+    statuses: &[kiosk_core::AgentStatus],
+    labels: &kiosk_core::config::AgentLabelsConfig,
+) -> String {
+    if statuses.is_empty() {
+        "-".to_string()
+    } else {
+        kiosk_core::state::sorted_unique_agent_states(statuses)
+            .iter()
+            .map(|state| agent_state_label(*state, labels))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
 fn format_branch_table(
     entries: &[BranchEntry],
     labels: &kiosk_core::config::AgentLabelsConfig,
 ) -> String {
-    let has_agents = entries.iter().any(|e| e.agent_status.is_some());
+    let has_agents = entries.iter().any(|e| !e.agent_statuses.is_empty());
     let rows: Vec<Vec<String>> = entries
         .iter()
         .map(|entry| {
@@ -1075,10 +1245,7 @@ fn format_branch_table(
         .collect();
     let agent_values: Vec<String> = entries
         .iter()
-        .map(|e| {
-            e.agent_status
-                .map_or_else(|| "-".to_string(), |s| agent_state_label(s.state, labels))
-        })
+        .map(|e| format_agent_badges(&e.agent_statuses, labels))
         .collect();
     format_table_with_optional_agent(
         &[("branch", 0), ("stat", 4), ("worktree", 0)],
@@ -1104,7 +1271,7 @@ fn format_session_table(
     rows: &[SessionOutput],
     labels: &kiosk_core::config::AgentLabelsConfig,
 ) -> String {
-    let has_agents = rows.iter().any(|r| r.agent_status.is_some());
+    let has_agents = rows.iter().any(|r| !r.agent_statuses.is_empty());
     let table_rows: Vec<Vec<String>> = rows
         .iter()
         .map(|row| {
@@ -1120,10 +1287,7 @@ fn format_session_table(
         .collect();
     let agent_values: Vec<String> = rows
         .iter()
-        .map(|r| {
-            r.agent_status
-                .map_or_else(|| "-".to_string(), |s| agent_state_label(s.state, labels))
-        })
+        .map(|r| format_agent_badges(&r.agent_statuses, labels))
         .collect();
     format_table_with_optional_agent(
         &[
@@ -1919,7 +2083,7 @@ mod tests {
                 is_default: false,
                 remote: None,
                 session_activity_ts: None,
-                agent_status: None,
+                agent_statuses: Vec::new(),
             },
             BranchEntry {
                 name: "feat/test".to_string(),
@@ -1929,7 +2093,7 @@ mod tests {
                 is_default: false,
                 remote: Some("origin".to_string()),
                 session_activity_ts: None,
-                agent_status: None,
+                agent_statuses: Vec::new(),
             },
         ];
         let rendered =
@@ -1954,7 +2118,7 @@ mod tests {
                 last_activity: 1_234_567_890,
                 pane_count: 1,
                 current_command: "zsh".to_string(),
-                agent_status: None,
+                agent_statuses: Vec::new(),
             },
             SessionOutput {
                 session: "repo".to_string(),
@@ -1965,7 +2129,7 @@ mod tests {
                 last_activity: 1_234_567_891,
                 pane_count: 2,
                 current_command: "bash".to_string(),
-                agent_status: None,
+                agent_statuses: Vec::new(),
             },
         ];
         let rendered =
@@ -2513,7 +2677,7 @@ mod tests {
             is_default: true,
             remote: None,
             session_activity_ts: Some(12345),
-            agent_status: None,
+            agent_statuses: Vec::new(),
         };
 
         let output = BranchOutput::from(&entry);
@@ -2654,10 +2818,10 @@ mod tests {
                 is_default: false,
                 remote: None,
                 session_activity_ts: None,
-                agent_status: Some(AgentStatus {
+                agent_statuses: vec![AgentStatus {
                     kind: AgentKind::ClaudeCode,
                     state: AgentState::Waiting,
-                }),
+                }],
             },
             BranchEntry {
                 name: "feat/test".to_string(),
@@ -2667,10 +2831,10 @@ mod tests {
                 is_default: false,
                 remote: None,
                 session_activity_ts: None,
-                agent_status: Some(AgentStatus {
+                agent_statuses: vec![AgentStatus {
                     kind: AgentKind::Codex,
                     state: AgentState::Running,
-                }),
+                }],
             },
             BranchEntry {
                 name: "develop".to_string(),
@@ -2680,12 +2844,12 @@ mod tests {
                 is_default: false,
                 remote: None,
                 session_activity_ts: None,
-                agent_status: None,
+                agent_statuses: Vec::new(),
             },
         ];
         let rendered =
             format_branch_table(&rows, &kiosk_core::config::AgentLabelsConfig::default());
-        // Agent column should appear since some entries have agent_status
+        // Agent column should appear since some entries have agent_statuses
         assert!(
             rendered.contains("agent"),
             "Should have agent column header: {rendered}"
@@ -2713,10 +2877,10 @@ mod tests {
             is_default: false,
             remote: None,
             session_activity_ts: None,
-            agent_status: Some(AgentStatus {
+            agent_statuses: vec![AgentStatus {
                 kind: AgentKind::ClaudeCode,
                 state: AgentState::Running,
-            }),
+            }],
         }];
         let labels = AgentLabelsConfig {
             running: "RUN".to_string(),
@@ -2750,10 +2914,10 @@ mod tests {
             last_activity: 0,
             pane_count: 1,
             current_command: "zsh".to_string(),
-            agent_status: Some(AgentStatus {
+            agent_statuses: vec![AgentStatus {
                 kind: AgentKind::Codex,
                 state: AgentState::Waiting,
-            }),
+            }],
         }];
         let labels = AgentLabelsConfig {
             running: "R".to_string(),
@@ -2999,7 +3163,7 @@ mod tests {
         tmux.pane_content
             .insert("%0".to_string(), "❯ \n? for shortcuts".to_string());
 
-        // With agent.enabled = false, branches should have no agent_status
+        // With agent.enabled = false, branches should have no agent_statuses
         let result = cmd_branches(&config, &git, &tmux, "demo", true);
         assert!(result.is_ok());
         // The function prints JSON to stdout — we can't easily capture it here,
@@ -3091,7 +3255,7 @@ mod tests {
             is_default: false,
             remote: None,
             session_activity_ts: None,
-            agent_status: None,
+            agent_statuses: Vec::new(),
         }];
         let rendered =
             format_branch_table(&rows, &kiosk_core::config::AgentLabelsConfig::default());
@@ -3115,10 +3279,10 @@ mod tests {
                 last_activity: 0,
                 pane_count: 1,
                 current_command: "zsh".to_string(),
-                agent_status: Some(AgentStatus {
+                agent_statuses: vec![AgentStatus {
                     kind: AgentKind::ClaudeCode,
                     state: AgentState::Idle,
-                }),
+                }],
             },
             SessionOutput {
                 session: "repo".to_string(),
@@ -3129,7 +3293,7 @@ mod tests {
                 last_activity: 0,
                 pane_count: 1,
                 current_command: "zsh".to_string(),
-                agent_status: None,
+                agent_statuses: Vec::new(),
             },
         ];
         let rendered =
@@ -3145,7 +3309,7 @@ mod tests {
     }
 
     #[test]
-    fn branch_output_includes_agent_status_in_json() {
+    fn branch_output_includes_agent_statuses_in_json() {
         use kiosk_core::agent::{AgentKind, AgentState, AgentStatus};
 
         let entry = BranchEntry {
@@ -3156,19 +3320,19 @@ mod tests {
             is_default: false,
             remote: None,
             session_activity_ts: None,
-            agent_status: Some(AgentStatus {
+            agent_statuses: vec![AgentStatus {
                 kind: AgentKind::ClaudeCode,
                 state: AgentState::Waiting,
-            }),
+            }],
         };
         let output = BranchOutput::from(&entry);
         let json = serde_json::to_value(&output).unwrap();
-        assert_eq!(json["agent_status"]["kind"], "ClaudeCode");
-        assert_eq!(json["agent_status"]["state"], "Waiting");
+        assert_eq!(json["agent_statuses"][0]["kind"], "ClaudeCode");
+        assert_eq!(json["agent_statuses"][0]["state"], "Waiting");
     }
 
     #[test]
-    fn branch_output_omits_agent_status_when_none() {
+    fn branch_output_omits_agent_statuses_when_empty() {
         let entry = BranchEntry {
             name: "main".to_string(),
             worktree_path: None,
@@ -3177,13 +3341,425 @@ mod tests {
             is_default: false,
             remote: None,
             session_activity_ts: None,
-            agent_status: None,
+            agent_statuses: Vec::new(),
         };
         let output = BranchOutput::from(&entry);
         let json = serde_json::to_value(&output).unwrap();
         assert!(
-            json.get("agent_status").is_none(),
-            "agent_status should be omitted when None: {json}"
+            json.get("agent_statuses").is_none(),
+            "agent_statuses should be omitted when empty: {json}"
+        );
+    }
+
+    // --- cmd_next tests ---
+
+    fn mock_with_sessions_and_agents(
+        current: &str,
+        sessions: &[(&str, &str, &str, u64)], // (session_name, command, content, activity)
+    ) -> (Config, MockGitProvider, MockTmuxProvider) {
+        let config = test_config();
+        let mut worktrees = vec![main_worktree()];
+        let mut git_worktrees = vec![main_worktree()];
+
+        let mut pane_info = HashMap::new();
+        let mut pane_content = HashMap::new();
+        let mut session_activity_ts = HashMap::new();
+        let mut session_names = vec!["demo".to_string()];
+
+        for (i, (session, command, content, activity)) in sessions.iter().enumerate() {
+            let pane_id = format!("%{}", i + 10);
+            pane_info.insert(
+                session.to_string(),
+                vec![kiosk_core::tmux::provider::PaneInfo {
+                    pane_id: pane_id.clone(),
+                    command: command.to_string(),
+                    pid: 50000 + u32::try_from(i).unwrap(),
+                }],
+            );
+            pane_content.insert(pane_id, content.to_string());
+            session_activity_ts.insert(session.to_string(), *activity);
+
+            if *session != "demo" && !session_names.contains(&session.to_string()) {
+                session_names.push(session.to_string());
+                // Create a worktree entry for each non-demo session
+                let branch = session.strip_prefix("demo--").unwrap_or(session);
+                let wt = Worktree {
+                    path: PathBuf::from(format!("/tmp/.kiosk_worktrees/{session}")),
+                    branch: Some(branch.replace('-', "/")),
+                    is_main: false,
+                };
+                worktrees.push(wt.clone());
+                git_worktrees.push(wt);
+            }
+        }
+
+        let git = MockGitProvider {
+            repos: vec![repo("/tmp/demo", "demo")],
+            worktrees: git_worktrees,
+            ..Default::default()
+        };
+
+        let tmux = MockTmuxProvider {
+            sessions: Mutex::new(session_names),
+            inside_tmux: true,
+            current_session: Some(current.to_string()),
+            pane_info,
+            pane_content,
+            session_activity_ts,
+            ..Default::default()
+        };
+
+        (config, git, tmux)
+    }
+
+    #[test]
+    fn next_switches_to_waiting_session() {
+        let (config, git, tmux) = mock_with_sessions_and_agents(
+            "demo",
+            &[
+                ("demo", "claude", "⠋ Reading file", 1000),
+                (
+                    "demo--feat-a",
+                    "claude",
+                    "Allow write?\n  Yes, allow\n  No, deny",
+                    900,
+                ),
+            ],
+        );
+
+        let result = cmd_next(&config, &git, &tmux, false);
+        assert!(result.is_ok());
+        let switched = tmux.switched_sessions.lock().unwrap();
+        assert_eq!(switched.as_slice(), &["demo--feat-a"]);
+    }
+
+    #[test]
+    fn next_switches_to_idle_when_no_waiting() {
+        let (config, git, tmux) = mock_with_sessions_and_agents(
+            "demo",
+            &[
+                ("demo", "claude", "⠋ Reading file", 1000),
+                ("demo--feat-b", "claude", "❯ \n? for shortcuts", 900),
+            ],
+        );
+
+        let result = cmd_next(&config, &git, &tmux, false);
+        assert!(result.is_ok());
+        let switched = tmux.switched_sessions.lock().unwrap();
+        assert_eq!(switched.as_slice(), &["demo--feat-b"]);
+    }
+
+    #[test]
+    fn next_prefers_waiting_over_idle() {
+        let (config, git, tmux) = mock_with_sessions_and_agents(
+            "demo",
+            &[
+                ("demo", "claude", "⠋ Reading file", 1000),
+                ("demo--feat-idle", "claude", "❯ \n? for shortcuts", 800),
+                (
+                    "demo--feat-wait",
+                    "claude",
+                    "Allow write?\n  Yes, allow\n  No, deny",
+                    900,
+                ),
+            ],
+        );
+
+        let result = cmd_next(&config, &git, &tmux, false);
+        assert!(result.is_ok());
+        let switched = tmux.switched_sessions.lock().unwrap();
+        assert_eq!(
+            switched.as_slice(),
+            &["demo--feat-wait"],
+            "Should prefer waiting over idle even if idle is older"
+        );
+    }
+
+    #[test]
+    fn next_skips_current_session() {
+        let (config, git, tmux) = mock_with_sessions_and_agents(
+            "demo--feat-wait",
+            &[
+                (
+                    "demo--feat-wait",
+                    "claude",
+                    "Allow write?\n  Yes, allow\n  No, deny",
+                    800,
+                ),
+                ("demo--feat-idle", "claude", "❯ \n? for shortcuts", 900),
+            ],
+        );
+
+        let result = cmd_next(&config, &git, &tmux, false);
+        assert!(result.is_ok());
+        let switched = tmux.switched_sessions.lock().unwrap();
+        assert_eq!(
+            switched.as_slice(),
+            &["demo--feat-idle"],
+            "Should skip current session even if it has higher priority"
+        );
+    }
+
+    #[test]
+    fn next_oldest_activity_wins_within_same_tier() {
+        let (config, git, tmux) = mock_with_sessions_and_agents(
+            "demo",
+            &[
+                (
+                    "demo--feat-new",
+                    "claude",
+                    "Allow write?\n  Yes, allow\n  No, deny",
+                    2000,
+                ),
+                (
+                    "demo--feat-old",
+                    "claude",
+                    "Allow write?\n  Yes, allow\n  No, deny",
+                    1000,
+                ),
+            ],
+        );
+
+        let result = cmd_next(&config, &git, &tmux, false);
+        assert!(result.is_ok());
+        let switched = tmux.switched_sessions.lock().unwrap();
+        assert_eq!(
+            switched.as_slice(),
+            &["demo--feat-old"],
+            "Should pick session with oldest activity"
+        );
+    }
+
+    #[test]
+    fn next_no_eligible_sessions_returns_error() {
+        let (config, git, tmux) = mock_with_sessions_and_agents(
+            "demo",
+            &[
+                ("demo", "claude", "⠋ Reading file", 1000),
+                ("demo--feat-shell", "bash", "$ ls -la", 900),
+            ],
+        );
+
+        let result = cmd_next(&config, &git, &tmux, false);
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert!(
+            error
+                .message()
+                .contains("No other sessions with detected agents")
+        );
+        assert!(tmux.switched_sessions.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn next_not_inside_tmux_returns_error() {
+        let config = test_config();
+        let git = demo_git(vec![main_worktree()], vec![]);
+        let tmux = MockTmuxProvider {
+            inside_tmux: false,
+            ..Default::default()
+        };
+
+        let result = cmd_next(&config, &git, &tmux, false);
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert!(error.message().contains("not inside tmux"));
+    }
+
+    #[test]
+    fn next_json_output_on_success() {
+        let (config, git, tmux) = mock_with_sessions_and_agents(
+            "demo",
+            &[(
+                "demo--feat-a",
+                "claude",
+                "Allow write?\n  Yes, allow\n  No, deny",
+                900,
+            )],
+        );
+
+        let result = cmd_next(&config, &git, &tmux, true);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn next_agent_detection_disabled_returns_error() {
+        let mut config = test_config();
+        config.agent.enabled = false;
+
+        let git = demo_git(vec![main_worktree()], vec![]);
+        let tmux = MockTmuxProvider {
+            inside_tmux: true,
+            current_session: Some("demo".to_string()),
+            ..Default::default()
+        };
+
+        let error = cmd_next(&config, &git, &tmux, false).unwrap_err();
+        assert_eq!(error.code(), 1);
+        assert!(error.message().contains("agent detection is disabled"));
+    }
+
+    #[test]
+    fn next_only_current_session_eligible_returns_error() {
+        let (config, git, tmux) = mock_with_sessions_and_agents(
+            "demo--feat-wait",
+            &[(
+                "demo--feat-wait",
+                "claude",
+                "Allow write?\n  Yes, allow\n  No, deny",
+                800,
+            )],
+        );
+
+        let error = cmd_next(&config, &git, &tmux, false).unwrap_err();
+        assert!(
+            error
+                .message()
+                .contains("No other sessions with detected agents"),
+            "Should return error when only eligible session is the current one"
+        );
+        assert!(tmux.switched_sessions.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn next_switches_to_running_when_no_waiting_or_idle() {
+        let (config, git, tmux) = mock_with_sessions_and_agents(
+            "demo",
+            &[("demo--feat-run", "claude", "⠋ Reading file", 900)],
+        );
+
+        let result = cmd_next(&config, &git, &tmux, false);
+        assert!(
+            result.is_ok(),
+            "Running sessions should now be eligible fallback"
+        );
+        let switched = tmux.switched_sessions.lock().unwrap();
+        assert_eq!(switched.as_slice(), &["demo--feat-run"]);
+    }
+
+    #[test]
+    fn next_picks_idle_before_running() {
+        let (config, git, tmux) = mock_with_sessions_and_agents(
+            "demo",
+            &[
+                ("demo--feat-run", "claude", "⠋ Reading file", 800),
+                ("demo--feat-idle", "claude", "❯ \n? for shortcuts", 900),
+            ],
+        );
+
+        let result = cmd_next(&config, &git, &tmux, false);
+        assert!(result.is_ok());
+        let switched = tmux.switched_sessions.lock().unwrap();
+        assert_eq!(
+            switched.as_slice(),
+            &["demo--feat-idle"],
+            "Should pick idle over running"
+        );
+    }
+
+    #[test]
+    fn next_picks_waiting_before_running() {
+        let (config, git, tmux) = mock_with_sessions_and_agents(
+            "demo",
+            &[
+                ("demo--feat-run", "claude", "⠋ Reading file", 800),
+                (
+                    "demo--feat-wait",
+                    "claude",
+                    "Allow write?\n  Yes, allow\n  No, deny",
+                    900,
+                ),
+            ],
+        );
+
+        let result = cmd_next(&config, &git, &tmux, false);
+        assert!(result.is_ok());
+        let switched = tmux.switched_sessions.lock().unwrap();
+        assert_eq!(
+            switched.as_slice(),
+            &["demo--feat-wait"],
+            "Should pick waiting over running"
+        );
+    }
+
+    #[test]
+    fn next_picks_running_over_non_agent_session() {
+        let (config, git, tmux) = mock_with_sessions_and_agents(
+            "demo",
+            &[
+                ("demo--feat-shell", "bash", "$ ls -la", 700),
+                ("demo--feat-run", "claude", "⠋ Reading file", 900),
+            ],
+        );
+
+        let result = cmd_next(&config, &git, &tmux, false);
+        assert!(result.is_ok());
+        let switched = tmux.switched_sessions.lock().unwrap();
+        assert_eq!(
+            switched.as_slice(),
+            &["demo--feat-run"],
+            "Should pick running over non-agent session"
+        );
+    }
+
+    #[test]
+    fn next_switches_to_unknown_when_only_unknown() {
+        // Unrecognised terminal content → Unknown state; should still be eligible
+        let (config, git, tmux) = mock_with_sessions_and_agents(
+            "demo",
+            &[
+                ("demo--feat-old", "claude", "some unrecognised output", 500),
+                ("demo--feat-new", "claude", "some unrecognised output", 1500),
+            ],
+        );
+
+        let result = cmd_next(&config, &git, &tmux, false);
+        assert!(result.is_ok());
+        let switched = tmux.switched_sessions.lock().unwrap();
+        assert_eq!(
+            switched.as_slice(),
+            &["demo--feat-old"],
+            "Should pick the oldest Unknown session"
+        );
+    }
+
+    #[test]
+    fn next_picks_running_over_unknown() {
+        let (config, git, tmux) = mock_with_sessions_and_agents(
+            "demo",
+            &[
+                ("demo--feat-unk", "claude", "some unrecognised output", 500),
+                ("demo--feat-run", "claude", "⠋ Reading file", 1000),
+            ],
+        );
+
+        let result = cmd_next(&config, &git, &tmux, false);
+        assert!(result.is_ok());
+        let switched = tmux.switched_sessions.lock().unwrap();
+        assert_eq!(
+            switched.as_slice(),
+            &["demo--feat-run"],
+            "Should prefer Running over Unknown even if Unknown is older"
+        );
+    }
+
+    #[test]
+    fn next_picks_unknown_over_non_agent_session() {
+        let (config, git, tmux) = mock_with_sessions_and_agents(
+            "demo",
+            &[
+                ("demo--feat-shell", "bash", "$ ls -la", 300),
+                ("demo--feat-unk", "claude", "some unrecognised output", 900),
+            ],
+        );
+
+        let result = cmd_next(&config, &git, &tmux, false);
+        assert!(result.is_ok());
+        let switched = tmux.switched_sessions.lock().unwrap();
+        assert_eq!(
+            switched.as_slice(),
+            &["demo--feat-unk"],
+            "Should pick Unknown over a non-agent session"
         );
     }
 }

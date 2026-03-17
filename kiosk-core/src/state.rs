@@ -1,5 +1,5 @@
 use crate::{
-    agent::AgentStatus,
+    agent::{AgentKind, AgentStatus},
     config::{
         AgentConfig, AgentLabelsConfig,
         keys::{Command, FlattenedKeybindingRow},
@@ -377,16 +377,16 @@ pub struct BranchEntry {
     pub remote: Option<String>,
     /// Last activity timestamp for the session (if any)
     pub session_activity_ts: Option<u64>,
-    /// Status of any AI agent running in the session
-    pub agent_status: Option<AgentStatus>,
+    /// Statuses of AI agents running in the session (sorted by attention priority)
+    pub agent_statuses: Vec<AgentStatus>,
 }
 
 /// Snapshot of runtime tmux/session state for a single session name.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SessionRuntimeState {
     pub exists: bool,
     pub activity_ts: Option<u64>,
-    pub agent_status: Option<AgentStatus>,
+    pub agent_statuses: Vec<AgentStatus>,
 }
 
 impl BranchEntry {
@@ -486,7 +486,7 @@ impl BranchEntry {
                     is_default,
                     remote: None,
                     session_activity_ts,
-                    agent_status: None,
+                    agent_statuses: Vec::new(),
                 }
             })
             .collect()
@@ -512,7 +512,7 @@ impl BranchEntry {
                 is_default: false,
                 remote: Some(remote.to_string()),
                 session_activity_ts: None,
-                agent_status: None,
+                agent_statuses: Vec::new(),
             })
             .collect()
     }
@@ -534,8 +534,11 @@ impl BranchEntry {
                 ))
                 // Branches with sessions (even without activity timestamps) before those without
                 .then(b.has_session.cmp(&a.has_session))
-                // Agent needing attention sorts first (Waiting > Running > Idle/Unknown > None)
-                .then(agent_sort_priority(b.agent_status).cmp(&agent_sort_priority(a.agent_status)))
+                // Agent needing attention sorts first (Waiting > Idle > Running > Unknown > None)
+                .then(
+                    agent_statuses_sort_priority(&b.agent_statuses)
+                        .cmp(&agent_statuses_sort_priority(&a.agent_statuses)),
+                )
                 // Branches with worktrees before those without
                 .then(b.worktree_path.is_some().cmp(&a.worktree_path.is_some()))
                 .then(a.name.cmp(&b.name))
@@ -543,17 +546,77 @@ impl BranchEntry {
     }
 }
 
-/// Sort priority for agent status: higher = sorts first.
-/// Waiting (needs user input) is most urgent, then Running, then the rest.
-fn agent_sort_priority(status: Option<crate::agent::AgentStatus>) -> u8 {
-    match status {
-        Some(s) => match s.state {
-            crate::AgentState::Waiting => 3,
-            crate::AgentState::Running => 2,
-            crate::AgentState::Idle | crate::AgentState::Unknown => 1,
-        },
-        None => 0,
+/// Sort priority for agent statuses: higher = sorts first.
+///
+/// Delegates to [`crate::AgentState::attention_priority`] so there is a single
+/// source of truth for state ranking. Returns 0 only for an empty slice (no
+/// detected agent), which is strictly less than any detected state (minimum 1).
+fn agent_statuses_sort_priority(statuses: &[crate::agent::AgentStatus]) -> u8 {
+    statuses
+        .iter()
+        .map(|s| s.state.attention_priority())
+        .max()
+        .unwrap_or(0)
+}
+
+/// Stable display tie-break order for agents with equal-priority states.
+fn agent_kind_sort_priority(kind: AgentKind) -> u8 {
+    match kind {
+        AgentKind::ClaudeCode => 0,
+        AgentKind::Codex => 1,
+        AgentKind::CursorAgent => 2,
+        AgentKind::OpenCode => 3,
+        AgentKind::Gemini => 4,
     }
+}
+
+/// Canonicalize agent statuses for stable sorting, comparisons, and display.
+pub fn normalized_agent_statuses(
+    statuses: &[crate::agent::AgentStatus],
+) -> Vec<crate::agent::AgentStatus> {
+    let mut normalized = statuses.to_vec();
+    normalized.sort_by(|left, right| {
+        right
+            .state
+            .attention_priority()
+            .cmp(&left.state.attention_priority())
+            .then(agent_kind_sort_priority(left.kind).cmp(&agent_kind_sort_priority(right.kind)))
+    });
+    normalized.dedup();
+    normalized
+}
+
+/// Sort and deduplicate agent states by attention priority (highest first).
+///
+/// Relies on `normalized_agent_statuses` already sorting by state priority
+/// descending, so only dedup is needed here.
+pub fn sorted_unique_agent_states(
+    statuses: &[crate::agent::AgentStatus],
+) -> Vec<crate::AgentState> {
+    let mut states: Vec<crate::AgentState> = normalized_agent_statuses(statuses)
+        .into_iter()
+        .map(|status| status.state)
+        .collect();
+    states.dedup();
+    states
+}
+
+/// Select the highest-priority state from a status list.
+///
+/// Returns `Unknown` when the input slice is empty as a convenience default;
+/// callers that need to distinguish "no agent" from "unknown agent" should
+/// check for an empty slice before calling.
+/// Shared ordering for session-like rows: higher-priority agent state first,
+/// then oldest activity first.
+pub fn cmp_by_agent_priority_then_oldest_activity(
+    left_statuses: &[crate::agent::AgentStatus],
+    left_activity: u64,
+    right_statuses: &[crate::agent::AgentStatus],
+    right_activity: u64,
+) -> std::cmp::Ordering {
+    agent_statuses_sort_priority(right_statuses)
+        .cmp(&agent_statuses_sort_priority(left_statuses))
+        .then(left_activity.cmp(&right_activity))
 }
 
 /// Compare two optional timestamps for recency-based sorting (most recent first).
@@ -652,11 +715,293 @@ impl Default for SetupState {
     }
 }
 
+/// Metadata for a session that has been resolved to a repo/worktree.
+#[derive(Debug, Clone)]
+pub struct ResolvedSessionMetadata {
+    pub repo_name: String,
+    pub branch: Option<String>,
+    pub path: PathBuf,
+}
+
+/// Parameters for constructing a resolved `SessionEntry`.
+/// Groups the many fields to avoid `too_many_arguments` on the constructor.
+#[derive(Debug, Clone)]
+pub struct ResolvedSessionParams {
+    pub session_name: String,
+    pub repo_name: String,
+    pub branch: Option<String>,
+    pub path: PathBuf,
+    pub agent_statuses: Vec<AgentStatus>,
+    pub session_activity: u64,
+    pub attached: bool,
+}
+
+#[derive(Debug, Clone)]
+pub enum SessionMetadata {
+    Unresolved,
+    Resolved(ResolvedSessionMetadata),
+}
+
+/// A session entry for the sessions view (cross-repo tmux session list).
+#[derive(Debug, Clone)]
+pub struct SessionEntry {
+    pub session_name: String,
+    pub metadata: SessionMetadata,
+    pub agent_statuses: Vec<AgentStatus>,
+    pub session_activity: u64,
+    pub attached: bool,
+}
+
+impl SessionEntry {
+    #[must_use]
+    pub fn unresolved(
+        session_name: String,
+        agent_statuses: Vec<AgentStatus>,
+        session_activity: u64,
+        attached: bool,
+    ) -> Self {
+        Self {
+            session_name,
+            metadata: SessionMetadata::Unresolved,
+            agent_statuses,
+            session_activity,
+            attached,
+        }
+    }
+
+    #[must_use]
+    pub fn resolved(params: ResolvedSessionParams) -> Self {
+        Self {
+            session_name: params.session_name,
+            metadata: SessionMetadata::Resolved(ResolvedSessionMetadata {
+                repo_name: params.repo_name,
+                branch: params.branch,
+                path: params.path,
+            }),
+            agent_statuses: params.agent_statuses,
+            session_activity: params.session_activity,
+            attached: params.attached,
+        }
+    }
+
+    #[must_use]
+    pub fn repo_name(&self) -> Option<&str> {
+        match &self.metadata {
+            SessionMetadata::Resolved(metadata) => Some(&metadata.repo_name),
+            SessionMetadata::Unresolved => None,
+        }
+    }
+
+    #[must_use]
+    pub fn branch(&self) -> Option<&str> {
+        match &self.metadata {
+            SessionMetadata::Resolved(metadata) => metadata.branch.as_deref(),
+            SessionMetadata::Unresolved => None,
+        }
+    }
+
+    #[must_use]
+    pub fn path(&self) -> Option<&Path> {
+        match &self.metadata {
+            SessionMetadata::Resolved(metadata) => Some(&metadata.path),
+            SessionMetadata::Unresolved => None,
+        }
+    }
+}
+
+pub fn active_session_entries<S1, S2>(
+    repos: &[Repo],
+    session_activity: &HashMap<String, u64, S1>,
+    attached_sessions: &HashSet<String, S2>,
+) -> Vec<SessionEntry>
+where
+    S1: std::hash::BuildHasher,
+    S2: std::hash::BuildHasher,
+{
+    let mut sessions = Vec::new();
+    for repo in repos {
+        for worktree in &repo.worktrees {
+            let session_name = repo.tmux_session_name(&worktree.path);
+            let Some(&activity) = session_activity.get(&session_name) else {
+                continue;
+            };
+            sessions.push(SessionEntry::resolved(ResolvedSessionParams {
+                session_name: session_name.clone(),
+                repo_name: repo.name.clone(),
+                branch: worktree.branch.clone(),
+                path: worktree.path.clone(),
+                agent_statuses: Vec::new(),
+                session_activity: activity,
+                attached: attached_sessions.contains(&session_name),
+            }));
+        }
+    }
+    sessions
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SessionsLoadState {
+    #[default]
+    Discovering,
+    MetadataPending,
+    Ready,
+}
+
+#[derive(Debug, Clone)]
+pub struct PollerHandle {
+    cancel: Arc<AtomicBool>,
+}
+
+impl Default for PollerHandle {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PollerHandle {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            cancel: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Wraps an existing cancel token. The caller retains shared ownership;
+    /// calling `cancel()` on this handle sets the flag for all holders.
+    #[must_use]
+    pub fn from_cancel(cancel: Arc<AtomicBool>) -> Self {
+        Self { cancel }
+    }
+
+    pub fn cancel(&self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        self.cancel.load(Ordering::Relaxed)
+    }
+
+    #[must_use]
+    pub fn cancel_token(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.cancel)
+    }
+
+    #[must_use]
+    pub fn ptr_eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.cancel, &other.cancel)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SessionsViewState {
+    pub sessions: Vec<SessionEntry>,
+    pub list: SearchableList,
+    pub load_state: SessionsLoadState,
+    /// Keep sessions selection pinned to the first item until user interacts.
+    pub pin_first_selection: bool,
+}
+
+impl Default for SessionsViewState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SessionsViewState {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            sessions: Vec::new(),
+            list: SearchableList::new(0),
+            load_state: SessionsLoadState::Discovering,
+            pin_first_selection: false,
+        }
+    }
+
+    pub fn begin_loading(&mut self) {
+        self.sessions.clear();
+        self.list = SearchableList::new(0);
+        self.load_state = SessionsLoadState::Discovering;
+        self.pin_first_selection = true;
+    }
+
+    #[must_use]
+    pub fn is_loading(&self) -> bool {
+        self.load_state == SessionsLoadState::Discovering
+    }
+
+    #[must_use]
+    pub fn is_resolving(&self) -> bool {
+        matches!(
+            self.load_state,
+            SessionsLoadState::MetadataPending | SessionsLoadState::Discovering
+        )
+    }
+
+    pub fn mark_shell_ready(&mut self) {
+        self.load_state = SessionsLoadState::MetadataPending;
+    }
+
+    pub fn mark_ready(&mut self) {
+        self.load_state = SessionsLoadState::Ready;
+    }
+
+    /// If the initial-selection pin is active, reset selection to the first item.
+    pub fn apply_pin_first_selection(&mut self) {
+        if self.pin_first_selection && !self.list.filtered.is_empty() {
+            self.list.selected = Some(0);
+            self.list.scroll_offset = 0;
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub enum ActiveAgentPoller {
+    #[default]
+    None,
+    Branch(PollerHandle),
+    Sessions(PollerHandle),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActiveAgentPollerKind {
+    None,
+    Branch,
+    Sessions,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgentPollerScope {
+    None,
+    Branch,
+    Sessions,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PollerInstallError {
+    InvalidMode {
+        mode: Mode,
+        expected_scope: &'static str,
+    },
+}
+
+impl ActiveAgentPoller {
+    fn scope(&self) -> AgentPollerScope {
+        match self {
+            ActiveAgentPoller::None => AgentPollerScope::None,
+            ActiveAgentPoller::Branch(_) => AgentPollerScope::Branch,
+            ActiveAgentPoller::Sessions(_) => AgentPollerScope::Sessions,
+        }
+    }
+}
+
 /// What mode the app is in
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Mode {
     RepoSelect,
     BranchSelect,
+    Sessions,
     SelectBaseBranch,
     /// Blocking loading state — shows spinner, no input except Ctrl+C
     Loading(String),
@@ -673,7 +1018,103 @@ pub enum Mode {
     Setup(SetupStep),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TransitionError {
+    Invalid { from: Mode, to: Mode },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModeContextAccessError {
+    MissingBaseBranchSelection { mode: Mode },
+    MissingHelpOverlay { mode: Mode },
+    MissingSetup { mode: Mode },
+}
+
+impl std::fmt::Display for ModeContextAccessError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingBaseBranchSelection { mode } => {
+                write!(
+                    f,
+                    "base branch selection context not available in mode {mode:?}"
+                )
+            }
+            Self::MissingHelpOverlay { mode } => {
+                write!(f, "help overlay context not available in mode {mode:?}")
+            }
+            Self::MissingSetup { mode } => {
+                write!(f, "setup context not available in mode {mode:?}")
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum ModeTransition {
+    RepoSelect,
+    BranchSelect,
+    Sessions,
+    SelectBaseBranch {
+        flow: BaseBranchSelection,
+    },
+    ConfirmWorktreeDelete {
+        branch_name: String,
+        has_session: bool,
+    },
+    Loading {
+        message: String,
+    },
+    OpenHelp {
+        overlay: HelpOverlayState,
+    },
+    CloseHelp,
+    Setup {
+        step: SetupStep,
+        setup: SetupState,
+    },
+}
+
+impl ModeTransition {
+    #[must_use]
+    pub fn target_mode_with_current(&self, current: &Mode) -> Mode {
+        match self {
+            ModeTransition::RepoSelect => Mode::RepoSelect,
+            ModeTransition::BranchSelect => Mode::BranchSelect,
+            ModeTransition::Sessions => Mode::Sessions,
+            ModeTransition::SelectBaseBranch { .. } => Mode::SelectBaseBranch,
+            ModeTransition::ConfirmWorktreeDelete {
+                branch_name,
+                has_session,
+            } => Mode::ConfirmWorktreeDelete {
+                branch_name: branch_name.clone(),
+                has_session: *has_session,
+            },
+            ModeTransition::Loading { message } => Mode::Loading(message.clone()),
+            ModeTransition::OpenHelp { .. } => match current {
+                // Idempotent: if already in Help, don't nest another layer.
+                Mode::Help { .. } => current.clone(),
+                _ => Mode::Help {
+                    previous: Box::new(current.clone()),
+                },
+            },
+            ModeTransition::CloseHelp => match current {
+                Mode::Help { previous } => (**previous).clone(),
+                other => other.clone(),
+            },
+            ModeTransition::Setup { step, .. } => Mode::Setup(step.clone()),
+        }
+    }
+}
+
 impl Mode {
+    fn expected_agent_poller_scope(&self) -> AgentPollerScope {
+        match self.effective() {
+            Mode::BranchSelect => AgentPollerScope::Branch,
+            Mode::Sessions => AgentPollerScope::Sessions,
+            _ => AgentPollerScope::None,
+        }
+    }
+
     /// The effective mode, looking through overlays like Help.
     pub fn effective(&self) -> &Mode {
         match self {
@@ -688,6 +1129,12 @@ impl Mode {
             Mode::RepoSelect => &[
                 Command::OpenRepo,
                 Command::EnterRepo,
+                Command::ShowHelp,
+                Command::Quit,
+            ],
+            Mode::Sessions => &[
+                Command::JumpToNextAgentSession,
+                Command::SwitchToSession,
                 Command::ShowHelp,
                 Command::Quit,
             ],
@@ -718,6 +1165,7 @@ impl Mode {
         matches!(
             self,
             Mode::RepoSelect
+                | Mode::Sessions
                 | Mode::BranchSelect
                 | Mode::SelectBaseBranch
                 | Mode::Help { .. }
@@ -729,6 +1177,7 @@ impl Mode {
         matches!(
             self,
             Mode::RepoSelect
+                | Mode::Sessions
                 | Mode::BranchSelect
                 | Mode::SelectBaseBranch
                 | Mode::Help { .. }
@@ -750,6 +1199,9 @@ impl Mode {
     pub(crate) fn supports_branch_select_actions(&self) -> bool {
         matches!(self, Mode::BranchSelect)
     }
+    pub(crate) fn supports_sessions_select_actions(&self) -> bool {
+        matches!(self, Mode::Sessions)
+    }
 }
 
 /// The new-branch flow state
@@ -768,6 +1220,17 @@ pub struct HelpOverlayState {
     pub rows: Vec<FlattenedKeybindingRow>,
 }
 
+#[derive(Debug, Clone)]
+enum ModeContextState {
+    None,
+    BaseBranchSelection(BaseBranchSelection),
+    HelpOverlay {
+        overlay: HelpOverlayState,
+        previous: Box<ModeContextState>,
+    },
+    Setup(SetupState),
+}
+
 /// Central application state. Components read from this, actions modify it.
 #[derive(Debug, Clone)]
 #[allow(clippy::struct_excessive_bools)]
@@ -779,13 +1242,10 @@ pub struct AppState {
     pub selected_repo_idx: Option<usize>,
     pub branches: Vec<BranchEntry>,
     pub branch_list: SearchableList,
-
-    pub base_branch_selection: Option<BaseBranchSelection>,
-    pub help_overlay: Option<HelpOverlayState>,
-    pub setup: Option<SetupState>,
+    mode_context: ModeContextState,
 
     pub split_command: Option<String>,
-    pub mode: Mode,
+    mode: Mode,
     pub loading_branches: bool,
     pub fetching_remotes: bool,
     pub error: Option<String>,
@@ -794,10 +1254,9 @@ pub struct AppState {
     pub session_activity: HashMap<String, u64>,
     /// Latest runtime snapshot keyed by tmux session name.
     pub session_runtime: HashMap<String, SessionRuntimeState>,
-    /// Cancel token for the active agent status poller thread.
-    /// Setting this flag stops the current poller; clearing it (via `cancel_agent_poller`)
-    /// prepares for a new one.
-    pub agent_poller_cancel: Option<Arc<AtomicBool>>,
+    /// Active agent poller token, scoped by mode.
+    /// At most one poller (branch or sessions) is active at a time.
+    active_agent_poller: ActiveAgentPoller,
     /// Whether agent status detection is enabled (configurable via `[agent] enabled`).
     pub agent_enabled: bool,
     /// Agent poll interval (configurable via `[agent] poll_interval_ms`).
@@ -811,6 +1270,10 @@ pub struct AppState {
     /// Tracks repo paths already seen during streaming discovery (O(1) dedup).
     /// Cleared when a new scan starts.
     pub seen_repo_paths: HashSet<PathBuf>,
+    /// Configured search directories for repo/worktree discovery.
+    pub search_dirs: Vec<(PathBuf, u16)>,
+    /// Sessions view state. Grouped to reduce invalid cross-mode combinations.
+    pub sessions_view: SessionsViewState,
 }
 
 impl AppState {
@@ -822,9 +1285,7 @@ impl AppState {
             selected_repo_idx: None,
             branches: Vec::new(),
             branch_list: SearchableList::new(0),
-            base_branch_selection: None,
-            help_overlay: None,
-            setup: None,
+            mode_context: ModeContextState::None,
             split_command: None,
             mode,
             loading_branches: false,
@@ -834,7 +1295,7 @@ impl AppState {
             pending_worktree_deletes: Vec::new(),
             session_activity: HashMap::new(),
             session_runtime: HashMap::new(),
-            agent_poller_cancel: None,
+            active_agent_poller: ActiveAgentPoller::None,
             agent_enabled: true,
             agent_poll_interval: std::time::Duration::from_millis(
                 AgentConfig::default().poll_interval_ms,
@@ -843,6 +1304,8 @@ impl AppState {
             current_repo_path: None,
             cwd_worktree_path: None,
             seen_repo_paths: HashSet::new(),
+            search_dirs: Vec::new(),
+            sessions_view: SessionsViewState::new(),
         }
     }
 
@@ -878,23 +1341,173 @@ impl AppState {
 
     pub fn new_setup() -> Self {
         Self {
-            setup: Some(SetupState::new()),
+            mode_context: ModeContextState::Setup(SetupState::new()),
             ..Self::base(Mode::Setup(SetupStep::Welcome))
         }
     }
 
-    /// Signal the current agent poller thread to stop and clear the cancel token.
-    pub fn cancel_agent_poller(&mut self) {
-        if let Some(token) = self.agent_poller_cancel.take() {
-            token.store(true, Ordering::Relaxed);
+    #[must_use]
+    fn can_transition_to(&self, to: &Mode) -> bool {
+        // Look through Help overlays to the underlying mode so that, e.g.,
+        // Help opened over Sessions cannot bypass BranchSelect-only guards.
+        let effective_from = self.mode.effective();
+        match to {
+            Mode::SelectBaseBranch | Mode::ConfirmWorktreeDelete { .. } => {
+                // Allow from BranchSelect, or when unwinding Help back to the
+                // same mode (e.g. CloseHelp from Help { previous: SelectBaseBranch }).
+                matches!(effective_from, Mode::BranchSelect)
+                    || std::mem::discriminant(effective_from) == std::mem::discriminant(to)
+            }
+            _ => true,
         }
+    }
+
+    pub fn transition(&mut self, transition: &ModeTransition) -> Result<(), TransitionError> {
+        let from = self.mode.clone();
+        let to = transition.target_mode_with_current(&from);
+        if !self.can_transition_to(&to) {
+            return Err(TransitionError::Invalid { from, to });
+        }
+
+        if matches!(from, Mode::Help { .. }) && !matches!(to, Mode::Help { .. }) {
+            self.clear_help_overlay();
+        }
+
+        match transition {
+            ModeTransition::SelectBaseBranch { flow } => {
+                self.set_base_branch_selection(flow.clone());
+            }
+            ModeTransition::OpenHelp { overlay } => {
+                self.set_help_overlay(overlay.clone());
+            }
+            ModeTransition::Setup { setup, .. } => match &mut self.mode_context {
+                ModeContextState::HelpOverlay { previous, .. } => {
+                    **previous = ModeContextState::Setup(setup.clone());
+                }
+                _ => {
+                    self.mode_context = ModeContextState::Setup(setup.clone());
+                }
+            },
+            ModeTransition::RepoSelect
+            | ModeTransition::BranchSelect
+            | ModeTransition::Sessions
+            | ModeTransition::CloseHelp
+            | ModeTransition::ConfirmWorktreeDelete { .. }
+            | ModeTransition::Loading { .. } => {}
+        }
+
+        self.mode = to;
+        self.reconcile_mode_context_for_mode();
+        self.reconcile_agent_poller_mode_invariant();
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub fn apply_transition(&mut self, transition: &ModeTransition) {
+        self.transition(transition)
+            .expect("transition failed in test");
+    }
+
+    #[must_use]
+    pub fn mode(&self) -> &Mode {
+        &self.mode
+    }
+
+    #[must_use]
+    pub fn effective_mode(&self) -> &Mode {
+        self.mode.effective()
+    }
+
+    #[must_use]
+    pub fn is_help_open(&self) -> bool {
+        matches!(self.mode, Mode::Help { .. })
+    }
+
+    #[must_use]
+    pub fn is_sessions_context(&self) -> bool {
+        self.effective_mode() == &Mode::Sessions
+    }
+
+    #[must_use]
+    pub fn is_branch_select_context(&self) -> bool {
+        self.effective_mode() == &Mode::BranchSelect
+    }
+
+    fn reconcile_agent_poller_mode_invariant(&mut self) {
+        if self.active_agent_poller.scope() != self.mode.expected_agent_poller_scope() {
+            self.cancel_all_agent_pollers();
+        }
+    }
+
+    #[must_use]
+    pub fn active_agent_poller_kind(&self) -> ActiveAgentPollerKind {
+        match &self.active_agent_poller {
+            ActiveAgentPoller::None => ActiveAgentPollerKind::None,
+            ActiveAgentPoller::Branch(_) => ActiveAgentPollerKind::Branch,
+            ActiveAgentPoller::Sessions(_) => ActiveAgentPollerKind::Sessions,
+        }
+    }
+
+    #[must_use]
+    pub fn active_agent_poller_matches(&self, handle: &PollerHandle) -> bool {
+        match &self.active_agent_poller {
+            ActiveAgentPoller::Branch(active) | ActiveAgentPoller::Sessions(active) => {
+                active.ptr_eq(handle)
+            }
+            ActiveAgentPoller::None => false,
+        }
+    }
+
+    /// Signal any active poller thread to stop and clear poller state.
+    pub fn cancel_all_agent_pollers(&mut self) {
+        match &self.active_agent_poller {
+            ActiveAgentPoller::None => {}
+            ActiveAgentPoller::Branch(handle) | ActiveAgentPoller::Sessions(handle) => {
+                handle.cancel();
+            }
+        }
+        self.active_agent_poller = ActiveAgentPoller::None;
+    }
+
+    /// Install a branch poller as the active poller, cancelling any existing poller.
+    pub fn install_branch_poller(
+        &mut self,
+        handle: PollerHandle,
+    ) -> Result<(), PollerInstallError> {
+        if self.mode.expected_agent_poller_scope() != AgentPollerScope::Branch {
+            handle.cancel();
+            return Err(PollerInstallError::InvalidMode {
+                mode: self.mode.clone(),
+                expected_scope: "BranchSelect",
+            });
+        }
+        self.cancel_all_agent_pollers();
+        self.active_agent_poller = ActiveAgentPoller::Branch(handle);
+        Ok(())
+    }
+
+    /// Install a sessions poller as the active poller, cancelling any existing poller.
+    pub fn install_sessions_poller(
+        &mut self,
+        handle: PollerHandle,
+    ) -> Result<(), PollerInstallError> {
+        if self.mode.expected_agent_poller_scope() != AgentPollerScope::Sessions {
+            handle.cancel();
+            return Err(PollerInstallError::InvalidMode {
+                mode: self.mode.clone(),
+                expected_scope: "Sessions",
+            });
+        }
+        self.cancel_all_agent_pollers();
+        self.active_agent_poller = ActiveAgentPoller::Sessions(handle);
+        Ok(())
     }
 
     /// Get the active text input for the current mode (mutable).
     /// Works for both `SearchableList` modes and Setup mode.
     pub fn active_text_input(&mut self) -> Option<&mut TextInput> {
         match self.mode {
-            Mode::Setup(SetupStep::SearchDirs) => self.setup.as_mut().map(|s| &mut s.input),
+            Mode::Setup(SetupStep::SearchDirs) => self.setup_mut().map(|s| &mut s.input),
             _ => self.active_list_mut().map(|list| &mut list.input),
         }
     }
@@ -903,8 +1516,9 @@ impl AppState {
     pub fn active_list_mut(&mut self) -> Option<&mut SearchableList> {
         match self.mode {
             Mode::RepoSelect => Some(&mut self.repo_list),
+            Mode::Sessions => Some(&mut self.sessions_view.list),
             Mode::BranchSelect => Some(&mut self.branch_list),
-            Mode::SelectBaseBranch => self.base_branch_selection.as_mut().map(|f| &mut f.list),
+            Mode::SelectBaseBranch => self.base_branch_selection_mut().map(|f| &mut f.list),
             Mode::Help { .. } => self.active_help_list_mut(),
             _ => None,
         }
@@ -914,19 +1528,225 @@ impl AppState {
     pub fn active_list(&self) -> Option<&SearchableList> {
         match self.mode {
             Mode::RepoSelect => Some(&self.repo_list),
+            Mode::Sessions => Some(&self.sessions_view.list),
             Mode::BranchSelect => Some(&self.branch_list),
-            Mode::SelectBaseBranch => self.base_branch_selection.as_ref().map(|f| &f.list),
+            Mode::SelectBaseBranch => self.require_base_branch_selection().ok().map(|f| &f.list),
             Mode::Help { .. } => self.active_help_list(),
             _ => None,
         }
     }
 
     pub fn active_help_list_mut(&mut self) -> Option<&mut SearchableList> {
-        self.help_overlay.as_mut().map(|overlay| &mut overlay.list)
+        self.help_overlay_mut().map(|overlay| &mut overlay.list)
     }
 
     pub fn active_help_list(&self) -> Option<&SearchableList> {
-        self.help_overlay.as_ref().map(|overlay| &overlay.list)
+        self.require_help_overlay()
+            .ok()
+            .map(|overlay| &overlay.list)
+    }
+
+    fn base_branch_selection_mut(&mut self) -> Option<&mut BaseBranchSelection> {
+        match &mut self.mode_context {
+            ModeContextState::BaseBranchSelection(flow) => Some(flow),
+            ModeContextState::HelpOverlay { previous, .. } => match previous.as_mut() {
+                ModeContextState::BaseBranchSelection(flow) => Some(flow),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    pub fn update_base_branch_selection<R>(
+        &mut self,
+        f: impl FnOnce(&mut BaseBranchSelection) -> R,
+    ) -> Result<R, ModeContextAccessError> {
+        self.base_branch_selection_mut().map(f).ok_or_else(|| {
+            ModeContextAccessError::MissingBaseBranchSelection {
+                mode: self.mode.clone(),
+            }
+        })
+    }
+
+    pub fn require_base_branch_selection(
+        &self,
+    ) -> Result<&BaseBranchSelection, ModeContextAccessError> {
+        match &self.mode_context {
+            ModeContextState::BaseBranchSelection(flow) => Ok(flow),
+            ModeContextState::HelpOverlay { previous, .. } => match previous.as_ref() {
+                ModeContextState::BaseBranchSelection(flow) => Ok(flow),
+                _ => Err(ModeContextAccessError::MissingBaseBranchSelection {
+                    mode: self.mode.clone(),
+                }),
+            },
+            _ => Err(ModeContextAccessError::MissingBaseBranchSelection {
+                mode: self.mode.clone(),
+            }),
+        }
+    }
+
+    fn set_base_branch_selection(&mut self, flow: BaseBranchSelection) {
+        match &mut self.mode_context {
+            ModeContextState::HelpOverlay { previous, .. } => {
+                **previous = ModeContextState::BaseBranchSelection(flow);
+            }
+            _ => {
+                self.mode_context = ModeContextState::BaseBranchSelection(flow);
+            }
+        }
+    }
+
+    fn clear_base_branch_selection(&mut self) {
+        match &mut self.mode_context {
+            ModeContextState::BaseBranchSelection(_) => {
+                self.mode_context = ModeContextState::None;
+            }
+            ModeContextState::HelpOverlay { previous, .. } => {
+                if matches!(previous.as_ref(), ModeContextState::BaseBranchSelection(_)) {
+                    **previous = ModeContextState::None;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn help_overlay_mut(&mut self) -> Option<&mut HelpOverlayState> {
+        if let ModeContextState::HelpOverlay { overlay, .. } = &mut self.mode_context {
+            Some(overlay)
+        } else {
+            None
+        }
+    }
+
+    pub fn update_help_overlay<R>(
+        &mut self,
+        f: impl FnOnce(&mut HelpOverlayState) -> R,
+    ) -> Result<R, ModeContextAccessError> {
+        self.help_overlay_mut()
+            .map(f)
+            .ok_or_else(|| ModeContextAccessError::MissingHelpOverlay {
+                mode: self.mode.clone(),
+            })
+    }
+
+    pub fn require_help_overlay(&self) -> Result<&HelpOverlayState, ModeContextAccessError> {
+        if let ModeContextState::HelpOverlay { overlay, .. } = &self.mode_context {
+            Ok(overlay)
+        } else {
+            Err(ModeContextAccessError::MissingHelpOverlay {
+                mode: self.mode.clone(),
+            })
+        }
+    }
+
+    fn set_help_overlay(&mut self, overlay: HelpOverlayState) {
+        // Idempotent: if a help overlay is already active, update it in place
+        // rather than nesting a second layer.
+        if let ModeContextState::HelpOverlay {
+            overlay: current, ..
+        } = &mut self.mode_context
+        {
+            *current = overlay;
+            return;
+        }
+        let previous = std::mem::replace(&mut self.mode_context, ModeContextState::None);
+        self.mode_context = ModeContextState::HelpOverlay {
+            overlay,
+            previous: Box::new(previous),
+        };
+    }
+
+    fn clear_help_overlay(&mut self) {
+        if let ModeContextState::HelpOverlay { previous, .. } = &mut self.mode_context {
+            self.mode_context = std::mem::replace(previous.as_mut(), ModeContextState::None);
+        }
+    }
+
+    fn clear_setup(&mut self) {
+        match &mut self.mode_context {
+            ModeContextState::Setup(_) => {
+                self.mode_context = ModeContextState::None;
+            }
+            ModeContextState::HelpOverlay { previous, .. } => {
+                if matches!(previous.as_ref(), ModeContextState::Setup(_)) {
+                    **previous = ModeContextState::None;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn setup_mut(&mut self) -> Option<&mut SetupState> {
+        match &mut self.mode_context {
+            ModeContextState::Setup(setup) => Some(setup),
+            ModeContextState::HelpOverlay { previous, .. } => match previous.as_mut() {
+                ModeContextState::Setup(setup) => Some(setup),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    pub fn update_setup<R>(
+        &mut self,
+        f: impl FnOnce(&mut SetupState) -> R,
+    ) -> Result<R, ModeContextAccessError> {
+        self.setup_mut()
+            .map(f)
+            .ok_or_else(|| ModeContextAccessError::MissingSetup {
+                mode: self.mode.clone(),
+            })
+    }
+
+    pub fn require_setup(&self) -> Result<&SetupState, ModeContextAccessError> {
+        match &self.mode_context {
+            ModeContextState::Setup(setup) => Ok(setup),
+            ModeContextState::HelpOverlay { previous, .. } => match previous.as_ref() {
+                ModeContextState::Setup(setup) => Ok(setup),
+                _ => Err(ModeContextAccessError::MissingSetup {
+                    mode: self.mode.clone(),
+                }),
+            },
+            _ => Err(ModeContextAccessError::MissingSetup {
+                mode: self.mode.clone(),
+            }),
+        }
+    }
+
+    pub fn ensure_setup(&mut self) -> &mut SetupState {
+        let needs_setup = match &self.mode_context {
+            ModeContextState::Setup(_) => false,
+            ModeContextState::HelpOverlay { previous, .. } => {
+                !matches!(previous.as_ref(), ModeContextState::Setup(_))
+            }
+            _ => true,
+        };
+
+        if needs_setup {
+            match &mut self.mode_context {
+                ModeContextState::HelpOverlay { previous, .. } => {
+                    **previous = ModeContextState::Setup(SetupState::new());
+                }
+                _ => {
+                    self.mode_context = ModeContextState::Setup(SetupState::new());
+                }
+            }
+        }
+
+        self.setup_mut()
+            .expect("setup context should exist after ensure_setup")
+    }
+
+    fn reconcile_mode_context_for_mode(&mut self) {
+        let keep_base_branch = matches!(self.mode, Mode::SelectBaseBranch | Mode::Help { .. });
+        if !keep_base_branch {
+            self.clear_base_branch_selection();
+        }
+
+        let keep_setup = matches!(self.mode, Mode::Setup(_) | Mode::Help { .. });
+        if !keep_setup {
+            self.clear_setup();
+        }
     }
 
     pub fn is_branch_pending_delete(&self, repo_path: &Path, branch_name: &str) -> bool {
@@ -1989,7 +2809,7 @@ mod tests {
     }
 
     #[test]
-    fn test_branch_sort_agent_waiting_before_running() {
+    fn test_branch_sort_agent_waiting_idle_running_priority() {
         use crate::agent::{AgentKind, AgentState, AgentStatus};
 
         let mut entries = vec![
@@ -2001,10 +2821,10 @@ mod tests {
                 is_default: false,
                 remote: None,
                 session_activity_ts: Some(100),
-                agent_status: Some(AgentStatus {
+                agent_statuses: vec![AgentStatus {
                     kind: AgentKind::ClaudeCode,
                     state: AgentState::Running,
-                }),
+                }],
             },
             BranchEntry {
                 name: "feat-waiting".to_string(),
@@ -2014,10 +2834,10 @@ mod tests {
                 is_default: false,
                 remote: None,
                 session_activity_ts: Some(100),
-                agent_status: Some(AgentStatus {
+                agent_statuses: vec![AgentStatus {
                     kind: AgentKind::Codex,
                     state: AgentState::Waiting,
-                }),
+                }],
             },
             BranchEntry {
                 name: "feat-idle".to_string(),
@@ -2027,19 +2847,16 @@ mod tests {
                 is_default: false,
                 remote: None,
                 session_activity_ts: Some(100),
-                agent_status: Some(AgentStatus {
+                agent_statuses: vec![AgentStatus {
                     kind: AgentKind::ClaudeCode,
                     state: AgentState::Idle,
-                }),
+                }],
             },
         ];
         BranchEntry::sort_entries(&mut entries);
         assert_eq!(entries[0].name, "feat-waiting", "Waiting should sort first");
-        assert_eq!(
-            entries[1].name, "feat-running",
-            "Running should sort second"
-        );
-        assert_eq!(entries[2].name, "feat-idle", "Idle should sort last");
+        assert_eq!(entries[1].name, "feat-idle", "Idle should sort second");
+        assert_eq!(entries[2].name, "feat-running", "Running should sort third");
     }
 
     #[test]
@@ -2053,7 +2870,7 @@ mod tests {
                 is_default: false,
                 remote: Some("origin".to_string()),
                 session_activity_ts: None,
-                agent_status: None,
+                agent_statuses: Vec::new(),
             },
             BranchEntry {
                 name: "zzz-local".to_string(),
@@ -2063,7 +2880,7 @@ mod tests {
                 is_default: false,
                 remote: None,
                 session_activity_ts: None,
-                agent_status: None,
+                agent_statuses: Vec::new(),
             },
             BranchEntry {
                 name: "mmm-local".to_string(),
@@ -2073,7 +2890,7 @@ mod tests {
                 is_default: false,
                 remote: None,
                 session_activity_ts: None,
-                agent_status: None,
+                agent_statuses: Vec::new(),
             },
         ];
 
@@ -2229,7 +3046,7 @@ mod tests {
     #[test]
     fn test_active_list_points_to_help_overlay_in_help_mode() {
         let mut state = AppState::new(vec![make_repo(std::path::Path::new("/tmp"), "repo")], None);
-        state.help_overlay = Some(HelpOverlayState {
+        state.set_help_overlay(HelpOverlayState {
             list: SearchableList::new(3),
             rows: Vec::new(),
         });
@@ -2245,8 +3062,8 @@ mod tests {
         }
         assert_eq!(
             state
-                .help_overlay
-                .as_ref()
+                .require_help_overlay()
+                .ok()
                 .and_then(|overlay| overlay.list.selected),
             Some(1)
         );
@@ -2262,7 +3079,7 @@ mod tests {
             is_default: false,
             remote: None,
             session_activity_ts: Some(12345),
-            agent_status: None,
+            agent_statuses: Vec::new(),
         };
 
         let json = serde_json::to_string(&entry).unwrap();
@@ -2283,9 +3100,134 @@ mod tests {
     #[test]
     fn test_app_state_new_setup() {
         let state = AppState::new_setup();
-        assert!(state.setup.is_some());
+        assert!(state.require_setup().is_ok());
         assert_eq!(state.mode, Mode::Setup(SetupStep::Welcome));
         assert!(state.repos.is_empty());
+    }
+
+    #[test]
+    fn test_mode_context_help_overlay_preserves_previous_variant() {
+        let mut state = AppState::new(vec![], None);
+        let _ = state.ensure_setup();
+        assert!(state.require_setup().is_ok());
+        assert!(state.require_help_overlay().is_err());
+        assert!(state.require_base_branch_selection().is_err());
+
+        state.set_help_overlay(HelpOverlayState {
+            list: SearchableList::new(1),
+            rows: Vec::new(),
+        });
+        assert!(state.require_setup().is_ok());
+        assert!(state.require_help_overlay().is_ok());
+        assert!(state.require_base_branch_selection().is_err());
+        state.clear_help_overlay();
+        assert!(state.require_setup().is_ok());
+        assert!(state.require_help_overlay().is_err());
+
+        state.set_base_branch_selection(BaseBranchSelection {
+            new_name: "feat/new".to_string(),
+            bases: vec!["main".to_string()],
+            list: SearchableList::new(1),
+        });
+        assert!(state.require_setup().is_err());
+        assert!(state.require_help_overlay().is_err());
+        assert!(state.require_base_branch_selection().is_ok());
+
+        state.set_help_overlay(HelpOverlayState {
+            list: SearchableList::new(1),
+            rows: Vec::new(),
+        });
+        assert!(state.require_help_overlay().is_ok());
+        assert!(state.require_base_branch_selection().is_ok());
+        state.clear_help_overlay();
+        assert!(state.require_help_overlay().is_err());
+        assert!(state.require_base_branch_selection().is_ok());
+    }
+
+    #[test]
+    fn test_mode_context_clear_is_scoped_to_active_variant() {
+        let mut state = AppState::new(vec![], None);
+        state.set_base_branch_selection(BaseBranchSelection {
+            new_name: "feat/new".to_string(),
+            bases: vec!["main".to_string()],
+            list: SearchableList::new(1),
+        });
+
+        state.clear_help_overlay();
+        assert!(state.require_base_branch_selection().is_ok());
+
+        state.clear_base_branch_selection();
+        assert!(state.require_base_branch_selection().is_err());
+    }
+
+    #[test]
+    fn test_mode_context_require_accessors_match_mode_invariants() {
+        fn assert_access(
+            state: &AppState,
+            expect_setup: bool,
+            expect_help: bool,
+            expect_base: bool,
+        ) {
+            assert_eq!(state.require_setup().is_ok(), expect_setup);
+            assert_eq!(state.require_help_overlay().is_ok(), expect_help);
+            assert_eq!(state.require_base_branch_selection().is_ok(), expect_base);
+        }
+
+        let mut state = AppState::new(vec![], None);
+        assert_access(&state, false, false, false); // loading
+
+        state.apply_transition(&ModeTransition::RepoSelect);
+        assert_access(&state, false, false, false);
+
+        state.apply_transition(&ModeTransition::BranchSelect);
+        assert_access(&state, false, false, false);
+
+        state.apply_transition(&ModeTransition::ConfirmWorktreeDelete {
+            branch_name: "main".to_string(),
+            has_session: false,
+        });
+        assert_access(&state, false, false, false);
+
+        state.apply_transition(&ModeTransition::Sessions);
+        assert_access(&state, false, false, false);
+
+        state.apply_transition(&ModeTransition::Setup {
+            step: SetupStep::SearchDirs,
+            setup: SetupState::new(),
+        });
+        assert_access(&state, true, false, false);
+
+        state.apply_transition(&ModeTransition::OpenHelp {
+            overlay: HelpOverlayState {
+                list: SearchableList::new(0),
+                rows: Vec::new(),
+            },
+        });
+        assert_access(&state, true, true, false);
+
+        state.apply_transition(&ModeTransition::CloseHelp);
+        assert_access(&state, true, false, false);
+
+        state.apply_transition(&ModeTransition::BranchSelect);
+        state.apply_transition(&ModeTransition::SelectBaseBranch {
+            flow: BaseBranchSelection {
+                new_name: "feat/new".to_string(),
+                bases: vec!["main".to_string()],
+                list: SearchableList::new(1),
+            },
+        });
+        assert_access(&state, false, false, true);
+
+        state.apply_transition(&ModeTransition::OpenHelp {
+            overlay: HelpOverlayState {
+                list: SearchableList::new(0),
+                rows: Vec::new(),
+            },
+        });
+        assert_access(&state, false, true, true);
+
+        state.apply_transition(&ModeTransition::CloseHelp);
+        assert_access(&state, false, false, true);
     }
 
     #[test]
@@ -2400,5 +3342,534 @@ mod tests {
         };
         assert_eq!(state.agent_labels.running, "GO");
         assert_eq!(state.agent_labels.waiting, "PEND");
+    }
+
+    #[test]
+    fn test_mode_transition_helpers_set_expected_modes() {
+        let mut state = AppState::new(vec![], None);
+
+        state.apply_transition(&ModeTransition::RepoSelect);
+        assert_eq!(state.mode, Mode::RepoSelect);
+
+        state.apply_transition(&ModeTransition::BranchSelect);
+        assert_eq!(state.mode, Mode::BranchSelect);
+
+        state.apply_transition(&ModeTransition::Sessions);
+        assert_eq!(state.mode, Mode::Sessions);
+
+        state.apply_transition(&ModeTransition::BranchSelect);
+        state.apply_transition(&ModeTransition::SelectBaseBranch {
+            flow: BaseBranchSelection {
+                new_name: "feat/test".to_string(),
+                bases: vec!["main".to_string()],
+                list: SearchableList::new(1),
+            },
+        });
+        assert_eq!(state.mode, Mode::SelectBaseBranch);
+
+        state.apply_transition(&ModeTransition::Loading {
+            message: "Loading...".to_string(),
+        });
+        assert_eq!(state.mode, Mode::Loading("Loading...".to_string()));
+    }
+
+    #[test]
+    fn test_mode_transition_helpers_set_parameterized_modes() {
+        let mut state = AppState::new(vec![], None);
+
+        state.apply_transition(&ModeTransition::BranchSelect);
+        state.apply_transition(&ModeTransition::ConfirmWorktreeDelete {
+            branch_name: "feat-x".to_string(),
+            has_session: true,
+        });
+        assert_eq!(
+            state.mode,
+            Mode::ConfirmWorktreeDelete {
+                branch_name: "feat-x".to_string(),
+                has_session: true,
+            }
+        );
+
+        state.apply_transition(&ModeTransition::OpenHelp {
+            overlay: HelpOverlayState {
+                list: SearchableList::new(0),
+                rows: Vec::new(),
+            },
+        });
+        assert_eq!(
+            state.mode,
+            Mode::Help {
+                previous: Box::new(Mode::ConfirmWorktreeDelete {
+                    branch_name: "feat-x".to_string(),
+                    has_session: true,
+                }),
+            }
+        );
+
+        state.apply_transition(&ModeTransition::Setup {
+            step: SetupStep::SearchDirs,
+            setup: SetupState::new(),
+        });
+        assert_eq!(state.mode, Mode::Setup(SetupStep::SearchDirs));
+
+        state.apply_transition(&ModeTransition::OpenHelp {
+            overlay: HelpOverlayState {
+                list: SearchableList::new(0),
+                rows: Vec::new(),
+            },
+        });
+        state.apply_transition(&ModeTransition::CloseHelp);
+        assert_eq!(state.mode, Mode::Setup(SetupStep::SearchDirs));
+    }
+
+    #[test]
+    fn test_transition_rejects_invalid_target_modes() {
+        let mut state = AppState::new(vec![], None);
+        state.apply_transition(&ModeTransition::RepoSelect);
+
+        let result = state.transition(&ModeTransition::SelectBaseBranch {
+            flow: BaseBranchSelection {
+                new_name: "feat/test".to_string(),
+                bases: vec!["main".to_string()],
+                list: SearchableList::new(1),
+            },
+        });
+        assert!(matches!(
+            result,
+            Err(TransitionError::Invalid {
+                from: Mode::RepoSelect,
+                to: Mode::SelectBaseBranch
+            })
+        ));
+
+        let result = state.transition(&ModeTransition::ConfirmWorktreeDelete {
+            branch_name: "feat-x".to_string(),
+            has_session: false,
+        });
+        assert!(matches!(
+            result,
+            Err(TransitionError::Invalid {
+                from: Mode::RepoSelect,
+                to: Mode::ConfirmWorktreeDelete { .. }
+            })
+        ));
+    }
+
+    #[test]
+    fn test_mode_transition_intents_map_to_expected_modes() {
+        assert_eq!(
+            ModeTransition::RepoSelect.target_mode_with_current(&Mode::RepoSelect),
+            Mode::RepoSelect
+        );
+        assert_eq!(
+            ModeTransition::BranchSelect.target_mode_with_current(&Mode::RepoSelect),
+            Mode::BranchSelect
+        );
+        assert_eq!(
+            ModeTransition::Sessions.target_mode_with_current(&Mode::RepoSelect),
+            Mode::Sessions
+        );
+        assert_eq!(
+            ModeTransition::SelectBaseBranch {
+                flow: BaseBranchSelection {
+                    new_name: "feat-a".to_string(),
+                    bases: vec!["main".to_string()],
+                    list: SearchableList::new(1),
+                },
+            }
+            .target_mode_with_current(&Mode::BranchSelect),
+            Mode::SelectBaseBranch
+        );
+        assert_eq!(
+            ModeTransition::ConfirmWorktreeDelete {
+                branch_name: "feat-a".to_string(),
+                has_session: true,
+            }
+            .target_mode_with_current(&Mode::BranchSelect),
+            Mode::ConfirmWorktreeDelete {
+                branch_name: "feat-a".to_string(),
+                has_session: true,
+            }
+        );
+    }
+
+    #[test]
+    fn test_transition_with_intent_respects_mode_policy() {
+        let mut state = AppState::new(vec![], None);
+        state.apply_transition(&ModeTransition::RepoSelect);
+
+        let result = state.transition(&ModeTransition::SelectBaseBranch {
+            flow: BaseBranchSelection {
+                new_name: "feat/test".to_string(),
+                bases: vec!["main".to_string()],
+                list: SearchableList::new(1),
+            },
+        });
+        assert!(
+            result.is_err(),
+            "RepoSelect -> SelectBaseBranch should fail"
+        );
+
+        state.apply_transition(&ModeTransition::BranchSelect);
+        let result = state.transition(&ModeTransition::SelectBaseBranch {
+            flow: BaseBranchSelection {
+                new_name: "feat/test".to_string(),
+                bases: vec!["main".to_string()],
+                list: SearchableList::new(1),
+            },
+        });
+        assert!(
+            result.is_ok(),
+            "BranchSelect -> SelectBaseBranch should succeed"
+        );
+    }
+
+    #[test]
+    fn test_transition_allows_branch_select_flow_modes() {
+        let mut state = AppState::new(vec![], None);
+        state.apply_transition(&ModeTransition::BranchSelect);
+
+        assert!(
+            state
+                .transition(&ModeTransition::SelectBaseBranch {
+                    flow: BaseBranchSelection {
+                        new_name: "feat/test".to_string(),
+                        bases: vec!["main".to_string()],
+                        list: SearchableList::new(1),
+                    },
+                })
+                .is_ok()
+        );
+        assert_eq!(state.mode, Mode::SelectBaseBranch);
+
+        state.apply_transition(&ModeTransition::BranchSelect);
+        assert!(
+            state
+                .transition(&ModeTransition::ConfirmWorktreeDelete {
+                    branch_name: "feat-y".to_string(),
+                    has_session: true,
+                })
+                .is_ok()
+        );
+        assert!(matches!(state.mode, Mode::ConfirmWorktreeDelete { .. }));
+    }
+
+    #[test]
+    fn test_transition_table_matches_policy_for_all_mode_pairs() {
+        let all_modes = vec![
+            Mode::RepoSelect,
+            Mode::BranchSelect,
+            Mode::Sessions,
+            Mode::SelectBaseBranch,
+            Mode::Loading("loading".to_string()),
+            Mode::ConfirmWorktreeDelete {
+                branch_name: "feat-z".to_string(),
+                has_session: false,
+            },
+            Mode::Help {
+                previous: Box::new(Mode::RepoSelect),
+            },
+            Mode::Setup(SetupStep::Welcome),
+        ];
+
+        for from in &all_modes {
+            for to in &all_modes {
+                let mut state = AppState::new(vec![], None);
+                state.mode = from.clone();
+
+                // Policy: SelectBaseBranch and ConfirmWorktreeDelete are only
+                // reachable from BranchSelect, or when returning to that same
+                // mode via CloseHelp (effective mode == target mode).
+                let effective_from = from.effective();
+                let expected = if matches!(
+                    to,
+                    Mode::SelectBaseBranch | Mode::ConfirmWorktreeDelete { .. }
+                ) {
+                    matches!(effective_from, Mode::BranchSelect)
+                        || std::mem::discriminant(effective_from) == std::mem::discriminant(to)
+                } else {
+                    true
+                };
+
+                let transition = match to {
+                    Mode::RepoSelect => ModeTransition::RepoSelect,
+                    Mode::BranchSelect => ModeTransition::BranchSelect,
+                    Mode::Sessions => ModeTransition::Sessions,
+                    Mode::SelectBaseBranch => ModeTransition::SelectBaseBranch {
+                        flow: BaseBranchSelection {
+                            new_name: "feat-z".to_string(),
+                            bases: vec!["main".to_string()],
+                            list: SearchableList::new(1),
+                        },
+                    },
+                    Mode::Loading(message) => ModeTransition::Loading {
+                        message: message.clone(),
+                    },
+                    Mode::ConfirmWorktreeDelete {
+                        branch_name,
+                        has_session,
+                    } => ModeTransition::ConfirmWorktreeDelete {
+                        branch_name: branch_name.clone(),
+                        has_session: *has_session,
+                    },
+                    Mode::Help { .. } => ModeTransition::OpenHelp {
+                        overlay: HelpOverlayState {
+                            list: SearchableList::new(0),
+                            rows: Vec::new(),
+                        },
+                    },
+                    Mode::Setup(step) => ModeTransition::Setup {
+                        step: step.clone(),
+                        setup: SetupState::new(),
+                    },
+                };
+
+                let result = state.transition(&transition);
+                assert_eq!(
+                    result.is_ok(),
+                    expected,
+                    "transition result mismatch from {from:?} to {to:?}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_install_sessions_poller_rejected_outside_sessions_mode() {
+        let mut state = AppState::new(vec![], None);
+        let sessions = PollerHandle::new();
+        let result = state.install_sessions_poller(sessions.clone());
+
+        assert!(matches!(
+            result,
+            Err(PollerInstallError::InvalidMode {
+                expected_scope: "Sessions",
+                ..
+            })
+        ));
+        assert!(sessions.is_cancelled());
+        assert_eq!(
+            state.active_agent_poller_kind(),
+            ActiveAgentPollerKind::None
+        );
+    }
+
+    #[test]
+    fn test_install_branch_poller_rejected_outside_branch_mode() {
+        let mut state = AppState::new(vec![], None);
+        let branch = PollerHandle::new();
+        let result = state.install_branch_poller(branch.clone());
+
+        assert!(
+            branch.is_cancelled(),
+            "Invalid branch poller installs should cancel the handle"
+        );
+        assert!(matches!(
+            result,
+            Err(PollerInstallError::InvalidMode {
+                expected_scope: "BranchSelect",
+                ..
+            })
+        ));
+        assert_eq!(
+            state.active_agent_poller_kind(),
+            ActiveAgentPollerKind::None
+        );
+    }
+
+    #[test]
+    fn test_install_sessions_poller_replaces_branch_poller() {
+        let mut state = AppState::new(vec![], None);
+        state.apply_transition(&ModeTransition::BranchSelect);
+        let branch = PollerHandle::new();
+        assert!(state.install_branch_poller(branch.clone()).is_ok());
+
+        state.apply_transition(&ModeTransition::Sessions);
+        let sessions = PollerHandle::new();
+        assert!(state.install_sessions_poller(sessions).is_ok());
+
+        assert!(
+            branch.is_cancelled(),
+            "Switching poller scopes should cancel previous branch poller"
+        );
+        assert_eq!(
+            state.active_agent_poller_kind(),
+            ActiveAgentPollerKind::Sessions
+        );
+    }
+
+    #[test]
+    fn test_cancel_all_agent_pollers_cancels_active_poller() {
+        let mut state = AppState::new(vec![], None);
+        state.apply_transition(&ModeTransition::Sessions);
+        let sessions = PollerHandle::new();
+        assert!(state.install_sessions_poller(sessions.clone()).is_ok());
+
+        state.cancel_all_agent_pollers();
+
+        assert!(
+            sessions.is_cancelled(),
+            "cancel_all_agent_pollers should cancel active sessions poller"
+        );
+        assert_eq!(
+            state.active_agent_poller_kind(),
+            ActiveAgentPollerKind::None
+        );
+    }
+
+    #[test]
+    fn test_transition_cancels_mismatched_branch_poller() {
+        let mut state = AppState::new(vec![], None);
+        state.apply_transition(&ModeTransition::BranchSelect);
+        let branch = PollerHandle::new();
+        assert!(state.install_branch_poller(branch.clone()).is_ok());
+
+        state.apply_transition(&ModeTransition::RepoSelect);
+
+        assert!(branch.is_cancelled());
+        assert_eq!(
+            state.active_agent_poller_kind(),
+            ActiveAgentPollerKind::None
+        );
+    }
+
+    #[test]
+    fn test_transition_keeps_sessions_poller_for_help_overlay() {
+        let mut state = AppState::new(vec![], None);
+        state.apply_transition(&ModeTransition::Sessions);
+        let sessions = PollerHandle::new();
+        assert!(state.install_sessions_poller(sessions.clone()).is_ok());
+
+        state.apply_transition(&ModeTransition::OpenHelp {
+            overlay: HelpOverlayState {
+                list: SearchableList::new(0),
+                rows: Vec::new(),
+            },
+        });
+
+        assert!(!sessions.is_cancelled());
+        assert_eq!(
+            state.active_agent_poller_kind(),
+            ActiveAgentPollerKind::Sessions
+        );
+    }
+
+    #[test]
+    fn test_sessions_context_looks_through_help_overlay() {
+        let mut state = AppState::new(vec![], None);
+        state.apply_transition(&ModeTransition::Sessions);
+        state.apply_transition(&ModeTransition::OpenHelp {
+            overlay: HelpOverlayState {
+                list: SearchableList::new(0),
+                rows: Vec::new(),
+            },
+        });
+
+        assert!(state.is_help_open());
+        assert!(state.is_sessions_context());
+        assert!(!state.is_branch_select_context());
+    }
+
+    #[test]
+    fn test_branch_select_context_looks_through_help_overlay() {
+        let mut state = AppState::new(vec![], None);
+        state.apply_transition(&ModeTransition::BranchSelect);
+        state.apply_transition(&ModeTransition::OpenHelp {
+            overlay: HelpOverlayState {
+                list: SearchableList::new(0),
+                rows: Vec::new(),
+            },
+        });
+
+        assert!(state.is_help_open());
+        assert!(state.is_branch_select_context());
+        assert!(!state.is_sessions_context());
+    }
+
+    #[test]
+    fn test_sorted_unique_agent_states_priority_order() {
+        use crate::agent::{AgentKind, AgentState, AgentStatus};
+
+        let statuses = vec![
+            AgentStatus {
+                kind: AgentKind::ClaudeCode,
+                state: AgentState::Running,
+            },
+            AgentStatus {
+                kind: AgentKind::Codex,
+                state: AgentState::Waiting,
+            },
+            AgentStatus {
+                kind: AgentKind::Codex,
+                state: AgentState::Idle,
+            },
+            AgentStatus {
+                kind: AgentKind::Codex,
+                state: AgentState::Waiting,
+            },
+        ];
+
+        let states = sorted_unique_agent_states(&statuses);
+        assert_eq!(
+            states,
+            vec![AgentState::Waiting, AgentState::Idle, AgentState::Running]
+        );
+    }
+
+    #[test]
+    fn test_normalized_agent_statuses_are_sorted_and_deduped() {
+        use crate::agent::{AgentKind, AgentState, AgentStatus};
+
+        let statuses = vec![
+            AgentStatus {
+                kind: AgentKind::Codex,
+                state: AgentState::Idle,
+            },
+            AgentStatus {
+                kind: AgentKind::ClaudeCode,
+                state: AgentState::Waiting,
+            },
+            AgentStatus {
+                kind: AgentKind::Codex,
+                state: AgentState::Idle,
+            },
+        ];
+
+        assert_eq!(
+            normalized_agent_statuses(&statuses),
+            vec![
+                AgentStatus {
+                    kind: AgentKind::ClaudeCode,
+                    state: AgentState::Waiting,
+                },
+                AgentStatus {
+                    kind: AgentKind::Codex,
+                    state: AgentState::Idle,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn test_cmp_by_agent_priority_then_oldest_activity() {
+        use crate::agent::{AgentKind, AgentState, AgentStatus};
+
+        let waiting = vec![AgentStatus {
+            kind: AgentKind::ClaudeCode,
+            state: AgentState::Waiting,
+        }];
+        let idle = vec![AgentStatus {
+            kind: AgentKind::ClaudeCode,
+            state: AgentState::Idle,
+        }];
+
+        assert!(
+            cmp_by_agent_priority_then_oldest_activity(&waiting, 200, &idle, 100).is_lt(),
+            "waiting should outrank idle"
+        );
+        assert!(
+            cmp_by_agent_priority_then_oldest_activity(&idle, 100, &idle, 200).is_lt(),
+            "older activity should sort first within the same priority"
+        );
     }
 }

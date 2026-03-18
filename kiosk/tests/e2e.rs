@@ -768,6 +768,129 @@ layout = 'h(shell, "sleep 30")'
 }
 
 #[test]
+fn test_e2e_nested_layout_creates_three_panes() {
+    let env = TestEnv::new("nested-layout");
+    let search_dir = env.search_dir();
+    let session_name = "nested-repo--feat-nested-test";
+    cleanup_session(&env.tmux_socket, session_name);
+
+    let repo = search_dir.join("nested-repo");
+    fs::create_dir_all(&repo).unwrap();
+    init_test_repo(&repo);
+
+    let extra = r#"
+[session]
+layout = 'h(v(shell, "sleep 30"), "sleep 30")'
+"#;
+    env.write_config_with_extra(&search_dir, extra);
+    env.launch_kiosk();
+
+    // Enter branch picker, type a new branch name, and create it.
+    env.send_special("Tab");
+    wait_for_screen(&env, 2500, |s| s.contains("select branch"));
+    env.send("feat/nested-test");
+    wait_ms(300);
+    env.send_special("C-o");
+    wait_ms(400);
+    env.send_special("Enter");
+
+    assert!(
+        wait_for_tmux_session(Some(&env.tmux_socket), session_name, 5000),
+        "tmux session '{session_name}' should exist"
+    );
+
+    let output = Command::new("tmux")
+        .args([
+            "-L",
+            &env.tmux_socket,
+            "list-panes",
+            "-t",
+            session_name,
+            "-F",
+            "#{pane_id}",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "list-panes should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let pane_ids: Vec<String> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect();
+    assert_eq!(
+        pane_ids.len(),
+        3,
+        "Expected 3 panes for nested layout, got: {pane_ids:?}",
+    );
+
+    // Verify layout: left column has two stacked panes, right column has one full-height pane.
+    // h(v(shell, ...), ...) → pane at (0,0), pane at (0,>0), pane at (>0,0)
+    let positions_output = Command::new("tmux")
+        .args([
+            "-L",
+            &env.tmux_socket,
+            "list-panes",
+            "-t",
+            session_name,
+            "-F",
+            "#{pane_left} #{pane_top}",
+        ])
+        .output()
+        .unwrap();
+    let positions: Vec<(usize, usize)> = String::from_utf8_lossy(&positions_output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.split_whitespace();
+            let left = parts.next()?.parse().ok()?;
+            let top = parts.next()?.parse().ok()?;
+            Some((left, top))
+        })
+        .collect();
+
+    assert!(
+        positions.iter().any(|&(l, t)| l == 0 && t == 0),
+        "Expected a pane at top-left (0,0), got: {positions:?}"
+    );
+    assert!(
+        positions.iter().any(|&(l, t)| l == 0 && t > 0),
+        "Expected a pane in the bottom-left (left=0, top>0), got: {positions:?}"
+    );
+    assert!(
+        positions.iter().any(|&(l, t)| l > 0 && t == 0),
+        "Expected a pane on the right (left>0, top=0), got: {positions:?}"
+    );
+
+    // Verify two panes are running sleep (the v-split bottom and the right pane).
+    let pane_commands_output = Command::new("tmux")
+        .args([
+            "-L",
+            &env.tmux_socket,
+            "list-panes",
+            "-t",
+            session_name,
+            "-F",
+            "#{pane_current_command}",
+        ])
+        .output()
+        .unwrap();
+    let pane_commands = String::from_utf8_lossy(&pane_commands_output.stdout).to_string();
+    let sleep_count = pane_commands
+        .lines()
+        .filter(|line| *line == "sleep" || *line == "coreutils")
+        .count();
+    assert_eq!(
+        sleep_count, 2,
+        "Expected 2 panes running sleep for nested layout, commands were: {pane_commands}"
+    );
+
+    cleanup_session(&env.tmux_socket, session_name);
+}
+
+#[test]
 fn test_e2e_ctrl_n_new_branch() {
     let env = TestEnv::new("ctrl-n-new-branch");
     let search_dir = env.search_dir();

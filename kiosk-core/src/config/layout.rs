@@ -243,6 +243,11 @@ fn parse_split(
         match token {
             Token::Comma => {
                 pos += 1;
+                // Allow trailing comma before closing paren
+                if tokens.get(pos) == Some(&Token::RParen) {
+                    pos += 1;
+                    break;
+                }
             }
             Token::RParen => {
                 pos += 1;
@@ -258,10 +263,13 @@ fn parse_split(
         return Err(LayoutParseError::SingleChild);
     }
 
-    Ok((Layout::Split {
-        direction,
-        children,
-    }, pos))
+    Ok((
+        Layout::Split {
+            direction,
+            children,
+        },
+        pos,
+    ))
 }
 
 #[cfg(test)]
@@ -295,10 +303,7 @@ mod tests {
             parse_layout("h(\"hx\", shell)").unwrap(),
             Layout::Split {
                 direction: Direction::Horizontal,
-                children: vec![
-                    Layout::Pane(Some("hx".to_string())),
-                    Layout::Pane(None),
-                ],
+                children: vec![Layout::Pane(Some("hx".to_string())), Layout::Pane(None),],
             }
         );
     }
@@ -309,10 +314,7 @@ mod tests {
             parse_layout("v(shell, \"claude\")").unwrap(),
             Layout::Split {
                 direction: Direction::Vertical,
-                children: vec![
-                    Layout::Pane(None),
-                    Layout::Pane(Some("claude".to_string())),
-                ],
+                children: vec![Layout::Pane(None), Layout::Pane(Some("claude".to_string())),],
             }
         );
     }
@@ -395,10 +397,7 @@ mod tests {
     fn parse_whitespace_variations() {
         let expected = Layout::Split {
             direction: Direction::Horizontal,
-            children: vec![
-                Layout::Pane(Some("hx".to_string())),
-                Layout::Pane(None),
-            ],
+            children: vec![Layout::Pane(Some("hx".to_string())), Layout::Pane(None)],
         };
         assert_eq!(parse_layout("h(\"hx\",shell)").unwrap(), expected);
         assert_eq!(parse_layout("  h( \"hx\" , shell )  ").unwrap(), expected);
@@ -437,10 +436,7 @@ mod tests {
 
     #[test]
     fn error_single_child() {
-        assert_eq!(
-            parse_layout("h(shell)"),
-            Err(LayoutParseError::SingleChild)
-        );
+        assert_eq!(parse_layout("h(shell)"), Err(LayoutParseError::SingleChild));
     }
 
     #[test]
@@ -464,6 +460,30 @@ mod tests {
         assert_eq!(
             parse_layout("h(shell, shell"),
             Err(LayoutParseError::UnexpectedEnd)
+        );
+    }
+
+    #[test]
+    fn parse_trailing_comma() {
+        let expected = parse_layout("h(\"hx\", shell)").unwrap();
+        assert_eq!(parse_layout("h(\"hx\", shell,)").unwrap(), expected);
+    }
+
+    #[test]
+    fn parse_trailing_comma_three_children() {
+        let expected = parse_layout("h(\"hx\", shell, \"claude\")").unwrap();
+        assert_eq!(
+            parse_layout("h(\"hx\", shell, \"claude\",)").unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn parse_trailing_comma_nested() {
+        let expected = parse_layout("h(v(shell, \"claude\"), \"hx\")").unwrap();
+        assert_eq!(
+            parse_layout("h(v(shell, \"claude\",), \"hx\",)").unwrap(),
+            expected
         );
     }
 

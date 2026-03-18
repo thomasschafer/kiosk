@@ -487,8 +487,7 @@ fn run_tui(
         s.cwd_worktree_path = cwd_worktree_path;
         s
     } else {
-        let mut s =
-            AppState::new_loading("Discovering repos...", config.session.layout.clone());
+        let mut s = AppState::new_loading("Discovering repos...", config.session.layout.clone());
         s.current_repo_path = current_repo_path;
         s.cwd_worktree_path = cwd_worktree_path;
         s

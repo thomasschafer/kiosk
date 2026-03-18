@@ -181,10 +181,10 @@ impl TmuxProvider for CliTmuxProvider {
 
         if let Some(layout) = layout {
             let initial_pane_id = run_tmux(&[
-                "list-panes",
+                "display-message",
+                "-p",
                 "-t",
-                &format!("={name}"),
-                "-F",
+                &format!("={name}:0.0"),
                 "#{pane_id}",
             ])?;
             apply_layout(&initial_pane_id, layout, &dir_str)?;

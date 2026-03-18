@@ -449,15 +449,15 @@ mod tests {
     #[test]
     fn generated_docs_omit_none_default() {
         let docs = generate_docs();
-        // split_command is Option<String> with None default — should not show a default
-        let split_cmd_section = docs
-            .split("#### `split_command`")
+        // layout is Option<Layout> with None default — should not show a default
+        let layout_section = docs
+            .split("#### `layout`")
             .nth(1)
             .and_then(|rest| rest.split("###").next())
             .unwrap();
         assert!(
-            !split_cmd_section.contains("Default:"),
-            "split_command should not show a default, found:\n{split_cmd_section}"
+            !layout_section.contains("Default:"),
+            "layout should not show a default, found:\n{layout_section}"
         );
     }
 }

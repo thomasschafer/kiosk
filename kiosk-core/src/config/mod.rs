@@ -1,4 +1,5 @@
 pub mod keys;
+pub mod layout;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -61,7 +62,7 @@ pub struct Config {
     /// ```
     pub search_dirs: Vec<SearchDirEntry>,
 
-    /// Layout when creating a new tmux session.
+    /// Pane layout when creating a new tmux session.
     #[serde(default)]
     pub session: SessionConfig,
 
@@ -152,13 +153,15 @@ impl AgentLabelsConfig {
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 #[serde(deny_unknown_fields)]
 pub struct SessionConfig {
-    /// Command to run in a split pane when creating a new session. For example, to open
-    /// Helix in a vertical split:
+    /// Pane layout when creating a new session. Uses a DSL with `h()` for horizontal
+    /// splits, `v()` for vertical splits, quoted strings for commands, and `shell` for
+    /// a plain shell. For example:
     /// ```toml
     /// [session]
-    /// split_command = "hx"
+    /// layout = 'h(v(shell, "claude"), "hx")'
     /// ```
-    pub split_command: Option<String>,
+    #[serde(default, deserialize_with = "layout::deserialize_layout")]
+    pub layout: Option<layout::Layout>,
 }
 
 /// Agent status color configuration for TUI badges.
@@ -492,7 +495,7 @@ mod tests {
         assert!(
             matches!(&config.search_dirs[0], SearchDirEntry::Simple(s) if s == "~/Development")
         );
-        assert!(config.session.split_command.is_none());
+        assert!(config.session.layout.is_none());
     }
 
     #[test]
@@ -502,7 +505,7 @@ mod tests {
 search_dirs = ["~/Development", "~/Work"]
 
 [session]
-split_command = "hx"
+layout = 'h(v(shell, "claude"), "hx")'
 "#,
         )
         .unwrap();
@@ -511,7 +514,22 @@ split_command = "hx"
             matches!(&config.search_dirs[0], SearchDirEntry::Simple(s) if s == "~/Development")
         );
         assert!(matches!(&config.search_dirs[1], SearchDirEntry::Simple(s) if s == "~/Work"));
-        assert_eq!(config.session.split_command.as_deref(), Some("hx"));
+        assert_eq!(
+            config.session.layout,
+            Some(layout::Layout::Split {
+                direction: layout::Direction::Horizontal,
+                children: vec![
+                    layout::Layout::Split {
+                        direction: layout::Direction::Vertical,
+                        children: vec![
+                            layout::Layout::Pane(None),
+                            layout::Layout::Pane(Some("claude".to_string())),
+                        ],
+                    },
+                    layout::Layout::Pane(Some("hx".to_string())),
+                ],
+            })
+        );
     }
 
     #[test]

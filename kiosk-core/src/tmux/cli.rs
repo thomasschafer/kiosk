@@ -1,4 +1,5 @@
 use super::provider::{PaneInfo, SessionPaneData, TmuxProvider};
+use crate::config::layout::{Direction, Layout};
 use anyhow::{Context, Result, bail};
 use std::collections::HashMap;
 use std::{path::Path, process::Command};
@@ -16,32 +17,67 @@ fn tmux_command() -> Command {
     cmd
 }
 
-fn create_session_commands(
-    name: &str,
-    dir_str: &str,
-    split_command: Option<&str>,
-) -> Vec<Vec<String>> {
-    let mut commands = vec![vec![
-        "new-session".to_string(),
-        "-ds".to_string(),
-        name.to_string(),
-        "-c".to_string(),
-        dir_str.to_string(),
-    ]];
-
-    if let Some(cmd) = split_command.filter(|cmd| !cmd.trim().is_empty()) {
-        commands.push(vec![
-            "split-window".to_string(),
-            "-h".to_string(),
-            "-t".to_string(),
-            format!("={name}:0"),
-            "-c".to_string(),
-            dir_str.to_string(),
-            cmd.to_string(),
-        ]);
+/// Run a tmux command and return its stdout, or an error on failure.
+fn run_tmux(args: &[&str]) -> Result<String> {
+    let output = tmux_command()
+        .args(args)
+        .output()
+        .with_context(|| format!("failed to execute tmux {}", args.join(" ")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("tmux {} failed: {}", args.join(" "), stderr.trim());
     }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
 
-    commands
+/// Recursively apply a layout to a tmux pane, splitting as needed and capturing
+/// pane IDs from tmux to target subsequent splits correctly.
+fn apply_layout(pane_id: &str, layout: &Layout, dir_str: &str) -> Result<()> {
+    match layout {
+        Layout::Pane(None) => Ok(()),
+        Layout::Pane(Some(cmd)) => {
+            run_tmux(&["send-keys", "-t", pane_id, "-l", cmd])?;
+            run_tmux(&["send-keys", "-t", pane_id, "Enter"])?;
+            Ok(())
+        }
+        Layout::Split {
+            direction,
+            children,
+        } => {
+            let flag = match direction {
+                Direction::Horizontal => "-h",
+                Direction::Vertical => "-v",
+            };
+
+            // First child inherits the current pane. Remaining children each get
+            // a new pane created by splitting the last-created pane, so they
+            // appear in natural order (left→right / top→bottom).
+            let mut pane_ids = vec![pane_id.to_string()];
+            let mut split_target = pane_id.to_string();
+
+            for _ in &children[1..] {
+                let new_id = run_tmux(&[
+                    "split-window",
+                    flag,
+                    "-t",
+                    &split_target,
+                    "-c",
+                    dir_str,
+                    "-P",
+                    "-F",
+                    "#{pane_id}",
+                ])?;
+                pane_ids.push(new_id.clone());
+                split_target = new_id;
+            }
+
+            for (child, child_pane_id) in children.iter().zip(pane_ids.iter()) {
+                apply_layout(child_pane_id, child, dir_str)?;
+            }
+
+            Ok(())
+        }
+    }
 }
 
 impl TmuxProvider for CliTmuxProvider {
@@ -138,18 +174,20 @@ impl TmuxProvider for CliTmuxProvider {
             .is_ok_and(|o| o.status.success())
     }
 
-    fn create_session(&self, name: &str, dir: &Path, split_command: Option<&str>) -> Result<()> {
+    fn create_session(&self, name: &str, dir: &Path, layout: Option<&Layout>) -> Result<()> {
         let dir_str = dir.to_string_lossy();
 
-        for args in create_session_commands(name, &dir_str, split_command) {
-            let output = tmux_command()
-                .args(&args)
-                .output()
-                .with_context(|| format!("failed to execute tmux {}", args.join(" ")))?;
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                bail!("tmux {} failed: {}", args.join(" "), stderr.trim());
-            }
+        run_tmux(&["new-session", "-ds", name, "-c", &dir_str])?;
+
+        if let Some(layout) = layout {
+            let initial_pane_id = run_tmux(&[
+                "list-panes",
+                "-t",
+                &format!("={name}"),
+                "-F",
+                "#{pane_id}",
+            ])?;
+            apply_layout(&initial_pane_id, layout, &dir_str)?;
         }
 
         Ok(())
@@ -482,42 +520,7 @@ fn parse_pane_line(line: &str) -> Option<PaneInfo> {
 
 #[cfg(test)]
 mod tests {
-    use super::{create_session_commands, parse_pane_line};
-
-    #[test]
-    fn test_create_session_commands_with_split_command_uses_split_window_command_arg() {
-        let commands = create_session_commands("demo", "/tmp/demo", Some("hx"));
-        assert_eq!(commands.len(), 2);
-
-        assert_eq!(
-            commands[0],
-            vec![
-                "new-session".to_string(),
-                "-ds".to_string(),
-                "demo".to_string(),
-                "-c".to_string(),
-                "/tmp/demo".to_string(),
-            ]
-        );
-        assert_eq!(
-            commands[1],
-            vec![
-                "split-window".to_string(),
-                "-h".to_string(),
-                "-t".to_string(),
-                "=demo:0".to_string(),
-                "-c".to_string(),
-                "/tmp/demo".to_string(),
-                "hx".to_string(),
-            ]
-        );
-    }
-
-    #[test]
-    fn test_create_session_commands_without_split_command() {
-        let commands = create_session_commands("demo", "/tmp/demo", None);
-        assert_eq!(commands.len(), 1);
-    }
+    use super::parse_pane_line;
 
     #[test]
     fn test_parse_pane_line_basic() {

@@ -275,7 +275,7 @@ pub(super) fn handle_open_branch(
                     return Some(OpenAction::Open {
                         path: Some(wt_path.clone()),
                         session_name,
-                        split_command: state.split_command.clone(),
+                        layout: state.layout.clone(),
                     });
                 }
                 let is_remote = branch.remote.is_some();

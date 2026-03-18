@@ -218,15 +218,16 @@ search_dirs = ["~/Development", { path = "~/Work", depth = 2 }]
 
 ### `[session]` section
 
-Layout when creating a new tmux session.
+Pane layout when creating a new tmux session.
 
-#### `split_command`
+#### `layout`
 
-Command to run in a split pane when creating a new session. For example, to open
-Helix in a vertical split:
+Pane layout when creating a new session. Uses a DSL with `h()` for horizontal
+splits, `v()` for vertical splits, quoted strings for commands, and `shell` for
+a plain shell. For example:
 ```toml
 [session]
-split_command = "hx"
+layout = 'h(v(shell, "claude"), "hx")'
 ```
 
 ### `[theme]` section

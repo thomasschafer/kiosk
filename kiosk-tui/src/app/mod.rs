@@ -52,7 +52,7 @@ pub enum OpenAction {
     Open {
         path: Option<PathBuf>,
         session_name: String,
-        split_command: Option<String>,
+        layout: Option<kiosk_core::config::layout::Layout>,
     },
     /// Setup wizard completed — dirs are stored in `AppState` setup state
     SetupComplete,
@@ -758,7 +758,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             return Some(OpenAction::Open {
                 path: Some(path),
                 session_name,
-                split_command: state.split_command.clone(),
+                layout: state.layout.clone(),
             });
         }
         AppEvent::WorktreeRemoved {
@@ -1292,7 +1292,7 @@ fn process_action<T: TmuxProvider + ?Sized + 'static>(
                 return Some(OpenAction::Open {
                     path: Some(repo.path.clone()),
                     session_name,
-                    split_command: state.split_command.clone(),
+                    layout: state.layout.clone(),
                 });
             }
         }
@@ -1397,7 +1397,7 @@ fn process_action<T: TmuxProvider + ?Sized + 'static>(
                 return Some(OpenAction::Open {
                     path: None,
                     session_name,
-                    split_command: None,
+                    layout: None,
                 });
             }
         }
@@ -2164,7 +2164,8 @@ mod tests {
     #[test]
     fn test_open_repo_returns_repo_path() {
         let repos = vec![make_repo("alpha"), make_repo("beta")];
-        let mut state = AppState::new(repos, Some("hx".into()));
+        let layout = kiosk_core::config::layout::parse_layout("\"hx\"").unwrap();
+        let mut state = AppState::new(repos, Some(layout.clone()));
         state.repo_list.selected = Some(1);
 
         let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
@@ -2180,11 +2181,11 @@ mod tests {
             OpenAction::Open {
                 path,
                 session_name,
-                split_command,
+                layout: result_layout,
             } => {
                 assert_eq!(path, Some(PathBuf::from("/tmp/beta")));
                 assert_eq!(session_name, "beta");
-                assert_eq!(split_command.as_deref(), Some("hx"));
+                assert_eq!(result_layout, Some(layout));
             }
             OpenAction::Quit | OpenAction::SetupComplete => {
                 panic!("Expected OpenAction::Open")

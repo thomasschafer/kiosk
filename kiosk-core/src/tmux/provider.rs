@@ -1,3 +1,4 @@
+use crate::config::layout::Layout;
 use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,7 +41,7 @@ pub trait TmuxProvider: Send + Sync {
         &self,
         name: &str,
         dir: &Path,
-        split_command: Option<&str>,
+        layout: Option<&Layout>,
     ) -> anyhow::Result<()>;
     fn capture_pane(&self, session: &str, lines: usize) -> anyhow::Result<String>;
     /// Capture pane output for a specific pane.

@@ -3,6 +3,7 @@ use crate::{
     config::{
         AgentConfig, AgentLabelsConfig,
         keys::{Command, FlattenedKeybindingRow},
+        layout::Layout,
     },
     constants::{WORKTREE_DIR_DEDUP_MAX_ATTEMPTS, WORKTREE_DIR_NAME, WORKTREE_NAME_SEPARATOR},
     git::Repo,
@@ -1244,7 +1245,7 @@ pub struct AppState {
     pub branch_list: SearchableList,
     mode_context: ModeContextState,
 
-    pub split_command: Option<String>,
+    pub layout: Option<Layout>,
     mode: Mode,
     pub loading_branches: bool,
     pub fetching_remotes: bool,
@@ -1289,7 +1290,7 @@ impl AppState {
             branches: Vec::new(),
             branch_list: SearchableList::new(0),
             mode_context: ModeContextState::None,
-            split_command: None,
+            layout: None,
             mode,
             loading_branches: false,
             fetching_remotes: false,
@@ -1313,22 +1314,22 @@ impl AppState {
         }
     }
 
-    pub fn new(repos: Vec<Repo>, split_command: Option<String>) -> Self {
+    pub fn new(repos: Vec<Repo>, layout: Option<Layout>) -> Self {
         let repo_list = SearchableList::new(repos.len());
         let seen_repo_paths: HashSet<PathBuf> = repos.iter().map(|r| r.path.clone()).collect();
         Self {
             repos,
             repo_list,
-            split_command,
+            layout,
             seen_repo_paths,
             mode: Mode::RepoSelect,
             ..Self::base(Mode::RepoSelect)
         }
     }
 
-    pub fn new_loading(loading_message: &str, split_command: Option<String>) -> Self {
+    pub fn new_loading(loading_message: &str, layout: Option<Layout>) -> Self {
         Self {
-            split_command,
+            layout,
             ..Self::base(Mode::Loading(loading_message.to_string()))
         }
     }

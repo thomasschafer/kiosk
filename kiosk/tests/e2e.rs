@@ -675,7 +675,7 @@ fn test_e2e_worktree_creation() {
 }
 
 #[test]
-fn test_e2e_split_command_creates_split_pane_for_new_branch_flow() {
+fn test_e2e_layout_creates_split_pane_for_new_branch_flow() {
     let env = TestEnv::new("split-pane-new-branch");
     let search_dir = env.search_dir();
     let session_name = "split-repo--feat-split-test";
@@ -687,7 +687,7 @@ fn test_e2e_split_command_creates_split_pane_for_new_branch_flow() {
 
     let extra = r#"
 [session]
-split_command = "sleep 30"
+layout = 'h(shell, "sleep 30")'
 "#;
     env.write_config_with_extra(&search_dir, extra);
     env.launch_kiosk();
@@ -731,7 +731,7 @@ split_command = "sleep 30"
     assert_eq!(
         pane_ids.len(),
         2,
-        "Expected 2 panes when split_command is set, got: {pane_ids:?}",
+        "Expected 2 panes when layout is set, got: {pane_ids:?}",
     );
 
     let mut captured = String::new();

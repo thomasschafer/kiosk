@@ -229,13 +229,8 @@ impl TmuxProvider for CliTmuxProvider {
         run_tmux(&["new-session", "-ds", name, "-c", &dir_str])?;
 
         if let Some(layout) = layout {
-            let initial_pane_id = run_tmux(&[
-                "list-panes",
-                "-t",
-                &format!("={name}"),
-                "-F",
-                "#{pane_id}",
-            ])?;
+            let initial_pane_id =
+                run_tmux(&["list-panes", "-t", &format!("={name}"), "-F", "#{pane_id}"])?;
             apply_layout(&initial_pane_id, layout, &dir_str)?;
         }
 

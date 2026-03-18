@@ -258,10 +258,13 @@ fn parse_split(
         return Err(LayoutParseError::SingleChild);
     }
 
-    Ok((Layout::Split {
-        direction,
-        children,
-    }, pos))
+    Ok((
+        Layout::Split {
+            direction,
+            children,
+        },
+        pos,
+    ))
 }
 
 #[cfg(test)]
@@ -295,10 +298,7 @@ mod tests {
             parse_layout("h(\"hx\", shell)").unwrap(),
             Layout::Split {
                 direction: Direction::Horizontal,
-                children: vec![
-                    Layout::Pane(Some("hx".to_string())),
-                    Layout::Pane(None),
-                ],
+                children: vec![Layout::Pane(Some("hx".to_string())), Layout::Pane(None),],
             }
         );
     }
@@ -309,10 +309,7 @@ mod tests {
             parse_layout("v(shell, \"claude\")").unwrap(),
             Layout::Split {
                 direction: Direction::Vertical,
-                children: vec![
-                    Layout::Pane(None),
-                    Layout::Pane(Some("claude".to_string())),
-                ],
+                children: vec![Layout::Pane(None), Layout::Pane(Some("claude".to_string())),],
             }
         );
     }
@@ -395,10 +392,7 @@ mod tests {
     fn parse_whitespace_variations() {
         let expected = Layout::Split {
             direction: Direction::Horizontal,
-            children: vec![
-                Layout::Pane(Some("hx".to_string())),
-                Layout::Pane(None),
-            ],
+            children: vec![Layout::Pane(Some("hx".to_string())), Layout::Pane(None)],
         };
         assert_eq!(parse_layout("h(\"hx\",shell)").unwrap(), expected);
         assert_eq!(parse_layout("  h( \"hx\" , shell )  ").unwrap(), expected);
@@ -437,10 +431,7 @@ mod tests {
 
     #[test]
     fn error_single_child() {
-        assert_eq!(
-            parse_layout("h(shell)"),
-            Err(LayoutParseError::SingleChild)
-        );
+        assert_eq!(parse_layout("h(shell)"), Err(LayoutParseError::SingleChild));
     }
 
     #[test]

@@ -37,12 +37,8 @@ pub trait TmuxProvider: Send + Sync {
             .collect()
     }
     fn session_exists(&self, name: &str) -> bool;
-    fn create_session(
-        &self,
-        name: &str,
-        dir: &Path,
-        layout: Option<&Layout>,
-    ) -> anyhow::Result<()>;
+    fn create_session(&self, name: &str, dir: &Path, layout: Option<&Layout>)
+    -> anyhow::Result<()>;
     fn capture_pane(&self, session: &str, lines: usize) -> anyhow::Result<String>;
     /// Capture pane output for a specific pane.
     fn capture_pane_with_pane(

@@ -197,10 +197,14 @@ pub(super) fn handle_delete_worktree(state: &mut AppState) {
                 return;
             }
         }
+        let is_main_worktree = state
+            .selected_repo_idx
+            .and_then(|idx| state.repos.get(idx))
+            .is_some_and(|repo| branch.worktree_path.as_ref() == Some(&repo.path));
         if branch.worktree_path.is_none() {
             state.set_error("No worktree to delete");
-        } else if branch.is_current {
-            state.set_error("Cannot delete the current branch's worktree");
+        } else if is_main_worktree {
+            state.set_error("Cannot delete the main worktree");
         } else {
             apply_transition!(
                 state,
@@ -229,14 +233,10 @@ pub(super) fn handle_confirm_delete<T: TmuxProvider + ?Sized>(
         if let Some(branch) = state.branches.iter().find(|b| b.name == branch_name)
             && let Some(worktree_path) = &branch.worktree_path
         {
-            // Kill the tmux session first if it exists
-            if has_session && let Some(repo_idx) = state.selected_repo_idx {
-                let repo = &state.repos[repo_idx];
-                let session_name = repo.tmux_session_name(worktree_path);
-                tmux.kill_session(&session_name);
-            }
-
             let worktree_path = worktree_path.clone();
+
+            // Persist pending delete before killing the session: if killing the session
+            // terminates kiosk itself, the next launch will reconcile and complete the removal.
             if let Some(repo_idx) = state.selected_repo_idx {
                 let repo_path = state.repos[repo_idx].path.clone();
                 let pending = PendingWorktreeDelete::new(
@@ -249,6 +249,13 @@ pub(super) fn handle_confirm_delete<T: TmuxProvider + ?Sized>(
                     state.set_error(&format!("Failed to persist pending deletes: {e}"));
                 }
             }
+
+            if has_session && let Some(repo_idx) = state.selected_repo_idx {
+                let repo = &state.repos[repo_idx];
+                let session_name = repo.tmux_session_name(&worktree_path);
+                tmux.kill_session(&session_name);
+            }
+
             apply_transition!(state, ModeTransition::BranchSelect);
             spawn_worktree_removal(git, sender, worktree_path, branch_name);
         }

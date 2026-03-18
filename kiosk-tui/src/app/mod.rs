@@ -2298,10 +2298,12 @@ mod tests {
     }
 
     #[test]
-    fn test_delete_worktree_current_branch_shows_error() {
+    fn test_delete_main_worktree_shows_error() {
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
+        state.selected_repo_idx = Some(0);
         apply_transition!(state, ModeTransition::BranchSelect);
+        // Worktree path matches the repo path — this is the main worktree
         state.branches = vec![BranchEntry {
             name: "main".to_string(),
             worktree_path: Some(PathBuf::from("/tmp/alpha")),
@@ -2326,7 +2328,46 @@ mod tests {
 
         assert_eq!(state.mode(), &Mode::BranchSelect);
         assert!(state.error.is_some());
-        assert!(state.error.unwrap().contains("current branch"));
+        assert!(state.error.unwrap().contains("main worktree"));
+    }
+
+    #[test]
+    fn test_delete_current_linked_worktree_shows_confirm() {
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+        state.selected_repo_idx = Some(0);
+        apply_transition!(state, ModeTransition::BranchSelect);
+        // Worktree path differs from repo path — this is a kiosk-managed linked worktree
+        state.branches = vec![BranchEntry {
+            name: "feat/foo".to_string(),
+            worktree_path: Some(PathBuf::from("/tmp/.kiosk_worktrees/alpha--feat-foo")),
+            has_session: false,
+            is_current: true,
+            remote: None,
+            is_default: false,
+            session_activity_ts: None,
+            agent_statuses: Vec::new(),
+        }];
+        state.branch_list.filtered = vec![(0, 0)];
+        state.branch_list.selected = Some(0);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let keys = KeysConfig::default();
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+        let ctx = default_ctx(&git, &tmux, &keys, &matcher, &sender);
+
+        process_action(Action::DeleteWorktree, &mut state, &ctx);
+
+        assert_eq!(
+            state.mode(),
+            &Mode::ConfirmWorktreeDelete {
+                branch_name: "feat/foo".to_string(),
+                has_session: false,
+            }
+        );
+        assert!(state.error.is_none());
     }
 
     #[test]

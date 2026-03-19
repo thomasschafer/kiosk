@@ -1102,8 +1102,8 @@ mod tests {
     ///
     /// Real scenario: a Cursor Agent runs in a zsh pane, exits, and leaves its
     /// banner text ("Cursor Agent v...") visible in the scrollback. Later, a
-    /// tmux popup opens in the same session (updating session_activity to "now").
-    /// Without the fix, content-fallback detection finds CursorAgent from the
+    /// tmux popup opens in the same session (updating `session_activity` to "now").
+    /// Without the fix, content-fallback detection finds `CursorAgent` from the
     /// banner, state detection returns Unknown (no live indicators), and the
     /// activity-recency inference incorrectly upgrades Unknown → Running — making
     /// the exited agent appear to still be running.

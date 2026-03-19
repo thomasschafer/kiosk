@@ -204,10 +204,10 @@ pub(super) fn handle_delete_worktree(state: &mut AppState) {
                 .is_some_and(|repo| {
                     // Canonicalize before comparing so symlinks or non-canonical path
                     // components don't cause a false-negative and allow main-worktree deletion.
-                    let canonical_wt = std::fs::canonicalize(wt_path)
-                        .unwrap_or_else(|_| wt_path.clone());
-                    let canonical_repo = std::fs::canonicalize(&repo.path)
-                        .unwrap_or_else(|_| repo.path.clone());
+                    let canonical_wt =
+                        std::fs::canonicalize(wt_path).unwrap_or_else(|_| wt_path.clone());
+                    let canonical_repo =
+                        std::fs::canonicalize(&repo.path).unwrap_or_else(|_| repo.path.clone());
                     canonical_wt == canonical_repo
                 })
         });

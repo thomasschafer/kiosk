@@ -35,7 +35,10 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Padding, Paragraph},
 };
-use spawn::{spawn_agent_status_poller, spawn_repo_discovery, spawn_sessions_discovery};
+use spawn::{
+    spawn_agent_status_poller, spawn_repo_discovery, spawn_sessions_discovery,
+    spawn_worktree_removal,
+};
 use std::{
     fmt::Write as _,
     path::PathBuf,
@@ -815,9 +818,18 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             reconcile_branch_runtime_state(state);
             state.branch_list.reset(state.branches.len());
             state.loading_branches = false;
-            if state.reconcile_pending_worktree_deletes()
-                && let Err(e) = save_pending_worktree_deletes(&state.pending_worktree_deletes)
-            {
+            state.reconcile_pending_worktree_deletes();
+            // Spawn removal for any surviving pending deletes — this completes worktree
+            // deletions that were interrupted (e.g. kiosk killed when deleting its own session).
+            for pending in &state.pending_worktree_deletes {
+                spawn_worktree_removal(
+                    git,
+                    sender,
+                    pending.worktree_path.clone(),
+                    pending.branch_name.clone(),
+                );
+            }
+            if let Err(e) = save_pending_worktree_deletes(&state.pending_worktree_deletes) {
                 state.set_error(&format!("Failed to persist pending deletes: {e}"));
             }
             apply_transition!(state, ModeTransition::BranchSelect);
@@ -2613,6 +2625,70 @@ mod tests {
                 .error
                 .as_deref()
                 .is_some_and(|msg| msg.contains("Failed to remove"))
+        );
+    }
+
+    #[test]
+    fn test_branches_loaded_spawns_removal_for_pending_deletes() {
+        // Simulates crash recovery: kiosk was killed before completing a worktree removal,
+        // so on next branch load the pending delete should trigger spawn_worktree_removal.
+        let mut repos = vec![make_repo("alpha")];
+        repos[0].worktrees.push(Worktree {
+            path: PathBuf::from("/tmp/.kiosk_worktrees/alpha--dev"),
+            branch: Some("dev".to_string()),
+            is_main: false,
+        });
+        let git = Arc::new(MockGitProvider {
+            branches: vec!["main".to_string(), "dev".to_string()],
+            worktrees: repos[0].worktrees.clone(),
+            ..Default::default()
+        });
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+
+        let mut state = AppState::new(repos, None);
+        state.selected_repo_idx = Some(0);
+        state.mark_pending_worktree_delete(kiosk_core::pending_delete::PendingWorktreeDelete::new(
+            PathBuf::from("/tmp/alpha"),
+            "dev".to_string(),
+            PathBuf::from("/tmp/.kiosk_worktrees/alpha--dev"),
+        ));
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let sender = EventSender {
+            tx,
+            cancel: Arc::new(AtomicBool::new(false)),
+        };
+
+        process_app_event(
+            AppEvent::BranchesLoaded {
+                branches: vec![BranchEntry {
+                    name: "dev".to_string(),
+                    worktree_path: Some(PathBuf::from("/tmp/.kiosk_worktrees/alpha--dev")),
+                    has_session: false,
+                    is_current: false,
+                    remote: None,
+                    is_default: false,
+                    session_activity_ts: None,
+                    agent_statuses: Vec::new(),
+                }],
+                worktrees: git.worktrees.clone(),
+                local_names: vec!["main".to_string(), "dev".to_string()],
+                session_activity: Default::default(),
+            },
+            &mut state,
+            &(git.clone() as Arc<dyn GitProvider>),
+            &tmux,
+            &sender,
+            &make_matcher(),
+        );
+
+        // Allow the spawned removal thread to run
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let calls = git.remove_worktree_calls.lock().unwrap();
+        assert_eq!(
+            calls.as_slice(),
+            &[PathBuf::from("/tmp/.kiosk_worktrees/alpha--dev")]
         );
     }
 

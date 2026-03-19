@@ -247,6 +247,7 @@ pub(super) fn handle_confirm_delete<T: TmuxProvider + ?Sized>(
                 state.mark_pending_worktree_delete(pending);
                 if let Err(e) = save_pending_worktree_deletes(&state.pending_worktree_deletes) {
                     state.set_error(&format!("Failed to persist pending deletes: {e}"));
+                    state.clear_pending_worktree_delete_by_path(&worktree_path);
                     return;
                 }
             }

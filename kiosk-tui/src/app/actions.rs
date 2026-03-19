@@ -197,10 +197,20 @@ pub(super) fn handle_delete_worktree(state: &mut AppState) {
                 return;
             }
         }
-        let is_main_worktree = state
-            .selected_repo_idx
-            .and_then(|idx| state.repos.get(idx))
-            .is_some_and(|repo| branch.worktree_path.as_ref() == Some(&repo.path));
+        let is_main_worktree = branch.worktree_path.as_ref().is_some_and(|wt_path| {
+            state
+                .selected_repo_idx
+                .and_then(|idx| state.repos.get(idx))
+                .is_some_and(|repo| {
+                    // Canonicalize before comparing so symlinks or non-canonical path
+                    // components don't cause a false-negative and allow main-worktree deletion.
+                    let canonical_wt = std::fs::canonicalize(wt_path)
+                        .unwrap_or_else(|_| wt_path.clone());
+                    let canonical_repo = std::fs::canonicalize(&repo.path)
+                        .unwrap_or_else(|_| repo.path.clone());
+                    canonical_wt == canonical_repo
+                })
+        });
         if branch.worktree_path.is_none() {
             state.set_error("No worktree to delete");
         } else if is_main_worktree {

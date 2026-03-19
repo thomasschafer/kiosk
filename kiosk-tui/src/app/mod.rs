@@ -2673,7 +2673,7 @@ mod tests {
                 }],
                 worktrees: git.worktrees.clone(),
                 local_names: vec!["main".to_string(), "dev".to_string()],
-                session_activity: Default::default(),
+                session_activity: std::collections::HashMap::default(),
             },
             &mut state,
             &(git.clone() as Arc<dyn GitProvider>),

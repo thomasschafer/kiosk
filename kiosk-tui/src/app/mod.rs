@@ -768,6 +768,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             branch_name: _,
             worktree_path,
         } => {
+            state.in_flight_worktree_removals.remove(&worktree_path);
             state.clear_pending_worktree_delete_by_path(&worktree_path);
             if let Err(e) = save_pending_worktree_deletes(&state.pending_worktree_deletes) {
                 state.set_error(&format!("Failed to persist pending deletes: {e}"));
@@ -784,6 +785,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             worktree_path,
             error,
         } => {
+            state.in_flight_worktree_removals.remove(&worktree_path);
             if let Some(repo) = state.selected_repo_idx.and_then(|idx| state.repos.get(idx)) {
                 state.clear_pending_worktree_delete_by_branch(&repo.path.clone(), &branch_name);
             } else {
@@ -819,9 +821,20 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             state.branch_list.reset(state.branches.len());
             state.loading_branches = false;
             state.reconcile_pending_worktree_deletes();
-            // Spawn removal for any surviving pending deletes — this completes worktree
-            // deletions that were interrupted (e.g. kiosk killed when deleting its own session).
+            // Spawn removal for any surviving pending deletes that aren't already in flight —
+            // this completes worktree deletions interrupted (e.g. kiosk killed when deleting
+            // its own session). The in-flight guard prevents duplicate spawning across
+            // successive BranchesLoaded events.
             for pending in &state.pending_worktree_deletes {
+                if state
+                    .in_flight_worktree_removals
+                    .contains(&pending.worktree_path)
+                {
+                    continue;
+                }
+                state
+                    .in_flight_worktree_removals
+                    .insert(pending.worktree_path.clone());
                 spawn_worktree_removal(
                     git,
                     sender,
@@ -2682,14 +2695,23 @@ mod tests {
             &make_matcher(),
         );
 
-        // Allow the spawned removal thread to run
-        std::thread::sleep(std::time::Duration::from_millis(100));
-
-        let calls = git.remove_worktree_calls.lock().unwrap();
-        assert_eq!(
-            calls.as_slice(),
-            &[PathBuf::from("/tmp/.kiosk_worktrees/alpha--dev")]
-        );
+        let expected_path = PathBuf::from("/tmp/.kiosk_worktrees/alpha--dev");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if git
+                .remove_worktree_calls
+                .lock()
+                .unwrap()
+                .contains(&expected_path)
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for remove_worktree to be called"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     #[test]

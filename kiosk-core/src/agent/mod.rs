@@ -249,6 +249,12 @@ fn detect_all_from_pane_data(
             // Skip this for Codex: Codex sessions often include non-agent pane
             // activity (editor/shell), and session-level activity can cause
             // false Running while Codex itself is idle.
+            //
+            // Skip this for content-fallback detections: when kind was inferred
+            // from stale transcript text in a shell pane, recent session activity
+            // (e.g. from opening a popup in the same session) must not upgrade
+            // an Unknown state to Running — that would report a previously-exited
+            // agent as currently running.
             let kind_source = kind_debug
                 .as_ref()
                 .map_or(KindSource::PaneCommand, |(_, source, _)| *source);
@@ -257,6 +263,7 @@ fn detect_all_from_pane_data(
                 && kind != AgentKind::Codex
                 && !content.trim().is_empty()
                 && kind_source != KindSource::PaneTitle
+                && !kind_from_content_fallback
             {
                 state = infer_state_from_activity_ts(data.session_activity);
                 if state == AgentState::Running {
@@ -1087,6 +1094,52 @@ mod tests {
             status.state,
             AgentState::Running,
             "Unknown + recent activity should infer Running"
+        );
+    }
+
+    /// Regression test: stale agent banner in a shell pane must not be reported
+    /// as Running when session activity is recent.
+    ///
+    /// Real scenario: a Cursor Agent runs in a zsh pane, exits, and leaves its
+    /// banner text ("Cursor Agent v...") visible in the scrollback. Later, a
+    /// tmux popup opens in the same session (updating session_activity to "now").
+    /// Without the fix, content-fallback detection finds CursorAgent from the
+    /// banner, state detection returns Unknown (no live indicators), and the
+    /// activity-recency inference incorrectly upgrades Unknown → Running — making
+    /// the exited agent appear to still be running.
+    #[test]
+    fn stale_content_fallback_unknown_not_upgraded_by_activity() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let mut tmux = MockTmuxProvider::default();
+        let session = "stale-cursor-banner";
+        tmux.pane_info.insert(
+            session.to_string(),
+            vec![PaneInfo {
+                pane_id: "%0".to_string(),
+                command: "zsh".to_string(),
+                pid: 99999, // No child processes — cursor agent has exited
+            }],
+        );
+        // Stale shell pane content: cursor agent banner visible in scrollback,
+        // but the agent has exited — only a shell prompt remains at the bottom.
+        tmux.pane_content.insert(
+            "%0".to_string(),
+            "  Cursor Agent v2026.02.27-e7d2ef6\n\
+             ~/Development/my-project · main\n\
+             0 | my-project (main) $ kiosk\n\
+             0 | my-project (main) $ "
+                .to_string(),
+        );
+        // Session activity is very recent (e.g. a popup just opened in this session)
+        tmux.session_activity_ts.insert(session.to_string(), now);
+
+        assert!(
+            detect_for_session(&tmux, session).is_none(),
+            "stale cursor agent banner + recent activity should not report a running agent"
         );
     }
 

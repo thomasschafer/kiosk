@@ -35,7 +35,10 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Padding, Paragraph},
 };
-use spawn::{spawn_agent_status_poller, spawn_repo_discovery, spawn_sessions_discovery};
+use spawn::{
+    spawn_agent_status_poller, spawn_repo_discovery, spawn_sessions_discovery,
+    spawn_worktree_removal,
+};
 use std::{
     fmt::Write as _,
     path::PathBuf,
@@ -765,6 +768,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             branch_name: _,
             worktree_path,
         } => {
+            state.in_flight_worktree_removals.remove(&worktree_path);
             state.clear_pending_worktree_delete_by_path(&worktree_path);
             if let Err(e) = save_pending_worktree_deletes(&state.pending_worktree_deletes) {
                 state.set_error(&format!("Failed to persist pending deletes: {e}"));
@@ -781,6 +785,7 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             worktree_path,
             error,
         } => {
+            state.in_flight_worktree_removals.remove(&worktree_path);
             if let Some(repo) = state.selected_repo_idx.and_then(|idx| state.repos.get(idx)) {
                 state.clear_pending_worktree_delete_by_branch(&repo.path.clone(), &branch_name);
             } else {
@@ -815,9 +820,29 @@ fn process_app_event<T: TmuxProvider + ?Sized + 'static>(
             reconcile_branch_runtime_state(state);
             state.branch_list.reset(state.branches.len());
             state.loading_branches = false;
-            if state.reconcile_pending_worktree_deletes()
-                && let Err(e) = save_pending_worktree_deletes(&state.pending_worktree_deletes)
-            {
+            state.reconcile_pending_worktree_deletes();
+            // Spawn removal for any surviving pending deletes that aren't already in flight —
+            // this completes worktree deletions interrupted (e.g. kiosk killed when deleting
+            // its own session). The in-flight guard prevents duplicate spawning across
+            // successive BranchesLoaded events.
+            for pending in &state.pending_worktree_deletes {
+                if state
+                    .in_flight_worktree_removals
+                    .contains(&pending.worktree_path)
+                {
+                    continue;
+                }
+                state
+                    .in_flight_worktree_removals
+                    .insert(pending.worktree_path.clone());
+                spawn_worktree_removal(
+                    git,
+                    sender,
+                    pending.worktree_path.clone(),
+                    pending.branch_name.clone(),
+                );
+            }
+            if let Err(e) = save_pending_worktree_deletes(&state.pending_worktree_deletes) {
                 state.set_error(&format!("Failed to persist pending deletes: {e}"));
             }
             apply_transition!(state, ModeTransition::BranchSelect);
@@ -2298,10 +2323,12 @@ mod tests {
     }
 
     #[test]
-    fn test_delete_worktree_current_branch_shows_error() {
+    fn test_delete_main_worktree_shows_error() {
         let repos = vec![make_repo("alpha")];
         let mut state = AppState::new(repos, None);
+        state.selected_repo_idx = Some(0);
         apply_transition!(state, ModeTransition::BranchSelect);
+        // Worktree path matches the repo path — this is the main worktree
         state.branches = vec![BranchEntry {
             name: "main".to_string(),
             worktree_path: Some(PathBuf::from("/tmp/alpha")),
@@ -2326,7 +2353,46 @@ mod tests {
 
         assert_eq!(state.mode(), &Mode::BranchSelect);
         assert!(state.error.is_some());
-        assert!(state.error.unwrap().contains("current branch"));
+        assert!(state.error.unwrap().contains("main worktree"));
+    }
+
+    #[test]
+    fn test_delete_current_linked_worktree_shows_confirm() {
+        let repos = vec![make_repo("alpha")];
+        let mut state = AppState::new(repos, None);
+        state.selected_repo_idx = Some(0);
+        apply_transition!(state, ModeTransition::BranchSelect);
+        // Worktree path differs from repo path — this is a kiosk-managed linked worktree
+        state.branches = vec![BranchEntry {
+            name: "feat/foo".to_string(),
+            worktree_path: Some(PathBuf::from("/tmp/.kiosk_worktrees/alpha--feat-foo")),
+            has_session: false,
+            is_current: true,
+            remote: None,
+            is_default: false,
+            session_activity_ts: None,
+            agent_statuses: Vec::new(),
+        }];
+        state.branch_list.filtered = vec![(0, 0)];
+        state.branch_list.selected = Some(0);
+
+        let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+        let keys = KeysConfig::default();
+        let matcher = SkimMatcherV2::default();
+        let sender = make_sender();
+        let ctx = default_ctx(&git, &tmux, &keys, &matcher, &sender);
+
+        process_action(Action::DeleteWorktree, &mut state, &ctx);
+
+        assert_eq!(
+            state.mode(),
+            &Mode::ConfirmWorktreeDelete {
+                branch_name: "feat/foo".to_string(),
+                has_session: false,
+            }
+        );
+        assert!(state.error.is_none());
     }
 
     #[test]
@@ -2573,6 +2639,79 @@ mod tests {
                 .as_deref()
                 .is_some_and(|msg| msg.contains("Failed to remove"))
         );
+    }
+
+    #[test]
+    fn test_branches_loaded_spawns_removal_for_pending_deletes() {
+        // Simulates crash recovery: kiosk was killed before completing a worktree removal,
+        // so on next branch load the pending delete should trigger spawn_worktree_removal.
+        let mut repos = vec![make_repo("alpha")];
+        repos[0].worktrees.push(Worktree {
+            path: PathBuf::from("/tmp/.kiosk_worktrees/alpha--dev"),
+            branch: Some("dev".to_string()),
+            is_main: false,
+        });
+        let git = Arc::new(MockGitProvider {
+            branches: vec!["main".to_string(), "dev".to_string()],
+            worktrees: repos[0].worktrees.clone(),
+            ..Default::default()
+        });
+        let tmux: Arc<dyn TmuxProvider> = Arc::new(MockTmuxProvider::default());
+
+        let mut state = AppState::new(repos, None);
+        state.selected_repo_idx = Some(0);
+        state.mark_pending_worktree_delete(kiosk_core::pending_delete::PendingWorktreeDelete::new(
+            PathBuf::from("/tmp/alpha"),
+            "dev".to_string(),
+            PathBuf::from("/tmp/.kiosk_worktrees/alpha--dev"),
+        ));
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let sender = EventSender {
+            tx,
+            cancel: Arc::new(AtomicBool::new(false)),
+        };
+
+        process_app_event(
+            AppEvent::BranchesLoaded {
+                branches: vec![BranchEntry {
+                    name: "dev".to_string(),
+                    worktree_path: Some(PathBuf::from("/tmp/.kiosk_worktrees/alpha--dev")),
+                    has_session: false,
+                    is_current: false,
+                    remote: None,
+                    is_default: false,
+                    session_activity_ts: None,
+                    agent_statuses: Vec::new(),
+                }],
+                worktrees: git.worktrees.clone(),
+                local_names: vec!["main".to_string(), "dev".to_string()],
+                session_activity: std::collections::HashMap::default(),
+            },
+            &mut state,
+            &(git.clone() as Arc<dyn GitProvider>),
+            &tmux,
+            &sender,
+            &make_matcher(),
+        );
+
+        let expected_path = PathBuf::from("/tmp/.kiosk_worktrees/alpha--dev");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if git
+                .remove_worktree_calls
+                .lock()
+                .unwrap()
+                .contains(&expected_path)
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for remove_worktree to be called"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     #[test]

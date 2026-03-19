@@ -197,10 +197,24 @@ pub(super) fn handle_delete_worktree(state: &mut AppState) {
                 return;
             }
         }
+        let is_main_worktree = branch.worktree_path.as_ref().is_some_and(|wt_path| {
+            state
+                .selected_repo_idx
+                .and_then(|idx| state.repos.get(idx))
+                .is_some_and(|repo| {
+                    // Canonicalize before comparing so symlinks or non-canonical path
+                    // components don't cause a false-negative and allow main-worktree deletion.
+                    let canonical_wt =
+                        std::fs::canonicalize(wt_path).unwrap_or_else(|_| wt_path.clone());
+                    let canonical_repo =
+                        std::fs::canonicalize(&repo.path).unwrap_or_else(|_| repo.path.clone());
+                    canonical_wt == canonical_repo
+                })
+        });
         if branch.worktree_path.is_none() {
             state.set_error("No worktree to delete");
-        } else if branch.is_current {
-            state.set_error("Cannot delete the current branch's worktree");
+        } else if is_main_worktree {
+            state.set_error("Cannot delete the main worktree");
         } else {
             apply_transition!(
                 state,
@@ -229,14 +243,10 @@ pub(super) fn handle_confirm_delete<T: TmuxProvider + ?Sized>(
         if let Some(branch) = state.branches.iter().find(|b| b.name == branch_name)
             && let Some(worktree_path) = &branch.worktree_path
         {
-            // Kill the tmux session first if it exists
-            if has_session && let Some(repo_idx) = state.selected_repo_idx {
-                let repo = &state.repos[repo_idx];
-                let session_name = repo.tmux_session_name(worktree_path);
-                tmux.kill_session(&session_name);
-            }
-
             let worktree_path = worktree_path.clone();
+
+            // Persist pending delete before killing the session: if killing the session
+            // terminates kiosk itself, the next launch will reconcile and complete the removal.
             if let Some(repo_idx) = state.selected_repo_idx {
                 let repo_path = state.repos[repo_idx].path.clone();
                 let pending = PendingWorktreeDelete::new(
@@ -247,8 +257,17 @@ pub(super) fn handle_confirm_delete<T: TmuxProvider + ?Sized>(
                 state.mark_pending_worktree_delete(pending);
                 if let Err(e) = save_pending_worktree_deletes(&state.pending_worktree_deletes) {
                     state.set_error(&format!("Failed to persist pending deletes: {e}"));
+                    state.clear_pending_worktree_delete_by_path(&worktree_path);
+                    return;
                 }
             }
+
+            if has_session && let Some(repo_idx) = state.selected_repo_idx {
+                let repo = &state.repos[repo_idx];
+                let session_name = repo.tmux_session_name(&worktree_path);
+                tmux.kill_session(&session_name);
+            }
+
             apply_transition!(state, ModeTransition::BranchSelect);
             spawn_worktree_removal(git, sender, worktree_path, branch_name);
         }

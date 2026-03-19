@@ -1251,6 +1251,9 @@ pub struct AppState {
     pub error: Option<String>,
     active_list_page_rows: usize,
     pub pending_worktree_deletes: Vec<PendingWorktreeDelete>,
+    /// Worktree paths for which a removal task has already been spawned.
+    /// Prevents duplicate spawning across successive `BranchesLoaded` events.
+    pub in_flight_worktree_removals: HashSet<PathBuf>,
     pub session_activity: HashMap<String, u64>,
     /// Latest runtime snapshot keyed by tmux session name.
     pub session_runtime: HashMap<String, SessionRuntimeState>,
@@ -1293,6 +1296,7 @@ impl AppState {
             error: None,
             active_list_page_rows: 10,
             pending_worktree_deletes: Vec::new(),
+            in_flight_worktree_removals: HashSet::new(),
             session_activity: HashMap::new(),
             session_runtime: HashMap::new(),
             active_agent_poller: ActiveAgentPoller::None,

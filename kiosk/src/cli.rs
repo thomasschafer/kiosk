@@ -781,6 +781,28 @@ fn has_detected_agent(statuses: &[kiosk_core::AgentStatus]) -> bool {
     !statuses.is_empty()
 }
 
+fn next_eligible_statuses(
+    detections: Vec<kiosk_core::agent::DetectionResult>,
+) -> Vec<kiosk_core::AgentStatus> {
+    kiosk_core::state::normalized_agent_statuses(
+        &detections
+            .into_iter()
+            .map(|result| {
+                let mut status = result.status;
+                if matches!(status.state, kiosk_core::AgentState::Running)
+                    && matches!(
+                        result.debug.state_source,
+                        kiosk_core::agent::StateSource::ActivityRecency
+                    )
+                {
+                    status.state = kiosk_core::AgentState::Unknown;
+                }
+                status
+            })
+            .collect::<Vec<_>>(),
+    )
+}
+
 pub fn cmd_next(
     config: &Config,
     _git: &dyn GitProvider,
@@ -811,11 +833,8 @@ pub fn cmd_next(
         .filter(|(session, _)| current_session.as_deref() != Some(session.as_str()))
         .find_map(|(session, _)| {
             let data = all_pane_data.get(&session)?;
-            let statuses = kiosk_core::state::normalized_agent_statuses(
-                &kiosk_core::agent::detect_all_for_session_from_pane_data(tmux, data)
-                    .into_iter()
-                    .map(|result| result.status)
-                    .collect::<Vec<_>>(),
+            let statuses = next_eligible_statuses(
+                kiosk_core::agent::detect_all_for_session_from_pane_data(tmux, data),
             );
             has_detected_agent(&statuses)
                 .then_some(statuses)
@@ -3726,6 +3745,27 @@ mod tests {
             switched.as_slice(),
             &["demo--feat-unk"],
             "Should pick unknown over a non-agent session"
+        );
+    }
+
+    #[test]
+    fn next_activity_inferred_running_is_treated_as_unknown() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let (config, git, tmux) = mock_with_sessions_and_agents(
+            "demo",
+            &[("demo--feat-unk", "claude", "some unrecognised output", now)],
+        );
+
+        let result = cmd_next(&config, &git, &tmux, false);
+        assert!(result.is_ok());
+        let switched = tmux.switched_sessions.lock().unwrap();
+        assert_eq!(
+            switched.as_slice(),
+            &["demo--feat-unk"],
+            "Activity-recency fallback should not make an unknown session ineligible for next"
         );
     }
 }

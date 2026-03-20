@@ -202,7 +202,7 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Switch to the next agent session needing attention
+    /// Switch to the oldest other tmux session with an idle or waiting agent
     Next {
         /// Output result as JSON
         #[arg(long)]

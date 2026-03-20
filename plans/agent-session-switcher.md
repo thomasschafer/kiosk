@@ -14,8 +14,8 @@ Three features that work together to make kiosk an effective agent session manag
 
 ### ✅ Part 1: `kiosk next` CLI Command (Done)
 
-- Attempts to choose the oldest tmux session (other than current) whose detected agent is `Waiting` or `Idle`
-- Ignores `Running` and `Unknown` sessions
+- Attempts to choose the oldest tmux session (other than current) whose detected agent is `Waiting`, `Idle`, or `Unknown`
+- Ignores `Running` sessions
 - Uses tmux session activity ordering directly instead of resolving repo/worktree metadata first
 - `--json` output supported
 
@@ -55,13 +55,14 @@ Three features that work together to make kiosk an effective agent session manag
 
 ## Resolved Decisions
 
-- **Sort order**: oldest eligible tmux session first, where eligible means `Waiting` or `Idle`
+- **Sort order**: oldest eligible tmux session first, where eligible means `Waiting`, `Idle`, or `Unknown`
 - **Sessions view current row**: Always pin the current session to the top of the sessions list
 - **`kiosk next` includes Idle**: Idle includes agents that may have asked questions
 - **Round-robin strategy**: Stateless, using tmux `session_activity` timestamps (oldest first within priority group)
 - **Skip current session**: `kiosk next` only switches to a *different* session, if one exists, otherwise shows message saying no session to jump to
 - **Sessions view architecture**: New standalone component (not branch picker reuse)
-- **`Running` and `Unknown` states**: Not eligible for `kiosk next`
+- **`Running` states**: Not eligible for `kiosk next`
+- **`Unknown` states**: Eligible for `kiosk next`
 - **Session preview rollout**: Ship monochrome first (3.1), then full-color ANSI rendering (3.2)
 - **Session preview polling**: Refresh on selection changes and poll selected session every 1 second by default
 - **Preview poll config policy**: configurable interval in milliseconds; any value `> 0` is accepted; no clamping

@@ -804,7 +804,7 @@ pub fn cmd_next(
     let all_pane_data = tmux.list_all_panes_with_activity();
 
     // Walk sessions from oldest to newest and stop at the first full detection
-    // that finds an idle or waiting agent.
+    // that finds an idle, waiting, or unknown agent.
     let eligible_session = sessions_by_recency
         .into_iter()
         .rev()
@@ -823,7 +823,9 @@ pub fn cmd_next(
                     statuses.iter().any(|status| {
                         matches!(
                             status.state,
-                            kiosk_core::AgentState::Waiting | kiosk_core::AgentState::Idle
+                            kiosk_core::AgentState::Waiting
+                                | kiosk_core::AgentState::Idle
+                                | kiosk_core::AgentState::Unknown
                         )
                     })
                 })
@@ -861,7 +863,7 @@ pub fn cmd_next(
         Ok(())
     } else {
         Err(CliError::user(
-            "No other idle or waiting sessions with detected agents",
+            "No other idle, waiting, or unknown sessions with detected agents",
         ))
     }
 }
@@ -3506,7 +3508,7 @@ mod tests {
         assert!(
             error
                 .message()
-                .contains("No other idle or waiting sessions with detected agents")
+                .contains("No other idle, waiting, or unknown sessions with detected agents")
         );
         assert!(tmux.switched_sessions.lock().unwrap().is_empty());
     }
@@ -3575,7 +3577,7 @@ mod tests {
         assert!(
             error
                 .message()
-                .contains("No other idle or waiting sessions with detected agents"),
+                .contains("No other idle, waiting, or unknown sessions with detected agents"),
             "Should return error when only eligible session is the current one"
         );
         assert!(tmux.switched_sessions.lock().unwrap().is_empty());
@@ -3592,7 +3594,7 @@ mod tests {
         assert!(
             error
                 .message()
-                .contains("No other idle or waiting sessions with detected agents")
+                .contains("No other idle, waiting, or unknown sessions with detected agents")
         );
         assert!(tmux.switched_sessions.lock().unwrap().is_empty());
     }
@@ -3619,7 +3621,7 @@ mod tests {
         assert_eq!(
             switched.as_slice(),
             &["demo--feat-idle-old"],
-            "Should pick the oldest eligible idle or waiting session"
+            "Should pick the oldest eligible idle, waiting, or unknown session"
         );
     }
 
@@ -3662,13 +3664,13 @@ mod tests {
         assert!(
             error
                 .message()
-                .contains("No other idle or waiting sessions with detected agents")
+                .contains("No other idle, waiting, or unknown sessions with detected agents")
         );
         assert!(tmux.switched_sessions.lock().unwrap().is_empty());
     }
 
     #[test]
-    fn next_unknown_session_is_not_eligible() {
+    fn next_unknown_session_is_eligible() {
         let (config, git, tmux) = mock_with_sessions_and_agents(
             "demo",
             &[
@@ -3677,17 +3679,18 @@ mod tests {
             ],
         );
 
-        let error = cmd_next(&config, &git, &tmux, false).unwrap_err();
-        assert!(
-            error
-                .message()
-                .contains("No other idle or waiting sessions with detected agents")
+        let result = cmd_next(&config, &git, &tmux, false);
+        assert!(result.is_ok());
+        let switched = tmux.switched_sessions.lock().unwrap();
+        assert_eq!(
+            switched.as_slice(),
+            &["demo--feat-old"],
+            "Should pick the oldest unknown session when it is the oldest eligible one"
         );
-        assert!(tmux.switched_sessions.lock().unwrap().is_empty());
     }
 
     #[test]
-    fn next_unknown_session_is_skipped_for_eligible_session() {
+    fn next_unknown_session_is_picked_when_older_than_idle() {
         let (config, git, tmux) = mock_with_sessions_and_agents(
             "demo",
             &[
@@ -3701,13 +3704,13 @@ mod tests {
         let switched = tmux.switched_sessions.lock().unwrap();
         assert_eq!(
             switched.as_slice(),
-            &["demo--feat-idle"],
-            "Should skip unknown sessions in favour of eligible idle or waiting sessions"
+            &["demo--feat-unk"],
+            "Should pick unknown when it is the oldest eligible session"
         );
     }
 
     #[test]
-    fn next_unknown_and_non_agent_sessions_are_not_eligible() {
+    fn next_unknown_is_picked_over_non_agent_session() {
         let (config, git, tmux) = mock_with_sessions_and_agents(
             "demo",
             &[
@@ -3716,12 +3719,13 @@ mod tests {
             ],
         );
 
-        let error = cmd_next(&config, &git, &tmux, false).unwrap_err();
-        assert!(
-            error
-                .message()
-                .contains("No other idle or waiting sessions with detected agents")
+        let result = cmd_next(&config, &git, &tmux, false);
+        assert!(result.is_ok());
+        let switched = tmux.switched_sessions.lock().unwrap();
+        assert_eq!(
+            switched.as_slice(),
+            &["demo--feat-unk"],
+            "Should pick unknown over a non-agent session"
         );
-        assert!(tmux.switched_sessions.lock().unwrap().is_empty());
     }
 }

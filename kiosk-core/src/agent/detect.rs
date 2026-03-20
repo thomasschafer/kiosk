@@ -873,14 +873,12 @@ fn looks_like_codex_idle_prompt(tail: &str) -> bool {
     // the last prompt may include user text.
     let has_prompt = tail.lines().any(is_non_menu_codex_prompt_line);
 
-    // Newer Codex footer style, e.g.
+    // Newer Codex footer styles, e.g.
     // `gpt-5.3-codex high · 100% left · ~/Development/kiosk`
+    // `gpt-5.4 default · 79% left · ~/Development/kiosk`
+    //
     // Keep this narrow so simple `100% context left` does not imply idle.
-    let lower = tail.to_lowercase();
-    let has_footer = lower.contains("codex")
-        && lower.contains(" left")
-        && tail.contains('·')
-        && !lower.contains("context left");
+    let has_footer = tail.lines().any(looks_like_codex_footer_line);
 
     has_prompt && has_footer
 }
@@ -925,6 +923,32 @@ fn looks_like_codex_plain_idle_prompt(tail: &str) -> bool {
     // During processing Codex often shows "context left" with the user prompt.
     // Keep that state as Unknown to avoid false Idle.
     !lower.contains("context left")
+}
+
+fn looks_like_codex_footer_line(line: &str) -> bool {
+    let lower = line.trim().to_lowercase();
+    if lower.is_empty() || lower.contains("context left") || !line.contains('·') {
+        return false;
+    }
+
+    let parts: Vec<&str> = line.split('·').map(str::trim).collect();
+    if parts.len() < 2 {
+        return false;
+    }
+
+    let model_segment = parts[0].to_lowercase();
+    let looks_like_model = model_segment.contains("codex")
+        || model_segment.starts_with("gpt-")
+        // Broad 'o' prefix catches the o-series family (o1, o3, o4-mini, …)
+        // without enumerating every variant; the surrounding guards keep
+        // false-positive risk low.
+        || model_segment.starts_with('o');
+    let has_left_metric = parts[1].to_lowercase().contains("left");
+    let has_path_segment = parts
+        .get(2)
+        .is_none_or(|segment| segment.contains('/') || segment.starts_with('~'));
+
+    looks_like_model && has_left_metric && has_path_segment
 }
 
 fn matches_any(content: &str, patterns: &[&str]) -> bool {
@@ -1599,6 +1623,14 @@ mod tests {
         assert_eq!(detect_state(content, AgentKind::Codex), AgentState::Idle);
     }
 
+    #[test]
+    fn codex_prompt_with_new_footer_style_is_idle() {
+        let content = "• Updated tests\n\
+            › Write tests for @filename\n\
+              gpt-5.4 default · 79% left · ~/Development/kiosk";
+        assert_eq!(detect_state(content, AgentKind::Codex), AgentState::Idle);
+    }
+
     /// Stale trust prompt text should NOT cause false Waiting.
     ///
     /// Real scenario: After dismissing the trust prompt and update dialog,
@@ -2052,6 +2084,7 @@ mod fixture_tests {
         (CODEX_IDLE_FRESH,                "codex/idle-fresh.txt",                                   AgentKind::Codex,       AgentState::Idle),
         (CODEX_IDLE_AFTER_RESPONSE,       "codex/idle-after-response.txt",                          AgentKind::Codex,       AgentState::Idle),
         (CODEX_IDLE_AFTER_DENIED,         "codex/idle-after-denied-permission.txt",                 AgentKind::Codex,       AgentState::Idle),
+        (CODEX_IDLE_NEW_FOOTER,           "codex/idle-new-footer.txt",                              AgentKind::Codex,       AgentState::Idle),
         // FIXME: should be Idle — user is mid-typing a prompt
         (CODEX_IDLE_TYPING,               "codex/idle-user-typing.txt",                             AgentKind::Codex,       AgentState::Unknown),
         (CODEX_RUNNING_SPINNER,           "codex/running-spinner.txt",                              AgentKind::Codex,       AgentState::Running),

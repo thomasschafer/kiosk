@@ -776,11 +776,6 @@ pub fn cmd_sessions(
     Ok(())
 }
 
-/// Returns true if at least one agent was detected in the session.
-fn has_detected_agent(statuses: &[kiosk_core::AgentStatus]) -> bool {
-    !statuses.is_empty()
-}
-
 fn next_eligible_statuses(
     detections: Vec<kiosk_core::agent::DetectionResult>,
 ) -> Vec<kiosk_core::AgentStatus> {
@@ -821,34 +816,37 @@ pub fn cmd_next(
     }
 
     let current_session = tmux.current_session_name();
-    let mut sessions_by_recency = tmux.list_sessions_with_activity();
-    sessions_by_recency.sort_by(|left, right| right.1.cmp(&left.1));
     let all_pane_data = tmux.list_all_panes_with_activity();
+    let mut sessions_by_recency: Vec<(String, u64)> = all_pane_data
+        .keys()
+        .map(|name| {
+            let activity = all_pane_data[name].session_activity;
+            (name.clone(), activity)
+        })
+        .collect();
+    sessions_by_recency.sort_by_key(|(_, ts)| *ts);
 
     // Walk sessions from oldest to newest and stop at the first full detection
     // that finds an idle, waiting, or unknown agent.
     let eligible_session = sessions_by_recency
         .into_iter()
-        .rev()
         .filter(|(session, _)| current_session.as_deref() != Some(session.as_str()))
         .find_map(|(session, _)| {
             let data = all_pane_data.get(&session)?;
             let statuses = next_eligible_statuses(
                 kiosk_core::agent::detect_all_for_session_from_pane_data(tmux, data),
             );
-            has_detected_agent(&statuses)
-                .then_some(statuses)
-                .filter(|statuses| {
-                    statuses.iter().any(|status| {
-                        matches!(
-                            status.state,
-                            kiosk_core::AgentState::Waiting
-                                | kiosk_core::AgentState::Idle
-                                | kiosk_core::AgentState::Unknown
-                        )
-                    })
+            statuses
+                .iter()
+                .any(|status| {
+                    matches!(
+                        status.state,
+                        kiosk_core::AgentState::Waiting
+                            | kiosk_core::AgentState::Idle
+                            | kiosk_core::AgentState::Unknown
+                    )
                 })
-                .map(|statuses| (session, statuses))
+                .then_some((session, statuses))
         });
 
     if let Some((session, statuses)) = eligible_session {
@@ -3357,7 +3355,9 @@ mod tests {
             );
             pane_content.insert(pane_id, content.to_string());
             session_activity_ts.insert(session.to_string(), *activity);
-            sessions_with_activity.push((session.to_string(), *activity));
+            if *session != current {
+                sessions_with_activity.push((session.to_string(), *activity));
+            }
 
             if *session != "demo" && !session_names.contains(&session.to_string()) {
                 session_names.push(session.to_string());

@@ -58,7 +58,7 @@ Three features that work together to make kiosk an effective agent session manag
 - **Sort order**: oldest eligible tmux session first, where eligible means `Waiting`, `Idle`, or `Unknown`
 - **Sessions view current row**: Always pin the current session to the top of the sessions list
 - **`kiosk next` includes Idle**: Idle includes agents that may have asked questions
-- **Round-robin strategy**: Stateless, using tmux `session_activity` timestamps (oldest first within priority group)
+- **Selection strategy**: Stateless, using tmux `session_activity` timestamps (oldest eligible first)
 - **Skip current session**: `kiosk next` only switches to a *different* session, if one exists, otherwise shows message saying no session to jump to
 - **Sessions view architecture**: New standalone component (not branch picker reuse)
 - **`Running` states**: Not eligible for `kiosk next`

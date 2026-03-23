@@ -818,7 +818,8 @@ pub fn cmd_next(config: &Config, tmux: &dyn TmuxProvider, json: bool) -> CliResu
         .iter()
         .map(|(name, data)| (name.clone(), data.session_activity))
         .collect();
-    sessions_by_recency.sort_by_key(|(_, ts)| *ts);
+    sessions_by_recency
+        .sort_by(|(name_a, ts_a), (name_b, ts_b)| ts_a.cmp(ts_b).then_with(|| name_a.cmp(name_b)));
 
     // Walk sessions from oldest to newest and stop at the first full detection
     // that finds an idle, waiting, or unknown agent.
@@ -3762,6 +3763,82 @@ mod tests {
             switched.as_slice(),
             &["demo--feat-unk"],
             "Activity-recency fallback should not make an unknown session ineligible for next"
+        );
+    }
+
+    #[test]
+    fn next_mixed_state_session_with_waiting_and_running_is_eligible() {
+        // A session containing both a Waiting pane and a Running pane should
+        // still be eligible for `kiosk next` because the eligibility check uses
+        // `any()` semantics — at least one pane in Waiting/Idle/Unknown is enough.
+        let config = test_config();
+
+        let mut pane_info = HashMap::new();
+        let mut pane_content = HashMap::new();
+        let mut session_activity_ts = HashMap::new();
+
+        // Current session: demo (running, not eligible itself)
+        pane_info.insert(
+            "demo".to_string(),
+            vec![kiosk_core::tmux::provider::PaneInfo {
+                pane_id: "%0".to_string(),
+                command: "claude".to_string(),
+                pid: 1000,
+            }],
+        );
+        pane_content.insert("%0".to_string(), "⠋ Reading file".to_string());
+        session_activity_ts.insert("demo".to_string(), 1000u64);
+
+        // Mixed session: one pane Waiting, one pane Running
+        pane_info.insert(
+            "demo--feat-mixed".to_string(),
+            vec![
+                kiosk_core::tmux::provider::PaneInfo {
+                    pane_id: "%10".to_string(),
+                    command: "claude".to_string(),
+                    pid: 2000,
+                },
+                kiosk_core::tmux::provider::PaneInfo {
+                    pane_id: "%11".to_string(),
+                    command: "claude".to_string(),
+                    pid: 2001,
+                },
+            ],
+        );
+        // Pane %10: Waiting (permission dialog)
+        pane_content.insert(
+            "%10".to_string(),
+            "Allow write?\n  Yes, allow\n  No, deny".to_string(),
+        );
+        // Pane %11: Running (braille spinner)
+        pane_content.insert("%11".to_string(), "⠋ Reading file".to_string());
+        session_activity_ts.insert("demo--feat-mixed".to_string(), 900u64);
+
+        let tmux = MockTmuxProvider {
+            sessions: Mutex::new(vec!["demo".to_string(), "demo--feat-mixed".to_string()]),
+            sessions_with_activity: vec![
+                ("demo".to_string(), 1000),
+                ("demo--feat-mixed".to_string(), 900),
+            ],
+            inside_tmux: true,
+            current_session: Some("demo".to_string()),
+            pane_info,
+            pane_content,
+            session_activity_ts,
+            ..Default::default()
+        };
+
+        let result = cmd_next(&config, &tmux, false);
+        assert!(
+            result.is_ok(),
+            "Mixed Waiting+Running session should be eligible: {:?}",
+            result.unwrap_err().message()
+        );
+        let switched = tmux.switched_sessions.lock().unwrap();
+        assert_eq!(
+            switched.as_slice(),
+            &["demo--feat-mixed"],
+            "Should switch to the mixed-state session"
         );
     }
 }

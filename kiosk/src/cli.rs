@@ -776,6 +776,12 @@ pub fn cmd_sessions(
     Ok(())
 }
 
+/// Normalise detection results for use in `cmd_next` eligibility checks.
+///
+/// `Running` states inferred purely from recent pane activity
+/// (`StateSource::ActivityRecency`) are downgraded to `Unknown` so that
+/// sessions whose activity recency falsely implies running remain eligible
+/// for `kiosk next`.
 fn next_eligible_statuses(
     detections: Vec<kiosk_core::agent::DetectionResult>,
 ) -> Vec<kiosk_core::AgentStatus> {

@@ -447,10 +447,21 @@ impl TmuxProvider for CliTmuxProvider {
         if !self.is_inside_tmux() {
             return None;
         }
-        let output = tmux_command()
-            .args(["display-message", "-p", "#S"])
-            .output()
-            .ok()?;
+        // When invoked via `run-shell -b` (e.g. a tmux keybinding), tmux sets
+        // TMUX_PANE to the pane where the key was pressed before spawning the
+        // background process.  Without an explicit target, `display-message`
+        // resolves "#S" relative to the connecting client's current session,
+        // which falls back to the most-recently-active session rather than the
+        // one that triggered the keybinding — causing non-deterministic
+        // behaviour.  Passing `-t $TMUX_PANE` pins the query to the correct
+        // pane so "#S" always resolves to the session that owns it.
+        let mut cmd = tmux_command();
+        cmd.arg("display-message").arg("-p");
+        if let Ok(pane) = std::env::var("TMUX_PANE") {
+            cmd.args(["-t", &pane]);
+        }
+        cmd.arg("#S");
+        let output = cmd.output().ok()?;
         if !output.status.success() {
             return None;
         }

@@ -655,12 +655,26 @@ fn detect_claude_waiting(content: &str) -> bool {
 /// Codex does NOT use the alternate screen, so old content persists in the
 /// scrollback. This means stale waiting/running text from earlier prompts
 /// can cause false positives if checked against the full content window.
+/// All pattern checks are therefore tail-only (last 5 lines).
 ///
-/// Key insight: waiting patterns are only checked against the **tail** (last
-/// 5 lines), not the full 30-line window, to avoid matching stale prompts
-/// like "Press enter to continue" from trust dialogs that are still in the
-/// scrollback above. Running patterns are also tail-only for the same reason:
-/// stale "esc to interrupt" lines can linger in Codex transcript history.
+/// Idle detection uses a three-step fallback chain because the primary
+/// footer signal (`? for shortcuts`) isn't always visible in tmux captures:
+///
+/// 1. **`matches_any(tail, idle_tail)`** — the `? for shortcuts` footer.
+///    Most reliable: only present when Codex is truly at the input prompt.
+///    (Exception: if a running indicator also appears, Codex is actively
+///    working — it shows both simultaneously during tool execution.)
+///
+/// 2. **[`looks_like_codex_idle_prompt`]** — requires BOTH a non-menu
+///    prompt line (`› ...`) AND a model/footer status line (e.g.
+///    `gpt-5.3-codex high · 100% left · ~/…`). Covers newer Codex renders
+///    where `? for shortcuts` is absent but the footer status line is
+///    present. Requiring both signals avoids false idle from stale text.
+///
+/// 3. **[`looks_like_codex_plain_idle_prompt`]** — bare prompt (`›` or
+///    `› type a message`) on the last non-empty line, with no footer at
+///    all. Most conservative: excludes tails containing `context left`
+///    which commonly appear mid-processing.
 fn detect_codex_state(_content: &str, tail: &str) -> AgentState {
     // For Codex (no alt-screen), the idle footer `? for shortcuts` is the
     // single most reliable signal — it's only visible when Codex is truly
@@ -704,7 +718,10 @@ fn detect_codex_state(_content: &str, tail: &str) -> AgentState {
 ///
 /// Cursor shows `/ commands` in the footer during BOTH idle and running
 /// states, so we must check running indicators BEFORE idle patterns.
-/// Uses `detect_active_state` which has the correct priority order.
+/// This requires a custom priority order: content-level running checks
+/// (hexagonal markers ⬢/⬡ for Thinking/Generating/Editing) must come
+/// before idle-tail checks, which differs from [`detect_active_state`]'s
+/// order.
 fn detect_cursor_state(content: &str, tail: &str) -> AgentState {
     // Check tail-level running first (ctrl+c to stop, esc to interrupt).
     if matches_any(tail, CURSOR_PATTERNS.running) || contains_braille_spinner(tail) {
@@ -815,16 +832,32 @@ fn detect_gemini_state(content: &str, _tail: &str) -> AgentState {
 // Shared detection logic
 // ===========================================================================
 
-/// State detection for agents where absence of the idle footer means
-/// "processing" (Claude Code, `OpenCode`).
+/// Shared state detection helper — currently used only by **`OpenCode`**.
+///
+/// This helper applies the standard priority for agents whose idle footer
+/// reliably signals the prompt, and whose running indicators don't overlap
+/// with idle-tail patterns.
+///
+/// Other agents have custom implementations because this priority order
+/// doesn't fit their capture semantics:
+/// - **Claude Code**: uses the alternate screen (no scrollback), needs a
+///   tighter prompt-fallback window (last 3 lines), and has complex
+///   waiting-pattern logic (approval prompts paired with y/n).
+/// - **Codex**: no alternate screen, so stale scrollback can cause false
+///   positives. Idle-footer-first priority is critical to override lingering
+///   running/waiting text from earlier prompts.
+/// - **Cursor**: shows `/ commands` in both idle AND running states, so
+///   content-level running indicators must be checked before idle-tail —
+///   the opposite of this helper's order.
+/// - **Gemini**: uses content-level (not tail-level) pattern matching for
+///   waiting/running, and has a distinct `(y/n)` approval detection that
+///   must exclude false positives from content mentioning `(y/n)`.
 ///
 /// Detection priority:
-/// 1. Running patterns in the **tail** → Running (takes precedence over idle
-///    because agents like Codex show both `esc to interrupt` and
-///    `? for shortcuts` simultaneously during active work)
-/// 2. Idle tail patterns (e.g. `? for shortcuts`) → Idle
-/// 3. Running patterns in full content + braille spinners → Running
-/// 4. Waiting patterns → Waiting
+/// 1. Running patterns in the **tail** → Running
+/// 2. Waiting patterns in full content → Waiting
+/// 3. Idle tail patterns (e.g. `? for shortcuts`) → Idle
+/// 4. Running patterns in full content + braille spinners → Running
 /// 5. Default → **Unknown** (no recognisable pattern matched)
 fn detect_active_state(content: &str, tail: &str, patterns: &AgentPatterns) -> AgentState {
     if matches_any(tail, patterns.running) || contains_braille_spinner(tail) {
@@ -876,6 +909,12 @@ fn is_idle_claude_prompt(trimmed: &str) -> bool {
     false
 }
 
+/// Step 2 of the Codex idle fallback chain.
+///
+/// Matches when the tail contains both a non-menu prompt line (`› ...`)
+/// and a model/footer status line (e.g. `gpt-5.3-codex high · 100% left`).
+/// This covers newer Codex renders where `? for shortcuts` is absent but
+/// the footer status line is still present.
 fn looks_like_codex_idle_prompt(tail: &str) -> bool {
     // Strong idle fallback: when Codex footer is present, allow any
     // non-menu prompt line (`› ...`). This matches real idle captures where
@@ -919,6 +958,12 @@ fn is_menu_codex_prompt_payload(after_prompt: &str) -> bool {
     !prefix.is_empty() && prefix.chars().all(|c| c.is_ascii_digit()) && suffix.starts_with(' ')
 }
 
+/// Step 3 of the Codex idle fallback chain.
+///
+/// Matches a bare prompt (`›` or `› type a message`) on the last non-empty
+/// line with no footer present at all. Most conservative of the three idle
+/// checks: excludes tails containing `context left` which commonly appear
+/// mid-processing.
 fn looks_like_codex_plain_idle_prompt(tail: &str) -> bool {
     let mut lines = tail.lines().map(str::trim).filter(|line| !line.is_empty());
     let Some(last) = lines.next_back() else {
@@ -934,6 +979,11 @@ fn looks_like_codex_plain_idle_prompt(tail: &str) -> bool {
     !lower.contains("context left")
 }
 
+/// Detect a Codex model/status footer line (e.g. `gpt-5.3-codex high · 100% left · ~/…`).
+///
+/// Used by [`looks_like_codex_idle_prompt`] to confirm the footer is present
+/// alongside a prompt line. Matches lines containing `·`-separated segments
+/// where the first segment looks like a model name.
 fn looks_like_codex_footer_line(line: &str) -> bool {
     let lower = line.trim().to_lowercase();
     if lower.is_empty() || lower.contains("context left") || !line.contains('·') {

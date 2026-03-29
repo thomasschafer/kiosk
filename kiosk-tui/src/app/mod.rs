@@ -1,3 +1,4 @@
+#[macro_use]
 mod actions;
 mod spawn;
 
@@ -81,14 +82,6 @@ const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦
 fn initialize_repo_scan(state: &mut AppState) {
     state.loading_repos = true;
     state.seen_repo_paths = state.repos.iter().map(|repo| repo.path.clone()).collect();
-}
-
-macro_rules! apply_transition {
-    ($state:expr, $transition:expr $(,)?) => {
-        if let Err(error) = $state.transition(&$transition) {
-            $state.set_error(&format!("Internal state transition error: {error:?}"));
-        }
-    };
 }
 
 pub fn run(

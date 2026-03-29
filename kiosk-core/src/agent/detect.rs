@@ -416,39 +416,54 @@ const GEMINI_PATTERNS: AgentPatterns = AgentPatterns {
 const BRAILLE_SPINNERS: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 // ===========================================================================
+// State detection — content preparation
+// ===========================================================================
+
+/// Pre-processed terminal content for state detection.
+///
+/// Strips ANSI codes, collects non-empty lines, and computes lowercased tail
+/// windows (last 30, 5, and 3 lines) in a single pass. Both [`detect_state`]
+/// and [`detect_state_rule`] use this to avoid duplicating the setup logic.
+struct PreparedContent {
+    /// Lowercased tail window of the last 30 non-empty lines (content-level).
+    content: String,
+    /// Lowercased tail window of the last 5 non-empty lines (tail-level).
+    tail: String,
+    /// Lowercased tail window of the last 3 non-empty lines (prompt-level).
+    prompt_tail: String,
+}
+
+impl PreparedContent {
+    fn from_raw(raw: &str) -> Self {
+        let clean = strip_ansi_codes(raw);
+        let non_empty: Vec<&str> = clean
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .collect();
+        let len = non_empty.len();
+        Self {
+            content: join_tail(&non_empty, len, 30).to_lowercase(),
+            tail: join_tail(&non_empty, len, 5).to_lowercase(),
+            prompt_tail: join_tail(&non_empty, len, 3).to_lowercase(),
+        }
+    }
+}
+
+// ===========================================================================
 // State detection — public entry point
 // ===========================================================================
 
 /// Detect agent state from terminal content, dispatching to agent-specific
 /// detectors.
-///
-/// Content is ANSI-stripped once; non-empty lines are collected into windows
-/// (last 30, 5, and optionally 3 lines) and lowercased for case-insensitive
-/// matching. The windows are computed from a single pass over the cleaned
-/// content.
 pub fn detect_state(content: &str, kind: AgentKind) -> AgentState {
-    let clean = strip_ansi_codes(content);
-    let non_empty: Vec<&str> = clean
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .collect();
-
-    let len = non_empty.len();
-    let last_30 = join_tail(&non_empty, len, 30).to_lowercase();
-    let last_5 = join_tail(&non_empty, len, 5).to_lowercase();
+    let prep = PreparedContent::from_raw(content);
 
     match kind {
-        AgentKind::ClaudeCode => {
-            // Claude prompt fallback uses a tighter window (last 3 lines) to
-            // reduce false Idle during the brief processing transition when
-            // the user's question line (containing ❯) is still near the bottom.
-            let last_3 = join_tail(&non_empty, len, 3).to_lowercase();
-            detect_claude_state(&last_30, &last_5, &last_3)
-        }
-        AgentKind::Codex => detect_codex_state(&last_30, &last_5),
-        AgentKind::CursorAgent => detect_cursor_state(&last_30, &last_5),
-        AgentKind::OpenCode => detect_opencode_state(&last_30, &last_5),
-        AgentKind::Gemini => detect_gemini_state(&last_30, &last_5),
+        AgentKind::ClaudeCode => detect_claude_state(&prep.content, &prep.tail, &prep.prompt_tail),
+        AgentKind::Codex => detect_codex_state(&prep.content, &prep.tail),
+        AgentKind::CursorAgent => detect_cursor_state(&prep.content, &prep.tail),
+        AgentKind::OpenCode => detect_opencode_state(&prep.content, &prep.tail),
+        AgentKind::Gemini => detect_gemini_state(&prep.content, &prep.tail),
     }
 }
 
@@ -457,26 +472,18 @@ pub fn detect_state(content: &str, kind: AgentKind) -> AgentState {
 /// This is intended for diagnostics (for example `kiosk status --debug-agent`),
 /// not for core state logic.
 pub fn detect_state_rule(content: &str, kind: AgentKind, state: AgentState) -> &'static str {
-    let clean = strip_ansi_codes(content);
-    let non_empty: Vec<&str> = clean
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .collect();
-    let len = non_empty.len();
-    let last_5 = join_tail(&non_empty, len, 5).to_lowercase();
-    let last_3 = join_tail(&non_empty, len, 3).to_lowercase();
+    let prep = PreparedContent::from_raw(content);
 
     match kind {
         AgentKind::ClaudeCode => match state {
             AgentState::Running => {
-                let last_30 = join_tail(&non_empty, len, 30).to_lowercase();
-                if matches_any(&last_5, CLAUDE_PATTERNS.running)
-                    || contains_braille_spinner(&last_5)
+                if matches_any(&prep.tail, CLAUDE_PATTERNS.running)
+                    || contains_braille_spinner(&prep.tail)
                 {
                     "claude.running.tail_marker"
-                } else if contains_thinking_status(&last_30) {
+                } else if contains_thinking_status(&prep.content) {
                     "claude.running.thinking_glyph"
-                } else if contains_thinking_word(&last_30) {
+                } else if contains_thinking_word(&prep.content) {
                     "claude.running.thinking_word"
                 } else {
                     "claude.running.content_marker"
@@ -484,9 +491,10 @@ pub fn detect_state_rule(content: &str, kind: AgentKind, state: AgentState) -> &
             }
             AgentState::Waiting => "claude.waiting.pattern",
             AgentState::Idle => {
-                if matches_any(&last_5, CLAUDE_PATTERNS.idle_tail) {
+                if matches_any(&prep.tail, CLAUDE_PATTERNS.idle_tail) {
                     "claude.idle.footer"
-                } else if last_3
+                } else if prep
+                    .prompt_tail
                     .lines()
                     .any(|line| is_idle_claude_prompt(line.trim_start()))
                 {
@@ -501,11 +509,11 @@ pub fn detect_state_rule(content: &str, kind: AgentKind, state: AgentState) -> &
             AgentState::Running => "codex.running.pattern",
             AgentState::Waiting => "codex.waiting.tail_pattern",
             AgentState::Idle => {
-                if matches_any(&last_5, CODEX_PATTERNS.idle_tail) {
+                if matches_any(&prep.tail, CODEX_PATTERNS.idle_tail) {
                     "codex.idle.footer"
-                } else if looks_like_codex_idle_prompt(&last_5) {
+                } else if looks_like_codex_idle_prompt(&prep.tail) {
                     "codex.idle.prompt_and_footer"
-                } else if looks_like_codex_plain_idle_prompt(&last_5) {
+                } else if looks_like_codex_plain_idle_prompt(&prep.tail) {
                     "codex.idle.plain_prompt"
                 } else {
                     "codex.idle.other"
@@ -517,9 +525,9 @@ pub fn detect_state_rule(content: &str, kind: AgentKind, state: AgentState) -> &
             AgentState::Running => "cursor.running.pattern",
             AgentState::Waiting => "cursor.waiting.pattern",
             AgentState::Idle => {
-                if matches_any(&last_5, CURSOR_PATTERNS.idle_tail) {
+                if matches_any(&prep.tail, CURSOR_PATTERNS.idle_tail) {
                     "cursor.idle.footer"
-                } else if last_5.contains("/ commands") {
+                } else if prep.tail.contains("/ commands") {
                     "cursor.idle.commands_footer"
                 } else {
                     "cursor.idle.prompt"
@@ -531,9 +539,10 @@ pub fn detect_state_rule(content: &str, kind: AgentKind, state: AgentState) -> &
             AgentState::Running => "opencode.running.pattern",
             AgentState::Waiting => "opencode.waiting.pattern",
             AgentState::Idle => {
-                if matches_any(&last_5, OPENCODE_PATTERNS.idle_tail) {
+                if matches_any(&prep.tail, OPENCODE_PATTERNS.idle_tail) {
                     "opencode.idle.footer"
-                } else if last_5
+                } else if prep
+                    .tail
                     .lines()
                     .any(|line| line.contains('┃') || line.contains('╹'))
                 {
@@ -547,7 +556,7 @@ pub fn detect_state_rule(content: &str, kind: AgentKind, state: AgentState) -> &
         AgentKind::Gemini => match state {
             AgentState::Running => "gemini.running.pattern_or_spinner",
             AgentState::Waiting => {
-                if last_5.contains("waiting for auth") {
+                if prep.tail.contains("waiting for auth") {
                     "gemini.waiting.auth"
                 } else {
                     "gemini.waiting.pattern"
@@ -1989,6 +1998,45 @@ mod tests {
         assert_eq!(join_tail(&lines, 5, 2), "d\ne");
         assert_eq!(join_tail(&lines, 5, 10), "a\nb\nc\nd\ne");
         assert_eq!(join_tail(&lines, 5, 0), "");
+    }
+
+    // -- PreparedContent ------------------------------------------------------
+
+    #[test]
+    fn prepared_content_basic_windows() {
+        let prep = PreparedContent::from_raw("line1\nline2\nline3\nline4\nline5\nline6");
+        // last_3 should contain lines 4-6
+        assert_eq!(prep.prompt_tail, "line4\nline5\nline6");
+        // last_5 should contain lines 2-6
+        assert_eq!(prep.tail, "line2\nline3\nline4\nline5\nline6");
+        // last_30 should contain all lines (fewer than 30)
+        assert_eq!(prep.content, "line1\nline2\nline3\nline4\nline5\nline6");
+    }
+
+    #[test]
+    fn prepared_content_strips_ansi() {
+        let prep = PreparedContent::from_raw("\x1B[32mgreen\x1B[0m\nplain");
+        assert_eq!(prep.tail, "green\nplain");
+    }
+
+    #[test]
+    fn prepared_content_skips_empty_lines() {
+        let prep = PreparedContent::from_raw("a\n\n  \nb\n\nc");
+        assert_eq!(prep.prompt_tail, "a\nb\nc");
+    }
+
+    #[test]
+    fn prepared_content_empty_input() {
+        let prep = PreparedContent::from_raw("");
+        assert_eq!(prep.content, "");
+        assert_eq!(prep.tail, "");
+        assert_eq!(prep.prompt_tail, "");
+    }
+
+    #[test]
+    fn prepared_content_lowercases() {
+        let prep = PreparedContent::from_raw("Hello WORLD");
+        assert_eq!(prep.tail, "hello world");
     }
 
     // -- Thinking word -------------------------------------------------------

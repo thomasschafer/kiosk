@@ -2089,6 +2089,316 @@ mod tests {
         assert_eq!(prep.tail, "hello world");
     }
 
+    #[test]
+    fn prepared_content_over_30_boundary() {
+        // 31 lines: content must contain only the last 30; tail the last 5;
+        // prompt_tail the last 3.
+        let lines: Vec<String> = (1..=31).map(|i| format!("line{i:02}")).collect();
+        let raw = lines.join("\n");
+        let prep = PreparedContent::from_raw(&raw);
+
+        // content = lines 2..=31 (last 30)
+        let expected_content = lines[1..].join("\n").to_lowercase();
+        assert_eq!(
+            prep.content, expected_content,
+            "content should be last 30 lines"
+        );
+
+        // tail = lines 27..=31 (last 5)
+        let expected_tail = lines[26..].join("\n").to_lowercase();
+        assert_eq!(prep.tail, expected_tail, "tail should be last 5 lines");
+
+        // prompt_tail = lines 29..=31 (last 3)
+        let expected_prompt = lines[28..].join("\n").to_lowercase();
+        assert_eq!(
+            prep.prompt_tail, expected_prompt,
+            "prompt_tail should be last 3 lines"
+        );
+    }
+
+    #[test]
+    fn prepared_content_exactly_30_lines() {
+        // Exactly 30 lines: content should include all of them (no truncation).
+        let lines: Vec<String> = (1..=30).map(|i| format!("line{i:02}")).collect();
+        let raw = lines.join("\n");
+        let prep = PreparedContent::from_raw(&raw);
+        let expected = lines.join("\n").to_lowercase();
+        assert_eq!(
+            prep.content, expected,
+            "exactly 30 lines should not be truncated"
+        );
+    }
+
+    #[test]
+    fn prepared_content_windows_are_nested() {
+        // prompt_tail ⊆ tail ⊆ content — the suffix of each larger window should
+        // end with the smaller window.
+        let lines: Vec<String> = (1..=40).map(|i| format!("line{i:02}")).collect();
+        let raw = lines.join("\n");
+        let prep = PreparedContent::from_raw(&raw);
+        assert!(
+            prep.content.ends_with(&prep.tail),
+            "content should end with tail"
+        );
+        assert!(
+            prep.tail.ends_with(&prep.prompt_tail),
+            "tail should end with prompt_tail"
+        );
+    }
+
+    // -- detect_state_rule ---------------------------------------------------
+
+    #[test]
+    fn state_rule_claude_running_tail_marker() {
+        let rule = detect_state_rule(
+            "doing work\nesc to interrupt",
+            AgentKind::ClaudeCode,
+            AgentState::Running,
+        );
+        assert_eq!(rule, "claude.running.tail_marker");
+    }
+
+    #[test]
+    fn state_rule_claude_running_thinking_glyph() {
+        // Glyph + ellipsis but no "esc to interrupt" in last 5 lines.
+        let content = "✦ Cogitating… 42 tokens\n\n\n\n\nsome other line";
+        let rule = detect_state_rule(content, AgentKind::ClaudeCode, AgentState::Running);
+        assert_eq!(rule, "claude.running.thinking_glyph");
+    }
+
+    #[test]
+    fn state_rule_claude_running_thinking_word() {
+        // Word+ellipsis at line start, glyph stripped.
+        let content = "noodling…\n\n\n\n\nsome other line";
+        let rule = detect_state_rule(content, AgentKind::ClaudeCode, AgentState::Running);
+        assert_eq!(rule, "claude.running.thinking_word");
+    }
+
+    #[test]
+    fn state_rule_claude_running_content_marker() {
+        // "esc to interrupt" must be outside the tail (last 5 non-empty lines)
+        // to avoid matching the tail_marker rule. Six non-empty lines after it
+        // pushes it beyond the tail window.
+        let content = "esc to interrupt\nline2\nline3\nline4\nline5\nsome other line";
+        let rule = detect_state_rule(content, AgentKind::ClaudeCode, AgentState::Running);
+        assert_eq!(rule, "claude.running.content_marker");
+    }
+
+    #[test]
+    fn state_rule_claude_waiting() {
+        let rule = detect_state_rule(
+            "Yes, allow this action",
+            AgentKind::ClaudeCode,
+            AgentState::Waiting,
+        );
+        assert_eq!(rule, "claude.waiting.pattern");
+    }
+
+    #[test]
+    fn state_rule_claude_idle_footer() {
+        let rule = detect_state_rule(
+            "some output\n? for shortcuts",
+            AgentKind::ClaudeCode,
+            AgentState::Idle,
+        );
+        assert_eq!(rule, "claude.idle.footer");
+    }
+
+    #[test]
+    fn state_rule_claude_idle_prompt_fallback() {
+        let rule = detect_state_rule(
+            "some output\n❯ Try \"refactor cli.rs\"",
+            AgentKind::ClaudeCode,
+            AgentState::Idle,
+        );
+        assert_eq!(rule, "claude.idle.prompt_fallback");
+    }
+
+    #[test]
+    fn state_rule_claude_unknown() {
+        let rule = detect_state_rule("", AgentKind::ClaudeCode, AgentState::Unknown);
+        assert_eq!(rule, "claude.unknown.no_match");
+    }
+
+    #[test]
+    fn state_rule_codex_running() {
+        let rule = detect_state_rule(
+            "• Working (2s • esc to interrupt)",
+            AgentKind::Codex,
+            AgentState::Running,
+        );
+        assert_eq!(rule, "codex.running.pattern");
+    }
+
+    #[test]
+    fn state_rule_codex_waiting() {
+        let rule = detect_state_rule(
+            "Run this command?\n› 1. Yes, proceed (y)",
+            AgentKind::Codex,
+            AgentState::Waiting,
+        );
+        assert_eq!(rule, "codex.waiting.tail_pattern");
+    }
+
+    #[test]
+    fn state_rule_codex_idle_footer() {
+        let rule = detect_state_rule(
+            "› Type a message\n? for shortcuts",
+            AgentKind::Codex,
+            AgentState::Idle,
+        );
+        assert_eq!(rule, "codex.idle.footer");
+    }
+
+    #[test]
+    fn state_rule_codex_idle_prompt_and_footer() {
+        let rule = detect_state_rule(
+            "› some text\ngpt-5.3-codex high · 100% left · ~/project",
+            AgentKind::Codex,
+            AgentState::Idle,
+        );
+        assert_eq!(rule, "codex.idle.prompt_and_footer");
+    }
+
+    #[test]
+    fn state_rule_codex_idle_plain_prompt() {
+        let rule = detect_state_rule("• Done\n› ", AgentKind::Codex, AgentState::Idle);
+        assert_eq!(rule, "codex.idle.plain_prompt");
+    }
+
+    #[test]
+    fn state_rule_codex_unknown() {
+        let rule = detect_state_rule("", AgentKind::Codex, AgentState::Unknown);
+        assert_eq!(rule, "codex.unknown.no_match");
+    }
+
+    #[test]
+    fn state_rule_cursor_running() {
+        let rule = detect_state_rule(
+            "⠋ editing\nesc to interrupt",
+            AgentKind::CursorAgent,
+            AgentState::Running,
+        );
+        assert_eq!(rule, "cursor.running.pattern");
+    }
+
+    #[test]
+    fn state_rule_cursor_waiting() {
+        let rule = detect_state_rule(
+            "run this command?\nnot in allowlist: sleep 10",
+            AgentKind::CursorAgent,
+            AgentState::Waiting,
+        );
+        assert_eq!(rule, "cursor.waiting.pattern");
+    }
+
+    #[test]
+    fn state_rule_cursor_idle_footer() {
+        // CURSOR_PATTERNS.idle_tail = &["/ commands"], so matches_any fires first
+        // and always returns "cursor.idle.footer" when "/ commands" is present.
+        // The "cursor.idle.commands_footer" branch is effectively unreachable
+        // given the current idle_tail definition.
+        let rule = detect_state_rule(
+            "some output\n/ commands",
+            AgentKind::CursorAgent,
+            AgentState::Idle,
+        );
+        assert_eq!(rule, "cursor.idle.footer");
+    }
+
+    #[test]
+    fn state_rule_cursor_idle_prompt() {
+        // Bare "> " prompt with no "/ commands" footer → prompt fallback.
+        let rule = detect_state_rule("> ", AgentKind::CursorAgent, AgentState::Idle);
+        assert_eq!(rule, "cursor.idle.prompt");
+    }
+
+    #[test]
+    fn state_rule_opencode_running() {
+        let rule = detect_state_rule(
+            "⬝⬝■■  esc interrupt",
+            AgentKind::OpenCode,
+            AgentState::Running,
+        );
+        assert_eq!(rule, "opencode.running.pattern");
+    }
+
+    #[test]
+    fn state_rule_opencode_waiting() {
+        let rule = detect_state_rule(
+            "Permission Required\nAllow (a)  Deny (d)",
+            AgentKind::OpenCode,
+            AgentState::Waiting,
+        );
+        assert_eq!(rule, "opencode.waiting.pattern");
+    }
+
+    #[test]
+    fn state_rule_opencode_idle_footer() {
+        let rule = detect_state_rule(
+            "some output\nctrl+p commands",
+            AgentKind::OpenCode,
+            AgentState::Idle,
+        );
+        assert_eq!(rule, "opencode.idle.footer");
+    }
+
+    #[test]
+    fn state_rule_opencode_idle_prompt_bar() {
+        let rule = detect_state_rule(
+            "  ┃  Build  GPT-5.3\n  ╹▀▀▀▀",
+            AgentKind::OpenCode,
+            AgentState::Idle,
+        );
+        assert_eq!(rule, "opencode.idle.prompt_bar");
+    }
+
+    #[test]
+    fn state_rule_gemini_running() {
+        let rule = detect_state_rule(
+            "working\nesc to interrupt",
+            AgentKind::Gemini,
+            AgentState::Running,
+        );
+        assert_eq!(rule, "gemini.running.pattern_or_spinner");
+    }
+
+    #[test]
+    fn state_rule_gemini_waiting_auth() {
+        let rule = detect_state_rule(
+            "⠴ Waiting for auth...",
+            AgentKind::Gemini,
+            AgentState::Waiting,
+        );
+        assert_eq!(rule, "gemini.waiting.auth");
+    }
+
+    #[test]
+    fn state_rule_gemini_waiting_pattern() {
+        let rule = detect_state_rule(
+            "action required\nallow once",
+            AgentKind::Gemini,
+            AgentState::Waiting,
+        );
+        assert_eq!(rule, "gemini.waiting.pattern");
+    }
+
+    #[test]
+    fn state_rule_gemini_idle() {
+        let rule = detect_state_rule(
+            "some output\n? for shortcuts",
+            AgentKind::Gemini,
+            AgentState::Idle,
+        );
+        assert_eq!(rule, "gemini.idle.footer");
+    }
+
+    #[test]
+    fn state_rule_gemini_unknown() {
+        let rule = detect_state_rule("random output", AgentKind::Gemini, AgentState::Unknown);
+        assert_eq!(rule, "gemini.unknown.no_match");
+    }
+
     // -- Thinking word -------------------------------------------------------
 
     #[test]

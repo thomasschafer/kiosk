@@ -527,8 +527,6 @@ pub fn detect_state_rule(content: &str, kind: AgentKind, state: AgentState) -> &
             AgentState::Idle => {
                 if matches_any(&prep.tail, CURSOR_PATTERNS.idle_tail) {
                     "cursor.idle.footer"
-                } else if prep.tail.contains("/ commands") {
-                    "cursor.idle.commands_footer"
                 } else {
                     "cursor.idle.prompt"
                 }
@@ -740,11 +738,6 @@ fn detect_cursor_state(content: &str, tail: &str) -> AgentState {
     // Idle footer: `/ commands` only counts as idle when no running
     // indicators are present (checked above).
     if matches_any(tail, CURSOR_PATTERNS.idle_tail) {
-        return AgentState::Idle;
-    }
-    // Fallback: if footer shows "/ commands" without running indicators,
-    // the agent is idle at the prompt.
-    if tail.contains("/ commands") {
         return AgentState::Idle;
     }
     // Fallback: bare prompt "> " at the end of output means idle.
@@ -2294,10 +2287,6 @@ mod tests {
 
     #[test]
     fn state_rule_cursor_idle_footer() {
-        // CURSOR_PATTERNS.idle_tail = &["/ commands"], so matches_any fires first
-        // and always returns "cursor.idle.footer" when "/ commands" is present.
-        // The "cursor.idle.commands_footer" branch is effectively unreachable
-        // given the current idle_tail definition.
         let rule = detect_state_rule(
             "some output\n/ commands",
             AgentKind::CursorAgent,

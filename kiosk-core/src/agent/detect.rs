@@ -416,39 +416,54 @@ const GEMINI_PATTERNS: AgentPatterns = AgentPatterns {
 const BRAILLE_SPINNERS: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 // ===========================================================================
+// State detection — content preparation
+// ===========================================================================
+
+/// Pre-processed terminal content for state detection.
+///
+/// Strips ANSI codes, collects non-empty lines, and computes lowercased tail
+/// windows (last 30, 5, and 3 lines) in a single pass. Both [`detect_state`]
+/// and [`detect_state_rule`] use this to avoid duplicating the setup logic.
+struct PreparedContent {
+    /// Lowercased tail window of the last 30 non-empty lines (content-level).
+    content: String,
+    /// Lowercased tail window of the last 5 non-empty lines (tail-level).
+    tail: String,
+    /// Lowercased tail window of the last 3 non-empty lines (prompt-level).
+    prompt_tail: String,
+}
+
+impl PreparedContent {
+    fn from_raw(raw: &str) -> Self {
+        let clean = strip_ansi_codes(raw);
+        let non_empty: Vec<&str> = clean
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .collect();
+        let len = non_empty.len();
+        Self {
+            content: join_tail(&non_empty, len, 30).to_lowercase(),
+            tail: join_tail(&non_empty, len, 5).to_lowercase(),
+            prompt_tail: join_tail(&non_empty, len, 3).to_lowercase(),
+        }
+    }
+}
+
+// ===========================================================================
 // State detection — public entry point
 // ===========================================================================
 
 /// Detect agent state from terminal content, dispatching to agent-specific
 /// detectors.
-///
-/// Content is ANSI-stripped once; non-empty lines are collected into windows
-/// (last 30, 5, and optionally 3 lines) and lowercased for case-insensitive
-/// matching. The windows are computed from a single pass over the cleaned
-/// content.
 pub fn detect_state(content: &str, kind: AgentKind) -> AgentState {
-    let clean = strip_ansi_codes(content);
-    let non_empty: Vec<&str> = clean
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .collect();
-
-    let len = non_empty.len();
-    let last_30 = join_tail(&non_empty, len, 30).to_lowercase();
-    let last_5 = join_tail(&non_empty, len, 5).to_lowercase();
+    let prep = PreparedContent::from_raw(content);
 
     match kind {
-        AgentKind::ClaudeCode => {
-            // Claude prompt fallback uses a tighter window (last 3 lines) to
-            // reduce false Idle during the brief processing transition when
-            // the user's question line (containing ❯) is still near the bottom.
-            let last_3 = join_tail(&non_empty, len, 3).to_lowercase();
-            detect_claude_state(&last_30, &last_5, &last_3)
-        }
-        AgentKind::Codex => detect_codex_state(&last_30, &last_5),
-        AgentKind::CursorAgent => detect_cursor_state(&last_30, &last_5),
-        AgentKind::OpenCode => detect_opencode_state(&last_30, &last_5),
-        AgentKind::Gemini => detect_gemini_state(&last_30, &last_5),
+        AgentKind::ClaudeCode => detect_claude_state(&prep.content, &prep.tail, &prep.prompt_tail),
+        AgentKind::Codex => detect_codex_state(&prep.content, &prep.tail),
+        AgentKind::CursorAgent => detect_cursor_state(&prep.content, &prep.tail),
+        AgentKind::OpenCode => detect_opencode_state(&prep.content, &prep.tail),
+        AgentKind::Gemini => detect_gemini_state(&prep.content, &prep.tail),
     }
 }
 
@@ -457,26 +472,18 @@ pub fn detect_state(content: &str, kind: AgentKind) -> AgentState {
 /// This is intended for diagnostics (for example `kiosk status --debug-agent`),
 /// not for core state logic.
 pub fn detect_state_rule(content: &str, kind: AgentKind, state: AgentState) -> &'static str {
-    let clean = strip_ansi_codes(content);
-    let non_empty: Vec<&str> = clean
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .collect();
-    let len = non_empty.len();
-    let last_5 = join_tail(&non_empty, len, 5).to_lowercase();
-    let last_3 = join_tail(&non_empty, len, 3).to_lowercase();
+    let prep = PreparedContent::from_raw(content);
 
     match kind {
         AgentKind::ClaudeCode => match state {
             AgentState::Running => {
-                let last_30 = join_tail(&non_empty, len, 30).to_lowercase();
-                if matches_any(&last_5, CLAUDE_PATTERNS.running)
-                    || contains_braille_spinner(&last_5)
+                if matches_any(&prep.tail, CLAUDE_PATTERNS.running)
+                    || contains_braille_spinner(&prep.tail)
                 {
                     "claude.running.tail_marker"
-                } else if contains_thinking_status(&last_30) {
+                } else if contains_thinking_status(&prep.content) {
                     "claude.running.thinking_glyph"
-                } else if contains_thinking_word(&last_30) {
+                } else if contains_thinking_word(&prep.content) {
                     "claude.running.thinking_word"
                 } else {
                     "claude.running.content_marker"
@@ -484,9 +491,10 @@ pub fn detect_state_rule(content: &str, kind: AgentKind, state: AgentState) -> &
             }
             AgentState::Waiting => "claude.waiting.pattern",
             AgentState::Idle => {
-                if matches_any(&last_5, CLAUDE_PATTERNS.idle_tail) {
+                if matches_any(&prep.tail, CLAUDE_PATTERNS.idle_tail) {
                     "claude.idle.footer"
-                } else if last_3
+                } else if prep
+                    .prompt_tail
                     .lines()
                     .any(|line| is_idle_claude_prompt(line.trim_start()))
                 {
@@ -501,11 +509,11 @@ pub fn detect_state_rule(content: &str, kind: AgentKind, state: AgentState) -> &
             AgentState::Running => "codex.running.pattern",
             AgentState::Waiting => "codex.waiting.tail_pattern",
             AgentState::Idle => {
-                if matches_any(&last_5, CODEX_PATTERNS.idle_tail) {
+                if matches_any(&prep.tail, CODEX_PATTERNS.idle_tail) {
                     "codex.idle.footer"
-                } else if looks_like_codex_idle_prompt(&last_5) {
+                } else if looks_like_codex_idle_prompt(&prep.tail) {
                     "codex.idle.prompt_and_footer"
-                } else if looks_like_codex_plain_idle_prompt(&last_5) {
+                } else if looks_like_codex_plain_idle_prompt(&prep.tail) {
                     "codex.idle.plain_prompt"
                 } else {
                     "codex.idle.other"
@@ -517,10 +525,8 @@ pub fn detect_state_rule(content: &str, kind: AgentKind, state: AgentState) -> &
             AgentState::Running => "cursor.running.pattern",
             AgentState::Waiting => "cursor.waiting.pattern",
             AgentState::Idle => {
-                if matches_any(&last_5, CURSOR_PATTERNS.idle_tail) {
+                if matches_any(&prep.tail, CURSOR_PATTERNS.idle_tail) {
                     "cursor.idle.footer"
-                } else if last_5.contains("/ commands") {
-                    "cursor.idle.commands_footer"
                 } else {
                     "cursor.idle.prompt"
                 }
@@ -531,9 +537,10 @@ pub fn detect_state_rule(content: &str, kind: AgentKind, state: AgentState) -> &
             AgentState::Running => "opencode.running.pattern",
             AgentState::Waiting => "opencode.waiting.pattern",
             AgentState::Idle => {
-                if matches_any(&last_5, OPENCODE_PATTERNS.idle_tail) {
+                if matches_any(&prep.tail, OPENCODE_PATTERNS.idle_tail) {
                     "opencode.idle.footer"
-                } else if last_5
+                } else if prep
+                    .tail
                     .lines()
                     .any(|line| line.contains('┃') || line.contains('╹'))
                 {
@@ -547,7 +554,7 @@ pub fn detect_state_rule(content: &str, kind: AgentKind, state: AgentState) -> &
         AgentKind::Gemini => match state {
             AgentState::Running => "gemini.running.pattern_or_spinner",
             AgentState::Waiting => {
-                if last_5.contains("waiting for auth") {
+                if prep.content.contains("waiting for auth") {
                     "gemini.waiting.auth"
                 } else {
                     "gemini.waiting.pattern"
@@ -646,12 +653,26 @@ fn detect_claude_waiting(content: &str) -> bool {
 /// Codex does NOT use the alternate screen, so old content persists in the
 /// scrollback. This means stale waiting/running text from earlier prompts
 /// can cause false positives if checked against the full content window.
+/// All pattern checks are therefore tail-only (last 5 lines).
 ///
-/// Key insight: waiting patterns are only checked against the **tail** (last
-/// 5 lines), not the full 30-line window, to avoid matching stale prompts
-/// like "Press enter to continue" from trust dialogs that are still in the
-/// scrollback above. Running patterns are also tail-only for the same reason:
-/// stale "esc to interrupt" lines can linger in Codex transcript history.
+/// Idle detection uses a three-step fallback chain because the primary
+/// footer signal (`? for shortcuts`) isn't always visible in tmux captures:
+///
+/// 1. **`matches_any(tail, idle_tail)`** — the `? for shortcuts` footer.
+///    Most reliable: only present when Codex is truly at the input prompt.
+///    (Exception: if a running indicator also appears, Codex is actively
+///    working — it shows both simultaneously during tool execution.)
+///
+/// 2. **[`looks_like_codex_idle_prompt`]** — requires BOTH a non-menu
+///    prompt line (`› ...`) AND a model/footer status line (e.g.
+///    `gpt-5.3-codex high · 100% left · ~/…`). Covers newer Codex renders
+///    where `? for shortcuts` is absent but the footer status line is
+///    present. Requiring both signals avoids false idle from stale text.
+///
+/// 3. **[`looks_like_codex_plain_idle_prompt`]** — bare prompt (`›` or
+///    `› type a message`) on the last non-empty line, with no footer at
+///    all. Most conservative: excludes tails containing `context left`
+///    which commonly appear mid-processing.
 fn detect_codex_state(_content: &str, tail: &str) -> AgentState {
     // For Codex (no alt-screen), the idle footer `? for shortcuts` is the
     // single most reliable signal — it's only visible when Codex is truly
@@ -695,7 +716,10 @@ fn detect_codex_state(_content: &str, tail: &str) -> AgentState {
 ///
 /// Cursor shows `/ commands` in the footer during BOTH idle and running
 /// states, so we must check running indicators BEFORE idle patterns.
-/// Uses `detect_active_state` which has the correct priority order.
+/// This requires a custom priority order: content-level running checks
+/// (hexagonal markers ⬢/⬡ for Thinking/Generating/Editing) must come
+/// before idle-tail checks, which differs from [`detect_active_state`]'s
+/// order.
 fn detect_cursor_state(content: &str, tail: &str) -> AgentState {
     // Check tail-level running first (ctrl+c to stop, esc to interrupt).
     if matches_any(tail, CURSOR_PATTERNS.running) || contains_braille_spinner(tail) {
@@ -714,11 +738,6 @@ fn detect_cursor_state(content: &str, tail: &str) -> AgentState {
     // Idle footer: `/ commands` only counts as idle when no running
     // indicators are present (checked above).
     if matches_any(tail, CURSOR_PATTERNS.idle_tail) {
-        return AgentState::Idle;
-    }
-    // Fallback: if footer shows "/ commands" without running indicators,
-    // the agent is idle at the prompt.
-    if tail.contains("/ commands") {
         return AgentState::Idle;
     }
     // Fallback: bare prompt "> " at the end of output means idle.
@@ -806,16 +825,32 @@ fn detect_gemini_state(content: &str, _tail: &str) -> AgentState {
 // Shared detection logic
 // ===========================================================================
 
-/// State detection for agents where absence of the idle footer means
-/// "processing" (Claude Code, `OpenCode`).
+/// Shared state detection helper — currently used only by **`OpenCode`**.
+///
+/// This helper applies the standard priority for agents whose idle footer
+/// reliably signals the prompt, and whose running indicators don't overlap
+/// with idle-tail patterns.
+///
+/// Other agents have custom implementations because this priority order
+/// doesn't fit their capture semantics:
+/// - **Claude Code**: uses the alternate screen (no scrollback), needs a
+///   tighter prompt-fallback window (last 3 lines), and has complex
+///   waiting-pattern logic (approval prompts paired with y/n).
+/// - **Codex**: no alternate screen, so stale scrollback can cause false
+///   positives. Idle-footer-first priority is critical to override lingering
+///   running/waiting text from earlier prompts.
+/// - **Cursor**: shows `/ commands` in both idle AND running states, so
+///   content-level running indicators must be checked before idle-tail —
+///   the opposite of this helper's order.
+/// - **Gemini**: uses content-level (not tail-level) pattern matching for
+///   waiting/running, and has a distinct `(y/n)` approval detection that
+///   must exclude false positives from content mentioning `(y/n)`.
 ///
 /// Detection priority:
-/// 1. Running patterns in the **tail** → Running (takes precedence over idle
-///    because agents like Codex show both `esc to interrupt` and
-///    `? for shortcuts` simultaneously during active work)
-/// 2. Idle tail patterns (e.g. `? for shortcuts`) → Idle
-/// 3. Running patterns in full content + braille spinners → Running
-/// 4. Waiting patterns → Waiting
+/// 1. Running patterns in the **tail** → Running
+/// 2. Waiting patterns in full content → Waiting
+/// 3. Idle tail patterns (e.g. `? for shortcuts`) → Idle
+/// 4. Running patterns in full content + braille spinners → Running
 /// 5. Default → **Unknown** (no recognisable pattern matched)
 fn detect_active_state(content: &str, tail: &str, patterns: &AgentPatterns) -> AgentState {
     if matches_any(tail, patterns.running) || contains_braille_spinner(tail) {
@@ -867,6 +902,12 @@ fn is_idle_claude_prompt(trimmed: &str) -> bool {
     false
 }
 
+/// Step 2 of the Codex idle fallback chain.
+///
+/// Matches when the tail contains both a non-menu prompt line (`› ...`)
+/// and a model/footer status line (e.g. `gpt-5.3-codex high · 100% left`).
+/// This covers newer Codex renders where `? for shortcuts` is absent but
+/// the footer status line is still present.
 fn looks_like_codex_idle_prompt(tail: &str) -> bool {
     // Strong idle fallback: when Codex footer is present, allow any
     // non-menu prompt line (`› ...`). This matches real idle captures where
@@ -910,7 +951,14 @@ fn is_menu_codex_prompt_payload(after_prompt: &str) -> bool {
     !prefix.is_empty() && prefix.chars().all(|c| c.is_ascii_digit()) && suffix.starts_with(' ')
 }
 
+/// Step 3 of the Codex idle fallback chain.
+///
+/// Matches a bare prompt (`›` or `› type a message`) on the last non-empty
+/// line with no footer present at all. Most conservative of the three idle
+/// checks: excludes tails containing `context left` which commonly appear
+/// mid-processing.
 fn looks_like_codex_plain_idle_prompt(tail: &str) -> bool {
+    // `tail` is already lowercased by PreparedContent::from_raw.
     let mut lines = tail.lines().map(str::trim).filter(|line| !line.is_empty());
     let Some(last) = lines.next_back() else {
         return false;
@@ -919,31 +967,37 @@ fn looks_like_codex_plain_idle_prompt(tail: &str) -> bool {
     if !is_bare_non_menu_codex_prompt_line(last) {
         return false;
     }
-    let lower = tail.to_lowercase();
     // During processing Codex often shows "context left" with the user prompt.
     // Keep that state as Unknown to avoid false Idle.
-    !lower.contains("context left")
+    !tail.contains("context left")
 }
 
+/// Detect a Codex model/status footer line (e.g. `gpt-5.3-codex high · 100% left · ~/…`).
+///
+/// Used by [`looks_like_codex_idle_prompt`] to confirm the footer is present
+/// alongside a prompt line. Matches lines containing `·`-separated segments
+/// where the first segment looks like a model name.
 fn looks_like_codex_footer_line(line: &str) -> bool {
-    let lower = line.trim().to_lowercase();
-    if lower.is_empty() || lower.contains("context left") || !line.contains('·') {
+    // `line` is a trimmed slice of an already-lowercased tail string
+    // (PreparedContent::from_raw lowercases before windowing).
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.contains("context left") || !trimmed.contains('·') {
         return false;
     }
 
-    let parts: Vec<&str> = line.split('·').map(str::trim).collect();
+    let parts: Vec<&str> = trimmed.split('·').map(str::trim).collect();
     if parts.len() < 2 {
         return false;
     }
 
-    let model_segment = parts[0].to_lowercase();
+    let model_segment = parts[0];
     let looks_like_model = model_segment.contains("codex")
         || model_segment.starts_with("gpt-")
         // Broad 'o' prefix catches the o-series family (o1, o3, o4-mini, …)
         // without enumerating every variant; the surrounding guards keep
         // false-positive risk low.
         || model_segment.starts_with('o');
-    let has_left_metric = parts[1].to_lowercase().contains("left");
+    let has_left_metric = parts[1].contains("left");
     let has_path_segment = parts
         .get(2)
         .is_none_or(|segment| segment.contains('/') || segment.starts_with('~'));
@@ -1989,6 +2043,351 @@ mod tests {
         assert_eq!(join_tail(&lines, 5, 2), "d\ne");
         assert_eq!(join_tail(&lines, 5, 10), "a\nb\nc\nd\ne");
         assert_eq!(join_tail(&lines, 5, 0), "");
+    }
+
+    // -- PreparedContent ------------------------------------------------------
+
+    #[test]
+    fn prepared_content_basic_windows() {
+        let prep = PreparedContent::from_raw("line1\nline2\nline3\nline4\nline5\nline6");
+        // last_3 should contain lines 4-6
+        assert_eq!(prep.prompt_tail, "line4\nline5\nline6");
+        // last_5 should contain lines 2-6
+        assert_eq!(prep.tail, "line2\nline3\nline4\nline5\nline6");
+        // last_30 should contain all lines (fewer than 30)
+        assert_eq!(prep.content, "line1\nline2\nline3\nline4\nline5\nline6");
+    }
+
+    #[test]
+    fn prepared_content_strips_ansi() {
+        let prep = PreparedContent::from_raw("\x1B[32mgreen\x1B[0m\nplain");
+        assert_eq!(prep.tail, "green\nplain");
+    }
+
+    #[test]
+    fn prepared_content_skips_empty_lines() {
+        let prep = PreparedContent::from_raw("a\n\n  \nb\n\nc");
+        assert_eq!(prep.prompt_tail, "a\nb\nc");
+    }
+
+    #[test]
+    fn prepared_content_empty_input() {
+        let prep = PreparedContent::from_raw("");
+        assert_eq!(prep.content, "");
+        assert_eq!(prep.tail, "");
+        assert_eq!(prep.prompt_tail, "");
+    }
+
+    #[test]
+    fn prepared_content_lowercases() {
+        let prep = PreparedContent::from_raw("Hello WORLD");
+        assert_eq!(prep.tail, "hello world");
+    }
+
+    #[test]
+    fn prepared_content_over_30_boundary() {
+        // 31 lines: content must contain only the last 30; tail the last 5;
+        // prompt_tail the last 3.
+        let lines: Vec<String> = (1..=31).map(|i| format!("line{i:02}")).collect();
+        let raw = lines.join("\n");
+        let prep = PreparedContent::from_raw(&raw);
+
+        // content = lines 2..=31 (last 30)
+        let expected_content = lines[1..].join("\n").to_lowercase();
+        assert_eq!(
+            prep.content, expected_content,
+            "content should be last 30 lines"
+        );
+
+        // tail = lines 27..=31 (last 5)
+        let expected_tail = lines[26..].join("\n").to_lowercase();
+        assert_eq!(prep.tail, expected_tail, "tail should be last 5 lines");
+
+        // prompt_tail = lines 29..=31 (last 3)
+        let expected_prompt = lines[28..].join("\n").to_lowercase();
+        assert_eq!(
+            prep.prompt_tail, expected_prompt,
+            "prompt_tail should be last 3 lines"
+        );
+    }
+
+    #[test]
+    fn prepared_content_exactly_30_lines() {
+        // Exactly 30 lines: content should include all of them (no truncation).
+        let lines: Vec<String> = (1..=30).map(|i| format!("line{i:02}")).collect();
+        let raw = lines.join("\n");
+        let prep = PreparedContent::from_raw(&raw);
+        let expected = lines.join("\n").to_lowercase();
+        assert_eq!(
+            prep.content, expected,
+            "exactly 30 lines should not be truncated"
+        );
+    }
+
+    #[test]
+    fn prepared_content_windows_are_nested() {
+        // prompt_tail ⊆ tail ⊆ content — the suffix of each larger window should
+        // end with the smaller window.
+        let lines: Vec<String> = (1..=40).map(|i| format!("line{i:02}")).collect();
+        let raw = lines.join("\n");
+        let prep = PreparedContent::from_raw(&raw);
+        assert!(
+            prep.content.ends_with(&prep.tail),
+            "content should end with tail"
+        );
+        assert!(
+            prep.tail.ends_with(&prep.prompt_tail),
+            "tail should end with prompt_tail"
+        );
+    }
+
+    // -- detect_state_rule ---------------------------------------------------
+
+    #[test]
+    fn state_rule_claude_running_tail_marker() {
+        let rule = detect_state_rule(
+            "doing work\nesc to interrupt",
+            AgentKind::ClaudeCode,
+            AgentState::Running,
+        );
+        assert_eq!(rule, "claude.running.tail_marker");
+    }
+
+    #[test]
+    fn state_rule_claude_running_thinking_glyph() {
+        // Glyph + ellipsis but no "esc to interrupt" in last 5 lines.
+        let content = "✦ Cogitating… 42 tokens\n\n\n\n\nsome other line";
+        let rule = detect_state_rule(content, AgentKind::ClaudeCode, AgentState::Running);
+        assert_eq!(rule, "claude.running.thinking_glyph");
+    }
+
+    #[test]
+    fn state_rule_claude_running_thinking_word() {
+        // Word+ellipsis at line start, glyph stripped.
+        let content = "noodling…\n\n\n\n\nsome other line";
+        let rule = detect_state_rule(content, AgentKind::ClaudeCode, AgentState::Running);
+        assert_eq!(rule, "claude.running.thinking_word");
+    }
+
+    #[test]
+    fn state_rule_claude_running_content_marker() {
+        // "esc to interrupt" must be outside the tail (last 5 non-empty lines)
+        // to avoid matching the tail_marker rule. Six non-empty lines after it
+        // pushes it beyond the tail window.
+        let content = "esc to interrupt\nline2\nline3\nline4\nline5\nsome other line";
+        let rule = detect_state_rule(content, AgentKind::ClaudeCode, AgentState::Running);
+        assert_eq!(rule, "claude.running.content_marker");
+    }
+
+    #[test]
+    fn state_rule_claude_waiting() {
+        let rule = detect_state_rule(
+            "Yes, allow this action",
+            AgentKind::ClaudeCode,
+            AgentState::Waiting,
+        );
+        assert_eq!(rule, "claude.waiting.pattern");
+    }
+
+    #[test]
+    fn state_rule_claude_idle_footer() {
+        let rule = detect_state_rule(
+            "some output\n? for shortcuts",
+            AgentKind::ClaudeCode,
+            AgentState::Idle,
+        );
+        assert_eq!(rule, "claude.idle.footer");
+    }
+
+    #[test]
+    fn state_rule_claude_idle_prompt_fallback() {
+        let rule = detect_state_rule(
+            "some output\n❯ Try \"refactor cli.rs\"",
+            AgentKind::ClaudeCode,
+            AgentState::Idle,
+        );
+        assert_eq!(rule, "claude.idle.prompt_fallback");
+    }
+
+    #[test]
+    fn state_rule_claude_unknown() {
+        let rule = detect_state_rule("", AgentKind::ClaudeCode, AgentState::Unknown);
+        assert_eq!(rule, "claude.unknown.no_match");
+    }
+
+    #[test]
+    fn state_rule_codex_running() {
+        let rule = detect_state_rule(
+            "• Working (2s • esc to interrupt)",
+            AgentKind::Codex,
+            AgentState::Running,
+        );
+        assert_eq!(rule, "codex.running.pattern");
+    }
+
+    #[test]
+    fn state_rule_codex_waiting() {
+        let rule = detect_state_rule(
+            "Run this command?\n› 1. Yes, proceed (y)",
+            AgentKind::Codex,
+            AgentState::Waiting,
+        );
+        assert_eq!(rule, "codex.waiting.tail_pattern");
+    }
+
+    #[test]
+    fn state_rule_codex_idle_footer() {
+        let rule = detect_state_rule(
+            "› Type a message\n? for shortcuts",
+            AgentKind::Codex,
+            AgentState::Idle,
+        );
+        assert_eq!(rule, "codex.idle.footer");
+    }
+
+    #[test]
+    fn state_rule_codex_idle_prompt_and_footer() {
+        let rule = detect_state_rule(
+            "› some text\ngpt-5.3-codex high · 100% left · ~/project",
+            AgentKind::Codex,
+            AgentState::Idle,
+        );
+        assert_eq!(rule, "codex.idle.prompt_and_footer");
+    }
+
+    #[test]
+    fn state_rule_codex_idle_plain_prompt() {
+        let rule = detect_state_rule("• Done\n› ", AgentKind::Codex, AgentState::Idle);
+        assert_eq!(rule, "codex.idle.plain_prompt");
+    }
+
+    #[test]
+    fn state_rule_codex_unknown() {
+        let rule = detect_state_rule("", AgentKind::Codex, AgentState::Unknown);
+        assert_eq!(rule, "codex.unknown.no_match");
+    }
+
+    #[test]
+    fn state_rule_cursor_running() {
+        let rule = detect_state_rule(
+            "⠋ editing\nesc to interrupt",
+            AgentKind::CursorAgent,
+            AgentState::Running,
+        );
+        assert_eq!(rule, "cursor.running.pattern");
+    }
+
+    #[test]
+    fn state_rule_cursor_waiting() {
+        let rule = detect_state_rule(
+            "run this command?\nnot in allowlist: sleep 10",
+            AgentKind::CursorAgent,
+            AgentState::Waiting,
+        );
+        assert_eq!(rule, "cursor.waiting.pattern");
+    }
+
+    #[test]
+    fn state_rule_cursor_idle_footer() {
+        let rule = detect_state_rule(
+            "some output\n/ commands",
+            AgentKind::CursorAgent,
+            AgentState::Idle,
+        );
+        assert_eq!(rule, "cursor.idle.footer");
+    }
+
+    #[test]
+    fn state_rule_cursor_idle_prompt() {
+        // Bare "> " prompt with no "/ commands" footer → prompt fallback.
+        let rule = detect_state_rule("> ", AgentKind::CursorAgent, AgentState::Idle);
+        assert_eq!(rule, "cursor.idle.prompt");
+    }
+
+    #[test]
+    fn state_rule_opencode_running() {
+        let rule = detect_state_rule(
+            "⬝⬝■■  esc interrupt",
+            AgentKind::OpenCode,
+            AgentState::Running,
+        );
+        assert_eq!(rule, "opencode.running.pattern");
+    }
+
+    #[test]
+    fn state_rule_opencode_waiting() {
+        let rule = detect_state_rule(
+            "Permission Required\nAllow (a)  Deny (d)",
+            AgentKind::OpenCode,
+            AgentState::Waiting,
+        );
+        assert_eq!(rule, "opencode.waiting.pattern");
+    }
+
+    #[test]
+    fn state_rule_opencode_idle_footer() {
+        let rule = detect_state_rule(
+            "some output\nctrl+p commands",
+            AgentKind::OpenCode,
+            AgentState::Idle,
+        );
+        assert_eq!(rule, "opencode.idle.footer");
+    }
+
+    #[test]
+    fn state_rule_opencode_idle_prompt_bar() {
+        let rule = detect_state_rule(
+            "  ┃  Build  GPT-5.3\n  ╹▀▀▀▀",
+            AgentKind::OpenCode,
+            AgentState::Idle,
+        );
+        assert_eq!(rule, "opencode.idle.prompt_bar");
+    }
+
+    #[test]
+    fn state_rule_gemini_running() {
+        let rule = detect_state_rule(
+            "working\nesc to interrupt",
+            AgentKind::Gemini,
+            AgentState::Running,
+        );
+        assert_eq!(rule, "gemini.running.pattern_or_spinner");
+    }
+
+    #[test]
+    fn state_rule_gemini_waiting_auth() {
+        let rule = detect_state_rule(
+            "⠴ Waiting for auth...",
+            AgentKind::Gemini,
+            AgentState::Waiting,
+        );
+        assert_eq!(rule, "gemini.waiting.auth");
+    }
+
+    #[test]
+    fn state_rule_gemini_waiting_pattern() {
+        let rule = detect_state_rule(
+            "action required\nallow once",
+            AgentKind::Gemini,
+            AgentState::Waiting,
+        );
+        assert_eq!(rule, "gemini.waiting.pattern");
+    }
+
+    #[test]
+    fn state_rule_gemini_idle() {
+        let rule = detect_state_rule(
+            "some output\n? for shortcuts",
+            AgentKind::Gemini,
+            AgentState::Idle,
+        );
+        assert_eq!(rule, "gemini.idle.footer");
+    }
+
+    #[test]
+    fn state_rule_gemini_unknown() {
+        let rule = detect_state_rule("random output", AgentKind::Gemini, AgentState::Unknown);
+        assert_eq!(rule, "gemini.unknown.no_match");
     }
 
     // -- Thinking word -------------------------------------------------------

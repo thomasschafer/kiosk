@@ -554,7 +554,7 @@ pub fn detect_state_rule(content: &str, kind: AgentKind, state: AgentState) -> &
         AgentKind::Gemini => match state {
             AgentState::Running => "gemini.running.pattern_or_spinner",
             AgentState::Waiting => {
-                if prep.tail.contains("waiting for auth") {
+                if prep.content.contains("waiting for auth") {
                     "gemini.waiting.auth"
                 } else {
                     "gemini.waiting.pattern"
@@ -958,6 +958,7 @@ fn is_menu_codex_prompt_payload(after_prompt: &str) -> bool {
 /// checks: excludes tails containing `context left` which commonly appear
 /// mid-processing.
 fn looks_like_codex_plain_idle_prompt(tail: &str) -> bool {
+    // `tail` is already lowercased by PreparedContent::from_raw.
     let mut lines = tail.lines().map(str::trim).filter(|line| !line.is_empty());
     let Some(last) = lines.next_back() else {
         return false;
@@ -966,10 +967,9 @@ fn looks_like_codex_plain_idle_prompt(tail: &str) -> bool {
     if !is_bare_non_menu_codex_prompt_line(last) {
         return false;
     }
-    let lower = tail.to_lowercase();
     // During processing Codex often shows "context left" with the user prompt.
     // Keep that state as Unknown to avoid false Idle.
-    !lower.contains("context left")
+    !tail.contains("context left")
 }
 
 /// Detect a Codex model/status footer line (e.g. `gpt-5.3-codex high · 100% left · ~/…`).
@@ -978,24 +978,26 @@ fn looks_like_codex_plain_idle_prompt(tail: &str) -> bool {
 /// alongside a prompt line. Matches lines containing `·`-separated segments
 /// where the first segment looks like a model name.
 fn looks_like_codex_footer_line(line: &str) -> bool {
-    let lower = line.trim().to_lowercase();
-    if lower.is_empty() || lower.contains("context left") || !line.contains('·') {
+    // `line` is a trimmed slice of an already-lowercased tail string
+    // (PreparedContent::from_raw lowercases before windowing).
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.contains("context left") || !trimmed.contains('·') {
         return false;
     }
 
-    let parts: Vec<&str> = line.split('·').map(str::trim).collect();
+    let parts: Vec<&str> = trimmed.split('·').map(str::trim).collect();
     if parts.len() < 2 {
         return false;
     }
 
-    let model_segment = parts[0].to_lowercase();
+    let model_segment = parts[0];
     let looks_like_model = model_segment.contains("codex")
         || model_segment.starts_with("gpt-")
         // Broad 'o' prefix catches the o-series family (o1, o3, o4-mini, …)
         // without enumerating every variant; the surrounding guards keep
         // false-positive risk low.
         || model_segment.starts_with('o');
-    let has_left_metric = parts[1].to_lowercase().contains("left");
+    let has_left_metric = parts[1].contains("left");
     let has_path_segment = parts
         .get(2)
         .is_none_or(|segment| segment.contains('/') || segment.starts_with('~'));

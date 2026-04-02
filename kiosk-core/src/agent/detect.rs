@@ -889,14 +889,21 @@ fn is_idle_claude_prompt(trimmed: &str) -> bool {
     let Some(after) = trimmed.strip_prefix('❯') else {
         return false;
     };
-    let after = after.trim();
     // Bare prompt (nothing after ❯)
-    if after.is_empty() {
+    if after.trim().is_empty() {
         return true;
     }
     // Claude's suggestion text: `Try "refactor cli.rs"` etc.
     // Lowercased input, so check for lowercase "try".
-    if after.starts_with("try \"") || after.starts_with("try \u{201c}") {
+    if after.trim().starts_with("try \"") || after.trim().starts_with("try \u{201c}") {
+        return true;
+    }
+    // The Gravy cat mascot is rendered to the right of the prompt on the same
+    // terminal row. tmux capture-pane -J joins the row into one line, producing
+    // `❯        (  ω  )` with many spaces before the cat art. User queries
+    // follow `❯` with a single space (`❯ some query`), so 5+ leading spaces
+    // reliably indicate the cat graphic rather than typed input.
+    if after.starts_with("     ") {
         return true;
     }
     false
@@ -1437,6 +1444,19 @@ mod tests {
     #[test]
     fn claude_idle_prompt_bare() {
         assert_eq!(detect_state("❯ ", AgentKind::ClaudeCode), AgentState::Idle);
+    }
+
+    #[test]
+    fn claude_idle_prompt_with_gravy_cat_on_same_line() {
+        // tmux capture-pane -J joins the prompt row and the cat mascot column
+        // into one line: `❯` at the left, cat art far to the right.
+        let content = "────────────────────────────────────────────────────────────────────────────────────────────────────────────────  ( °   °)\n\
+❯                                                                                                                  (  ω  )\n\
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────  (\")_(\")  ⏵⏵ bypass permissions on (shift+tab to cycle)  Gravy";
+        assert_eq!(
+            detect_state(content, AgentKind::ClaudeCode),
+            AgentState::Idle
+        );
     }
 
     #[test]

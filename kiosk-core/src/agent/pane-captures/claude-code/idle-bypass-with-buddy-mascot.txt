@@ -1,0 +1,30 @@
+                                                                                                                
+
+
+❯ Thanks! Next question, thoughts on this?                                                                      
+                                                                                                                
+Incorrect Package ID Parsing 🟠 [major]                                                                         
+The extractNameVersionMap function uses strings.LastIndex(id, "@") to separate a package name from its version. 
+ However, Python dependencies frequently use git URLs or references containing '@' characters (e.g., pkg @      
+git+https://.../repo.git@v1.0). In these cases, LastIndex will incorrectly split the string, leading to an      
+incorrect name key in the map and causing substituteWildcards to fail to resolve the intended package versions. 
+
+⏺ The concern is based on a misunderstanding of where extractNameVersionMap operates. Let me verify with the
+  git-references fixture.
+
+  Read 1 file, listed 1 directory, ran 1 bash command 
+
+⏺ The concern doesn't apply. extractNameVersionMap operates on dep graph pkgs[].id fields, which are always in
+  name@version format — this is an internal dep graph representation, not requirements.txt syntax. Even git/URL
+  references in requirements.txt are resolved by pip to a concrete package name and version ("black@23.12.1")
+  before being stored in the dep graph. The @ in git+https://...@23.12.1 never appears in a dep graph id field.
+
+  strings.LastIndex is still the right choice for edge cases where a package name itself contains @ (which pip
+  normalizes away), but the raw URL concern is a non-issue because dep graph IDs are always normalized
+  name@version strings.
+                                                                                                        \^^^/   
+                                                                                                        /\_/\   
+────────────────────────────────────────────────────────────────────────────────────────────────────   ( °   °) 
+❯                                                                                                      (  ω  )  
+────────────────────────────────────────────────────────────────────────────────────────────────────   (")_(")  
+  ⏵⏵ bypass permissions on (shift+tab to cycle)                                                         Gravy

@@ -889,21 +889,23 @@ fn is_idle_claude_prompt(trimmed: &str) -> bool {
     let Some(after) = trimmed.strip_prefix('❯') else {
         return false;
     };
+    let after_trimmed = after.trim();
     // Bare prompt (nothing after ❯)
-    if after.trim().is_empty() {
+    if after_trimmed.is_empty() {
         return true;
     }
     // Claude's suggestion text: `Try "refactor cli.rs"` etc.
     // Lowercased input, so check for lowercase "try".
-    if after.trim().starts_with("try \"") || after.trim().starts_with("try \u{201c}") {
+    if after_trimmed.starts_with("try \"") || after_trimmed.starts_with("try \u{201c}") {
         return true;
     }
     // Claude Code renders a buddy mascot to the right of the prompt on the
     // same terminal row. tmux capture-pane -J joins the row into one line,
-    // producing e.g. `❯        (  ω  )` with many spaces before the mascot.
-    // User queries follow `❯` with a single space (`❯ some query`), so 5+
-    // leading spaces reliably indicate the mascot rather than typed input.
-    if after.starts_with("     ") {
+    // producing e.g. `❯                    (  ω  )` with many spaces before
+    // the mascot. User queries follow `❯` with a single space, so 20+
+    // leading spaces reliably indicate the mascot (always at the right edge
+    // of a ≥80-column terminal) rather than typed input.
+    if after.starts_with("                    ") {
         return true;
     }
     false

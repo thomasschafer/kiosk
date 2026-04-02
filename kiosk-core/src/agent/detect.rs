@@ -898,11 +898,11 @@ fn is_idle_claude_prompt(trimmed: &str) -> bool {
     if after.trim().starts_with("try \"") || after.trim().starts_with("try \u{201c}") {
         return true;
     }
-    // The Gravy cat mascot is rendered to the right of the prompt on the same
-    // terminal row. tmux capture-pane -J joins the row into one line, producing
-    // `❯        (  ω  )` with many spaces before the cat art. User queries
-    // follow `❯` with a single space (`❯ some query`), so 5+ leading spaces
-    // reliably indicate the cat graphic rather than typed input.
+    // Claude Code renders a buddy mascot to the right of the prompt on the
+    // same terminal row. tmux capture-pane -J joins the row into one line,
+    // producing e.g. `❯        (  ω  )` with many spaces before the mascot.
+    // User queries follow `❯` with a single space (`❯ some query`), so 5+
+    // leading spaces reliably indicate the mascot rather than typed input.
     if after.starts_with("     ") {
         return true;
     }
@@ -1447,9 +1447,9 @@ mod tests {
     }
 
     #[test]
-    fn claude_idle_prompt_with_gravy_cat_on_same_line() {
-        // tmux capture-pane -J joins the prompt row and the cat mascot column
-        // into one line: `❯` at the left, cat art far to the right.
+    fn claude_idle_prompt_with_buddy_mascot_on_same_line() {
+        // tmux capture-pane -J joins the prompt row and the buddy mascot column
+        // into one line: `❯` at the left, mascot art far to the right.
         let content = "────────────────────────────────────────────────────────────────────────────────────────────────────────────────  ( °   °)\n\
 ❯                                                                                                                  (  ω  )\n\
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────  (\")_(\")  ⏵⏵ bypass permissions on (shift+tab to cycle)  Gravy";

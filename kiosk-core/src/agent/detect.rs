@@ -901,11 +901,13 @@ fn is_idle_claude_prompt(trimmed: &str) -> bool {
     }
     // Claude Code renders a buddy mascot to the right of the prompt on the
     // same terminal row. tmux capture-pane -J joins the row into one line,
-    // producing e.g. `❯                    (  ω  )` with many spaces before
-    // the mascot. User queries follow `❯` with a single space, so 20+
-    // leading spaces reliably indicate the mascot (always at the right edge
-    // of a ≥80-column terminal) rather than typed input.
-    if after.starts_with("                    ") {
+    // producing e.g. `❯\u{00A0}[spaces](  ω  )`. The gap between ❯ and the
+    // mascot is always large (the mascot sits at the right edge of a ≥80-col
+    // terminal). User queries follow ❯ with a single space/NBSP then text.
+    // Note: the first character after ❯ may be U+00A0 (non-breaking space),
+    // so we count Unicode whitespace characters, not ASCII bytes.
+    let leading_ws = after.chars().take_while(|c| c.is_whitespace()).count();
+    if leading_ws >= 20 {
         return true;
     }
     false
@@ -1452,8 +1454,11 @@ mod tests {
     fn claude_idle_prompt_with_buddy_mascot_on_same_line() {
         // tmux capture-pane -J joins the prompt row and the buddy mascot column
         // into one line: `❯` at the left, mascot art far to the right.
+        // Claude Code emits U+00A0 (non-breaking space) immediately after ❯
+        // in the idle prompt, so the check must use Unicode whitespace counting
+        // rather than ASCII starts_with.
         let content = "────────────────────────────────────────────────────────────────────────────────────────────────────────────────  ( °   °)\n\
-❯                                                                                                                  (  ω  )\n\
+❯\u{00A0}                                                                                                             (  ω  )\n\
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────  (\")_(\")  ⏵⏵ bypass permissions on (shift+tab to cycle)  Gravy";
         assert_eq!(
             detect_state(content, AgentKind::ClaudeCode),
@@ -2487,6 +2492,7 @@ mod fixture_tests {
         (CLAUDE_IDLE_CONFIG,              "claude-code/idle-config-screen.txt",                     AgentKind::ClaudeCode,  AgentState::Idle),
         (CLAUDE_IDLE_STATUS,              "claude-code/idle-status-screen.txt",                     AgentKind::ClaudeCode,  AgentState::Idle),
         (CLAUDE_IDLE_BYPASS,              "claude-code/idle-fresh-bypass-permissions.txt",          AgentKind::ClaudeCode,  AgentState::Idle),
+        (CLAUDE_IDLE_BYPASS_BUDDY,        "claude-code/idle-bypass-with-buddy-mascot.txt",           AgentKind::ClaudeCode,  AgentState::Idle),
         (CLAUDE_RUNNING_THINKING,         "claude-code/running-thinking-word.txt",                  AgentKind::ClaudeCode,  AgentState::Running),
         (CLAUDE_RUNNING_STREAMING,        "claude-code/running-streaming-response.txt",             AgentKind::ClaudeCode,  AgentState::Running),
         (CLAUDE_RUNNING_EXTENDED,         "claude-code/running-extended-thinking.txt",              AgentKind::ClaudeCode,  AgentState::Running),

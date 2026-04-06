@@ -44,6 +44,55 @@ fn create_session_commands(
     commands
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CurrentSessionTarget {
+    Untargeted,
+    Pane(String),
+    Unresolvable,
+}
+
+fn tmux_env_socket_name(tmux_env: &str) -> Option<String> {
+    let socket_path = tmux_env.split(',').next()?;
+    Path::new(socket_path)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+}
+
+fn current_session_target(
+    kiosk_tmux_socket: Option<&str>,
+    tmux_env: Option<&str>,
+    tmux_pane: Option<&str>,
+) -> CurrentSessionTarget {
+    let pane = tmux_pane.filter(|pane| !pane.is_empty());
+    let explicit_socket = kiosk_tmux_socket.filter(|socket| !socket.is_empty());
+    match explicit_socket {
+        None => pane.map_or(CurrentSessionTarget::Untargeted, |pane| {
+            CurrentSessionTarget::Pane(pane.to_string())
+        }),
+        Some(socket) => {
+            let Some(ambient_socket) = tmux_env.and_then(tmux_env_socket_name) else {
+                return CurrentSessionTarget::Unresolvable;
+            };
+            if ambient_socket != socket {
+                return CurrentSessionTarget::Unresolvable;
+            }
+            pane.map_or(CurrentSessionTarget::Untargeted, |pane| {
+                CurrentSessionTarget::Pane(pane.to_string())
+            })
+        }
+    }
+}
+
+fn current_session_name_args(target: &CurrentSessionTarget) -> Vec<String> {
+    let mut args = vec!["display-message".to_string(), "-p".to_string()];
+    if let CurrentSessionTarget::Pane(pane) = target {
+        args.push("-t".to_string());
+        args.push(pane.clone());
+    }
+    args.push("#S".to_string());
+    args
+}
+
 impl TmuxProvider for CliTmuxProvider {
     fn list_all_panes_with_activity(&self) -> HashMap<String, SessionPaneData> {
         // Single tmux call: list ALL panes across ALL sessions with session
@@ -447,20 +496,26 @@ impl TmuxProvider for CliTmuxProvider {
         if !self.is_inside_tmux() {
             return None;
         }
-        // When invoked via `run-shell -b` (e.g. a tmux keybinding), tmux sets
-        // TMUX_PANE to the pane where the key was pressed before spawning the
-        // background process.  Without an explicit target, `display-message`
-        // resolves "#S" relative to the connecting client's current session,
-        // which falls back to the most-recently-active session rather than the
-        // one that triggered the keybinding — causing non-deterministic
-        // behaviour.  Passing `-t $TMUX_PANE` pins the query to the correct
-        // pane so "#S" always resolves to the session that owns it.
-        let mut cmd = tmux_command();
-        cmd.arg("display-message").arg("-p");
-        if let Ok(pane) = std::env::var("TMUX_PANE") {
-            cmd.args(["-t", &pane]);
+        // When running inside tmux without an explicit socket, target
+        // `display-message` to `$TMUX_PANE` so keybindings launched via
+        // `run-shell -b` resolve the session that triggered the command.
+        //
+        // When `KIOSK_TMUX_SOCKET` is set, the ambient tmux context must
+        // belong to that same socket. Otherwise a pane id from a different
+        // tmux server may coincidentally exist on the requested socket and
+        // resolve to the wrong session. In that cross-socket case, refuse
+        // to guess.
+        let socket = std::env::var("KIOSK_TMUX_SOCKET").ok();
+        let tmux_env = std::env::var("TMUX").ok();
+        let pane = std::env::var("TMUX_PANE").ok();
+        let target =
+            current_session_target(socket.as_deref(), tmux_env.as_deref(), pane.as_deref());
+        if target == CurrentSessionTarget::Unresolvable {
+            return None;
         }
-        cmd.arg("#S");
+        let args = current_session_name_args(&target);
+        let mut cmd = tmux_command();
+        cmd.args(&args);
         let output = cmd.output().ok()?;
         if !output.status.success() {
             return None;
@@ -493,7 +548,10 @@ fn parse_pane_line(line: &str) -> Option<PaneInfo> {
 
 #[cfg(test)]
 mod tests {
-    use super::{create_session_commands, parse_pane_line};
+    use super::{
+        CurrentSessionTarget, create_session_commands, current_session_name_args,
+        current_session_target, parse_pane_line, tmux_env_socket_name,
+    };
 
     #[test]
     fn test_create_session_commands_with_split_command_uses_split_window_command_arg() {
@@ -528,6 +586,56 @@ mod tests {
     fn test_create_session_commands_without_split_command() {
         let commands = create_session_commands("demo", "/tmp/demo", None);
         assert_eq!(commands.len(), 1);
+    }
+
+    #[test]
+    fn test_tmux_env_socket_name_parses_socket_basename() {
+        let socket = tmux_env_socket_name("/tmp/tmux-501/kiosk-test,12345,0");
+        assert_eq!(socket.as_deref(), Some("kiosk-test"));
+    }
+
+    #[test]
+    fn test_current_session_target_uses_tmux_pane_when_socket_unset() {
+        let target = current_session_target(None, Some("/tmp/tmux-501/default,123,0"), Some("%42"));
+        assert_eq!(target, CurrentSessionTarget::Pane("%42".to_string()));
+    }
+
+    #[test]
+    fn test_current_session_target_uses_tmux_pane_when_socket_matches() {
+        let target = current_session_target(
+            Some("kiosk-test-socket"),
+            Some("/tmp/tmux-501/kiosk-test-socket,123,0"),
+            Some("%42"),
+        );
+        assert_eq!(target, CurrentSessionTarget::Pane("%42".to_string()));
+    }
+
+    #[test]
+    fn test_current_session_target_is_unresolvable_when_socket_mismatches() {
+        let target = current_session_target(
+            Some("target-socket"),
+            Some("/tmp/tmux-501/foreign-socket,123,0"),
+            Some("%42"),
+        );
+        assert_eq!(target, CurrentSessionTarget::Unresolvable);
+    }
+
+    #[test]
+    fn test_current_session_name_args_for_pane_target() {
+        let args = current_session_name_args(&CurrentSessionTarget::Pane("%42".to_string()));
+        assert_eq!(args, vec!["display-message", "-p", "-t", "%42", "#S"]);
+    }
+
+    #[test]
+    fn test_current_session_name_args_for_untargeted_lookup() {
+        let args = current_session_name_args(&CurrentSessionTarget::Untargeted);
+        assert_eq!(args, vec!["display-message", "-p", "#S"]);
+    }
+
+    #[test]
+    fn test_current_session_target_treats_empty_socket_as_unset() {
+        let target = current_session_target(Some(""), None, Some("%42"));
+        assert_eq!(target, CurrentSessionTarget::Pane("%42".to_string()));
     }
 
     #[test]

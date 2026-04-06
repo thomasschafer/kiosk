@@ -1191,6 +1191,142 @@ fn test_e2e_agent_sessions_json_no_agent() {
 }
 
 // ---------------------------------------------------------------------------
+// CLI tests: `kiosk next`
+// ---------------------------------------------------------------------------
+
+#[test]
+#[serial]
+fn test_e2e_next_ignores_foreign_tmux_pane_when_socket_is_explicit() {
+    if use_real_agents() {
+        return;
+    }
+
+    let env = AgentTestEnvDefault::new("next-socket-pane");
+    let eligible_session = format!("{}-eligible", env.kiosk_session);
+
+    let fake_claude = write_fake_agent_script(
+        env.tmp.path(),
+        "claude",
+        fake_agent_output(AgentKind::ClaudeCode, FakeState::Waiting),
+    );
+
+    let eligible_created = env
+        .tmux_cmd()
+        .args([
+            "new-session",
+            "-d",
+            "-s",
+            &eligible_session,
+            "-c",
+            &env.repo_dir.to_string_lossy(),
+            "-x",
+            "120",
+            "-y",
+            "30",
+        ])
+        .status()
+        .unwrap();
+    assert!(
+        eligible_created.success(),
+        "Failed to create eligible session"
+    );
+
+    env.tmux_cmd()
+        .args([
+            "send-keys",
+            "-t",
+            &eligible_session,
+            &fake_claude.to_string_lossy(),
+            "Enter",
+        ])
+        .status()
+        .unwrap();
+    assert!(
+        wait_for_pane_content(&eligible_session, "yes, allow", 10_000, &env.tmux_socket),
+        "Timed out waiting for eligible fake agent session"
+    );
+
+    let foreign_socket = format!("kiosk-e2e-next-foreign-{}", unique_id());
+    let foreign_session = format!("foreign-{}", unique_id());
+    let foreign_created = Command::new("tmux")
+        .args([
+            "-L",
+            &foreign_socket,
+            "new-session",
+            "-d",
+            "-s",
+            &foreign_session,
+            "sleep 30",
+        ])
+        .status()
+        .unwrap();
+    assert!(
+        foreign_created.success(),
+        "Failed to create foreign tmux session"
+    );
+
+    let foreign_pane_output = Command::new("tmux")
+        .args([
+            "-L",
+            &foreign_socket,
+            "display-message",
+            "-p",
+            "-t",
+            &foreign_session,
+            "#{pane_id}",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        foreign_pane_output.status.success(),
+        "Failed to resolve foreign pane id: {}",
+        String::from_utf8_lossy(&foreign_pane_output.stderr)
+    );
+    let foreign_pane = String::from_utf8_lossy(&foreign_pane_output.stdout)
+        .trim()
+        .to_string();
+    assert!(
+        !foreign_pane.is_empty(),
+        "Expected foreign tmux pane id to be non-empty"
+    );
+
+    let tmux_env = format!("/tmp/tmux-test/{foreign_socket},123,0");
+    let output = Command::new(kiosk_binary())
+        .args(["next", "--json"])
+        .env("XDG_CONFIG_HOME", &env.config_dir)
+        .env("XDG_STATE_HOME", &env.state_dir)
+        .env("KIOSK_TMUX_SOCKET", &env.tmux_socket)
+        .env("TMUX", &tmux_env)
+        .env("TMUX_PANE", &foreign_pane)
+        .output()
+        .unwrap();
+
+    let exit_status = output.status.code().unwrap_or(1).to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let _ = Command::new("tmux")
+        .args(["-L", &foreign_socket, "kill-server"])
+        .output();
+
+    assert_eq!(
+        exit_status.trim(),
+        "1",
+        "kiosk next should fail when the ambient tmux context belongs to a different socket.\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.is_empty(),
+        "Expected no success output when current session cannot be resolved: {stdout}"
+    );
+
+    let json: Value =
+        serde_json::from_str(&stderr).unwrap_or_else(|e| panic!("Invalid JSON: {e}\n{stderr}"));
+    assert_eq!(
+        json["error"], "could not determine current tmux session name",
+        "Explicit socket should ignore the foreign TMUX_PANE and fail clearly instead of acting on the wrong session"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // CLI tests: Cursor Agent
 // ---------------------------------------------------------------------------
 

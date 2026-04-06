@@ -14,13 +14,9 @@ Three features that work together to make kiosk an effective agent session manag
 
 ### ✅ Part 1: `kiosk next` CLI Command (Done)
 
-- Attempts to choose session (other than current) as follows (round robin with Waiting > Idle > Running > Unknown):
-  - If there is a Waiting session, jump to the oldest by `session_activity`
-  - Else, if there is an Idle session, jump to the oldest by `session_activity`
-  - Else, if there is a Running session, jump to the oldest by `session_activity`
-  - Else, if there is an Unknown session (detected agent, unclassified), jump to the oldest by `session_activity`
-  - Else, don't change, show an error or message
-- Never switches to the current session if there is another session that is either Waiting or Idle
+- Attempts to choose the oldest tmux session (other than current) whose detected agent is `Waiting`, `Idle`, or `Unknown`
+- Ignores `Running` sessions
+- Uses tmux session activity ordering directly instead of resolving repo/worktree metadata first
 - `--json` output supported
 
 ### ✅ Part 2: Sessions TUI View
@@ -59,13 +55,14 @@ Three features that work together to make kiosk an effective agent session manag
 
 ## Resolved Decisions
 
-- **Sort order**: Waiting > Idle > Running > No agent (Idle above Running because Idle includes potential questions — see issue #33)
+- **Sort order**: oldest eligible tmux session first, where eligible means `Waiting`, `Idle`, or `Unknown`
 - **Sessions view current row**: Always pin the current session to the top of the sessions list
 - **`kiosk next` includes Idle**: Idle includes agents that may have asked questions
-- **Round-robin strategy**: Stateless, using tmux `session_activity` timestamps (oldest first within priority group)
+- **Selection strategy**: Stateless, using tmux `session_activity` timestamps (oldest eligible first)
 - **Skip current session**: `kiosk next` only switches to a *different* session, if one exists, otherwise shows message saying no session to jump to
 - **Sessions view architecture**: New standalone component (not branch picker reuse)
-- **`Running` and `Unknown` states**: Both eligible for `kiosk next` as lower-priority fallbacks (Running before Unknown)
+- **`Running` states**: Not eligible for `kiosk next`
+- **`Unknown` states**: Eligible for `kiosk next`
 - **Session preview rollout**: Ship monochrome first (3.1), then full-color ANSI rendering (3.2)
 - **Session preview polling**: Refresh on selection changes and poll selected session every 1 second by default
 - **Preview poll config policy**: configurable interval in milliseconds; any value `> 0` is accepted; no clamping

@@ -1,7 +1,7 @@
 use anyhow::Context;
 use kiosk_core::{
     config::Config,
-    git::{GitProvider, Repo, apply_repo_name_collision_resolution, repo_matches_active_session},
+    git::{GitProvider, Repo},
     pending_delete::{
         PendingWorktreeDelete, load_pending_worktree_deletes, save_pending_worktree_deletes,
     },
@@ -9,7 +9,7 @@ use kiosk_core::{
     tmux::TmuxProvider,
 };
 use serde::Serialize;
-use std::{collections::HashSet, fmt::Write, fs, path::PathBuf};
+use std::{fmt::Write, fs, path::PathBuf};
 
 pub type CliResult<T> = Result<T, CliError>;
 
@@ -285,24 +285,6 @@ fn discover_all_with_worktrees(config: &Config, git: &dyn GitProvider) -> Vec<Re
         repo.worktrees = git.list_worktrees(&repo.path);
     }
     repos
-}
-
-fn discover_active_repos_with_worktrees(
-    config: &Config,
-    git: &dyn GitProvider,
-    active_sessions: &HashSet<String>,
-) -> Vec<Repo> {
-    let search_dirs = config.resolved_search_dirs();
-    let mut repos = git.scan_repos(&search_dirs);
-    apply_repo_name_collision_resolution(&mut repos, &search_dirs);
-    repos
-        .into_iter()
-        .filter(|repo| repo_matches_active_session(repo, active_sessions))
-        .map(|mut repo| {
-            repo.worktrees = git.list_worktrees(&repo.path);
-            repo
-        })
-        .collect()
 }
 
 fn detect_session_statuses(
@@ -794,21 +776,35 @@ pub fn cmd_sessions(
     Ok(())
 }
 
-/// Returns true if at least one agent was detected in the session.
+/// Normalise detection results for use in `cmd_next` eligibility checks.
 ///
-/// Any detected agent qualifies — including `Unknown`, which is intentionally
-/// included as a low-priority fallback. Sessions with no detected agents are
-/// excluded from `kiosk next`.
-fn has_detected_agent(statuses: &[kiosk_core::AgentStatus]) -> bool {
-    !statuses.is_empty()
+/// `Running` states inferred purely from recent pane activity
+/// (`StateSource::ActivityRecency`) are downgraded to `Unknown` so that
+/// sessions whose activity recency falsely implies running remain eligible
+/// for `kiosk next`.
+fn next_eligible_statuses(
+    detections: Vec<kiosk_core::agent::DetectionResult>,
+) -> Vec<kiosk_core::AgentStatus> {
+    kiosk_core::state::normalized_agent_statuses(
+        &detections
+            .into_iter()
+            .map(|result| {
+                let mut status = result.status;
+                if matches!(status.state, kiosk_core::AgentState::Running)
+                    && matches!(
+                        result.debug.state_source,
+                        kiosk_core::agent::StateSource::ActivityRecency
+                    )
+                {
+                    status.state = kiosk_core::AgentState::Unknown;
+                }
+                status
+            })
+            .collect::<Vec<_>>(),
+    )
 }
 
-pub fn cmd_next(
-    config: &Config,
-    git: &dyn GitProvider,
-    tmux: &dyn TmuxProvider,
-    json: bool,
-) -> CliResult<()> {
+pub fn cmd_next(config: &Config, tmux: &dyn TmuxProvider, json: bool) -> CliResult<()> {
     if !config.agent.enabled {
         return Err(CliError::user(
             "agent detection is disabled. Enable it in config to use kiosk next",
@@ -820,73 +816,52 @@ pub fn cmd_next(
         ));
     }
 
-    let current_session = tmux.current_session_name();
+    let current_session = tmux
+        .current_session_name()
+        .ok_or_else(|| CliError::user("could not determine current tmux session name"))?;
     let all_pane_data = tmux.list_all_panes_with_activity();
-    // Derive active sessions from all_pane_data (one tmux call) instead of
-    // calling list_session_names() separately (second tmux call).
-    let active_sessions_set: HashSet<String> = all_pane_data.keys().cloned().collect();
-    let session_activity: std::collections::HashMap<String, u64> = all_pane_data
+    let mut sessions_by_recency: Vec<(String, u64)> = all_pane_data
         .iter()
         .map(|(name, data)| (name.clone(), data.session_activity))
         .collect();
-    let repos = discover_active_repos_with_worktrees(config, git, &active_sessions_set);
-    let session_names: Vec<String> =
-        kiosk_core::state::active_session_entries(&repos, &session_activity, &HashSet::new())
-            .into_iter()
-            .filter_map(|session| {
-                (current_session.as_deref() != Some(session.session_name.as_str()))
-                    .then_some(session.session_name)
-            })
-            .collect();
+    sessions_by_recency
+        .sort_by(|(name_a, ts_a), (name_b, ts_b)| ts_a.cmp(ts_b).then_with(|| name_a.cmp(name_b)));
 
-    // Batched agent detection — include any session where at least one agent
-    // was detected. Preference order is Waiting > Idle > Running > Unknown.
-    let detection_results =
-        kiosk_core::agent::detect_all_for_sessions_batched(tmux, &session_names, &all_pane_data);
-
-    let mut candidates: Vec<(String, Vec<kiosk_core::AgentStatus>, u64)> = detection_results
+    // Walk sessions from oldest to newest and stop at the first full detection
+    // that finds an idle, waiting, or unknown agent.
+    let eligible_session = sessions_by_recency
         .into_iter()
-        .filter_map(|(session, detection)| {
-            let statuses = kiosk_core::state::normalized_agent_statuses(
-                &detection
-                    .into_iter()
-                    .map(|det| det.status)
-                    .collect::<Vec<_>>(),
+        .filter(|(session, _)| session != &current_session)
+        .find_map(|(session, _)| {
+            let data = all_pane_data.get(&session)?;
+            let statuses = next_eligible_statuses(
+                kiosk_core::agent::detect_all_for_session_from_pane_data(tmux, data),
             );
-            if has_detected_agent(&statuses) {
-                // Invariant: session_names ⊆ all_pane_data.keys()
-                // session_names is derived from active_session_entries which uses
-                // session_activity, which is built from all_pane_data. Therefore
-                // every candidate session is guaranteed to have an entry here.
-                let activity = all_pane_data.get(&session).map_or_else(
-                    || unreachable!("session {session:?} must exist in all_pane_data"),
-                    |d| d.session_activity,
-                );
-                Some((session, statuses, activity))
-            } else {
-                None
-            }
-        })
-        .collect();
+            statuses
+                .iter()
+                .any(|status| {
+                    matches!(
+                        status.state,
+                        kiosk_core::AgentState::Waiting
+                            | kiosk_core::AgentState::Idle
+                            | kiosk_core::AgentState::Unknown
+                    )
+                })
+                .then_some((session, statuses))
+        });
 
-    // Sort eligible candidates by shared state priority and oldest activity first.
-    candidates.sort_by(|a, b| {
-        kiosk_core::state::cmp_by_agent_priority_then_oldest_activity(&a.1, a.2, &b.1, b.2)
-    });
-
-    if let Some((session, statuses, _)) = candidates.first() {
-        let agent_states: Vec<String> = kiosk_core::state::sorted_unique_agent_states(statuses)
+    if let Some((session, statuses)) = eligible_session {
+        let agent_states: Vec<String> = kiosk_core::state::sorted_unique_agent_states(&statuses)
             .into_iter()
             .map(|state| state.to_string())
             .collect();
-        // primary_state is always present: candidates only contain sessions with
-        // at least one detected agent, so agent_states is guaranteed non-empty.
+        // Eligible sessions always include at least one detected agent state.
         let primary_state = agent_states
             .first()
-            .expect("candidate has at least one agent state")
+            .expect("eligible session has at least one agent state")
             .clone();
 
-        tmux.switch_to_session(session);
+        tmux.switch_to_session(&session);
         let output = NextOutput {
             switched: true,
             session: session.clone(),
@@ -905,7 +880,9 @@ pub fn cmd_next(
         }
         Ok(())
     } else {
-        Err(CliError::user("No other sessions with detected agents"))
+        Err(CliError::user(
+            "No other idle, waiting, or unknown sessions with detected agents",
+        ))
     }
 }
 
@@ -3356,15 +3333,14 @@ mod tests {
     fn mock_with_sessions_and_agents(
         current: &str,
         sessions: &[(&str, &str, &str, u64)], // (session_name, command, content, activity)
-    ) -> (Config, MockGitProvider, MockTmuxProvider) {
+    ) -> (Config, MockTmuxProvider) {
         let config = test_config();
-        let mut worktrees = vec![main_worktree()];
-        let mut git_worktrees = vec![main_worktree()];
 
         let mut pane_info = HashMap::new();
         let mut pane_content = HashMap::new();
         let mut session_activity_ts = HashMap::new();
         let mut session_names = vec!["demo".to_string()];
+        let mut sessions_with_activity = vec![(current.to_string(), 0)];
 
         for (i, (session, command, content, activity)) in sessions.iter().enumerate() {
             let pane_id = format!("%{}", i + 10);
@@ -3378,29 +3354,18 @@ mod tests {
             );
             pane_content.insert(pane_id, content.to_string());
             session_activity_ts.insert(session.to_string(), *activity);
+            if *session != current {
+                sessions_with_activity.push((session.to_string(), *activity));
+            }
 
             if *session != "demo" && !session_names.contains(&session.to_string()) {
                 session_names.push(session.to_string());
-                // Create a worktree entry for each non-demo session
-                let branch = session.strip_prefix("demo--").unwrap_or(session);
-                let wt = Worktree {
-                    path: PathBuf::from(format!("/tmp/.kiosk_worktrees/{session}")),
-                    branch: Some(branch.replace('-', "/")),
-                    is_main: false,
-                };
-                worktrees.push(wt.clone());
-                git_worktrees.push(wt);
             }
         }
 
-        let git = MockGitProvider {
-            repos: vec![repo("/tmp/demo", "demo")],
-            worktrees: git_worktrees,
-            ..Default::default()
-        };
-
         let tmux = MockTmuxProvider {
             sessions: Mutex::new(session_names),
+            sessions_with_activity,
             inside_tmux: true,
             current_session: Some(current.to_string()),
             pane_info,
@@ -3409,12 +3374,12 @@ mod tests {
             ..Default::default()
         };
 
-        (config, git, tmux)
+        (config, tmux)
     }
 
     #[test]
     fn next_switches_to_waiting_session() {
-        let (config, git, tmux) = mock_with_sessions_and_agents(
+        let (config, tmux) = mock_with_sessions_and_agents(
             "demo",
             &[
                 ("demo", "claude", "⠋ Reading file", 1000),
@@ -3427,7 +3392,7 @@ mod tests {
             ],
         );
 
-        let result = cmd_next(&config, &git, &tmux, false);
+        let result = cmd_next(&config, &tmux, false);
         assert!(result.is_ok());
         let switched = tmux.switched_sessions.lock().unwrap();
         assert_eq!(switched.as_slice(), &["demo--feat-a"]);
@@ -3435,7 +3400,7 @@ mod tests {
 
     #[test]
     fn next_switches_to_idle_when_no_waiting() {
-        let (config, git, tmux) = mock_with_sessions_and_agents(
+        let (config, tmux) = mock_with_sessions_and_agents(
             "demo",
             &[
                 ("demo", "claude", "⠋ Reading file", 1000),
@@ -3443,15 +3408,15 @@ mod tests {
             ],
         );
 
-        let result = cmd_next(&config, &git, &tmux, false);
+        let result = cmd_next(&config, &tmux, false);
         assert!(result.is_ok());
         let switched = tmux.switched_sessions.lock().unwrap();
         assert_eq!(switched.as_slice(), &["demo--feat-b"]);
     }
 
     #[test]
-    fn next_prefers_waiting_over_idle() {
-        let (config, git, tmux) = mock_with_sessions_and_agents(
+    fn next_picks_older_idle_before_newer_waiting() {
+        let (config, tmux) = mock_with_sessions_and_agents(
             "demo",
             &[
                 ("demo", "claude", "⠋ Reading file", 1000),
@@ -3465,19 +3430,19 @@ mod tests {
             ],
         );
 
-        let result = cmd_next(&config, &git, &tmux, false);
+        let result = cmd_next(&config, &tmux, false);
         assert!(result.is_ok());
         let switched = tmux.switched_sessions.lock().unwrap();
         assert_eq!(
             switched.as_slice(),
-            &["demo--feat-wait"],
-            "Should prefer waiting over idle even if idle is older"
+            &["demo--feat-idle"],
+            "Should pick the older eligible session even if a newer waiting session exists"
         );
     }
 
     #[test]
     fn next_skips_current_session() {
-        let (config, git, tmux) = mock_with_sessions_and_agents(
+        let (config, tmux) = mock_with_sessions_and_agents(
             "demo--feat-wait",
             &[
                 (
@@ -3490,7 +3455,7 @@ mod tests {
             ],
         );
 
-        let result = cmd_next(&config, &git, &tmux, false);
+        let result = cmd_next(&config, &tmux, false);
         assert!(result.is_ok());
         let switched = tmux.switched_sessions.lock().unwrap();
         assert_eq!(
@@ -3502,7 +3467,7 @@ mod tests {
 
     #[test]
     fn next_oldest_activity_wins_within_same_tier() {
-        let (config, git, tmux) = mock_with_sessions_and_agents(
+        let (config, tmux) = mock_with_sessions_and_agents(
             "demo",
             &[
                 (
@@ -3520,7 +3485,7 @@ mod tests {
             ],
         );
 
-        let result = cmd_next(&config, &git, &tmux, false);
+        let result = cmd_next(&config, &tmux, false);
         assert!(result.is_ok());
         let switched = tmux.switched_sessions.lock().unwrap();
         assert_eq!(
@@ -3532,7 +3497,7 @@ mod tests {
 
     #[test]
     fn next_no_eligible_sessions_returns_error() {
-        let (config, git, tmux) = mock_with_sessions_and_agents(
+        let (config, tmux) = mock_with_sessions_and_agents(
             "demo",
             &[
                 ("demo", "claude", "⠋ Reading file", 1000),
@@ -3540,13 +3505,13 @@ mod tests {
             ],
         );
 
-        let result = cmd_next(&config, &git, &tmux, false);
+        let result = cmd_next(&config, &tmux, false);
         assert!(result.is_err());
         let error = result.unwrap_err();
         assert!(
             error
                 .message()
-                .contains("No other sessions with detected agents")
+                .contains("No other idle, waiting, or unknown sessions with detected agents")
         );
         assert!(tmux.switched_sessions.lock().unwrap().is_empty());
     }
@@ -3554,21 +3519,41 @@ mod tests {
     #[test]
     fn next_not_inside_tmux_returns_error() {
         let config = test_config();
-        let git = demo_git(vec![main_worktree()], vec![]);
         let tmux = MockTmuxProvider {
             inside_tmux: false,
             ..Default::default()
         };
 
-        let result = cmd_next(&config, &git, &tmux, false);
+        let result = cmd_next(&config, &tmux, false);
         assert!(result.is_err());
         let error = result.unwrap_err();
         assert!(error.message().contains("not inside tmux"));
     }
 
     #[test]
+    fn next_errors_when_current_session_unknown() {
+        // current_session_name() can return None even inside tmux (e.g. if the
+        // tmux display-message call fails). In that case cmd_next should return
+        // an explicit error rather than treating every session as a candidate.
+        let config = test_config();
+        let tmux = MockTmuxProvider {
+            inside_tmux: true,
+            current_session: None,
+            ..Default::default()
+        };
+
+        let error = cmd_next(&config, &tmux, false).unwrap_err();
+        assert!(
+            error
+                .message()
+                .contains("could not determine current tmux session name"),
+            "Should error when current session cannot be determined"
+        );
+    }
+
+    #[test]
     fn next_json_output_on_success() {
-        let (config, git, tmux) = mock_with_sessions_and_agents(
+        let (config, tmux) = mock_with_sessions_and_agents(
             "demo",
             &[(
                 "demo--feat-a",
@@ -3578,7 +3563,7 @@ mod tests {
             )],
         );
 
-        let result = cmd_next(&config, &git, &tmux, true);
+        let result = cmd_next(&config, &tmux, true);
         assert!(result.is_ok());
     }
 
@@ -3587,21 +3572,20 @@ mod tests {
         let mut config = test_config();
         config.agent.enabled = false;
 
-        let git = demo_git(vec![main_worktree()], vec![]);
         let tmux = MockTmuxProvider {
             inside_tmux: true,
             current_session: Some("demo".to_string()),
             ..Default::default()
         };
 
-        let error = cmd_next(&config, &git, &tmux, false).unwrap_err();
+        let error = cmd_next(&config, &tmux, false).unwrap_err();
         assert_eq!(error.code(), 1);
         assert!(error.message().contains("agent detection is disabled"));
     }
 
     #[test]
     fn next_only_current_session_eligible_returns_error() {
-        let (config, git, tmux) = mock_with_sessions_and_agents(
+        let (config, tmux) = mock_with_sessions_and_agents(
             "demo--feat-wait",
             &[(
                 "demo--feat-wait",
@@ -3611,58 +3595,64 @@ mod tests {
             )],
         );
 
-        let error = cmd_next(&config, &git, &tmux, false).unwrap_err();
+        let error = cmd_next(&config, &tmux, false).unwrap_err();
         assert!(
             error
                 .message()
-                .contains("No other sessions with detected agents"),
+                .contains("No other idle, waiting, or unknown sessions with detected agents"),
             "Should return error when only eligible session is the current one"
         );
         assert!(tmux.switched_sessions.lock().unwrap().is_empty());
     }
 
     #[test]
-    fn next_switches_to_running_when_no_waiting_or_idle() {
-        let (config, git, tmux) = mock_with_sessions_and_agents(
+    fn next_running_session_is_not_eligible() {
+        let (config, tmux) = mock_with_sessions_and_agents(
             "demo",
             &[("demo--feat-run", "claude", "⠋ Reading file", 900)],
         );
 
-        let result = cmd_next(&config, &git, &tmux, false);
+        let error = cmd_next(&config, &tmux, false).unwrap_err();
         assert!(
-            result.is_ok(),
-            "Running sessions should now be eligible fallback"
+            error
+                .message()
+                .contains("No other idle, waiting, or unknown sessions with detected agents")
         );
-        let switched = tmux.switched_sessions.lock().unwrap();
-        assert_eq!(switched.as_slice(), &["demo--feat-run"]);
+        assert!(tmux.switched_sessions.lock().unwrap().is_empty());
     }
 
     #[test]
-    fn next_picks_idle_before_running() {
-        let (config, git, tmux) = mock_with_sessions_and_agents(
+    fn next_picks_oldest_idle_or_waiting_session() {
+        let (config, tmux) = mock_with_sessions_and_agents(
             "demo",
             &[
-                ("demo--feat-run", "claude", "⠋ Reading file", 800),
-                ("demo--feat-idle", "claude", "❯ \n? for shortcuts", 900),
+                ("demo--feat-run", "claude", "⠋ Reading file", 700),
+                ("demo--feat-idle-old", "claude", "❯ \n? for shortcuts", 800),
+                (
+                    "demo--feat-wait-new",
+                    "claude",
+                    "Allow write?\n  Yes, allow\n  No, deny",
+                    900,
+                ),
             ],
         );
 
-        let result = cmd_next(&config, &git, &tmux, false);
+        let result = cmd_next(&config, &tmux, false);
         assert!(result.is_ok());
         let switched = tmux.switched_sessions.lock().unwrap();
         assert_eq!(
             switched.as_slice(),
-            &["demo--feat-idle"],
-            "Should pick idle over running"
+            &["demo--feat-idle-old"],
+            "Should pick the oldest eligible idle, waiting, or unknown session"
         );
     }
 
     #[test]
-    fn next_picks_waiting_before_running() {
-        let (config, git, tmux) = mock_with_sessions_and_agents(
+    fn next_running_session_is_skipped_in_favour_of_eligible_session() {
+        let (config, tmux) = mock_with_sessions_and_agents(
             "demo",
             &[
-                ("demo--feat-run", "claude", "⠋ Reading file", 800),
+                ("demo--feat-run", "claude", "⠋ Reading file", 700),
                 (
                     "demo--feat-wait",
                     "claude",
@@ -3672,19 +3662,19 @@ mod tests {
             ],
         );
 
-        let result = cmd_next(&config, &git, &tmux, false);
+        let result = cmd_next(&config, &tmux, false);
         assert!(result.is_ok());
         let switched = tmux.switched_sessions.lock().unwrap();
         assert_eq!(
             switched.as_slice(),
             &["demo--feat-wait"],
-            "Should pick waiting over running"
+            "Should skip running sessions and switch to the first eligible one"
         );
     }
 
     #[test]
-    fn next_picks_running_over_non_agent_session() {
-        let (config, git, tmux) = mock_with_sessions_and_agents(
+    fn next_non_agent_and_running_sessions_are_not_eligible() {
+        let (config, tmux) = mock_with_sessions_and_agents(
             "demo",
             &[
                 ("demo--feat-shell", "bash", "$ ls -la", 700),
@@ -3692,20 +3682,18 @@ mod tests {
             ],
         );
 
-        let result = cmd_next(&config, &git, &tmux, false);
-        assert!(result.is_ok());
-        let switched = tmux.switched_sessions.lock().unwrap();
-        assert_eq!(
-            switched.as_slice(),
-            &["demo--feat-run"],
-            "Should pick running over non-agent session"
+        let error = cmd_next(&config, &tmux, false).unwrap_err();
+        assert!(
+            error
+                .message()
+                .contains("No other idle, waiting, or unknown sessions with detected agents")
         );
+        assert!(tmux.switched_sessions.lock().unwrap().is_empty());
     }
 
     #[test]
-    fn next_switches_to_unknown_when_only_unknown() {
-        // Unrecognised terminal content → Unknown state; should still be eligible
-        let (config, git, tmux) = mock_with_sessions_and_agents(
+    fn next_unknown_session_is_eligible() {
+        let (config, tmux) = mock_with_sessions_and_agents(
             "demo",
             &[
                 ("demo--feat-old", "claude", "some unrecognised output", 500),
@@ -3713,39 +3701,39 @@ mod tests {
             ],
         );
 
-        let result = cmd_next(&config, &git, &tmux, false);
+        let result = cmd_next(&config, &tmux, false);
         assert!(result.is_ok());
         let switched = tmux.switched_sessions.lock().unwrap();
         assert_eq!(
             switched.as_slice(),
             &["demo--feat-old"],
-            "Should pick the oldest Unknown session"
+            "Should pick the oldest unknown session when it is the oldest eligible one"
         );
     }
 
     #[test]
-    fn next_picks_running_over_unknown() {
-        let (config, git, tmux) = mock_with_sessions_and_agents(
+    fn next_unknown_session_is_picked_when_older_than_idle() {
+        let (config, tmux) = mock_with_sessions_and_agents(
             "demo",
             &[
                 ("demo--feat-unk", "claude", "some unrecognised output", 500),
-                ("demo--feat-run", "claude", "⠋ Reading file", 1000),
+                ("demo--feat-idle", "claude", "❯ \n? for shortcuts", 1000),
             ],
         );
 
-        let result = cmd_next(&config, &git, &tmux, false);
+        let result = cmd_next(&config, &tmux, false);
         assert!(result.is_ok());
         let switched = tmux.switched_sessions.lock().unwrap();
         assert_eq!(
             switched.as_slice(),
-            &["demo--feat-run"],
-            "Should prefer Running over Unknown even if Unknown is older"
+            &["demo--feat-unk"],
+            "Should pick unknown when it is the oldest eligible session"
         );
     }
 
     #[test]
-    fn next_picks_unknown_over_non_agent_session() {
-        let (config, git, tmux) = mock_with_sessions_and_agents(
+    fn next_unknown_is_picked_over_non_agent_session() {
+        let (config, tmux) = mock_with_sessions_and_agents(
             "demo",
             &[
                 ("demo--feat-shell", "bash", "$ ls -la", 300),
@@ -3753,13 +3741,110 @@ mod tests {
             ],
         );
 
-        let result = cmd_next(&config, &git, &tmux, false);
+        let result = cmd_next(&config, &tmux, false);
         assert!(result.is_ok());
         let switched = tmux.switched_sessions.lock().unwrap();
         assert_eq!(
             switched.as_slice(),
             &["demo--feat-unk"],
-            "Should pick Unknown over a non-agent session"
+            "Should pick unknown over a non-agent session"
+        );
+    }
+
+    #[test]
+    fn next_activity_inferred_running_is_treated_as_unknown() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let (config, tmux) = mock_with_sessions_and_agents(
+            "demo",
+            &[("demo--feat-unk", "claude", "some unrecognised output", now)],
+        );
+
+        let result = cmd_next(&config, &tmux, false);
+        assert!(result.is_ok());
+        let switched = tmux.switched_sessions.lock().unwrap();
+        assert_eq!(
+            switched.as_slice(),
+            &["demo--feat-unk"],
+            "Activity-recency fallback should not make an unknown session ineligible for next"
+        );
+    }
+
+    #[test]
+    fn next_mixed_state_session_with_waiting_and_running_is_eligible() {
+        // A session containing both a Waiting pane and a Running pane should
+        // still be eligible for `kiosk next` because the eligibility check uses
+        // `any()` semantics — at least one pane in Waiting/Idle/Unknown is enough.
+        let config = test_config();
+
+        let mut pane_info = HashMap::new();
+        let mut pane_content = HashMap::new();
+        let mut session_activity_ts = HashMap::new();
+
+        // Current session: demo (running, not eligible itself)
+        pane_info.insert(
+            "demo".to_string(),
+            vec![kiosk_core::tmux::provider::PaneInfo {
+                pane_id: "%0".to_string(),
+                command: "claude".to_string(),
+                pid: 1000,
+            }],
+        );
+        pane_content.insert("%0".to_string(), "⠋ Reading file".to_string());
+        session_activity_ts.insert("demo".to_string(), 1000u64);
+
+        // Mixed session: one pane Waiting, one pane Running
+        pane_info.insert(
+            "demo--feat-mixed".to_string(),
+            vec![
+                kiosk_core::tmux::provider::PaneInfo {
+                    pane_id: "%10".to_string(),
+                    command: "claude".to_string(),
+                    pid: 2000,
+                },
+                kiosk_core::tmux::provider::PaneInfo {
+                    pane_id: "%11".to_string(),
+                    command: "claude".to_string(),
+                    pid: 2001,
+                },
+            ],
+        );
+        // Pane %10: Waiting (permission dialog)
+        pane_content.insert(
+            "%10".to_string(),
+            "Allow write?\n  Yes, allow\n  No, deny".to_string(),
+        );
+        // Pane %11: Running (braille spinner)
+        pane_content.insert("%11".to_string(), "⠋ Reading file".to_string());
+        session_activity_ts.insert("demo--feat-mixed".to_string(), 900u64);
+
+        let tmux = MockTmuxProvider {
+            sessions: Mutex::new(vec!["demo".to_string(), "demo--feat-mixed".to_string()]),
+            sessions_with_activity: vec![
+                ("demo".to_string(), 1000),
+                ("demo--feat-mixed".to_string(), 900),
+            ],
+            inside_tmux: true,
+            current_session: Some("demo".to_string()),
+            pane_info,
+            pane_content,
+            session_activity_ts,
+            ..Default::default()
+        };
+
+        let result = cmd_next(&config, &tmux, false);
+        assert!(
+            result.is_ok(),
+            "Mixed Waiting+Running session should be eligible: {:?}",
+            result.unwrap_err().message()
+        );
+        let switched = tmux.switched_sessions.lock().unwrap();
+        assert_eq!(
+            switched.as_slice(),
+            &["demo--feat-mixed"],
+            "Should switch to the mixed-state session"
         );
     }
 }

@@ -92,7 +92,7 @@ kiosk status my-project feat/thing --json --debug-agent
 # List active kiosk sessions (includes last_activity, pane_count, current_command)
 kiosk sessions --json
 
-# Switch to the next session with a detected agent (Waiting > Idle > Running > Unknown)
+# Switch to the oldest other tmux session whose detected agent is idle, waiting, or unknown
 kiosk next --json
 
 # Read session logs

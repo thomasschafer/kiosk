@@ -202,7 +202,7 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Switch to the next agent session needing attention
+    /// Switch to the oldest other tmux session with an idle, waiting, or unknown agent
     Next {
         /// Output result as JSON
         #[arg(long)]
@@ -379,9 +379,7 @@ fn dispatch_command(
             };
             crate::cli::cmd_send(config, git.as_ref(), tmux.as_ref(), &args)
         }
-        Some(Commands::Next { json }) => {
-            crate::cli::cmd_next(config, git.as_ref(), tmux.as_ref(), json)
-        }
+        Some(Commands::Next { json }) => crate::cli::cmd_next(config, tmux.as_ref(), json),
         Some(Commands::Sessions { json }) => {
             crate::cli::cmd_sessions(config, git.as_ref(), tmux.as_ref(), json)
         }

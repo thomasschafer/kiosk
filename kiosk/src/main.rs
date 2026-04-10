@@ -479,14 +479,13 @@ fn run_tui(
     });
 
     let mut state = if let Some(repo) = initial_repo {
-        let mut s = AppState::new(vec![repo], config.session.split_command.clone());
+        let mut s = AppState::new(vec![repo], config.session.layout.clone());
         s.loading_repos = true;
         s.current_repo_path = current_repo_path;
         s.cwd_worktree_path = cwd_worktree_path;
         s
     } else {
-        let mut s =
-            AppState::new_loading("Discovering repos...", config.session.split_command.clone());
+        let mut s = AppState::new_loading("Discovering repos...", config.session.layout.clone());
         s.current_repo_path = current_repo_path;
         s.cwd_worktree_path = cwd_worktree_path;
         s
@@ -529,12 +528,12 @@ fn run_tui(
         Some(OpenAction::Open {
             path,
             session_name,
-            split_command,
+            layout,
         }) => {
             if let Some(path) = path
                 && !tmux.session_exists(&session_name)
             {
-                tmux.create_session(&session_name, &path, split_command.as_deref())?;
+                tmux.create_session(&session_name, &path, layout.as_ref())?;
             }
 
             tmux.switch_to_session(&session_name);

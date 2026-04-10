@@ -1,4 +1,5 @@
 use super::provider::{PaneInfo, SessionPaneData, TmuxProvider};
+use crate::config::layout::Layout;
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::Path;
@@ -90,7 +91,7 @@ impl TmuxProvider for MockTmuxProvider {
         &self,
         name: &str,
         _dir: &Path,
-        _split_command: Option<&str>,
+        _layout: Option<&Layout>,
     ) -> anyhow::Result<()> {
         self.created_sessions.lock().unwrap().push(name.to_string());
         let mut sessions = self.sessions.lock().unwrap();

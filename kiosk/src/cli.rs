@@ -458,7 +458,7 @@ fn open_internal(
         tmux.create_session(
             &resolved.session_name,
             &resolved.path,
-            config.session.split_command.as_deref(),
+            config.session.layout.as_ref(),
         )
         .map_err(CliError::from)?;
         resolved.created = true;

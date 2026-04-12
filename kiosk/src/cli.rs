@@ -240,7 +240,6 @@ struct WaitOutput {
     idle: bool,
     timed_out: bool,
     pane_command: String,
-    exit_code: Option<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -499,13 +498,12 @@ fn open_internal(
 
     let wait_output = match wait_result {
         Some(Ok(output)) => Some(output),
-        Some(Err(e)) if e.message() == "wait timeout" => Some(WaitOutput {
+        Some(Err(e)) if e.message() == "timed out" => Some(WaitOutput {
             idle: false,
             timed_out: true,
             pane_command: tmux
                 .pane_current_command(&resolved.session_name, &args.wait_pane.to_string())
                 .unwrap_or_else(|_| "unknown".to_string()),
-            exit_code: None,
         }),
         Some(Err(e)) => return Err(e),
         None => None,
@@ -1333,49 +1331,21 @@ pub fn cmd_panes(
         )));
     }
 
-    // Get pane information from tmux
-    let panes_output = std::process::Command::new("tmux")
-        .args([
-            "list-panes",
-            "-t",
-            &format!("={session_name}"),
-            "-F",
-            "#{pane_index}:#{pane_current_command}:#{pane_pid}:#{pane_active}:#{pane_width}:#{pane_height}",
-        ])
-        .output()
-        .map_err(|e| CliError::system(format!("failed to execute tmux list-panes: {e}")))?;
+    let pane_details = tmux
+        .list_panes(&session_name)
+        .map_err(|e| CliError::system(format!("failed to list panes: {e}")))?;
 
-    if !panes_output.status.success() {
-        let stderr = String::from_utf8_lossy(&panes_output.stderr);
-        return Err(CliError::system(format!(
-            "tmux list-panes failed: {}",
-            stderr.trim()
-        )));
-    }
-
-    let panes_str = String::from_utf8_lossy(&panes_output.stdout);
-    let mut panes = Vec::new();
-
-    for line in panes_str.lines() {
-        let parts: Vec<&str> = line.split(':').collect();
-        if parts.len() >= 6 {
-            let index = parts[0].parse::<usize>().unwrap_or(0);
-            let current_command = parts[1].to_string();
-            let pid = parts[2].parse::<u32>().unwrap_or(0);
-            let active = parts[3] == "1";
-            let width = parts[4].parse::<u32>().unwrap_or(0);
-            let height = parts[5].parse::<u32>().unwrap_or(0);
-
-            panes.push(PaneInfo {
-                index,
-                current_command,
-                pid,
-                active,
-                width,
-                height,
-            });
-        }
-    }
+    let panes: Vec<PaneInfo> = pane_details
+        .into_iter()
+        .map(|d| PaneInfo {
+            index: d.index,
+            current_command: d.current_command,
+            pid: d.pid,
+            active: d.active,
+            width: d.width,
+            height: d.height,
+        })
+        .collect();
 
     let output = PanesOutput {
         session: session_name,
@@ -1457,7 +1427,7 @@ fn wait_for_idle_with_options(
 
     loop {
         if start_time.elapsed() >= timeout_duration {
-            return Err(CliError::user("wait timeout"));
+            return Err(CliError::user("timed out"));
         }
 
         // When agent detection is enabled, check agent state first.
@@ -1474,7 +1444,6 @@ fn wait_for_idle_with_options(
                             idle: true,
                             timed_out: false,
                             pane_command: pane_cmd,
-                            exit_code: None,
                         });
                     }
                     kiosk_core::AgentState::Unknown => {
@@ -1487,7 +1456,6 @@ fn wait_for_idle_with_options(
                                 idle: true,
                                 timed_out: false,
                                 pane_command: pane_cmd,
-                                exit_code: None,
                             });
                         }
                     }
@@ -1504,7 +1472,6 @@ fn wait_for_idle_with_options(
                     idle: true,
                     timed_out: false,
                     pane_command: command,
-                    exit_code: None,
                 });
             } else {
                 unknown_streak = 0;
@@ -1517,7 +1484,6 @@ fn wait_for_idle_with_options(
                             idle: true,
                             timed_out: false,
                             pane_command: command,
-                            exit_code: None,
                         });
                     }
                 }
@@ -1565,24 +1531,23 @@ pub fn cmd_wait(
         Ok(output) => {
             if args.json {
                 print_json(&output)?;
+            } else if KNOWN_SHELLS.iter().any(|&s| output.pane_command == s) {
+                println!("pane idle: shell detected ({})", output.pane_command);
             } else {
-                println!("pane idle (shell detected)");
+                println!("agent idle: {}", output.pane_command);
             }
             Ok(())
         }
-        Err(e) if e.message() == "wait timeout" => {
+        Err(e) if e.message() == "timed out" => {
             let output = WaitOutput {
                 idle: false,
                 timed_out: true,
                 pane_command: tmux
                     .pane_current_command(&session_name, &args.pane.to_string())
                     .unwrap_or_else(|_| "unknown".to_string()),
-                exit_code: None,
             };
             if args.json {
                 print_json(&output)?;
-            } else {
-                println!("timeout reached");
             }
             Err(e)
         }
@@ -2968,11 +2933,34 @@ mod tests {
     }
 
     #[test]
-    fn test_panes_command() {
+    fn test_panes_returns_error_when_session_missing() {
+        let config = test_config();
+        let git = demo_git(vec![main_worktree()], vec![]);
+        let tmux = MockTmuxProvider::default(); // no sessions
+
+        let error = cmd_panes(
+            &config,
+            &git,
+            &tmux,
+            &PanesArgs {
+                repo: "demo".to_string(),
+                branch: None,
+                json: false,
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code(), 1);
+        assert!(error.message().contains("does not exist"));
+    }
+
+    #[test]
+    fn test_panes_returns_empty_list_via_mock() {
         let config = test_config();
         let git = demo_git(vec![main_worktree()], vec![]);
         let tmux = MockTmuxProvider::default();
         tmux.sessions.lock().unwrap().push("demo".to_string());
+        // mock_pane_details empty → list_panes returns Ok(vec![])
 
         let result = cmd_panes(
             &config,
@@ -2984,11 +2972,78 @@ mod tests {
                 json: true,
             },
         );
+        assert!(result.is_ok());
+    }
 
-        // In our mock, this would fail because we're calling external tmux
-        // In a real integration test, we'd mock the Command::new call
-        // For unit tests, this validates the session existence check works
-        assert!(result.is_err() || result.is_ok());
+    #[test]
+    fn test_panes_returns_mock_pane_data() {
+        use kiosk_core::tmux::provider::PaneDetails;
+        use std::collections::HashMap;
+
+        let config = test_config();
+        let git = demo_git(vec![main_worktree()], vec![]);
+
+        let mut mock_pane_details = HashMap::new();
+        mock_pane_details.insert(
+            "demo".to_string(),
+            vec![
+                PaneDetails {
+                    index: 0,
+                    current_command: "zsh".to_string(),
+                    pid: 1001,
+                    active: true,
+                    width: 200,
+                    height: 50,
+                },
+                PaneDetails {
+                    index: 1,
+                    current_command: "claude".to_string(),
+                    pid: 1002,
+                    active: false,
+                    width: 200,
+                    height: 50,
+                },
+            ],
+        );
+        let tmux = MockTmuxProvider {
+            sessions: std::sync::Mutex::new(vec!["demo".to_string()]),
+            mock_pane_details,
+            ..Default::default()
+        };
+
+        let result = cmd_panes(
+            &config,
+            &git,
+            &tmux,
+            &PanesArgs {
+                repo: "demo".to_string(),
+                branch: None,
+                json: true,
+            },
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_panes_returns_error_for_unknown_repo() {
+        let config = test_config();
+        let git = MockGitProvider::default(); // no repos
+        let tmux = MockTmuxProvider::default();
+
+        let error = cmd_panes(
+            &config,
+            &git,
+            &tmux,
+            &PanesArgs {
+                repo: "nonexistent".to_string(),
+                branch: None,
+                json: false,
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code(), 1);
+        assert!(error.message().contains("nonexistent"));
     }
 
     #[test]
@@ -3074,7 +3129,107 @@ mod tests {
             },
         )
         .expect_err("should timeout on running");
-        assert_eq!(err.message(), "wait timeout");
+        assert_eq!(err.message(), "timed out");
+    }
+
+    #[test]
+    fn cmd_wait_timeout_returns_timed_out_error_without_extra_message() {
+        // Regression: previously cmd_wait printed "timeout reached" AND returned
+        // Err("timed out"), causing main to also print via print_error — two messages.
+        // Now only Err("timed out") is returned; no extra stdout printing on timeout.
+        let config = test_config();
+        let git = demo_git(vec![main_worktree()], vec![]);
+
+        let mut tmux = MockTmuxProvider::default();
+        tmux.sessions.lock().unwrap().push("demo".to_string());
+        // Insert a running claude pane so wait_for_idle never naturally completes
+        tmux.pane_info.insert(
+            "demo".to_string(),
+            vec![kiosk_core::tmux::provider::PaneInfo {
+                pane_id: "%0".to_string(),
+                command: "claude".to_string(),
+                pid: 999,
+            }],
+        );
+        tmux.pane_content.insert(
+            "%0".to_string(),
+            "⠋ working... esc to interrupt".to_string(),
+        );
+
+        let err = cmd_wait(
+            &config,
+            &git,
+            &tmux,
+            &WaitArgs {
+                repo: "demo".to_string(),
+                branch: None,
+                timeout: 0, // immediate timeout
+                pane: 0,
+                json: false,
+            },
+        )
+        .unwrap_err();
+
+        // The error message is the single user-facing signal; no duplicate println.
+        assert_eq!(err.message(), "timed out");
+        assert_eq!(err.code(), 1);
+    }
+
+    #[test]
+    fn cmd_wait_timeout_json_output_has_timed_out_true() {
+        let config = test_config();
+        let git = demo_git(vec![main_worktree()], vec![]);
+
+        let mut tmux = MockTmuxProvider::default();
+        tmux.sessions.lock().unwrap().push("demo".to_string());
+        tmux.pane_info.insert(
+            "demo".to_string(),
+            vec![kiosk_core::tmux::provider::PaneInfo {
+                pane_id: "%0".to_string(),
+                command: "claude".to_string(),
+                pid: 999,
+            }],
+        );
+        tmux.pane_content.insert(
+            "%0".to_string(),
+            "⠋ working... esc to interrupt".to_string(),
+        );
+
+        // JSON mode: should print {"idle":false,"timed_out":true,...} and return Err
+        let result = cmd_wait(
+            &config,
+            &git,
+            &tmux,
+            &WaitArgs {
+                repo: "demo".to_string(),
+                branch: None,
+                timeout: 0,
+                pane: 0,
+                json: true,
+            },
+        );
+        // Still returns Err so the process exits non-zero, but JSON was printed
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().message(), "timed out");
+    }
+
+    #[test]
+    fn wait_output_has_no_exit_code_field() {
+        // Regression: WaitOutput previously had an exit_code field that was
+        // always None, serialising as null and confusing API consumers.
+        let output = WaitOutput {
+            idle: true,
+            timed_out: false,
+            pane_command: "zsh".to_string(),
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert!(
+            json.get("exit_code").is_none(),
+            "exit_code must not appear in JSON: {json}"
+        );
+        assert_eq!(json["idle"], true);
+        assert_eq!(json["timed_out"], false);
+        assert_eq!(json["pane_command"], "zsh");
     }
 
     #[test]

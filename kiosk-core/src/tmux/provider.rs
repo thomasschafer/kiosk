@@ -7,6 +7,18 @@ pub struct PaneInfo {
     pub pid: u32,
 }
 
+/// Full pane metadata returned by [`TmuxProvider::list_panes`], suitable for
+/// user-facing display (e.g. `kiosk panes`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaneDetails {
+    pub index: usize,
+    pub current_command: String,
+    pub pid: u32,
+    pub active: bool,
+    pub width: u32,
+    pub height: u32,
+}
+
 /// Pre-fetched pane info and session metadata for a single session.
 /// Returned by [`TmuxProvider::list_all_panes_with_activity`] to enable
 /// batched agent detection without per-session tmux subprocess calls.
@@ -78,6 +90,9 @@ pub trait TmuxProvider: Send + Sync {
     fn kill_session(&self, name: &str);
     fn is_inside_tmux(&self) -> bool;
     fn list_panes_detailed(&self, session: &str) -> Vec<PaneInfo>;
+    /// List all panes in a session with full display metadata (index, command,
+    /// pid, active flag, dimensions). Used by `kiosk panes`.
+    fn list_panes(&self, session_name: &str) -> anyhow::Result<Vec<PaneDetails>>;
     fn capture_pane_content(&self, pane_id: &str, lines: u32) -> Option<String>;
     /// Get the name of the current tmux session.
     /// Returns `None` if not inside tmux or if the command fails.

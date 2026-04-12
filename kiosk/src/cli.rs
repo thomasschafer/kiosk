@@ -1376,6 +1376,11 @@ const KNOWN_SHELLS: &[&str] = &[
     "bash", "zsh", "fish", "sh", "dash", "ash", "ksh", "tcsh", "csh", "nu", "nushell", "pwsh",
 ];
 
+/// Command names that indicate a known coding agent, used to produce a
+/// contextual idle message from `kiosk wait`.  Kept in sync with the
+/// `AGENT_PATTERNS` table in `kiosk-core::agent::detect`.
+const KNOWN_AGENTS: &[&str] = &["claude", "codex", "cursor-agent", "opencode", "gemini"];
+
 const WAIT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 const UNKNOWN_READY_POLLS: u32 = 8;
 
@@ -1533,8 +1538,10 @@ pub fn cmd_wait(
                 print_json(&output)?;
             } else if KNOWN_SHELLS.iter().any(|&s| output.pane_command == s) {
                 println!("pane idle: shell detected ({})", output.pane_command);
-            } else {
+            } else if KNOWN_AGENTS.iter().any(|&a| output.pane_command == a) {
                 println!("agent idle: {}", output.pane_command);
+            } else {
+                println!("pane idle: {}", output.pane_command);
             }
             Ok(())
         }
@@ -3230,6 +3237,27 @@ mod tests {
         assert_eq!(json["idle"], true);
         assert_eq!(json["timed_out"], false);
         assert_eq!(json["pane_command"], "zsh");
+    }
+
+    #[test]
+    fn wait_output_pane_command_classification() {
+        // Regression: non-shell, non-agent commands (e.g. "nvim") must not
+        // produce "agent idle: nvim". They should fall through to the neutral
+        // "pane idle: <cmd>" branch.  We test the classification constants
+        // directly since the full cmd_wait path requires a real idle output.
+        assert!(KNOWN_SHELLS.contains(&"zsh"), "zsh should be a known shell");
+        assert!(
+            KNOWN_AGENTS.contains(&"claude"),
+            "claude should be a known agent"
+        );
+        assert!(
+            !KNOWN_SHELLS.contains(&"nvim") && !KNOWN_AGENTS.contains(&"nvim"),
+            "nvim must fall through to the neutral pane-idle branch"
+        );
+        assert!(
+            !KNOWN_SHELLS.contains(&"vim") && !KNOWN_AGENTS.contains(&"vim"),
+            "vim must fall through to the neutral pane-idle branch"
+        );
     }
 
     #[test]

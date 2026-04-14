@@ -704,7 +704,7 @@ fn clean_orphaned_worktrees(
         let removed: Vec<String> = removed.iter().map(|p| p.display().to_string()).collect();
         let output = serde_json::json!({ "orphaned": orphaned, "removed": removed });
         println!("{output}");
-        clean_prunable_worktree_metadata(search_dirs, git, dry_run || !yes);
+        clean_prunable_worktree_metadata(search_dirs, git, dry_run || !yes, OutputMode::Json)?;
         return Ok(());
     }
 
@@ -746,29 +746,38 @@ fn clean_orphaned_worktrees(
         }
     }
 
-    clean_prunable_worktree_metadata(search_dirs, git, dry_run);
+    clean_prunable_worktree_metadata(search_dirs, git, dry_run, OutputMode::Human)?;
     Ok(())
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OutputMode {
+    Json,
+    Human,
 }
 
 fn clean_prunable_worktree_metadata(
     search_dirs: &[(std::path::PathBuf, u16)],
     git: &dyn GitProvider,
     dry_run: bool,
-) {
+    output_mode: OutputMode,
+) -> anyhow::Result<()> {
     let repos = git.discover_repos(search_dirs);
     if repos.is_empty() {
-        if !dry_run {
+        if !dry_run && output_mode == OutputMode::Human {
             println!("No repositories discovered for worktree metadata prune.");
         }
-        return;
+        return Ok(());
     }
 
     if dry_run {
-        println!(
-            "Would prune stale worktree metadata in {} repos.",
-            repos.len()
-        );
-        return;
+        if output_mode == OutputMode::Human {
+            println!(
+                "Would prune stale worktree metadata in {} repos.",
+                repos.len()
+            );
+        }
+        return Ok(());
     }
 
     let mut failures = Vec::new();
@@ -779,11 +788,38 @@ fn clean_prunable_worktree_metadata(
     }
 
     if failures.is_empty() {
-        println!("Pruned stale worktree metadata in discovered repositories.");
+        if output_mode == OutputMode::Human {
+            println!("Pruned stale worktree metadata in discovered repositories.");
+        }
+        Ok(())
     } else {
-        eprintln!("Failed to prune stale worktree metadata:");
-        for (repo_path, error) in failures {
-            eprintln!("  {}: {}", repo_path.display(), error);
+        match output_mode {
+            OutputMode::Json => {
+                let errors: Vec<serde_json::Value> = failures
+                    .iter()
+                    .map(|(path, err)| {
+                        serde_json::json!({
+                            "repo": path.display().to_string(),
+                            "error": err.to_string(),
+                        })
+                    })
+                    .collect();
+                eprintln!("{}", serde_json::json!({ "prune_errors": errors }));
+                anyhow::bail!(
+                    "failed to prune worktree metadata in {} repo(s)",
+                    failures.len()
+                );
+            }
+            OutputMode::Human => {
+                eprintln!("Failed to prune stale worktree metadata:");
+                for (repo_path, error) in &failures {
+                    eprintln!("  {}: {}", repo_path.display(), error);
+                }
+                anyhow::bail!(
+                    "failed to prune worktree metadata in {} repo(s)",
+                    failures.len()
+                );
+            }
         }
     }
 }

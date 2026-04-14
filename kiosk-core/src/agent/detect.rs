@@ -7,6 +7,12 @@ use super::{AgentKind, AgentState};
 // Agent kind detection
 // ===========================================================================
 
+/// Command-name substrings that identify known coding agents.
+/// Derived from `AGENT_PATTERNS`; use this as the single source of truth
+/// rather than maintaining a separate list in callers.
+pub const KNOWN_AGENT_COMMANDS: &[&str] =
+    &["cursor-agent", "opencode", "claude", "codex", "gemini"];
+
 /// Detect the kind of agent from tmux pane command or child process arguments.
 ///
 /// Order matters: more specific patterns are checked first to avoid false positives

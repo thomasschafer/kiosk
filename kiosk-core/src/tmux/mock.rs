@@ -1,4 +1,4 @@
-use super::provider::{PaneInfo, SessionPaneData, TmuxProvider};
+use super::provider::{PaneDetails, PaneInfo, SessionPaneData, TmuxProvider};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::Path;
@@ -29,6 +29,8 @@ pub struct MockTmuxProvider {
     pub session_activity_ts: HashMap<String, u64>,
     /// Current session name for `current_session_name()` mock
     pub current_session: Option<String>,
+    /// Pane details keyed by session name, returned by `list_panes()`.
+    pub mock_pane_details: HashMap<String, Vec<PaneDetails>>,
 }
 
 impl TmuxProvider for MockTmuxProvider {
@@ -187,7 +189,18 @@ impl TmuxProvider for MockTmuxProvider {
         Ok(self.capture_output.lock().unwrap().clone())
     }
 
-    fn pane_current_command(&self, _session: &str, _pane: &str) -> anyhow::Result<String> {
+    fn pane_current_command(&self, session: &str, pane: &str) -> anyhow::Result<String> {
+        // Accept both "%1" (pane_id) and "1" (numeric index) forms.
+        let pane_id = if pane.starts_with('%') {
+            pane.to_string()
+        } else {
+            format!("%{pane}")
+        };
+        if let Some(panes) = self.pane_info.get(session)
+            && let Some(p) = panes.iter().find(|p| p.pane_id == pane_id)
+        {
+            return Ok(p.command.clone());
+        }
         Ok("zsh".to_string())
     }
 
@@ -205,6 +218,14 @@ impl TmuxProvider for MockTmuxProvider {
 
     fn list_panes_detailed(&self, session: &str) -> Vec<PaneInfo> {
         self.pane_info.get(session).cloned().unwrap_or_default()
+    }
+
+    fn list_panes(&self, session_name: &str) -> anyhow::Result<Vec<PaneDetails>> {
+        Ok(self
+            .mock_pane_details
+            .get(session_name)
+            .cloned()
+            .unwrap_or_default())
     }
 
     fn capture_pane_content(&self, pane_id: &str, _lines: u32) -> Option<String> {

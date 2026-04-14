@@ -471,6 +471,31 @@ impl TmuxProvider for CliTmuxProvider {
             .collect()
     }
 
+    fn list_panes(&self, session_name: &str) -> anyhow::Result<Vec<super::provider::PaneDetails>> {
+        let output = tmux_command()
+            .args([
+                "list-panes",
+                "-s",  // list all windows in the session, not just the current window
+                "-t",
+                &format!("={session_name}"),
+                "-F",
+                // Command is last so splitn absorbs any unlikely | in a command name.
+                "#{pane_index}|#{pane_pid}|#{pane_active}|#{pane_width}|#{pane_height}|#{pane_current_command}",
+            ])
+            .output()?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("tmux list-panes failed: {}", stderr.trim());
+        }
+
+        let panes = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(parse_pane_details_line)
+            .collect();
+        Ok(panes)
+    }
+
     fn capture_pane_content(&self, pane_id: &str, lines: u32) -> Option<String> {
         let output = tmux_command()
             .args([
@@ -525,6 +550,28 @@ impl TmuxProvider for CliTmuxProvider {
     }
 }
 
+/// Parse a single line of `list-panes` output produced by [`CliTmuxProvider::list_panes`].
+///
+/// Format: `{index}|{pid}|{active}|{width}|{height}|{command}`
+///
+/// The command is placed last so that `splitn(6, '|')` absorbs any `|`
+/// characters in the command name into the final field.
+fn parse_pane_details_line(line: &str) -> Option<super::provider::PaneDetails> {
+    let parts: Vec<&str> = line.splitn(6, '|').collect();
+    if parts.len() == 6 {
+        Some(super::provider::PaneDetails {
+            index: parts[0].parse().ok()?,
+            pid: parts[1].parse().ok()?,
+            active: parts[2] == "1",
+            width: parts[3].parse().ok()?,
+            height: parts[4].parse().ok()?,
+            current_command: parts[5].to_string(),
+        })
+    } else {
+        None
+    }
+}
+
 /// Parse a single line of tmux list-panes output in the format:
 /// `{pane_id}|{pane_pid}|{pane_current_command}`
 ///
@@ -550,8 +597,9 @@ fn parse_pane_line(line: &str) -> Option<PaneInfo> {
 mod tests {
     use super::{
         CurrentSessionTarget, create_session_commands, current_session_name_args,
-        current_session_target, parse_pane_line, tmux_env_socket_name,
+        current_session_target, parse_pane_details_line, parse_pane_line, tmux_env_socket_name,
     };
+    use crate::tmux::provider::PaneDetails;
 
     #[test]
     fn test_create_session_commands_with_split_command_uses_split_window_command_arg() {
@@ -681,5 +729,50 @@ mod tests {
     #[test]
     fn test_parse_pane_line_single_field() {
         assert!(parse_pane_line("%0").is_none());
+    }
+
+    #[test]
+    fn parse_pane_details_line_parses_valid_line() {
+        let details = parse_pane_details_line("0|1234|1|200|50|zsh").unwrap();
+        assert_eq!(
+            details,
+            PaneDetails {
+                index: 0,
+                pid: 1234,
+                active: true,
+                width: 200,
+                height: 50,
+                current_command: "zsh".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_pane_details_line_inactive_pane() {
+        let details = parse_pane_details_line("1|5678|0|100|25|claude").unwrap();
+        assert_eq!(details.index, 1);
+        assert_eq!(details.pid, 5678);
+        assert!(!details.active);
+        assert_eq!(details.width, 100);
+        assert_eq!(details.height, 25);
+        assert_eq!(details.current_command, "claude");
+    }
+
+    #[test]
+    fn parse_pane_details_line_command_with_pipe_absorbed_into_last_field() {
+        // A command name containing | should be kept whole in the last field.
+        let details = parse_pane_details_line("0|99|1|80|24|some|weird|cmd").unwrap();
+        assert_eq!(details.current_command, "some|weird|cmd");
+    }
+
+    #[test]
+    fn parse_pane_details_line_invalid_index() {
+        assert!(parse_pane_details_line("notanumber|99|1|80|24|zsh").is_none());
+    }
+
+    #[test]
+    fn parse_pane_details_line_too_few_fields() {
+        assert!(parse_pane_details_line("0|99|1|80").is_none());
+        assert!(parse_pane_details_line("").is_none());
     }
 }

@@ -189,7 +189,13 @@ impl TmuxProvider for MockTmuxProvider {
         Ok(self.capture_output.lock().unwrap().clone())
     }
 
-    fn pane_current_command(&self, _session: &str, _pane: &str) -> anyhow::Result<String> {
+    fn pane_current_command(&self, session: &str, pane: &str) -> anyhow::Result<String> {
+        // Look up command by pane_id (e.g. "%1") from pane_info if present.
+        if let Some(panes) = self.pane_info.get(session)
+            && let Some(p) = panes.iter().find(|p| p.pane_id == pane)
+        {
+            return Ok(p.command.clone());
+        }
         Ok("zsh".to_string())
     }
 

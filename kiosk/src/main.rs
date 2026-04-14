@@ -704,7 +704,7 @@ fn clean_orphaned_worktrees(
         let removed: Vec<String> = removed.iter().map(|p| p.display().to_string()).collect();
         let output = serde_json::json!({ "orphaned": orphaned, "removed": removed });
         println!("{output}");
-        clean_prunable_worktree_metadata(search_dirs, git, dry_run || !yes, true);
+        clean_prunable_worktree_metadata(search_dirs, git, dry_run || !yes, OutputMode::Json);
         return Ok(());
     }
 
@@ -746,26 +746,32 @@ fn clean_orphaned_worktrees(
         }
     }
 
-    clean_prunable_worktree_metadata(search_dirs, git, dry_run, false);
+    clean_prunable_worktree_metadata(search_dirs, git, dry_run, OutputMode::Human);
     Ok(())
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OutputMode {
+    Json,
+    Human,
 }
 
 fn clean_prunable_worktree_metadata(
     search_dirs: &[(std::path::PathBuf, u16)],
     git: &dyn GitProvider,
     dry_run: bool,
-    json: bool,
+    output_mode: OutputMode,
 ) {
     let repos = git.discover_repos(search_dirs);
     if repos.is_empty() {
-        if !dry_run && !json {
+        if !dry_run && output_mode == OutputMode::Human {
             println!("No repositories discovered for worktree metadata prune.");
         }
         return;
     }
 
     if dry_run {
-        if !json {
+        if output_mode == OutputMode::Human {
             println!(
                 "Would prune stale worktree metadata in {} repos.",
                 repos.len()
@@ -782,7 +788,7 @@ fn clean_prunable_worktree_metadata(
     }
 
     if failures.is_empty() {
-        if !json {
+        if output_mode == OutputMode::Human {
             println!("Pruned stale worktree metadata in discovered repositories.");
         }
     } else {

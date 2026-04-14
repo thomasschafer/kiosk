@@ -1309,6 +1309,27 @@ pub fn print_error(error: &CliError, json: bool) {
     }
 }
 
+fn build_panes_output(
+    session_name: String,
+    pane_details: Vec<kiosk_core::tmux::provider::PaneDetails>,
+) -> PanesOutput {
+    let panes = pane_details
+        .into_iter()
+        .map(|d| PaneInfo {
+            index: d.index,
+            current_command: d.current_command,
+            pid: d.pid,
+            active: d.active,
+            width: d.width,
+            height: d.height,
+        })
+        .collect();
+    PanesOutput {
+        session: session_name,
+        panes,
+    }
+}
+
 pub fn cmd_panes(
     config: &Config,
     git: &dyn GitProvider,
@@ -1335,22 +1356,7 @@ pub fn cmd_panes(
         .list_panes(&session_name)
         .map_err(|e| CliError::system(format!("failed to list panes: {e}")))?;
 
-    let panes: Vec<PaneInfo> = pane_details
-        .into_iter()
-        .map(|d| PaneInfo {
-            index: d.index,
-            current_command: d.current_command,
-            pid: d.pid,
-            active: d.active,
-            width: d.width,
-            height: d.height,
-        })
-        .collect();
-
-    let output = PanesOutput {
-        session: session_name,
-        panes,
-    };
+    let output = build_panes_output(session_name, pane_details);
 
     if args.json {
         print_json(&output)?;
@@ -1375,11 +1381,6 @@ pub fn cmd_panes(
 const KNOWN_SHELLS: &[&str] = &[
     "bash", "zsh", "fish", "sh", "dash", "ash", "ksh", "tcsh", "csh", "nu", "nushell", "pwsh",
 ];
-
-/// Command names that indicate a known coding agent, used to produce a
-/// contextual idle message from `kiosk wait`.  Kept in sync with the
-/// `AGENT_PATTERNS` table in `kiosk-core::agent::detect`.
-const KNOWN_AGENTS: &[&str] = &["claude", "codex", "cursor-agent", "opencode", "gemini"];
 
 const WAIT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 const UNKNOWN_READY_POLLS: u32 = 8;
@@ -1443,7 +1444,7 @@ fn wait_for_idle_with_options(
                 match detection.status.state {
                     kiosk_core::AgentState::Idle | kiosk_core::AgentState::Waiting => {
                         let pane_cmd = tmux
-                            .pane_current_command(session_name, &pane_str)
+                            .pane_current_command(session_name, &detection.pane_id)
                             .unwrap_or_default();
                         return Ok(WaitOutput {
                             idle: true,
@@ -1455,7 +1456,7 @@ fn wait_for_idle_with_options(
                         unknown_streak = unknown_streak.saturating_add(1);
                         if unknown_streak >= options.unknown_ready_polls {
                             let pane_cmd = tmux
-                                .pane_current_command(session_name, &pane_str)
+                                .pane_current_command(session_name, &detection.pane_id)
                                 .unwrap_or_default();
                             return Ok(WaitOutput {
                                 idle: true,
@@ -1538,7 +1539,10 @@ pub fn cmd_wait(
                 print_json(&output)?;
             } else if KNOWN_SHELLS.iter().any(|&s| output.pane_command == s) {
                 println!("pane idle: shell detected ({})", output.pane_command);
-            } else if KNOWN_AGENTS.iter().any(|&a| output.pane_command == a) {
+            } else if kiosk_core::agent::detect::KNOWN_AGENT_COMMANDS
+                .iter()
+                .any(|&a| output.pane_command == a)
+            {
                 println!("agent idle: {}", output.pane_command);
             } else {
                 println!("pane idle: {}", output.pane_command);
@@ -2985,50 +2989,46 @@ mod tests {
     #[test]
     fn test_panes_returns_mock_pane_data() {
         use kiosk_core::tmux::provider::PaneDetails;
-        use std::collections::HashMap;
 
-        let config = test_config();
-        let git = demo_git(vec![main_worktree()], vec![]);
-
-        let mut mock_pane_details = HashMap::new();
-        mock_pane_details.insert(
-            "demo".to_string(),
-            vec![
-                PaneDetails {
-                    index: 0,
-                    current_command: "zsh".to_string(),
-                    pid: 1001,
-                    active: true,
-                    width: 200,
-                    height: 50,
-                },
-                PaneDetails {
-                    index: 1,
-                    current_command: "claude".to_string(),
-                    pid: 1002,
-                    active: false,
-                    width: 200,
-                    height: 50,
-                },
-            ],
-        );
-        let tmux = MockTmuxProvider {
-            sessions: std::sync::Mutex::new(vec!["demo".to_string()]),
-            mock_pane_details,
-            ..Default::default()
-        };
-
-        let result = cmd_panes(
-            &config,
-            &git,
-            &tmux,
-            &PanesArgs {
-                repo: "demo".to_string(),
-                branch: None,
-                json: true,
+        let pane_details = vec![
+            PaneDetails {
+                index: 0,
+                current_command: "zsh".to_string(),
+                pid: 1001,
+                active: true,
+                width: 200,
+                height: 50,
             },
-        );
-        assert!(result.is_ok());
+            PaneDetails {
+                index: 1,
+                current_command: "claude".to_string(),
+                pid: 1002,
+                active: false,
+                width: 200,
+                height: 50,
+            },
+        ];
+
+        let output = build_panes_output("demo".to_string(), pane_details);
+
+        assert_eq!(output.session, "demo");
+        assert_eq!(output.panes.len(), 2);
+
+        let p0 = &output.panes[0];
+        assert_eq!(p0.index, 0);
+        assert_eq!(p0.current_command, "zsh");
+        assert_eq!(p0.pid, 1001);
+        assert!(p0.active);
+        assert_eq!(p0.width, 200);
+        assert_eq!(p0.height, 50);
+
+        let p1 = &output.panes[1];
+        assert_eq!(p1.index, 1);
+        assert_eq!(p1.current_command, "claude");
+        assert_eq!(p1.pid, 1002);
+        assert!(!p1.active);
+        assert_eq!(p1.width, 200);
+        assert_eq!(p1.height, 50);
     }
 
     #[test]
@@ -3106,6 +3106,54 @@ mod tests {
         .expect("should not timeout");
         assert!(output.idle);
         assert!(!output.timed_out);
+    }
+
+    /// Regression test: when the agent is detected as Idle in pane %1 (not pane 0),
+    /// `WaitOutput.pane_command` must reflect the command in pane %1 ("claude"),
+    /// not the command in the user-requested pane 0 ("zsh").
+    #[test]
+    fn wait_for_idle_uses_detection_pane_id_not_requested_pane() {
+        let mut tmux = MockTmuxProvider::default();
+        // Pane 0: zsh shell; Pane 1: claude (idle)
+        tmux.pane_info.insert(
+            "demo".to_string(),
+            vec![
+                kiosk_core::tmux::provider::PaneInfo {
+                    pane_id: "%0".to_string(),
+                    command: "zsh".to_string(),
+                    pid: 1000,
+                },
+                kiosk_core::tmux::provider::PaneInfo {
+                    pane_id: "%1".to_string(),
+                    command: "claude".to_string(),
+                    pid: 1001,
+                },
+            ],
+        );
+        // Only pane %1 has content — claude is idle there.
+        tmux.pane_content
+            .insert("%1".to_string(), "❯ \n? for shortcuts".to_string());
+
+        let output = wait_for_idle_with_options(
+            &tmux,
+            "demo",
+            0, // user requested pane 0
+            5,
+            true,
+            WaitOptions {
+                poll_interval: std::time::Duration::from_millis(10),
+                unknown_ready_polls: 3,
+            },
+        )
+        .expect("should detect idle");
+
+        assert!(output.idle);
+        assert!(!output.timed_out);
+        // Must report "claude" (pane %1), not "zsh" (pane %0).
+        assert_eq!(
+            output.pane_command, "claude",
+            "pane_command should come from the pane where the agent was detected (%1), not the requested pane (0)"
+        );
     }
 
     #[test]
@@ -3247,15 +3295,17 @@ mod tests {
         // directly since the full cmd_wait path requires a real idle output.
         assert!(KNOWN_SHELLS.contains(&"zsh"), "zsh should be a known shell");
         assert!(
-            KNOWN_AGENTS.contains(&"claude"),
+            kiosk_core::agent::detect::KNOWN_AGENT_COMMANDS.contains(&"claude"),
             "claude should be a known agent"
         );
         assert!(
-            !KNOWN_SHELLS.contains(&"nvim") && !KNOWN_AGENTS.contains(&"nvim"),
+            !KNOWN_SHELLS.contains(&"nvim")
+                && !kiosk_core::agent::detect::KNOWN_AGENT_COMMANDS.contains(&"nvim"),
             "nvim must fall through to the neutral pane-idle branch"
         );
         assert!(
-            !KNOWN_SHELLS.contains(&"vim") && !KNOWN_AGENTS.contains(&"vim"),
+            !KNOWN_SHELLS.contains(&"vim")
+                && !kiosk_core::agent::detect::KNOWN_AGENT_COMMANDS.contains(&"vim"),
             "vim must fall through to the neutral pane-idle branch"
         );
     }

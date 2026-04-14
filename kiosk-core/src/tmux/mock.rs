@@ -190,9 +190,14 @@ impl TmuxProvider for MockTmuxProvider {
     }
 
     fn pane_current_command(&self, session: &str, pane: &str) -> anyhow::Result<String> {
-        // Look up command by pane_id (e.g. "%1") from pane_info if present.
+        // Accept both "%1" (pane_id) and "1" (numeric index) forms.
+        let pane_id = if pane.starts_with('%') {
+            pane.to_string()
+        } else {
+            format!("%{pane}")
+        };
         if let Some(panes) = self.pane_info.get(session)
-            && let Some(p) = panes.iter().find(|p| p.pane_id == pane)
+            && let Some(p) = panes.iter().find(|p| p.pane_id == pane_id)
         {
             return Ok(p.command.clone());
         }

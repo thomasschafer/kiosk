@@ -1539,9 +1539,8 @@ pub fn cmd_wait(
                 print_json(&output)?;
             } else if KNOWN_SHELLS.iter().any(|&s| output.pane_command == s) {
                 println!("pane idle: shell detected ({})", output.pane_command);
-            } else if kiosk_core::agent::detect::KNOWN_AGENT_COMMANDS
-                .iter()
-                .any(|&a| output.pane_command == a)
+            } else if kiosk_core::agent::detect::detect_agent_kind(&output.pane_command, None)
+                .is_some()
             {
                 println!("agent idle: {}", output.pane_command);
             } else {

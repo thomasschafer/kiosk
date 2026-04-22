@@ -697,7 +697,7 @@ impl AgentTestEnvDefault {
                 self.send_to_agent(task);
 
                 // Poll kiosk CLI until it reports Waiting state.
-                let deadline = std::time::Instant::now() + Duration::from_secs(60);
+                let deadline = std::time::Instant::now() + Duration::from_mins(1);
                 loop {
                     let output = Command::new(kiosk_binary())
                         .args(["branches", &self.repo_name, "--json"])
@@ -1691,6 +1691,40 @@ fn test_e2e_agent_codex_prompt_with_user_text_and_footer_is_idle() {
     assert_eq!(
         main_branch["agent_statuses"][0]["state"], "Idle",
         "prompt line with Codex footer should classify as Idle"
+    );
+}
+
+#[test]
+#[serial]
+fn test_e2e_agent_codex_prompt_with_user_text_and_short_footer_is_idle() {
+    if use_real_agents() {
+        return;
+    }
+
+    let env = AgentTestEnvDefault::new("codex-prompt-short-footer-idle");
+    env.launch_agent(AgentKind::Codex, FakeState::Running);
+
+    let mut prompt_output = String::new();
+    push_fake_codex_log_lines(&mut prompt_output, 12);
+    prompt_output.push_str(
+        "• Added regression tests for both core and TUI poller paths\\n\
+         • Built and validated changes\\n\
+         › Implement {feature}\\n\
+           gpt-5.4 high · ~/Development/kiosk",
+    );
+    replace_fake_codex_output_and_wait(
+        &env,
+        &prompt_output,
+        "log line 11",
+        "Timed out waiting for prompt + short footer Codex output",
+    );
+
+    let json = env.run_cli_json(&["branches", &env.repo_name, "--json"]);
+    let branches = json.as_array().unwrap();
+    let main_branch = branches.iter().find(|b| b["name"] == "main").unwrap();
+    assert_eq!(
+        main_branch["agent_statuses"][0]["state"], "Idle",
+        "prompt line with short Codex footer should classify as Idle"
     );
 }
 

@@ -763,7 +763,7 @@ pub fn cmd_sessions(
             })
             .collect();
 
-    output.sort_by(|left, right| left.session.cmp(&right.session));
+    output.sort_by_key(|entry| entry.session.clone());
 
     if json {
         print_json(&output)?;
@@ -822,8 +822,7 @@ pub fn cmd_next(config: &Config, tmux: &dyn TmuxProvider, json: bool) -> CliResu
         .iter()
         .map(|(name, data)| (name.clone(), data.session_activity))
         .collect();
-    sessions_by_recency
-        .sort_by(|(name_a, ts_a), (name_b, ts_b)| ts_a.cmp(ts_b).then_with(|| name_a.cmp(name_b)));
+    sessions_by_recency.sort_by_key(|(name, ts)| (*ts, name.clone()));
 
     // Walk sessions from oldest to newest and stop at the first full detection
     // that finds an idle, waiting, or unknown agent.

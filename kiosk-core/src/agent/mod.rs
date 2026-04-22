@@ -309,8 +309,7 @@ fn detect_all_from_pane_data(
 fn infer_state_from_activity_ts(activity_ts: u64) -> AgentState {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_secs());
 
     if now.saturating_sub(activity_ts) <= ACTIVITY_RECENCY_SECS {
         AgentState::Running

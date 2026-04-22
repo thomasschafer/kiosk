@@ -3318,11 +3318,8 @@ mod tests {
     #[test]
     fn test_agent_poll_interval_can_be_overridden() {
         let mut state = AppState::new(vec![], None);
-        state.agent_poll_interval = std::time::Duration::from_millis(5000);
-        assert_eq!(
-            state.agent_poll_interval,
-            std::time::Duration::from_millis(5000)
-        );
+        state.agent_poll_interval = std::time::Duration::from_secs(5);
+        assert_eq!(state.agent_poll_interval, std::time::Duration::from_secs(5));
     }
 
     #[test]

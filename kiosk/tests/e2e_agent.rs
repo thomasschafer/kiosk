@@ -697,7 +697,7 @@ impl AgentTestEnvDefault {
                 self.send_to_agent(task);
 
                 // Poll kiosk CLI until it reports Waiting state.
-                let deadline = std::time::Instant::now() + Duration::from_secs(60);
+                let deadline = std::time::Instant::now() + Duration::from_mins(1);
                 loop {
                     let output = Command::new(kiosk_binary())
                         .args(["branches", &self.repo_name, "--json"])

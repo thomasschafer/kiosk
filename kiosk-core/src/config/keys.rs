@@ -776,11 +776,7 @@ impl KeysConfig {
             })
             .collect();
 
-        extra_entries.sort_by(|a, b| {
-            a.command
-                .cmp(&b.command)
-                .then_with(|| a.key.to_string().cmp(&b.key.to_string()))
-        });
+        extra_entries.sort_by_key(|entry| (entry.command.clone(), entry.key.to_string()));
         entries.extend(extra_entries);
         entries
     }

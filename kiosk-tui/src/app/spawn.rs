@@ -509,8 +509,7 @@ fn build_session_discovered_snapshot(
     attached_sessions: &HashSet<String>,
 ) -> Vec<kiosk_core::state::SessionEntry> {
     let mut sessions_with_activity = sessions_with_activity.to_vec();
-    sessions_with_activity
-        .sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    sessions_with_activity.sort_by_key(|entry| (std::cmp::Reverse(entry.1), entry.0.clone()));
 
     sessions_with_activity
         .into_iter()

@@ -922,7 +922,8 @@ fn is_idle_claude_prompt(trimmed: &str) -> bool {
 /// Step 2 of the Codex idle fallback chain.
 ///
 /// Matches when the tail contains both a non-menu prompt line (`› ...`)
-/// and a model/footer status line (e.g. `gpt-5.3-codex high · 100% left`).
+/// and a model/footer status line (e.g. `gpt-5.3-codex high · 100% left`
+/// or `gpt-5.4 high · ~/project`).
 /// This covers newer Codex renders where `? for shortcuts` is absent but
 /// the footer status line is still present.
 fn looks_like_codex_idle_prompt(tail: &str) -> bool {
@@ -934,6 +935,7 @@ fn looks_like_codex_idle_prompt(tail: &str) -> bool {
     // Newer Codex footer styles, e.g.
     // `gpt-5.3-codex high · 100% left · ~/Development/kiosk`
     // `gpt-5.4 default · 79% left · ~/Development/kiosk`
+    // `gpt-5.4 high · ~/Development/kiosk`
     //
     // Keep this narrow so simple `100% context left` does not imply idle.
     let has_footer = tail.lines().any(looks_like_codex_footer_line);
@@ -989,11 +991,17 @@ fn looks_like_codex_plain_idle_prompt(tail: &str) -> bool {
     !tail.contains("context left")
 }
 
-/// Detect a Codex model/status footer line (e.g. `gpt-5.3-codex high · 100% left · ~/…`).
+/// Detect a Codex model/status footer line.
 ///
 /// Used by [`looks_like_codex_idle_prompt`] to confirm the footer is present
 /// alongside a prompt line. Matches lines containing `·`-separated segments
 /// where the first segment looks like a model name.
+///
+/// Supported footer shapes:
+/// - `gpt-5.3-codex high · 100% left · ~/project`
+/// - `gpt-5.4 default · 79% left · ~/project`
+/// - `gpt-5.3-codex high · 100% left`
+/// - `gpt-5.4 high · ~/project`
 fn looks_like_codex_footer_line(line: &str) -> bool {
     // `line` is a trimmed slice of an already-lowercased tail string
     // (PreparedContent::from_raw lowercases before windowing).
@@ -1003,7 +1011,7 @@ fn looks_like_codex_footer_line(line: &str) -> bool {
     }
 
     let parts: Vec<&str> = trimmed.split('·').map(str::trim).collect();
-    if parts.len() < 2 {
+    if !(2..=3).contains(&parts.len()) {
         return false;
     }
 
@@ -1014,12 +1022,22 @@ fn looks_like_codex_footer_line(line: &str) -> bool {
         // without enumerating every variant; the surrounding guards keep
         // false-positive risk low.
         || model_segment.starts_with('o');
-    let has_left_metric = parts[1].contains("left");
-    let has_path_segment = parts
-        .get(2)
-        .is_none_or(|segment| segment.contains('/') || segment.starts_with('~'));
+    let looks_like_left_metric_segment = |segment: &str| segment.contains("left");
+    let looks_like_path_segment = |segment: &str| segment.contains('/') || segment.starts_with('~');
 
-    looks_like_model && has_left_metric && has_path_segment
+    match parts.as_slice() {
+        [_, tail_segment] => {
+            looks_like_model
+                && (looks_like_left_metric_segment(tail_segment)
+                    || looks_like_path_segment(tail_segment))
+        }
+        [_, metric_segment, path_segment] => {
+            looks_like_model
+                && looks_like_left_metric_segment(metric_segment)
+                && looks_like_path_segment(path_segment)
+        }
+        _ => false,
+    }
 }
 
 fn matches_any(content: &str, patterns: &[&str]) -> bool {
@@ -1718,6 +1736,14 @@ mod tests {
         assert_eq!(detect_state(content, AgentKind::Codex), AgentState::Idle);
     }
 
+    #[test]
+    fn codex_prompt_with_short_footer_is_idle() {
+        let content = "• Updated tests\n\
+            › Write tests for @filename\n\
+              gpt-5.4 high · ~/Development/kiosk";
+        assert_eq!(detect_state(content, AgentKind::Codex), AgentState::Idle);
+    }
+
     /// Stale trust prompt text should NOT cause false Waiting.
     ///
     /// Real scenario: After dismissing the trust prompt and update dialog,
@@ -2282,6 +2308,16 @@ mod tests {
     fn state_rule_codex_idle_prompt_and_footer() {
         let rule = detect_state_rule(
             "› some text\ngpt-5.3-codex high · 100% left · ~/project",
+            AgentKind::Codex,
+            AgentState::Idle,
+        );
+        assert_eq!(rule, "codex.idle.prompt_and_footer");
+    }
+
+    #[test]
+    fn state_rule_codex_idle_prompt_and_short_footer() {
+        let rule = detect_state_rule(
+            "› some text\ngpt-5.4 high · ~/project",
             AgentKind::Codex,
             AgentState::Idle,
         );

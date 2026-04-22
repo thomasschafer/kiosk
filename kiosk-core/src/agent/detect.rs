@@ -1016,12 +1016,7 @@ fn looks_like_codex_footer_line(line: &str) -> bool {
     }
 
     let model_segment = parts[0];
-    let looks_like_model = model_segment.contains("codex")
-        || model_segment.starts_with("gpt-")
-        // Broad 'o' prefix catches the o-series family (o1, o3, o4-mini, …)
-        // without enumerating every variant; the surrounding guards keep
-        // false-positive risk low.
-        || model_segment.starts_with('o');
+    let looks_like_model = looks_like_codex_model_segment(model_segment);
     let looks_like_left_metric_segment = |segment: &str| segment.contains("left");
     let looks_like_path_segment = |segment: &str| segment.contains('/') || segment.starts_with('~');
 
@@ -1038,6 +1033,17 @@ fn looks_like_codex_footer_line(line: &str) -> bool {
         }
         _ => false,
     }
+}
+
+fn looks_like_codex_model_segment(model_segment: &str) -> bool {
+    model_segment.contains("codex")
+        || model_segment.starts_with("gpt-")
+        // Catch the OpenAI o-series family (o1, o3, o4-mini, …) without
+        // accepting arbitrary words like "overview".
+        || model_segment
+            .strip_prefix('o')
+            .and_then(|rest| rest.chars().next())
+            .is_some_and(|c| c.is_ascii_digit())
 }
 
 fn matches_any(content: &str, patterns: &[&str]) -> bool {
@@ -1742,6 +1748,14 @@ mod tests {
             › Write tests for @filename\n\
               gpt-5.4 high · ~/Development/kiosk";
         assert_eq!(detect_state(content, AgentKind::Codex), AgentState::Idle);
+    }
+
+    #[test]
+    fn codex_prompt_with_o_word_path_line_stays_unknown() {
+        let content = "• Updated notes\n\
+            › Write tests for @filename\n\
+              overview · ~/Development/kiosk";
+        assert_eq!(detect_state(content, AgentKind::Codex), AgentState::Unknown);
     }
 
     /// Stale trust prompt text should NOT cause false Waiting.

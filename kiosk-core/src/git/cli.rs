@@ -876,7 +876,7 @@ impl CliGitProvider {
         let mut seen_paths = std::collections::HashSet::new();
         repos_with_dirs.retain(|(repo, _)| seen_paths.insert(repo.path.clone()));
 
-        repos_with_dirs.sort_by(|a, b| a.0.name.to_lowercase().cmp(&b.0.name.to_lowercase()));
+        repos_with_dirs.sort_by_key(|a| a.0.name.to_lowercase());
 
         let mut name_counts = std::collections::HashMap::<String, usize>::new();
         for (repo, _) in &repos_with_dirs {

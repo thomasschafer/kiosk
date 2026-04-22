@@ -473,7 +473,7 @@ fn rebuild_filtered_preserving_search(list: &mut SearchableList, names: &[&str])
                     .map(|score| (i, score))
             })
             .collect();
-        scored.sort_by(|a, b| b.1.cmp(&a.1));
+        scored.sort_by_key(|entry| std::cmp::Reverse(entry.1));
         list.filtered = scored;
     }
     if let Some(sel) = list.selected {

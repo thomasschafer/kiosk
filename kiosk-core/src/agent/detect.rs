@@ -162,10 +162,16 @@ const CLAUDE_PATTERNS: AgentPatterns = AgentPatterns {
     ],
     // `? for shortcuts` is the canonical idle indicator but is NOT reliably
     // captured by `tmux capture-pane` in Claude Code >= v2.1 (rendered as a
-    // status-bar element outside the normal text flow). We fall back to
-    // detecting the input prompt character `❯` in `detect_claude_state`.
+    // status-bar element outside the normal text flow). The persistent
+    // permission-mode footer (`⏵⏵ auto mode on (shift+tab to cycle)` and
+    // friends) is reliably captured and is present whenever Claude's input
+    // line is on screen, so we use the parenthesised `(shift+tab to cycle)`
+    // suffix as the primary idle marker. Running adds ` · esc to interrupt`
+    // to the same line and is matched earlier in `detect_claude_state`;
+    // permission dialogs replace the footer entirely, so Waiting is unaffected.
     idle_tail: &[
         "? for shortcuts",
+        "(shift+tab to cycle)",
         // Config overlay: unique filter prompt shown in /config screen
         "type to filter · enter",
         // Status overlay: shown in /status screen with session info
@@ -1570,13 +1576,17 @@ mod tests {
         );
     }
 
-    /// During API calls, Claude shows `❯ <user query>` with no running
-    /// indicators. This should NOT be detected as Idle — the user's query
-    /// text distinguishes it from the bare idle prompt `❯ `.
+    /// A pane showing `❯ <user query>` with the persistent footer (and no
+    /// `esc to interrupt`) is the user typing into the prompt before
+    /// submission — Claude is at the input line, so the correct state is Idle.
     ///
-    /// Regression test for false Idle observed during manual testing.
+    /// Earlier Claude Code versions could briefly show this exact frame
+    /// during the transition between Enter and the spinner appearing; that
+    /// transient is acceptably treated as Idle since it flips to Running
+    /// within one poll cycle, while the typing case can persist for many
+    /// seconds and dominates the observed UX.
     #[test]
-    fn claude_api_call_not_false_idle() {
+    fn claude_typing_into_prompt_is_idle() {
         let content = "\
  ▐▛███▜▌   Claude Code v2.1.63\n\
 ▝▜█████▛▘  Opus 4.6 · Claude Max\n\
@@ -1588,8 +1598,8 @@ mod tests {
   ⏵⏵ bypass permissions on (shift+tab to cycle) · PR #12";
         assert_eq!(
             detect_state(content, AgentKind::ClaudeCode),
-            AgentState::Unknown,
-            "User query after ❯ should not be detected as Idle"
+            AgentState::Idle,
+            "Typed text in prompt with idle footer should be Idle"
         );
     }
 
@@ -2539,10 +2549,9 @@ mod fixture_tests {
         (CLAUDE_IDLE_FRESH,               "claude-code/idle-fresh.txt",                             AgentKind::ClaudeCode,  AgentState::Idle),
         (CLAUDE_IDLE_AFTER_RESPONSE,      "claude-code/idle-after-response.txt",                    AgentKind::ClaudeCode,  AgentState::Idle),
         (CLAUDE_IDLE_AFTER_CANCELLED_EDIT,"claude-code/idle-after-cancelled-edit.txt",              AgentKind::ClaudeCode,  AgentState::Idle),
-        // FIXME: should be Idle — user typed follow-up, Claude is idle but no `? for shortcuts` visible
-        (CLAUDE_IDLE_QUEUED,              "claude-code/idle-with-queued-message.txt",               AgentKind::ClaudeCode,  AgentState::Unknown),
-        // FIXME: should be Idle — thinking completed, user is typing, but no idle indicator captured
-        (CLAUDE_IDLE_TYPING,              "claude-code/idle-typing-after-completed-thinking.txt",   AgentKind::ClaudeCode,  AgentState::Unknown),
+        (CLAUDE_IDLE_QUEUED,              "claude-code/idle-with-queued-message.txt",               AgentKind::ClaudeCode,  AgentState::Idle),
+        (CLAUDE_IDLE_TYPING,              "claude-code/idle-typing-after-completed-thinking.txt",   AgentKind::ClaudeCode,  AgentState::Idle),
+        (CLAUDE_IDLE_TYPING_AUTO_MODE,    "claude-code/idle-typing-auto-mode.txt",                  AgentKind::ClaudeCode,  AgentState::Idle),
         (CLAUDE_IDLE_RESPONSE_KEYWORDS,   "claude-code/idle-response-contains-running-keywords.txt",AgentKind::ClaudeCode,  AgentState::Idle),
         (CLAUDE_IDLE_INVALID_CMD,         "claude-code/idle-after-invalid-command.txt",             AgentKind::ClaudeCode,  AgentState::Idle),
         (CLAUDE_IDLE_CONFIG,              "claude-code/idle-config-screen.txt",                     AgentKind::ClaudeCode,  AgentState::Idle),

@@ -8,7 +8,7 @@ publish = false
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 kiosk-core = { workspace = true }
-syn = { version = "2", features = ["full", "parsing"] }
+syn = { version = "3", features = ["full", "parsing"] }
 quote = "1"
 serde = { version = "1", features = ["derive"] }
 toml = "1.1"

@@ -25,7 +25,7 @@ simple-log = "2.4"
 serde_json.workspace = true
 
 [dev-dependencies]
-serial_test = "3"
+serial_test = "4"
 tempfile = "3"
 
 [lints]

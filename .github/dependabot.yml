@@ -4,18 +4,31 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+      day: monday
     open-pull-requests-limit: 5
     groups:
-      rust-patches:
-        patterns: ["*"]
-        update-types: ["patch"]
-
+      cargo-minor-and-patch:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+    cooldown:
+      default-days: 5
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+      day: monday
     open-pull-requests-limit: 3
     groups:
-      gha-patches:
-        patterns: ["*"]
-        update-types: ["patch"]
+      github-actions-minor-and-patch:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+    cooldown:
+      default-days: 5

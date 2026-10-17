@@ -841,7 +841,7 @@ mod tests {
 
         apply_fuzzy_filter(&mut list, &items, &matcher);
 
-        assert!(list.filtered.is_empty());
+        assert_eq!(list.filtered, []);
         assert_eq!(list.selected, None);
     }
 

@@ -435,7 +435,7 @@ mod tests {
         list.selected = None;
         let overlay = HelpOverlayState { list, rows };
         let (indices, total_visual_rows) = help_visual_metrics(&overlay);
-        assert!(indices.is_empty());
+        assert_eq!(indices, []);
         assert_eq!(total_visual_rows, 0);
     }
 

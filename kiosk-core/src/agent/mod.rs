@@ -1504,7 +1504,7 @@ mod tests {
             .into_iter()
             .map(|(n, rs)| (n, rs.into_iter().next()))
             .collect::<Vec<_>>();
-        assert!(results.is_empty());
+        assert_eq!(results, []);
     }
 
     #[test]
@@ -1595,7 +1595,7 @@ mod tests {
             pane_titles: std::collections::HashMap::new(),
             session_activity: 0,
         };
-        assert!(super::detect_all_from_pane_data(&tmux, &data).is_empty());
+        assert_eq!(super::detect_all_from_pane_data(&tmux, &data), []);
     }
 
     // -- Multi-status detection tests ----------------------------------------
@@ -1628,7 +1628,7 @@ mod tests {
     fn detect_all_no_agent_returns_empty() {
         let tmux = mock_with_agent("shell-session", "bash", "$ ls -la\ntotal 42");
         let results = detect_all_for_session(&tmux, "shell-session");
-        assert!(results.is_empty());
+        assert_eq!(results, []);
     }
 
     #[test]

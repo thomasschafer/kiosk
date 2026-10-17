@@ -1564,7 +1564,7 @@ mod tests {
         assert!(result.is_none());
         assert_eq!(state.mode(), &Mode::BranchSelect);
         assert!(state.loading_branches);
-        assert!(state.branches.is_empty());
+        assert_eq!(state.branches, []);
 
         // Wait for the background thread to send the event
         let event = rx.recv_timeout(std::time::Duration::from_secs(1)).unwrap();
@@ -1645,13 +1645,9 @@ mod tests {
         );
 
         assert!(!state.branches[0].has_session);
-        assert!(state.branches[0].agent_statuses.is_empty());
+        assert_eq!(state.branches[0].agent_statuses, []);
         assert!(!state.session_runtime[&session_name].exists);
-        assert!(
-            state.session_runtime[&session_name]
-                .agent_statuses
-                .is_empty()
-        );
+        assert_eq!(state.session_runtime[&session_name].agent_statuses, []);
         assert!(!state.session_runtime.contains_key(&stale_session_name));
         assert_eq!(
             state.session_runtime[&other_repo_session].activity_ts,
@@ -1842,7 +1838,7 @@ mod tests {
 
         assert!(matches!(state.mode(), Mode::Help { .. }));
         let overlay = state.require_help_overlay().expect("help overlay");
-        assert!(!overlay.rows.is_empty());
+        assert!(!overlay.rows.is_empty(), "expected help overlay rows");
         assert_eq!(overlay.list.filtered.len(), overlay.rows.len());
 
         process_action(Action::ShowHelp, &mut state, &ctx);
@@ -2047,7 +2043,10 @@ mod tests {
         process_action(Action::SearchPush('a'), &mut state, &ctx);
         assert_eq!(state.repo_list.input.text, "a");
         // "alpha" matches "a", "beta" also matches "a" — but both should be present
-        assert!(!state.repo_list.filtered.is_empty());
+        assert!(
+            !state.repo_list.filtered.is_empty(),
+            "expected repos matching \"a\""
+        );
     }
 
     #[test]
@@ -2595,7 +2594,7 @@ mod tests {
             &make_matcher(),
         );
 
-        assert!(state.pending_worktree_deletes.is_empty());
+        assert_eq!(state.pending_worktree_deletes, []);
     }
 
     #[test]
@@ -2625,7 +2624,7 @@ mod tests {
             &make_matcher(),
         );
 
-        assert!(state.pending_worktree_deletes.is_empty());
+        assert_eq!(state.pending_worktree_deletes, []);
         assert!(
             state
                 .error
@@ -4165,7 +4164,7 @@ mod tests {
 
         let setup = state.require_setup().expect("setup context");
         assert!(setup.dirs.contains(&"~/my-projects".to_string()));
-        assert!(setup.input.text.is_empty());
+        assert_eq!(setup.input.text, "");
     }
 
     #[test]
@@ -4187,7 +4186,7 @@ mod tests {
 
         let setup = state.require_setup().expect("setup context");
         assert_eq!(setup.input.text, format!("{base}Development/"));
-        assert!(setup.dirs.is_empty());
+        assert_eq!(setup.dirs, Vec::<String>::new());
     }
 
     #[test]
@@ -4384,7 +4383,7 @@ mod tests {
         handle_setup_add_dir(&mut state);
         let setup = state.require_setup().expect("setup context");
         assert!(setup.input.text.ends_with("Development/"));
-        assert!(setup.dirs.is_empty());
+        assert_eq!(setup.dirs, Vec::<String>::new());
 
         // Clear input and type the path directly, then add it
         state
@@ -4619,7 +4618,7 @@ mod tests {
             &make_matcher(),
         );
 
-        assert!(state.branches[0].agent_statuses.is_empty());
+        assert_eq!(state.branches[0].agent_statuses, []);
     }
 
     #[test]
@@ -4738,7 +4737,10 @@ mod tests {
         assert_eq!(state.branch_list.filtered, vec![(1, 100)]);
         assert_eq!(state.branch_list.selected, Some(0));
         // But the agent status was still applied to the underlying branch
-        assert!(!state.branches[0].agent_statuses.is_empty());
+        assert!(
+            !state.branches[0].agent_statuses.is_empty(),
+            "expected agent status on the underlying branch"
+        );
     }
 
     #[test]
@@ -4784,7 +4786,7 @@ mod tests {
         );
 
         // Should be ignored when not in BranchSelect
-        assert!(state.branches[0].agent_statuses.is_empty());
+        assert_eq!(state.branches[0].agent_statuses, []);
     }
 
     #[test]
@@ -5375,7 +5377,10 @@ mod tests {
         assert_eq!(state.repo_list.input.cursor, 2);
         assert_eq!(state.repos.len(), 3);
         // "alpha" and "delta" match "al"
-        assert!(!state.repo_list.filtered.is_empty());
+        assert!(
+            !state.repo_list.filtered.is_empty(),
+            "expected repos matching \"al\""
+        );
     }
 
     #[test]
@@ -5666,7 +5671,7 @@ mod tests {
             &make_matcher(),
         );
 
-        assert!(state.repos.is_empty());
+        assert_eq!(state.repos, []);
     }
 
     #[test]

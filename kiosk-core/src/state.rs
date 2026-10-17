@@ -2167,7 +2167,7 @@ mod tests {
         let local = vec!["main".into(), "dev".into()];
 
         let entries = BranchEntry::build_remote("origin", &remote, &local);
-        assert!(entries.is_empty());
+        assert_eq!(entries, []);
     }
 
     #[test]
@@ -2517,7 +2517,7 @@ mod tests {
         ));
 
         assert!(state.reconcile_pending_worktree_deletes());
-        assert!(state.pending_worktree_deletes.is_empty());
+        assert_eq!(state.pending_worktree_deletes, []);
     }
 
     #[test]
@@ -2613,7 +2613,7 @@ mod tests {
     fn test_sort_repos_empty() {
         let mut repos: Vec<Repo> = vec![];
         sort_repos(&mut repos, None, &HashMap::new());
-        assert!(repos.is_empty());
+        assert_eq!(repos, []);
     }
 
     #[test]
@@ -3094,11 +3094,11 @@ mod tests {
     #[test]
     fn test_setup_state_new() {
         let setup = SetupState::new();
-        assert!(setup.input.text.is_empty());
+        assert_eq!(setup.input.text, "");
         assert_eq!(setup.input.cursor, 0);
-        assert!(setup.completions.is_empty());
+        assert_eq!(setup.completions, Vec::<String>::new());
         assert!(setup.selected_completion.is_none());
-        assert!(setup.dirs.is_empty());
+        assert_eq!(setup.dirs, Vec::<String>::new());
     }
 
     #[test]
@@ -3106,7 +3106,7 @@ mod tests {
         let state = AppState::new_setup();
         assert!(state.require_setup().is_ok());
         assert_eq!(state.mode, Mode::Setup(SetupStep::Welcome));
-        assert!(state.repos.is_empty());
+        assert_eq!(state.repos, []);
     }
 
     #[test]

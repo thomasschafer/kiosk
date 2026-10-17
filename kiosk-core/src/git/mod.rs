@@ -277,7 +277,7 @@ branch refs/heads/feat/thing
     #[test]
     fn test_parse_worktree_porcelain_empty() {
         let wts = parse_worktree_porcelain("");
-        assert!(wts.is_empty());
+        assert_eq!(wts, []);
     }
 
     fn make_repo(name: &str, path: &str) -> Repo {

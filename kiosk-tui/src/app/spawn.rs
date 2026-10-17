@@ -918,7 +918,7 @@ mod tests {
         assert_eq!(update.session_name, session);
         assert!(update.session_exists);
         assert_eq!(update.session_activity_ts, Some(456));
-        assert!(update.agent_statuses.is_empty());
+        assert_eq!(update.agent_statuses, []);
     }
 
     #[test]

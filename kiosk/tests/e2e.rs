@@ -2346,7 +2346,7 @@ fn test_e2e_headless_branches_json_stable_schema() {
     );
     let json: Value = serde_json::from_slice(&output.stdout).unwrap();
     let branches = json.as_array().unwrap();
-    assert!(!branches.is_empty());
+    assert!(!branches.is_empty(), "expected at least one branch");
 
     let first = &branches[0];
     assert!(first.get("name").is_some(), "should have 'name' field");

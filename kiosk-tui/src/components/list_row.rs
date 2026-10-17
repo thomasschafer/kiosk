@@ -179,7 +179,7 @@ mod tests {
     fn truncate_spans_zero_width() {
         let spans = vec![Span::raw("hello")];
         let result = truncate_spans(&spans, 0);
-        assert!(result.is_empty());
+        assert_eq!(result, []);
     }
 
     #[test]

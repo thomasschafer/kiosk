@@ -159,7 +159,7 @@ mod tests {
 
     #[test]
     fn test_complete_empty_input() {
-        assert!(complete("").is_empty());
+        assert_eq!(complete(""), Vec::<String>::new());
     }
 
     #[test]
@@ -175,7 +175,7 @@ mod tests {
     #[test]
     fn test_complete_nonexistent_parent() {
         let result = complete("/nonexistent_path_xyz_12345/foo");
-        assert!(result.is_empty());
+        assert_eq!(result, Vec::<String>::new());
     }
 
     #[test]

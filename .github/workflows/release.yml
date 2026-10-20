@@ -218,7 +218,6 @@ jobs:
             desc "Tmux session manager with worktree support"
             homepage "https://github.com/thomasschafer/kiosk"
             license "MIT"
-            version "VERSION_PLACEHOLDER"
 
             on_macos do
               on_intel do

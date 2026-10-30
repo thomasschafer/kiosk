@@ -1,21 +1,17 @@
-pub mod action;
-pub mod agent;
+//! The parts of a kiosk picker that do not depend on the terminal: finding repositories,
+//! git, configuration, the picker's state machine, and the [`backend::Backend`] contract
+//! a multiplexer implements to open what the user picks.
+
+pub mod backend;
 pub mod config;
-pub mod constants;
+pub mod display;
 pub mod event;
 pub mod git;
 pub mod keyboard;
-pub mod paths;
+pub mod path;
 pub mod pending_delete;
+pub mod picker;
+pub mod product;
+pub mod setup;
+pub mod spawn;
 pub mod state;
-pub mod tmux;
-
-// Re-export commonly used types at crate root
-pub use action::Action;
-pub use agent::{AgentKind, AgentState, AgentStatus};
-pub use config::Config;
-pub use event::AppEvent;
-pub use git::{GitProvider, Repo, Worktree};
-pub use keyboard::KeyEvent;
-pub use state::{AppState, BranchEntry, Mode};
-pub use tmux::TmuxProvider;

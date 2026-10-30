@@ -1,46 +1,45 @@
-mod build_readme;
+use std::{env, path::Path};
 
-use anyhow::Result;
-use clap::{Parser, Subcommand};
-use std::path::PathBuf;
+use anyhow::{Result, bail};
+use kiosk::config::{Config, SOURCE};
+use kiosk_docgen::ProductDocs;
 
-#[derive(Parser)]
-#[command(about = "Dev tasks for kiosk")]
-struct Cli {
-    #[command(subcommand)]
-    command: Commands,
-}
-
-#[derive(Subcommand)]
-enum Commands {
-    /// Generate README.md config documentation
-    Readme {
-        /// Path to README.md file
-        #[arg(long, default_value = "README.md")]
-        readme: PathBuf,
-
-        /// Path to config module file
-        #[arg(long, default_value = "kiosk-core/src/config/mod.rs")]
-        config: PathBuf,
-
-        /// Only check if README is up to date, without modifying it
-        #[arg(long)]
-        check: bool,
-    },
-}
+const DOCS: ProductDocs<'static> = ProductDocs {
+    sources: &[SOURCE],
+    extension: "Config",
+    order: &[
+        "search_dirs",
+        "include_non_git",
+        "worktrees",
+        "on_open",
+        "agent",
+        "theme",
+        "keys",
+    ],
+    examples: &[(
+        "on_open",
+        "[on_open]\npanes = [\n  { command = \"hx\", direction = \"right\" },\n]",
+    )],
+};
 
 fn main() -> Result<()> {
-    let cli = Cli::parse();
-
-    match &cli.command {
-        Commands::Readme {
-            readme,
-            config,
-            check,
-        } => {
-            build_readme::generate_readme(readme, config, *check)?;
+    let mut args = env::args().skip(1);
+    let Some(task) = args.next() else {
+        bail!("usage: cargo xtask readme [--check]");
+    };
+    if task != "readme" {
+        bail!("unknown xtask '{task}'; expected 'readme'");
+    }
+    let mut check = false;
+    for argument in args {
+        if argument == "--check" && !check {
+            check = true;
+        } else {
+            bail!("unexpected argument '{argument}'; usage: cargo xtask readme [--check]");
         }
     }
-
-    Ok(())
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("xtask has a workspace parent");
+    kiosk_docgen::generate::<Config>(&root.join("README.md"), &DOCS, check)
 }

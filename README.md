@@ -1,26 +1,22 @@
 # kiosk
 
-Kiosk is a Git-aware tmux session manager, which shows the status of your AI agents (waiting for permissions, idle or running).
+Kiosk is a Git-aware tmux session manager, which shows the status of your AI agents (waiting for permission, running, idle or done).
 
 Search for the repo you want, and optionally select a branch or create a new one. If a session already exists, you jump straight in - if it doesn't, a new session is created, with a new worktree if needed.
 
 ![kiosk preview](media/preview.png)
 
-Worktrees are created in `.kiosk_worktrees/` in the parent directory of the given repository. For instance, if you set `search_dirs = ["~/Development"]`, then worktrees are created at `~/Development/.kiosk_worktrees/`.
+Worktrees are created in `~/.kiosk/worktrees/<repo>/<branch>` by default; set [`worktrees.directory`](#worktrees) to put them elsewhere.
 
 
 ## Usage
 
-### TUI
-
-Kiosk has two primary modes, explained below.
-
-#### Repos and branches view
+### Picker
 
 Add a keybinding to your `tmux.conf` to run `kiosk` in a popup (the following uses `<prefix> f`, but change as appropriate):
 
 ```tmux
-bind-key f popup -xC -yC -w90% -h90% -E "kiosk"
+bind-key f display-popup -xC -yC -w90% -h90% -d "#{pane_current_path}" -E "kiosk"
 ```
 
 You'll start in the repo view, which shows all repos in the folders defined in your config:
@@ -29,127 +25,33 @@ You'll start in the repo view, which shows all repos in the folders defined in y
 - Tab opens the branch view for that repo
 
 From the branch view, you can again fuzzy match across branches:
-- Enter opens a session in a worktree on that branch, either attaching to an existing session if one exists, or creating a new one otherwise
+- Enter opens a session in a worktree on that branch, either switching to an existing session if one exists, or creating a new one otherwise
+- `ctrl+o` creates a new branch named after your search, in a new worktree
+- `ctrl+x` removes a branch's worktree and closes its session
 
-#### Sessions view
+`ctrl+h` shows every binding for the current view. Run outside tmux, kiosk attaches to the session you pick once the picker closes.
 
-Add a keybinding to your `tmux.conf` to run `kiosk --sessions` in a popup (the following uses `<prefix> g`, but change as appropriate):
+Sessions kiosk creates are named after the repo and branch (`my-project/feat-thing`), but kiosk finds them by the folder they show, so renaming them is fine. Sessions you made yourself count as showing the folder they were started in.
+
+### Agent status
+
+Rows for checkouts that are open in tmux show what the agents in their sessions are doing, such as `claude waiting` or `codex running`. Kiosk reads this from two places:
+
+- Programs that report their own status with the [Program Status Protocol (OSC 7501)](https://mitchellh.com/writing/program-status-osc7501). tmux shows these reports to nobody, so kiosk pipes the output of each pane to a small collector (`tmux pipe-pane`) and sets global tmux hooks so new panes get one too. tmux allows one pipe per pane, so panes you already pipe elsewhere are left alone. Kiosk starts collecting the first time it runs in a tmux server, so set [`agent.osc7501`](#agent) to `false` if you'd rather it didn't.
+- For panes without such reports, the screens of Claude Code, Codex, Cursor, Gemini CLI and OpenCode, which kiosk recognises.
+
+To jump to the agent that has waited longest for you, bind `kiosk next`, which switches to the least recently active other session with an agent that is waiting, done, idle or in an unknown state:
 
 ```tmux
-bind-key g popup -xC -yC -w90% -h90% -E "kiosk --sessions"
+bind-key n run-shell "kiosk next"
 ```
 
-This view shows all running tmux sessions, along with the status of any agents.
+`kiosk agents` lists every agent kiosk can see, which helps when a status looks wrong; add `--json` for scripts.
 
-#### Config
+### Config
 
 On first launch (when no config file exists), you'll see a setup wizard to create your config file. If you'd rather do this manually, see the [configuration](#configuration) section.
 
-### CLI
-
-You can also use Kiosk as a CLI, which is particularly useful for AI agents. Below are some example commands, but see `kiosk --help` for a complete list of commands and options.
-
-<details>
-
-#### Examples
-
-```bash
-# List repos
-kiosk list --json
-
-# List branches with metadata
-kiosk branches my-project --json
-
-# Create a new branch, worktree, and tmux session (without attaching)
-kiosk open my-project --new-branch feat/thing --base main --no-switch --json
-
-# Launch a command in the session (the command is typed and Enter is sent automatically)
-kiosk open my-project feat/thing --no-switch --run "your-command-here" --log --json
-
-# Send a follow-up command to an existing session
-kiosk send my-project feat/thing --command "another-command" --json
-
-# Send raw tmux keys (e.g. for TUI interaction — no Enter appended)
-kiosk send my-project feat/thing --keys "C-c" --json
-kiosk send my-project feat/thing --keys "Escape" --json
-
-# Send literal text without appending Enter
-kiosk send my-project feat/thing --text "y" --json
-
-# Target a specific pane (default: 0)
-kiosk send my-project feat/thing --command "ls" --pane 1 --json
-kiosk status my-project feat/thing --pane 1 --json
-
-# List panes in a session
-kiosk panes my-project feat/thing --json
-
-# Check session status
-kiosk status my-project feat/thing --json
-
-# Include agent detection debug metadata (kind/state source + matched rules)
-kiosk status my-project feat/thing --json --debug-agent
-
-# List active kiosk sessions (includes last_activity, pane_count, current_command)
-kiosk sessions --json
-
-# Switch to the oldest other tmux session whose detected agent is idle, waiting, or unknown
-kiosk next --json
-
-# Read session logs
-kiosk log my-project feat/thing --tail 100 --json
-
-# Show resolved configuration
-kiosk config show --json
-
-# Non-interactive cleanup of orphaned worktrees
-kiosk clean --yes --json
-
-# Delete a specific worktree and session when done
-kiosk delete my-project feat/thing --force --json
-```
-
-#### Waiting for completion
-
-Use `--wait` on `open` to block until the command finishes:
-
-```bash
-# Launch, wait for completion, then read output — all in one
-kiosk open my-project feat/thing --no-switch --run "cargo test" --wait --wait-timeout 300 --log --json
-kiosk log my-project feat/thing --tail 200 --json
-```
-
-Or use the standalone `wait` command for commands sent later:
-
-```bash
-kiosk send my-project feat/thing --command "cargo test"
-kiosk wait my-project feat/thing --timeout 300 --json
-```
-
-#### Session naming
-
-Kiosk names tmux sessions deterministically:
-- Main checkout: `<repo-name>` (dots replaced with `_`)
-- Branch worktree: `<repo-name>--<branch>` (with `/` replaced by `-`, `.` replaced by `_`)
-
-The `open --json` response includes the exact session name in the `session` field.
-
-#### Agent status troubleshooting
-
-When agent state looks wrong (`UNKNOWN` vs `IDLE`/`RUNNING`), capture both Kiosk's debug metadata and raw pane tail:
-
-```bash
-# Show detected kind/state and which rule matched
-kiosk status my-project feat/thing --json --debug-agent | jq '{agent_status, agent_debug}'
-
-# Confirm pane command/title and target pane ids
-kiosk panes my-project feat/thing --json
-tmux list-panes -t my-project--feat-thing -F '#{pane_id} cmd=#{pane_current_command} title=#{pane_title}'
-
-# Inspect recent pane content (strip ANSI, large enough tail)
-tmux capture-pane -ep -t my-project--feat-thing:0.0 -S -2000 | tail -n 80
-```
-
-</details>
 
 ## Installing
 
@@ -192,48 +94,134 @@ cargo install --path kiosk
 
 ## Configuration
 
-By default, Kiosk looks for a TOML configuration file at:
-
-- Linux or macOS: `~/.config/kiosk/config.toml`
-- Windows: `%AppData%\kiosk\config.toml`
-
 Here's a minimal example that contains all required keys (change values as appropriate):
 
 ```toml
 search_dirs = ["~/Development"]
 ```
 
-### Config options
+<!-- CONFIG:START -->
+Kiosk reads `$XDG_CONFIG_HOME/kiosk/config.toml`, which is
+`~/.config/kiosk/config.toml` when `XDG_CONFIG_HOME` is unset, or `config.toml` in
+`$KIOSK_CONFIG_DIR` when that is set. All sections are optional, and the defaults are
+shown below alongside curated examples for settings that benefit from one.
 
-The following options can be set in your configuration file:
-
-<!-- CONFIG START -->
 #### `search_dirs`
 
-Directories to scan for git repositories. Each directory can be scanned to a specified depth, with a default of 1 (i.e. just the top level).
-Supports `~` for the home directory. For example:
+Directories searched recursively for Git repositories and, when enabled,
+plain folders. Entries can be simple strings such as `"~/Code"` or inline
+tables such as `{ path = "~/Work", depth = 3 }`, and both forms can be mixed.
+Missing directories are reported as warnings unless marked `optional`.
+
+Example:
+
 ```toml
-search_dirs = ["~/Development", { path = "~/Work", depth = 2 }]
+include_non_git = false
+search_dirs = [
+  "~/Code",
+  { path = "~/Work", depth = 2, include_non_git = true },
+  { path = "~/Clients", optional = true },
+]
 ```
 
-### `[session]` section
+A repository search root, written either as a path string or an inline table.
 
-Layout when creating a new tmux session.
+Accepted forms:
 
-#### `split_command`
+- String form.
+  - Directory to scan with the default depth of 1. `~` and paths beginning with `~/` expand from the user's home directory.
+- A path with optional per-directory scan depth, plain-folder override, and missing-directory tolerance.
+  - `path` — Directory to scan. `~` and paths beginning with `~/` expand from the user's home directory; other relative paths are accepted as written.
+  - `depth` — Maximum directory depth to scan. The value must be at least 1 and defaults to 1 when omitted.
+  - `include_non_git` — Whether to include plain folders for this search root. When omitted, the global `include_non_git` value is used.
+  - `optional` — Whether this directory may be absent. A missing optional directory is skipped without a warning; a path that exists but is not a readable directory still warns. Defaults to `false`.
 
-Command to run in a split pane when creating a new session. For example, to open
-Helix in a vertical split:
+#### `include_non_git`
+
+Include plain folders in search results globally. Rich search-directory
+entries can override this value with their own `include_non_git` setting.
+
+Default: `false`
+
+### `[worktrees]`
+
+Configure worktree placement.
+
+Where kiosk creates checkouts for branches that do not have one.
+
+#### `directory`
+
+Directory holding new checkouts, each at `<directory>/<repository>/<branch>`.
+`~` and paths beginning with `~/` expand from the user's home directory; the path
+must be absolute after expansion.
+
+Default: `"~/.kiosk/worktrees"`
+
+### `[on_open]`
+
+Configure command panes created after kiosk creates a session.
+
+The section is optional and contains no pane definitions by default.
+
+Example:
+
 ```toml
-[session]
-split_command = "hx"
+[on_open]
+panes = [
+  { command = "hx", direction = "right" },
+]
 ```
 
-### `[theme]` section
+#### `panes`
 
-Color theme configuration.
+Pane definitions, created in order without moving focus from the first pane.
+Commands run from the opened repository or worktree. They run only when kiosk
+creates a session, not when it switches to an existing one.
 
-Colors can be a named color (`black`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `white`, `gray`, `dark_gray`) or a hex value (`#rrggbb`).
+A command pane split off a new session's first pane.
+
+Each entry is an inline table with:
+
+- `command` — Shell command typed into the new pane's shell, which stays when the command ends. The command must not be empty.
+- `direction` — Split direction: `right` or `down`.
+- `ratio` — Fraction of the split occupied by the new command pane. The value must be greater than 0 and less than 1, and defaults to 0.5 when omitted.
+
+### `[agent]`
+
+Configure agent status.
+
+Agent status is shown beside open checkouts and used by `kiosk next`.
+
+#### `enabled`
+
+Whether to show agent status at all. Set to `false` to stop kiosk looking at
+panes.
+
+Default: `true`
+
+#### `osc7501`
+
+Whether to read the status programs report over OSC 7501. Kiosk pipes each pane's
+output (`pipe-pane`) to a small collector and sets global tmux hooks so new panes
+get one; panes you already pipe elsewhere are left alone. Set to `false` to turn
+this off, which also removes kiosk's hooks and collectors the next time kiosk runs.
+Panes without OSC 7501 status fall back to recognising known agents' screens.
+
+Default: `true`
+
+#### `poll_interval_ms`
+
+Milliseconds between status refreshes while the picker is open. The value must be
+at least 100.
+
+Default: `500`
+
+### `[theme]`
+
+Customize terminal-palette colors used by the picker. Light-terminal users
+can set `muted`, `border`, and other colors explicitly.
+
+Colors use the terminal's ANSI palette and can be `black`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `white`, `gray`, `dark_gray`, `reset`.
 
 Defaults:
 
@@ -242,126 +230,60 @@ Defaults:
 accent = "magenta"
 secondary = "cyan"
 tertiary = "green"
-success = "green"
 error = "red"
 warning = "yellow"
 muted = "dark_gray"
 border = "dark_gray"
 hint = "blue"
 highlight_fg = "black"
-
-[theme.status]
-running = "green"
-waiting = "yellow"
-idle = "cyan"
-unknown = "blue"
+open = "green"
 ```
 
-### `[keys]` section
+### `[keys]`
 
-Key binding configuration.
-To unbind an inherited key mapping, assign it to `noop`.
+Customize key bindings grouped by where they are active.
 
-Defaults are shown below.
+Assign a key to `"noop"` to unbind an inherited mapping.
+
+Write chords with lowercase `ctrl+`, `alt+`, and `shift+` modifiers followed by a character or a named key such as `enter`, `esc`, `tab`, `backspace`, `delete`, an arrow, `home`, `end`, `pageup`, `pagedown`, or `space`.
+
+Defaults:
 
 ```toml
 [keys.general]
-"C-c" = "quit"
-"esc" = "quit"
-"C-h" = "show_help"
-"C-s" = "toggle_sessions"
+"ctrl+c" = "quit"
+"ctrl+h" = "help"
+"ctrl+x" = "dismiss_toast"
 
 [keys.text_edit]
-"backspace" = "delete_backward_char"
-"del" = "delete_forward_char"
-"C-d" = "delete_forward_char"
-"C-w" = "delete_backward_word"
-"A-backspace" = "delete_backward_word"
-"A-d" = "delete_forward_word"
-"C-u" = "delete_to_start"
-"C-k" = "delete_to_end"
-"left" = "move_cursor_left"
-"right" = "move_cursor_right"
-"A-b" = "move_cursor_word_left"
-"A-left" = "move_cursor_word_left"
-"A-f" = "move_cursor_word_right"
-"A-right" = "move_cursor_word_right"
-"home" = "move_cursor_start"
-"C-a" = "move_cursor_start"
-"end" = "move_cursor_end"
-"C-e" = "move_cursor_end"
+"alt+backspace" = "delete_word"
+"backspace" = "backspace"
+"ctrl+w" = "delete_word"
+"esc" = "clear"
+"left" = "cursor_left"
+"right" = "cursor_right"
 
 [keys.list_navigation]
-"up" = "move_up"
+"ctrl+n" = "move_down"
+"ctrl+p" = "move_up"
 "down" = "move_down"
-"C-p" = "move_up"
-"C-n" = "move_down"
-"A-j" = "half_page_down"
-"A-k" = "half_page_up"
-"pageup" = "page_up"
-"pagedown" = "page_down"
-"C-v" = "page_down"
-"A-v" = "page_up"
-"A-g" = "move_top"
-"A-G" = "move_bottom"
-
-[keys.repo_select]
-"enter" = "open_repo"
-"tab" = "enter_repo"
-
-[keys.branch_select]
-"enter" = "open_branch"
-"esc" = "go_back"
-"C-o" = "new_branch"
-"C-x" = "delete_worktree"
-
-[keys.sessions_select]
-"enter" = "switch_to_session"
-"tab" = "jump_to_next_agent_session"
-"S-tab" = "jump_to_previous_agent_session"
+"up" = "move_up"
 
 [keys.modal]
-"enter" = "confirm"
-"esc" = "cancel"
-"tab" = "tab_complete"
+"enter" = "open"
+"esc" = "back"
+
+[keys.repo_select]
+"enter" = "open"
+"q" = "quit"
+"tab" = "branches_view"
+
+[keys.branch_select]
+"ctrl+o" = "new_branch"
+"ctrl+x" = "delete"
+"enter" = "open"
+"esc" = "back"
 
 ```
 
-### `[agent]` section
-
-Agent detection configuration.
-
-#### `enabled`
-
-Whether agent status detection is enabled.
-Set to `false` to completely disable agent polling and status display.
-
-Default: `true`
-
-#### `poll_interval_ms`
-
-Interval in milliseconds between agent status polls.
-
-Default: `500`
-
-### `[agent.labels]` section
-
-Label text for each agent state shown in the branch picker.
-
-#### `running`
-
-Default: `"[RUNNING]"`
-
-#### `waiting`
-
-Default: `"[WAITING]"`
-
-#### `idle`
-
-Default: `"[IDLE]"`
-
-#### `unknown`
-
-Default: `"[UNKNOWN]"`
-
-<!-- CONFIG END -->
+<!-- CONFIG:END -->

@@ -1,148 +1,225 @@
-use super::{
-    provider::GitProvider,
-    repo::{Repo, Worktree},
-};
-use anyhow::Result;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{
+        Arc, Condvar, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
+
+use anyhow::{Result, bail};
+
+use super::{
+    DirtyWorktreeRequiresForce, GitProvider, Listed, LocalBranchAlreadyExists, Repo, ScanWarning,
+    Worktree,
+};
+
+/// Repository, checkout path, branch and base of one `add_worktree` call.
+pub type AddWorktreeCall = (PathBuf, PathBuf, String, Option<String>);
 
 #[derive(Default)]
 pub struct MockGitProvider {
     pub repos: Vec<Repo>,
+    pub scan_warnings: Vec<ScanWarning>,
     pub branches: Vec<String>,
     pub remote_branches: Vec<String>,
     pub remote_branches_by_remote: HashMap<String, Vec<String>>,
     pub worktrees: Vec<Worktree>,
-    pub add_worktree_result: Mutex<Option<Result<()>>>,
-    pub create_branch_result: Mutex<Option<Result<()>>>,
-    pub remove_worktree_result: Mutex<Option<Result<()>>>,
-    pub remove_worktree_calls: Mutex<Vec<PathBuf>>,
-    pub prune_worktrees_result: Mutex<Option<Result<()>>>,
-    pub prune_worktrees_calls: Mutex<Vec<PathBuf>>,
+    pub list_worktree_calls: Mutex<Vec<PathBuf>>,
     pub remotes: Vec<String>,
-    pub fetch_remote_results: Mutex<HashMap<(PathBuf, String), Result<()>>>,
-    pub fetch_remote_calls: Mutex<Vec<(PathBuf, String)>>,
     pub default_branch: Option<String>,
-    pub current_repo_path: Option<PathBuf>,
+    pub failure: Mutex<Option<String>>,
+    pub prune_failure: Mutex<Option<String>>,
+    pub tracking_already_exists: AtomicBool,
+    pub tracking_calls: Mutex<Vec<(PathBuf, String, String)>>,
+    pub invalid_branch_names: HashSet<String>,
+    pub validation_calls: Mutex<Vec<(PathBuf, String)>>,
+    pub dirty_remove_once: AtomicBool,
+    pub add_worktree_calls: Mutex<Vec<AddWorktreeCall>>,
+    pub add_worktree_failure: Mutex<Option<String>>,
+    pub main_checkouts: HashMap<PathBuf, PathBuf>,
+    pub remove_calls: Mutex<Vec<(PathBuf, PathBuf, bool)>>,
+    pub prune_calls: Mutex<Vec<PathBuf>>,
+    pub fetch_calls: Mutex<Vec<(PathBuf, String)>>,
+    pub fetch_gate: Option<Arc<(Mutex<bool>, Condvar)>>,
+}
+
+impl MockGitProvider {
+    fn check_failure(&self) -> Result<()> {
+        if let Some(message) = self.failure.lock().unwrap().take() {
+            bail!(message);
+        }
+        Ok(())
+    }
 }
 
 impl GitProvider for MockGitProvider {
-    fn scan_repos(&self, _dirs: &[(PathBuf, u16)]) -> Vec<Repo> {
-        self.repos
-            .iter()
-            .map(|r| Repo {
-                worktrees: vec![],
-                ..r.clone()
-            })
-            .collect()
+    fn scan_repos_streaming(
+        &self,
+        _dir: &Path,
+        _depth: u16,
+        _include_non_git: bool,
+        is_cancelled: &dyn Fn() -> bool,
+        on_found: &dyn Fn(Repo),
+    ) -> Result<Vec<ScanWarning>> {
+        self.check_failure()?;
+        for repo in &self.repos {
+            if is_cancelled() {
+                break;
+            }
+            on_found(Repo {
+                worktrees: Vec::new(),
+                ..repo.clone()
+            });
+        }
+        Ok(self.scan_warnings.clone())
     }
 
-    fn discover_repos(&self, _dirs: &[(PathBuf, u16)]) -> Vec<Repo> {
-        self.repos.clone()
+    fn list_branches(&self, _repo_path: &Path) -> Result<Listed<String>> {
+        self.check_failure()?;
+        Ok(Listed::new(self.branches.clone(), false))
     }
 
-    fn list_branches(&self, _repo_path: &Path) -> Vec<String> {
-        self.branches.clone()
-    }
-
-    fn list_remote_branches(&self, _repo_path: &Path) -> Vec<String> {
-        self.remote_branches.clone()
-    }
-
-    fn list_worktrees(&self, _repo_path: &Path) -> Vec<Worktree> {
-        self.worktrees.clone()
-    }
-
-    fn add_worktree(&self, _repo_path: &Path, _branch: &str, _worktree_path: &Path) -> Result<()> {
-        self.add_worktree_result
-            .lock()
-            .unwrap()
-            .take()
-            .unwrap_or(Ok(()))
-    }
-
-    fn create_branch_and_worktree(
+    fn list_remote_branches_for_remote(
         &self,
         _repo_path: &Path,
-        _new_branch: &str,
-        _base: &str,
-        _worktree_path: &Path,
-    ) -> Result<()> {
-        self.create_branch_result
-            .lock()
-            .unwrap()
-            .take()
-            .unwrap_or(Ok(()))
+        remote: &str,
+    ) -> Result<Listed<String>> {
+        self.check_failure()?;
+        Ok(Listed::new(
+            self.remote_branches_by_remote
+                .get(remote)
+                .cloned()
+                .unwrap_or_else(|| self.remote_branches.clone()),
+            false,
+        ))
     }
 
-    fn remove_worktree(&self, worktree_path: &Path) -> Result<()> {
-        self.remove_worktree_calls
-            .lock()
-            .unwrap()
-            .push(worktree_path.to_path_buf());
-        self.remove_worktree_result
-            .lock()
-            .unwrap()
-            .take()
-            .unwrap_or(Ok(()))
-    }
-
-    fn prune_worktrees(&self, repo_path: &Path) -> Result<()> {
-        self.prune_worktrees_calls
+    fn list_worktrees(&self, repo_path: &Path) -> Result<Listed<Worktree>> {
+        self.check_failure()?;
+        self.list_worktree_calls
             .lock()
             .unwrap()
             .push(repo_path.to_path_buf());
-        self.prune_worktrees_result
-            .lock()
-            .unwrap()
-            .take()
-            .unwrap_or(Ok(()))
+        Ok(Listed::new(self.worktrees.clone(), false))
     }
 
-    fn create_tracking_branch_and_worktree(
-        &self,
-        _repo_path: &Path,
-        _branch: &str,
-        _worktree_path: &Path,
-    ) -> Result<()> {
-        self.create_branch_result
-            .lock()
-            .unwrap()
-            .take()
-            .unwrap_or(Ok(()))
-    }
-
-    fn list_remote_branches_for_remote(&self, _repo_path: &Path, remote: &str) -> Vec<String> {
-        self.remote_branches_by_remote
-            .get(remote)
-            .cloned()
-            .unwrap_or_else(|| self.remote_branches.clone())
-    }
-
-    fn list_remotes(&self, _repo_path: &Path) -> Vec<String> {
-        self.remotes.clone()
+    fn list_remotes(&self, _repo_path: &Path) -> Result<Vec<String>> {
+        self.check_failure()?;
+        Ok(self.remotes.clone())
     }
 
     fn fetch_remote(&self, repo_path: &Path, remote: &str) -> Result<()> {
-        self.fetch_remote_calls
+        self.check_failure()?;
+        self.fetch_calls
             .lock()
             .unwrap()
             .push((repo_path.to_path_buf(), remote.to_string()));
-        self.fetch_remote_results
+        if let Some(gate) = &self.fetch_gate {
+            let (released, condition) = &**gate;
+            let mut released = released.lock().unwrap();
+            while !*released {
+                released = condition.wait(released).unwrap();
+            }
+        }
+        Ok(())
+    }
+
+    fn create_tracking_branch(&self, repo_path: &Path, branch: &str, remote: &str) -> Result<()> {
+        self.check_failure()?;
+        self.tracking_calls.lock().unwrap().push((
+            repo_path.to_path_buf(),
+            branch.to_string(),
+            remote.to_string(),
+        ));
+        if self.tracking_already_exists.swap(false, Ordering::AcqRel) {
+            return Err(LocalBranchAlreadyExists::new(branch).into());
+        }
+        Ok(())
+    }
+
+    fn is_valid_branch_name(&self, repo_path: &Path, branch: &str) -> Result<bool> {
+        self.check_failure()?;
+        self.validation_calls
             .lock()
             .unwrap()
-            .remove(&(repo_path.to_path_buf(), remote.to_string()))
-            .unwrap_or(Ok(()))
+            .push((repo_path.to_path_buf(), branch.to_string()));
+        Ok(!self.invalid_branch_names.contains(branch))
     }
 
-    fn default_branch(&self, _repo_path: &Path, _local_branches: &[String]) -> Option<String> {
-        self.default_branch.clone()
+    fn add_worktree(
+        &self,
+        repo_path: &Path,
+        worktree_path: &Path,
+        branch: &str,
+        base: Option<&str>,
+    ) -> Result<()> {
+        self.check_failure()?;
+        self.add_worktree_calls.lock().unwrap().push((
+            repo_path.to_path_buf(),
+            worktree_path.to_path_buf(),
+            branch.to_string(),
+            base.map(str::to_string),
+        ));
+        if let Some(message) = self.add_worktree_failure.lock().unwrap().take() {
+            bail!(message);
+        }
+        Ok(())
     }
 
-    fn resolve_repo_from_cwd(&self) -> Option<PathBuf> {
-        self.current_repo_path.clone()
+    fn main_checkout(&self, path: &Path) -> Result<Option<PathBuf>> {
+        self.check_failure()?;
+        Ok(self.main_checkouts.get(path).cloned())
+    }
+
+    fn remove_worktree(&self, repo_path: &Path, worktree_path: &Path, force: bool) -> Result<()> {
+        self.check_failure()?;
+        self.remove_calls.lock().unwrap().push((
+            repo_path.to_path_buf(),
+            worktree_path.to_path_buf(),
+            force,
+        ));
+        if !force && self.dirty_remove_once.swap(false, Ordering::AcqRel) {
+            return Err(DirtyWorktreeRequiresForce.into());
+        }
+        Ok(())
+    }
+
+    fn prune_worktrees(&self, repo_path: &Path) -> Result<()> {
+        self.check_failure()?;
+        if let Some(message) = self.prune_failure.lock().unwrap().take() {
+            bail!(message);
+        }
+        self.prune_calls
+            .lock()
+            .unwrap()
+            .push(repo_path.to_path_buf());
+        Ok(())
+    }
+
+    fn default_branch(
+        &self,
+        _repo_path: &Path,
+        _local_branches: &[String],
+    ) -> Result<Option<String>> {
+        self.check_failure()?;
+        Ok(self.default_branch.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn records_remote_for_tracking_branch() {
+        let provider = MockGitProvider::default();
+        provider
+            .create_tracking_branch(Path::new("/repo"), "feature", "upstream")
+            .unwrap();
+        assert_eq!(
+            *provider.tracking_calls.lock().unwrap(),
+            [(PathBuf::from("/repo"), "feature".into(), "upstream".into())]
+        );
     }
 }

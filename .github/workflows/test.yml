@@ -64,10 +64,8 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
 
-      - name: Run unit tests
-        run: cargo test --workspace --lib --verbose
-
       - name: Install tmux
+        # The E2E tests drive tmux, which does not run on Windows; they compile to nothing there.
         if: runner.os != 'Windows'
         run: |
           if [ "$RUNNER_OS" = "Linux" ]; then
@@ -76,11 +74,5 @@ jobs:
             brew install tmux
           fi
 
-      - name: Run E2E tests
-        # E2E tests require tmux, which is not available on Windows
-        if: runner.os != 'Windows'
-        run: cargo test --package kiosk --test e2e --verbose
-
-      - name: Run agent E2E tests
-        if: runner.os != 'Windows'
-        run: cargo test --package kiosk --test e2e_agent --verbose
+      - name: Run tests
+        run: cargo test --workspace --all-targets --verbose

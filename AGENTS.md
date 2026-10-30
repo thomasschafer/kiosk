@@ -28,32 +28,27 @@ This prevents failures due to missing toolchain/system binaries.
 Examples: `nix develop -c cargo test`, `nix develop -c cargo run`, `nix develop -c cargo clippy`.
 
 ## Agent status debugging
-When status is surprising (`UNKNOWN`, `IDLE`, stale `WAITING`), gather these first:
+When status is surprising (`unknown`, `idle`, stale `waiting`), gather these first:
 
-1. `kiosk status <repo> <branch> --json --debug-agent | jq '{agent_status, agent_debug}'`
-2. `kiosk panes <repo> <branch> --json`
-3. `tmux list-panes -t "<session>" -F '#{pane_id} cmd=#{pane_current_command} title=#{pane_title} dead=#{pane_dead}'`
+1. `kiosk agents --json`: each pane's status, its source (`osc7501` or `heuristics`) and, for heuristics, the screen rule that matched.
+2. `tmux list-panes -a -F '#{pane_id} cmd=#{pane_current_command} title=#{pane_title} dead=#{pane_dead} pipe=#{pane_pipe} collector=#{@kiosk_collector} status=#{@kiosk_status}'`
+3. `tmux show-hooks -g | grep 7501` to check kiosk's collector hooks.
 4. `tmux capture-pane -ep -t "<pane_id>" -S -2000 | tail -n 120`
 
 ## tmux runtime validation (safe workflow)
 Use manual tmux navigation for exploratory checks. Keep E2E for repeatable automation.
 
-1. Build in dev shell: `nix develop -c cargo build -p kiosk`.
-2. Preflight safety: use unique temp names and snapshot sessions:
-   `(tmux list-sessions -F '#{session_name}' 2>/dev/null || true) | sort -u > "$BEFORE"`.
-3. Launch in detached harness with capture mode:
-   `tmux new-session -ds "$HARNESS" "cd <repo_root> && KIOSK_NO_ALT_SCREEN=1 ./target/debug/kiosk --config <temp_config>"`.
-4. Drive the TUI with `tmux send-keys`, then re-discover sessions (never assume harness survives `Enter`):
-   `(tmux list-sessions -F '#{session_name}' 2>/dev/null || true) | sort -u > "$AFTER"` and `comm -13 "$BEFORE" "$AFTER"`.
-5. Verify with `list-panes` + `capture-pane`, then clean up only exact sessions from the diff.
+Always use a dedicated socket (`tmux -L kiosk-test-<unique>`), never the user's own server. Kiosk sets global hooks and pipes panes to collectors in whichever server it runs against, so running it against the user's server changes their setup.
 
-Rules:
-- Never target fixed names like `kiosk`.
-- Never use wildcard/prefix cleanup logic.
-- Never run `tmux kill-session` unless the target came from the pre/post diff computed in the current run.
-- Wait briefly (`sleep 1-2`) after launch and after major key actions before querying/capturing.
-- `KIOSK_NO_ALT_SCREEN=1` should be the default for agent-driven capture runs.
-- Optional full isolation: run all commands on a dedicated tmux socket (`tmux -L <temp-sock> ...`).
+1. Build in dev shell: `nix develop -c cargo build -p kiosk` (the dev shell provides tmux).
+2. Start a server on the dedicated socket with a session for the picker, pointing kiosk at a temporary config:
+   `tmux -L "$SOCK" -f /dev/null new-session -ds harness -x 120 -y 30 "KIOSK_CONFIG_DIR=<temp_config_dir> KIOSK_STATE_DIR=<temp_state_dir> ./target/debug/kiosk; sleep 30"`.
+3. Opening switches the attached client, so attach one from a second dedicated socket:
+   `tmux -L "$SOCK-client" -f /dev/null new-session -d "env -u TMUX tmux -L $SOCK attach -t harness"`.
+4. Drive the TUI with `tmux -L "$SOCK" send-keys`, then verify with `list-sessions`, `list-panes` and `capture-pane` on the same socket. Wait briefly (`sleep 1-2`) after launch and after major key actions.
+5. Clean up with `tmux -L "$SOCK" kill-server` and `tmux -L "$SOCK-client" kill-server`. Never run `kill-server` or `kill-session` without `-L` and a socket you created in this run.
+
+To run kiosk commands from outside the test server, set `KIOSK_TMUX_SOCKET="$SOCK"` and unset `TMUX`.
 
 ## Sending keys to agent TUIs in tmux
 Agent TUIs use raw terminal input modes. The critical rule: **text and Enter must be separate `tmux send-keys` calls with a brief delay (~300ms+)**. Sending them in the same invocation drops the Enter in most agents.

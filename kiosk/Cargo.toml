@@ -13,20 +13,16 @@ categories = ["command-line-utilities"]
 
 [dependencies]
 anyhow.workspace = true
-clap = { workspace = true }
-dirs = "7"
-dunce = "1.0.5"
+base64 = "0.22"
+clap = { version = "4", features = ["derive"] }
 kiosk-core.workspace = true
-log = "0.4"
 kiosk-tui.workspace = true
-ratatui = "0.30"
 serde.workspace = true
-simple-log = "2.4"
 serde_json.workspace = true
 
 [dev-dependencies]
-serial_test = "4"
-tempfile = "3"
+kiosk-core = { workspace = true, features = ["test-support"] }
+tempfile.workspace = true
 
 [lints]
 workspace = true

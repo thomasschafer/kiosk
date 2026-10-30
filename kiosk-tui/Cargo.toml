@@ -4,26 +4,24 @@ version.workspace = true
 edition.workspace = true
 authors = ["thomasschafer97@gmail.com"]
 license = "MIT"
-description = "Terminal UI for kiosk — tmux session manager with worktree support"
+description = "Terminal UI for kiosk pickers, generic over the multiplexer backend"
 readme = "../README.md"
 homepage = "https://github.com/thomasschafer/kiosk"
 repository = "https://github.com/thomasschafer/kiosk"
-keywords = ["cli", "tmux", "worktree", "git"]
+keywords = ["cli", "worktree", "git", "tui"]
 categories = ["command-line-utilities"]
 
 [dependencies]
 anyhow.workspace = true
-crossterm = "0.29"
-fuzzy-matcher = "0.3"
+crossterm.workspace = true
 kiosk-core.workspace = true
-log = "0.4"
-rayon = "1"
-ratatui = "0.30"
-unicode-width = "0.2"
+ratatui.workspace = true
 unicode-segmentation = "1"
+unicode-width = "0.2"
 
 [dev-dependencies]
-tempfile = "3"
+kiosk-core = { workspace = true, features = ["test-support"] }
+toml.workspace = true
 
 [lints]
 workspace = true

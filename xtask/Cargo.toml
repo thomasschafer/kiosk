@@ -5,13 +5,9 @@ edition.workspace = true
 publish = false
 
 [dependencies]
-anyhow = "1"
-clap = { version = "4", features = ["derive"] }
-kiosk-core = { workspace = true }
-syn = { version = "3", features = ["full", "parsing"] }
-quote = "1"
-serde = { version = "1", features = ["derive"] }
-toml = "1.1"
+anyhow.workspace = true
+kiosk = { path = "../kiosk" }
+kiosk-docgen = { path = "../kiosk-docgen" }
 
 [lints]
 workspace = true

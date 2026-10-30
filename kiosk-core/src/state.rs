@@ -1,44 +1,49 @@
-use crate::{
-    agent::{AgentKind, AgentStatus},
-    config::{
-        AgentConfig, AgentLabelsConfig,
-        keys::{Command, FlattenedKeybindingRow},
-    },
-    constants::{WORKTREE_DIR_DEDUP_MAX_ATTEMPTS, WORKTREE_DIR_NAME, WORKTREE_NAME_SEPARATOR},
-    git::Repo,
-    pending_delete::PendingWorktreeDelete,
-};
-use serde::{Deserialize, Serialize};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    time::{Duration, Instant},
 };
+
+use serde::{Deserialize, Serialize};
 use unicode_segmentation::UnicodeSegmentation;
 
-/// Reusable text input with cursor, shared by `SearchableList` and `SetupState`.
-#[derive(Debug, Clone)]
+use crate::{
+    backend::annotation::AnnotationIndex,
+    config::keys::{BindingMode, KeysConfig},
+    git::Repo,
+    picker::{
+        branch::BranchViewState, delete::DeleteState, new_branch::NewBranchState,
+        repo::RepoViewState,
+    },
+    product::Product,
+};
+
+pub use crate::picker::branch::{BranchContext, BranchId, OpenCheckoutLoadState};
+pub use crate::picker::delete::{DeleteFlowState, DeleteWorktreeTarget};
+pub use crate::picker::new_branch::{BaseBranchSelection, RemoteBranchChoice, RemoteBranchPrompt};
+pub use crate::picker::repo::RepoEntry;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TextInput {
     pub text: String,
     pub cursor: usize,
 }
 
-#[derive(Clone, Copy)]
-struct GraphemeSpan {
-    start: usize,
-    end: usize,
-    is_whitespace: bool,
-}
-
 impl TextInput {
-    pub fn new() -> Self {
-        Self {
-            text: String::new(),
-            cursor: 0,
-        }
+    fn boundaries(&self) -> Vec<usize> {
+        let mut boundaries: Vec<_> = self.text.grapheme_indices(true).map(|(i, _)| i).collect();
+        boundaries.push(self.text.len());
+        boundaries
+    }
+
+    fn clamp_cursor(&mut self, boundaries: &[usize]) -> usize {
+        let cursor = self.cursor.min(self.text.len());
+        let index = match boundaries.binary_search(&cursor) {
+            Ok(index) => index,
+            Err(index) => index.saturating_sub(1),
+        };
+        self.cursor = boundaries.get(index).copied().unwrap_or_default();
+        index
     }
 
     pub fn clear(&mut self) {
@@ -46,232 +51,58 @@ impl TextInput {
         self.cursor = 0;
     }
 
-    fn grapheme_spans(&self) -> Vec<GraphemeSpan> {
-        self.text
-            .grapheme_indices(true)
-            .map(|(start, grapheme)| GraphemeSpan {
-                start,
-                end: start + grapheme.len(),
-                is_whitespace: grapheme.chars().all(char::is_whitespace),
-            })
-            .collect()
+    pub fn insert_char(&mut self, character: char) {
+        let boundaries = self.boundaries();
+        self.clamp_cursor(&boundaries);
+        self.text.insert(self.cursor, character);
+        self.cursor += character.len_utf8();
     }
 
-    fn grapheme_boundaries(&self) -> Vec<usize> {
-        let mut boundaries: Vec<usize> = self.text.grapheme_indices(true).map(|(i, _)| i).collect();
-        boundaries.push(self.text.len());
-        boundaries
-    }
-
-    fn boundaries_from_spans(spans: &[GraphemeSpan], text_len: usize) -> Vec<usize> {
-        let mut boundaries = Vec::with_capacity(spans.len().saturating_add(1));
-        for span in spans {
-            boundaries.push(span.start);
-        }
-        boundaries.push(text_len);
-        boundaries
-    }
-
-    fn boundary_index_at_or_before(boundaries: &[usize], cursor: usize) -> usize {
-        match boundaries.binary_search(&cursor) {
-            Ok(idx) => idx,
-            Err(idx) => idx.saturating_sub(1),
+    pub fn backspace(&mut self) {
+        let boundaries = self.boundaries();
+        let index = self.clamp_cursor(&boundaries);
+        if index > 0 {
+            let previous = boundaries[index - 1];
+            self.text.drain(previous..self.cursor);
+            self.cursor = previous;
         }
     }
 
-    fn clamp_cursor_to_boundary(&mut self, boundaries: &[usize]) -> usize {
-        let cursor = self.cursor.min(self.text.len());
-        let idx = Self::boundary_index_at_or_before(boundaries, cursor);
-        self.cursor = boundaries.get(idx).copied().unwrap_or(0);
-        idx
-    }
-
-    pub(crate) fn prev_word_boundary(&self, from: usize) -> usize {
-        let spans = self.grapheme_spans();
-        if spans.is_empty() {
-            return 0;
-        }
-        let boundaries = Self::boundaries_from_spans(&spans, self.text.len());
-        let cursor = from.min(self.text.len());
-        let mut grapheme_idx =
-            Self::boundary_index_at_or_before(&boundaries, cursor).saturating_sub(1);
-
-        while let Some(span) = spans.get(grapheme_idx) {
-            if !span.is_whitespace {
-                break;
-            }
-            if grapheme_idx == 0 {
-                return 0;
-            }
-            grapheme_idx -= 1;
-        }
-
-        while let Some(span) = spans.get(grapheme_idx) {
-            if span.is_whitespace {
-                return span.end;
-            }
-            if grapheme_idx == 0 {
-                return 0;
-            }
-            grapheme_idx -= 1;
-        }
-
-        0
-    }
-
-    pub(crate) fn next_word_boundary(&self, from: usize) -> usize {
-        let spans = self.grapheme_spans();
-        if spans.is_empty() {
-            return 0;
-        }
-        let boundaries = Self::boundaries_from_spans(&spans, self.text.len());
-        let cursor = from.min(self.text.len());
-        let mut grapheme_idx = Self::boundary_index_at_or_before(&boundaries, cursor);
-
-        while let Some(span) = spans.get(grapheme_idx) {
-            if !span.is_whitespace {
-                break;
-            }
-            grapheme_idx += 1;
-        }
-
-        while let Some(span) = spans.get(grapheme_idx) {
-            if span.is_whitespace {
-                return span.start;
-            }
-            grapheme_idx += 1;
-        }
-
-        self.text.len()
-    }
-
-    /// Move cursor left by one grapheme cluster (UTF-8 safe)
-    pub fn cursor_left(&mut self) {
-        let boundaries = self.grapheme_boundaries();
-        let idx = self.clamp_cursor_to_boundary(&boundaries);
-        if idx > 0 {
-            self.cursor = boundaries[idx - 1];
-        }
-    }
-
-    /// Move cursor right by one grapheme cluster (UTF-8 safe)
-    pub fn cursor_right(&mut self) {
-        let boundaries = self.grapheme_boundaries();
-        let idx = self.clamp_cursor_to_boundary(&boundaries);
-        if idx + 1 < boundaries.len() {
-            self.cursor = boundaries[idx + 1];
-        }
-    }
-
-    pub fn cursor_start(&mut self) {
-        self.cursor = 0;
-    }
-
-    pub fn cursor_end(&mut self) {
-        self.cursor = self.text.len();
-    }
-
-    pub fn cursor_word_left(&mut self) {
-        let boundaries = self.grapheme_boundaries();
-        self.clamp_cursor_to_boundary(&boundaries);
-        self.cursor = self.prev_word_boundary(self.cursor);
-    }
-
-    pub fn cursor_word_right(&mut self) {
-        let boundaries = self.grapheme_boundaries();
-        self.clamp_cursor_to_boundary(&boundaries);
-        self.cursor = self.next_word_boundary(self.cursor);
-    }
-
-    /// Insert a character at the current cursor position
-    pub fn insert_char(&mut self, c: char) {
-        let boundaries = self.grapheme_boundaries();
-        self.clamp_cursor_to_boundary(&boundaries);
-        self.text.insert(self.cursor, c);
-        self.cursor += c.len_utf8();
-    }
-
-    /// Remove the grapheme cluster before the cursor (UTF-8 safe)
-    pub fn backspace(&mut self) -> bool {
-        let boundaries = self.grapheme_boundaries();
-        let idx = self.clamp_cursor_to_boundary(&boundaries);
-        if idx == 0 {
-            return false;
-        }
-        let prev = boundaries[idx - 1];
-        self.text.drain(prev..self.cursor);
-        self.cursor = prev;
-        true
-    }
-
-    /// Remove the grapheme cluster at cursor position (UTF-8 safe)
-    pub fn delete_forward_char(&mut self) -> bool {
-        let boundaries = self.grapheme_boundaries();
-        let idx = self.clamp_cursor_to_boundary(&boundaries);
-        if idx + 1 >= boundaries.len() {
-            return false;
-        }
-        let end = boundaries[idx + 1];
-        self.text.drain(self.cursor..end);
-        true
-    }
-
-    /// Delete word backwards from cursor position
     pub fn delete_word(&mut self) {
-        if self.text.is_empty() || self.cursor == 0 {
+        if self.cursor == 0 || self.text.is_empty() {
             return;
         }
-        let boundaries = self.grapheme_boundaries();
-        self.clamp_cursor_to_boundary(&boundaries);
-        let new_cursor = self.prev_word_boundary(self.cursor);
-
-        self.text.drain(new_cursor..self.cursor);
-        self.cursor = new_cursor;
+        let boundaries = self.boundaries();
+        self.clamp_cursor(&boundaries);
+        let before = &self.text[..self.cursor];
+        let trimmed = before.trim_end_matches(char::is_whitespace);
+        let word_start = trimmed.rfind(char::is_whitespace).map_or(0, |index| {
+            index + self.text[index..].chars().next().unwrap().len_utf8()
+        });
+        self.text.drain(word_start..self.cursor);
+        self.cursor = word_start;
     }
 
-    /// Delete word forwards from cursor position
-    pub fn delete_word_forward(&mut self) {
-        if self.text.is_empty() || self.cursor >= self.text.len() {
-            return;
+    pub fn cursor_left(&mut self) {
+        let boundaries = self.boundaries();
+        let index = self.clamp_cursor(&boundaries);
+        if index > 0 {
+            self.cursor = boundaries[index - 1];
         }
-        let boundaries = self.grapheme_boundaries();
-        self.clamp_cursor_to_boundary(&boundaries);
-        let end = self.next_word_boundary(self.cursor);
-        self.text.drain(self.cursor..end);
     }
 
-    pub fn delete_to_start(&mut self) {
-        if self.cursor == 0 {
-            return;
+    pub fn cursor_right(&mut self) {
+        let boundaries = self.boundaries();
+        let index = self.clamp_cursor(&boundaries);
+        if index + 1 < boundaries.len() {
+            self.cursor = boundaries[index + 1];
         }
-        let boundaries = self.grapheme_boundaries();
-        self.clamp_cursor_to_boundary(&boundaries);
-        self.text.drain(..self.cursor);
-        self.cursor = 0;
-    }
-
-    pub fn delete_to_end(&mut self) {
-        if self.cursor >= self.text.len() {
-            return;
-        }
-        let boundaries = self.grapheme_boundaries();
-        self.clamp_cursor_to_boundary(&boundaries);
-        self.text.truncate(self.cursor);
     }
 }
 
-impl Default for TextInput {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Shared state for any searchable, filterable list.
-/// Eliminates the mode-dispatch triplication for search/cursor/movement.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchableList {
     pub input: TextInput,
-    /// Index-score pairs, sorted by score descending
     pub filtered: Vec<(usize, i64)>,
     pub selected: Option<usize>,
     pub scroll_offset: usize,
@@ -280,3597 +111,674 @@ pub struct SearchableList {
 impl SearchableList {
     pub fn new(item_count: usize) -> Self {
         Self {
-            input: TextInput::new(),
-            filtered: (0..item_count).map(|i| (i, 0)).collect(),
-            selected: if item_count > 0 { Some(0) } else { None },
+            input: TextInput::default(),
+            filtered: (0..item_count).map(|index| (index, 0)).collect(),
+            selected: (item_count > 0).then_some(0),
             scroll_offset: 0,
         }
     }
 
-    pub fn reset(&mut self, item_count: usize) {
-        self.input.clear();
-        self.filtered = (0..item_count).map(|i| (i, 0)).collect();
-        self.selected = if item_count > 0 { Some(0) } else { None };
-        self.scroll_offset = 0;
-    }
-
-    // ── Convenience accessors for backward compatibility ──
-
-    /// Access the search text
-    pub fn search(&self) -> &str {
-        &self.input.text
-    }
-
-    /// Access the cursor position
-    pub fn cursor(&self) -> usize {
-        self.input.cursor
-    }
-
-    /// Move selection by delta, clamping to bounds
     pub fn move_selection(&mut self, delta: i32) {
-        let len = self.filtered.len();
-        if len == 0 {
+        if self.filtered.is_empty() {
             return;
         }
-        let current = self.selected.unwrap_or(0);
-        if delta > 0 {
-            self.selected = Some(
-                current
-                    .saturating_add(delta.unsigned_abs() as usize)
-                    .min(len - 1),
-            );
+        let current = self.selected.unwrap_or_default();
+        self.selected = Some(if delta.is_positive() {
+            current
+                .saturating_add(delta.unsigned_abs() as usize)
+                .min(self.filtered.len() - 1)
         } else {
-            self.selected = Some(current.saturating_sub(delta.unsigned_abs() as usize));
-        }
+            current.saturating_sub(delta.unsigned_abs() as usize)
+        });
     }
 
-    pub fn move_to_top(&mut self) {
-        if !self.filtered.is_empty() {
-            self.selected = Some(0);
-        }
-    }
-
-    pub fn move_to_bottom(&mut self) {
-        if !self.filtered.is_empty() {
-            self.selected = Some(self.filtered.len() - 1);
-        }
-    }
-
-    pub fn update_scroll_offset_for_selection(&mut self, viewport_rows: usize) {
-        let len = self.filtered.len();
-        if len == 0 {
+    pub fn update_scroll_offset(&mut self, viewport_rows: usize) {
+        if self.filtered.is_empty() {
             self.scroll_offset = 0;
             return;
         }
-
         let viewport_rows = viewport_rows.max(1);
-        let max_offset = len.saturating_sub(viewport_rows);
-        let selected = self.selected.unwrap_or(0).min(len - 1);
-        let anchor_top = usize::from(viewport_rows > 2);
-        let anchor_bottom = viewport_rows.saturating_sub(2);
-
-        let top_bound = self.scroll_offset.saturating_add(anchor_top);
-        let bottom_bound = self.scroll_offset.saturating_add(anchor_bottom);
-
-        if selected < top_bound {
-            self.scroll_offset = selected.saturating_sub(anchor_top);
-        } else if selected > bottom_bound {
-            self.scroll_offset = selected.saturating_sub(anchor_bottom);
+        let selected = self
+            .selected
+            .unwrap_or_default()
+            .min(self.filtered.len() - 1);
+        if selected < self.scroll_offset {
+            self.scroll_offset = selected;
+        } else if selected >= self.scroll_offset.saturating_add(viewport_rows) {
+            self.scroll_offset = selected + 1 - viewport_rows;
         }
+        self.scroll_offset = self
+            .scroll_offset
+            .min(self.filtered.len().saturating_sub(viewport_rows));
+    }
 
-        self.scroll_offset = self.scroll_offset.min(max_offset);
+    pub fn visible_items(&self, viewport_rows: usize) -> Vec<(usize, usize)> {
+        let start = self.scroll_offset.min(self.filtered.len());
+        let end = start
+            .saturating_add(viewport_rows.max(1))
+            .min(self.filtered.len());
+        let mut positions = (start..end).collect::<Vec<_>>();
+        if let Some(selected) = self
+            .selected
+            .filter(|selected| *selected < self.filtered.len())
+            && (selected < start || selected >= end)
+        {
+            positions.push(selected);
+            positions.sort_unstable();
+        }
+        positions
+            .into_iter()
+            .map(|position| (position, self.filtered[position].0))
+            .collect()
     }
 }
 
-/// Rich branch entry with worktree and session metadata
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HelpBindingRow {
+    pub section_name: &'static str,
+    pub key_display: String,
+    pub command_name: &'static str,
+    pub description: &'static str,
+}
+
+impl HelpBindingRow {
+    pub fn search_text(&self) -> String {
+        format!(
+            "{} {} {}",
+            self.key_display, self.command_name, self.description
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HelpOverlayState {
+    pub rows: Vec<HelpBindingRow>,
+    pub list: SearchableList,
+}
+
+impl HelpOverlayState {
+    /// The bindings active in `mode`, grouped by section.
+    pub fn for_mode(keys: &KeysConfig, mode: BindingMode) -> Self {
+        let rows = keys
+            .sections(mode)
+            .into_iter()
+            .flat_map(|section| {
+                section
+                    .bindings
+                    .into_iter()
+                    .map(move |(key, command)| HelpBindingRow {
+                        section_name: section.name,
+                        key_display: key.to_string(),
+                        command_name: command.name(),
+                        description: command.description(),
+                    })
+            })
+            .collect::<Vec<_>>();
+        let list = SearchableList::new(rows.len());
+        Self { rows, list }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Mode {
+    RepoSelect,
+    BranchSelect(BranchContext),
+    ValidatingNewBranch {
+        context: BranchContext,
+        name: String,
+    },
+    SelectBaseBranch {
+        context: BranchContext,
+        flow: BaseBranchSelection,
+    },
+    ConfirmRemoteBranch {
+        context: BranchContext,
+        prompt: RemoteBranchPrompt,
+    },
+    ConfirmWorktreeDelete(DeleteFlowState),
+    Loading {
+        message: String,
+        branch: Option<BranchContext>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToastKind {
+    Warning,
+    Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Toast {
+    pub kind: ToastKind,
+    pub message: String,
+    category: ToastCategory,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToastCategory {
+    General,
+    Scan,
+}
+
+#[derive(Debug)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct AppState {
+    pub repo_view: RepoViewState,
+    pub branch_view: BranchViewState,
+    pub mode: Mode,
+    pub toasts: VecDeque<Toast>,
+    toast_messages: HashSet<String>,
+    front_toast_since: Option<Instant>,
+    scan_warning_count: usize,
+    pub help_overlay: Option<HelpOverlayState>,
+    pub active_list_rows: usize,
+    pub help_filter_generation: u64,
+    pub(crate) delete: DeleteState,
+    pub(crate) new_branch: NewBranchState,
+    pub product: &'static Product,
+    /// The backend's latest labels for open checkouts and folders.
+    pub annotations: AnnotationIndex,
+}
+
+impl AppState {
+    pub fn new(product: &'static Product, current_cwd: Option<PathBuf>) -> Self {
+        Self {
+            repo_view: RepoViewState::new(current_cwd),
+            branch_view: BranchViewState::default(),
+            mode: Mode::RepoSelect,
+            toasts: VecDeque::new(),
+            toast_messages: HashSet::new(),
+            front_toast_since: None,
+            scan_warning_count: 0,
+            help_overlay: None,
+            active_list_rows: 1,
+            help_filter_generation: 0,
+            delete: DeleteState::default(),
+            new_branch: NewBranchState::default(),
+            product,
+            annotations: AnnotationIndex::default(),
+        }
+    }
+
+    pub fn selected_repo(&self) -> Option<&RepoEntry> {
+        self.repo_view.selected()
+    }
+
+    pub fn selected_branch(&self) -> Option<&BranchEntry> {
+        self.branch_view.selected()
+    }
+
+    pub fn branch_context(&self) -> Option<&BranchContext> {
+        match &self.mode {
+            Mode::BranchSelect(context)
+            | Mode::ValidatingNewBranch { context, .. }
+            | Mode::SelectBaseBranch { context, .. }
+            | Mode::ConfirmRemoteBranch { context, .. }
+            | Mode::Loading {
+                branch: Some(context),
+                ..
+            } => Some(context),
+            Mode::ConfirmWorktreeDelete(flow) => Some(flow.context()),
+            Mode::RepoSelect | Mode::Loading { branch: None, .. } => None,
+        }
+    }
+
+    pub fn push_toast(&mut self, kind: ToastKind, message: impl Into<String>) {
+        self.push_toast_with_category(kind, &message.into(), ToastCategory::General);
+    }
+
+    pub fn push_scan_warning(&mut self) {
+        self.scan_warning_count = self.scan_warning_count.saturating_add(1);
+        let message = format!(
+            "{} director{} could not be scanned",
+            self.scan_warning_count,
+            if self.scan_warning_count == 1 {
+                "y"
+            } else {
+                "ies"
+            }
+        );
+        if let Some(toast) = self
+            .toasts
+            .iter_mut()
+            .find(|toast| toast.category == ToastCategory::Scan)
+        {
+            self.toast_messages.remove(&toast.message);
+            toast.message.clone_from(&message);
+            self.toast_messages.insert(message);
+        } else {
+            self.push_toast_with_category(ToastKind::Warning, &message, ToastCategory::Scan);
+        }
+    }
+
+    pub fn dismiss_toast(&mut self) {
+        if let Some(toast) = self.toasts.pop_front() {
+            self.toast_messages.remove(&toast.message);
+        }
+        self.front_toast_since = None;
+    }
+
+    pub fn tick_toasts(&mut self, now: Instant, ttl: Duration) -> bool {
+        if self.toasts.is_empty() {
+            self.front_toast_since = None;
+            return false;
+        }
+        let Some(since) = self.front_toast_since else {
+            self.front_toast_since = Some(now);
+            return false;
+        };
+        if now.saturating_duration_since(since) < ttl {
+            return false;
+        }
+        self.dismiss_toast();
+        true
+    }
+
+    fn push_toast_with_category(
+        &mut self,
+        kind: ToastKind,
+        message: &str,
+        category: ToastCategory,
+    ) {
+        const MAX_RETAINED_TOASTS: usize = 8;
+
+        let message = message.split_whitespace().collect::<Vec<_>>().join(" ");
+        if message.is_empty() || self.toast_messages.contains(&message) {
+            return;
+        }
+        let queue_was_empty = self.toasts.is_empty();
+        if self.toasts.len() == MAX_RETAINED_TOASTS {
+            let warning = self
+                .toasts
+                .iter()
+                .position(|toast| toast.kind == ToastKind::Warning);
+            let remove = match (kind, warning) {
+                (ToastKind::Error | ToastKind::Warning, Some(index)) => Some(index),
+                (ToastKind::Error, None) => Some(0),
+                (ToastKind::Warning, None) => None,
+            };
+            let Some(remove) = remove else {
+                return;
+            };
+            if remove == 0 {
+                self.front_toast_since = None;
+            }
+            if let Some(removed) = self.toasts.remove(remove) {
+                self.toast_messages.remove(&removed.message);
+            }
+        }
+        self.toast_messages.insert(message.clone());
+        self.toasts.push_back(Toast {
+            kind,
+            message,
+            category,
+        });
+        if queue_was_empty {
+            self.front_toast_since = None;
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct BranchEntry {
     pub name: String,
-    /// If a worktree already exists for this branch
-    pub worktree_path: Option<PathBuf>,
-    pub has_session: bool,
+    pub checkout: Option<BranchCheckout>,
     pub is_current: bool,
-    /// Whether this is the default branch (main/master)
     pub is_default: bool,
-    /// The remote this branch comes from, if it is a remote-only branch.
     pub remote: Option<String>,
-    /// Last activity timestamp for the session (if any)
-    pub session_activity_ts: Option<u64>,
-    /// Statuses of AI agents running in the session (sorted by attention priority)
-    pub agent_statuses: Vec<AgentStatus>,
 }
 
-/// Snapshot of runtime tmux/session state for a single session name.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct SessionRuntimeState {
-    pub exists: bool,
-    pub activity_ts: Option<u64>,
-    pub agent_statuses: Vec<AgentStatus>,
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BranchCheckout {
+    pub path: PathBuf,
+    /// Whether the backend is showing the checkout.
+    pub is_open: bool,
+}
+
+impl BranchCheckout {
+    pub fn closed(path: PathBuf) -> Self {
+        Self {
+            path,
+            is_open: false,
+        }
+    }
 }
 
 impl BranchEntry {
-    /// Build branch entries from a repo's branches, worktrees, and active tmux sessions
-    /// (unsorted).
-    pub fn build(
-        repo: &crate::git::Repo,
-        branch_names: &[String],
-        active_sessions: &[String],
-    ) -> Vec<Self> {
-        Self::build_entries(
-            repo,
-            branch_names,
-            active_sessions,
-            None,
-            &HashMap::new(),
-            None,
+    /// A local branch without a checkout.
+    pub fn local(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            checkout: None,
+            is_current: false,
+            is_default: false,
+            remote: None,
+        }
+    }
+
+    pub fn worktree_path(&self) -> Option<&Path> {
+        self.checkout
+            .as_ref()
+            .map(|checkout| checkout.path.as_path())
+    }
+
+    pub fn is_open(&self) -> bool {
+        self.checkout
+            .as_ref()
+            .is_some_and(|checkout| checkout.is_open)
+    }
+
+    pub fn id(&self) -> BranchId {
+        self.remote.as_ref().map_or_else(
+            || BranchId::Local(self.name.clone()),
+            |remote| BranchId::Remote {
+                remote: remote.clone(),
+                name: self.name.clone(),
+            },
         )
     }
 
-    /// Build sorted branch entries from a repo's branches, worktrees, and active tmux sessions.
-    ///
-    /// Sorted by: sessions first, then worktrees, then alphabetical.
-    pub fn build_sorted(
-        repo: &crate::git::Repo,
-        branch_names: &[String],
-        active_sessions: &[String],
-    ) -> Vec<Self> {
-        let mut entries = Self::build(repo, branch_names, active_sessions);
-        Self::sort_entries(&mut entries);
-        entries
+    pub fn display_name(&self) -> String {
+        self.id().display_name()
     }
 
-    /// Build sorted branch entries with activity timestamps and default branch info.
-    ///
-    /// `cwd` is the user's current working directory (resolved to a repo/worktree root).
-    /// When it matches a worktree path, that worktree's branch is marked as current.
-    /// Falls back to the main worktree's branch when `cwd` is `None` or doesn't match.
-    pub fn build_sorted_with_activity(
-        repo: &crate::git::Repo,
+    pub fn build_local(
+        repo: &Repo,
         branch_names: &[String],
-        active_sessions: &[String],
         default_branch: Option<&str>,
-        session_activity: &HashMap<String, u64>,
         cwd: Option<&Path>,
     ) -> Vec<Self> {
-        let mut entries = Self::build_entries(
-            repo,
-            branch_names,
-            active_sessions,
-            default_branch,
-            session_activity,
-            cwd,
-        );
-        Self::sort_entries(&mut entries);
-        entries
-    }
-
-    fn build_entries(
-        repo: &crate::git::Repo,
-        branch_names: &[String],
-        active_sessions: &[String],
-        default_branch: Option<&str>,
-        session_activity: &HashMap<String, u64>,
-        cwd: Option<&Path>,
-    ) -> Vec<Self> {
-        let wt_by_branch: HashMap<&str, &crate::git::Worktree> = repo
+        let worktree_by_branch: HashMap<&str, _> = repo
             .worktrees
             .iter()
-            .filter_map(|wt| wt.branch.as_deref().map(|b| (b, wt)))
+            .filter_map(|worktree| worktree.branch.as_deref().map(|branch| (branch, worktree)))
             .collect();
-
         let current_branch = cwd
-            .and_then(|p| repo.worktrees.iter().find(|wt| wt.path == p))
-            .or_else(|| repo.worktrees.first())
-            .and_then(|wt| wt.branch.as_deref());
-
-        branch_names
-            .iter()
-            .map(|name| {
-                let worktree_path = wt_by_branch.get(name.as_str()).map(|wt| wt.path.clone());
-                let session_name = worktree_path.as_ref().map(|p| repo.tmux_session_name(p));
-                let has_session = session_name
-                    .as_ref()
-                    .is_some_and(|sn| active_sessions.contains(sn));
-                let is_current = current_branch == Some(name.as_str());
-                let is_default = default_branch == Some(name.as_str());
-                let session_activity_ts = session_name
-                    .as_ref()
-                    .and_then(|sn| session_activity.get(sn).copied());
-
-                Self {
-                    name: name.clone(),
-                    worktree_path,
-                    has_session,
-                    is_current,
-                    is_default,
-                    remote: None,
-                    session_activity_ts,
-                    agent_statuses: Vec::new(),
-                }
+            .and_then(|path| {
+                repo.worktrees
+                    .iter()
+                    .filter(|worktree| crate::path::starts_with(path, &worktree.path))
+                    .max_by_key(|worktree| worktree.path.components().count())
             })
-            .collect()
+            .and_then(|worktree| worktree.branch.as_deref());
+
+        let mut entries: Vec<_> = branch_names
+            .iter()
+            .map(|name| Self {
+                name: name.clone(),
+                checkout: worktree_by_branch
+                    .get(name.as_str())
+                    .map(|worktree| BranchCheckout::closed(worktree.path.clone())),
+                is_current: current_branch == Some(name.as_str()),
+                is_default: default_branch == Some(name.as_str()),
+                remote: None,
+            })
+            .collect();
+        Self::sort(&mut entries);
+        entries
     }
 
-    /// Build remote-only branch entries, skipping branches that already exist locally.
     pub fn build_remote(
         remote: &str,
         remote_names: &[String],
         local_names: &[String],
     ) -> Vec<Self> {
-        let local_set: std::collections::HashSet<&str> =
+        let local_names: std::collections::HashSet<_> =
             local_names.iter().map(String::as_str).collect();
-
         remote_names
             .iter()
-            .filter(|name| !local_set.contains(name.as_str()))
+            .filter(|name| !local_names.contains(name.as_str()))
             .map(|name| Self {
-                name: name.clone(),
-                worktree_path: None,
-                has_session: false,
-                is_current: false,
-                is_default: false,
                 remote: Some(remote.to_string()),
-                session_activity_ts: None,
-                agent_statuses: Vec::new(),
+                ..Self::local(name.clone())
             })
             .collect()
     }
 
-    pub fn sort_entries(entries: &mut [Self]) {
-        entries.sort_by(|a, b| {
-            // Remote branches always sort after local
-            a.remote
+    /// Marks the checkout open when it is one of `open_checkouts`.
+    pub fn apply_open_checkouts(&mut self, open_checkouts: &[PathBuf]) {
+        if let Some(checkout) = &mut self.checkout {
+            checkout.is_open = open_checkouts
+                .iter()
+                .any(|open| crate::path::equivalent(open, &checkout.path));
+        }
+    }
+
+    pub(crate) fn sort(entries: &mut [Self]) {
+        entries.sort_by(|left, right| {
+            left.remote
                 .is_some()
-                .cmp(&b.remote.is_some())
-                // Current branch first
-                .then(b.is_current.cmp(&a.is_current))
-                // Default branch second
-                .then(b.is_default.cmp(&a.is_default))
-                // Branches with sessions, ordered by recency (most recent first)
-                .then(cmp_optional_recency(
-                    a.session_activity_ts,
-                    b.session_activity_ts,
-                ))
-                // Branches with sessions (even without activity timestamps) before those without
-                .then(b.has_session.cmp(&a.has_session))
-                // Agent needing attention sorts first (Waiting > Idle > Running > Unknown > None)
-                .then(
-                    agent_statuses_sort_priority(&b.agent_statuses)
-                        .cmp(&agent_statuses_sort_priority(&a.agent_statuses)),
-                )
-                // Branches with worktrees before those without
-                .then(b.worktree_path.is_some().cmp(&a.worktree_path.is_some()))
-                .then(a.name.cmp(&b.name))
+                .cmp(&right.remote.is_some())
+                .then(right.is_current.cmp(&left.is_current))
+                .then(right.is_default.cmp(&left.is_default))
+                .then(right.checkout.is_some().cmp(&left.checkout.is_some()))
+                .then(left.name.cmp(&right.name))
+                .then(left.remote.cmp(&right.remote))
         });
     }
-}
-
-/// Sort priority for agent statuses: higher = sorts first.
-///
-/// Delegates to [`crate::AgentState::attention_priority`] so there is a single
-/// source of truth for state ranking. Returns 0 only for an empty slice (no
-/// detected agent), which is strictly less than any detected state (minimum 1).
-fn agent_statuses_sort_priority(statuses: &[crate::agent::AgentStatus]) -> u8 {
-    statuses
-        .iter()
-        .map(|s| s.state.attention_priority())
-        .max()
-        .unwrap_or(0)
-}
-
-/// Stable display tie-break order for agents with equal-priority states.
-fn agent_kind_sort_priority(kind: AgentKind) -> u8 {
-    match kind {
-        AgentKind::ClaudeCode => 0,
-        AgentKind::Codex => 1,
-        AgentKind::CursorAgent => 2,
-        AgentKind::OpenCode => 3,
-        AgentKind::Gemini => 4,
-    }
-}
-
-/// Canonicalize agent statuses for stable sorting, comparisons, and display.
-pub fn normalized_agent_statuses(
-    statuses: &[crate::agent::AgentStatus],
-) -> Vec<crate::agent::AgentStatus> {
-    let mut normalized = statuses.to_vec();
-    normalized.sort_by(|left, right| {
-        right
-            .state
-            .attention_priority()
-            .cmp(&left.state.attention_priority())
-            .then(agent_kind_sort_priority(left.kind).cmp(&agent_kind_sort_priority(right.kind)))
-    });
-    normalized.dedup();
-    normalized
-}
-
-/// Sort and deduplicate agent states by attention priority (highest first).
-///
-/// Relies on `normalized_agent_statuses` already sorting by state priority
-/// descending, so only dedup is needed here.
-pub fn sorted_unique_agent_states(
-    statuses: &[crate::agent::AgentStatus],
-) -> Vec<crate::AgentState> {
-    let mut states: Vec<crate::AgentState> = normalized_agent_statuses(statuses)
-        .into_iter()
-        .map(|status| status.state)
-        .collect();
-    states.dedup();
-    states
-}
-
-/// Select the highest-priority state from a status list.
-///
-/// Returns `Unknown` when the input slice is empty as a convenience default;
-/// callers that need to distinguish "no agent" from "unknown agent" should
-/// check for an empty slice before calling.
-/// Shared ordering for session-like rows: higher-priority agent state first,
-/// then oldest activity first.
-pub fn cmp_by_agent_priority_then_oldest_activity(
-    left_statuses: &[crate::agent::AgentStatus],
-    left_activity: u64,
-    right_statuses: &[crate::agent::AgentStatus],
-    right_activity: u64,
-) -> std::cmp::Ordering {
-    agent_statuses_sort_priority(right_statuses)
-        .cmp(&agent_statuses_sort_priority(left_statuses))
-        .then(left_activity.cmp(&right_activity))
-}
-
-/// Compare two optional timestamps for recency-based sorting (most recent first).
-/// `Some` sorts before `None`; when both are `Some`, the higher timestamp sorts first.
-fn cmp_optional_recency(a: Option<u64>, b: Option<u64>) -> std::cmp::Ordering {
-    match (a, b) {
-        (Some(_), None) => std::cmp::Ordering::Less,
-        (None, Some(_)) => std::cmp::Ordering::Greater,
-        (Some(a_ts), Some(b_ts)) => b_ts.cmp(&a_ts),
-        (None, None) => std::cmp::Ordering::Equal,
-    }
-}
-
-/// Sort repos by: current repo first, then repos with sessions by recency, then alphabetically.
-#[allow(clippy::implicit_hasher)]
-pub fn sort_repos(
-    repos: &mut [Repo],
-    current_repo_path: Option<&Path>,
-    session_activity: &HashMap<String, u64>,
-) {
-    let current_repo_path = current_repo_path
-        .and_then(|path| std::fs::canonicalize(path).ok())
-        .or_else(|| current_repo_path.map(ToOwned::to_owned));
-    let mut canonical_by_path = HashMap::with_capacity(repos.len());
-    for repo in repos.iter() {
-        let canonical = std::fs::canonicalize(&repo.path).unwrap_or_else(|_| repo.path.clone());
-        canonical_by_path.insert(repo.path.clone(), canonical);
-    }
-    repos.sort_by(|a, b| {
-        let a_path = canonical_by_path.get(&a.path).unwrap_or(&a.path);
-        let b_path = canonical_by_path.get(&b.path).unwrap_or(&b.path);
-        let a_is_current = current_repo_path.as_ref().is_some_and(|p| a_path == p);
-        let b_is_current = current_repo_path.as_ref().is_some_and(|p| b_path == p);
-
-        // Current repo first
-        b_is_current
-            .cmp(&a_is_current)
-            .then_with(|| {
-                let a_activity = repo_max_activity(a, session_activity);
-                let b_activity = repo_max_activity(b, session_activity);
-                cmp_optional_recency(a_activity, b_activity)
-            })
-            .then_with(|| a.name.cmp(&b.name))
-    });
-}
-
-/// Get the most recent session activity for a repo (across all its worktrees).
-fn repo_max_activity(repo: &Repo, session_activity: &HashMap<String, u64>) -> Option<u64> {
-    let main_session = std::iter::once(repo.tmux_session_name(&repo.path));
-    let wt_sessions = repo
-        .worktrees
-        .iter()
-        .map(|wt| repo.tmux_session_name(&wt.path));
-    main_session
-        .chain(wt_sessions)
-        .filter_map(|name| session_activity.get(&name).copied())
-        .max()
-}
-
-/// Setup wizard step
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SetupStep {
-    /// Brief welcome screen
-    Welcome,
-    /// Directory entry with autocomplete
-    SearchDirs,
-}
-
-/// Setup wizard state
-#[derive(Debug, Clone)]
-pub struct SetupState {
-    /// Current text input with cursor
-    pub input: TextInput,
-    /// Current filesystem completions
-    pub completions: Vec<String>,
-    /// Which completion is highlighted
-    pub selected_completion: Option<usize>,
-    /// Directories added so far
-    pub dirs: Vec<String>,
-}
-
-impl SetupState {
-    pub fn new() -> Self {
-        Self {
-            input: TextInput::new(),
-            completions: Vec::new(),
-            selected_completion: None,
-            dirs: Vec::new(),
-        }
-    }
-}
-
-impl Default for SetupState {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Metadata for a session that has been resolved to a repo/worktree.
-#[derive(Debug, Clone)]
-pub struct ResolvedSessionMetadata {
-    pub repo_name: String,
-    pub branch: Option<String>,
-    pub path: PathBuf,
-}
-
-/// Parameters for constructing a resolved `SessionEntry`.
-/// Groups the many fields to avoid `too_many_arguments` on the constructor.
-#[derive(Debug, Clone)]
-pub struct ResolvedSessionParams {
-    pub session_name: String,
-    pub repo_name: String,
-    pub branch: Option<String>,
-    pub path: PathBuf,
-    pub agent_statuses: Vec<AgentStatus>,
-    pub session_activity: u64,
-    pub attached: bool,
-}
-
-#[derive(Debug, Clone)]
-pub enum SessionMetadata {
-    Unresolved,
-    Resolved(ResolvedSessionMetadata),
-}
-
-/// A session entry for the sessions view (cross-repo tmux session list).
-#[derive(Debug, Clone)]
-pub struct SessionEntry {
-    pub session_name: String,
-    pub metadata: SessionMetadata,
-    pub agent_statuses: Vec<AgentStatus>,
-    pub session_activity: u64,
-    pub attached: bool,
-}
-
-impl SessionEntry {
-    #[must_use]
-    pub fn unresolved(
-        session_name: String,
-        agent_statuses: Vec<AgentStatus>,
-        session_activity: u64,
-        attached: bool,
-    ) -> Self {
-        Self {
-            session_name,
-            metadata: SessionMetadata::Unresolved,
-            agent_statuses,
-            session_activity,
-            attached,
-        }
-    }
-
-    #[must_use]
-    pub fn resolved(params: ResolvedSessionParams) -> Self {
-        Self {
-            session_name: params.session_name,
-            metadata: SessionMetadata::Resolved(ResolvedSessionMetadata {
-                repo_name: params.repo_name,
-                branch: params.branch,
-                path: params.path,
-            }),
-            agent_statuses: params.agent_statuses,
-            session_activity: params.session_activity,
-            attached: params.attached,
-        }
-    }
-
-    #[must_use]
-    pub fn repo_name(&self) -> Option<&str> {
-        match &self.metadata {
-            SessionMetadata::Resolved(metadata) => Some(&metadata.repo_name),
-            SessionMetadata::Unresolved => None,
-        }
-    }
-
-    #[must_use]
-    pub fn branch(&self) -> Option<&str> {
-        match &self.metadata {
-            SessionMetadata::Resolved(metadata) => metadata.branch.as_deref(),
-            SessionMetadata::Unresolved => None,
-        }
-    }
-
-    #[must_use]
-    pub fn path(&self) -> Option<&Path> {
-        match &self.metadata {
-            SessionMetadata::Resolved(metadata) => Some(&metadata.path),
-            SessionMetadata::Unresolved => None,
-        }
-    }
-}
-
-pub fn active_session_entries<S1, S2>(
-    repos: &[Repo],
-    session_activity: &HashMap<String, u64, S1>,
-    attached_sessions: &HashSet<String, S2>,
-) -> Vec<SessionEntry>
-where
-    S1: std::hash::BuildHasher,
-    S2: std::hash::BuildHasher,
-{
-    let mut sessions = Vec::new();
-    for repo in repos {
-        for worktree in &repo.worktrees {
-            let session_name = repo.tmux_session_name(&worktree.path);
-            let Some(&activity) = session_activity.get(&session_name) else {
-                continue;
-            };
-            sessions.push(SessionEntry::resolved(ResolvedSessionParams {
-                session_name: session_name.clone(),
-                repo_name: repo.name.clone(),
-                branch: worktree.branch.clone(),
-                path: worktree.path.clone(),
-                agent_statuses: Vec::new(),
-                session_activity: activity,
-                attached: attached_sessions.contains(&session_name),
-            }));
-        }
-    }
-    sessions
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum SessionsLoadState {
-    #[default]
-    Discovering,
-    MetadataPending,
-    Ready,
-}
-
-#[derive(Debug, Clone)]
-pub struct PollerHandle {
-    cancel: Arc<AtomicBool>,
-}
-
-impl Default for PollerHandle {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl PollerHandle {
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            cancel: Arc::new(AtomicBool::new(false)),
-        }
-    }
-
-    /// Wraps an existing cancel token. The caller retains shared ownership;
-    /// calling `cancel()` on this handle sets the flag for all holders.
-    #[must_use]
-    pub fn from_cancel(cancel: Arc<AtomicBool>) -> Self {
-        Self { cancel }
-    }
-
-    pub fn cancel(&self) {
-        self.cancel.store(true, Ordering::Relaxed);
-    }
-
-    #[must_use]
-    pub fn is_cancelled(&self) -> bool {
-        self.cancel.load(Ordering::Relaxed)
-    }
-
-    #[must_use]
-    pub fn cancel_token(&self) -> Arc<AtomicBool> {
-        Arc::clone(&self.cancel)
-    }
-
-    #[must_use]
-    pub fn ptr_eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.cancel, &other.cancel)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct SessionsViewState {
-    pub sessions: Vec<SessionEntry>,
-    pub list: SearchableList,
-    pub load_state: SessionsLoadState,
-    /// Keep sessions selection pinned to the first item until user interacts.
-    pub pin_first_selection: bool,
-}
-
-impl Default for SessionsViewState {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl SessionsViewState {
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            sessions: Vec::new(),
-            list: SearchableList::new(0),
-            load_state: SessionsLoadState::Discovering,
-            pin_first_selection: false,
-        }
-    }
-
-    pub fn begin_loading(&mut self) {
-        self.sessions.clear();
-        self.list = SearchableList::new(0);
-        self.load_state = SessionsLoadState::Discovering;
-        self.pin_first_selection = true;
-    }
-
-    #[must_use]
-    pub fn is_loading(&self) -> bool {
-        self.load_state == SessionsLoadState::Discovering
-    }
-
-    #[must_use]
-    pub fn is_resolving(&self) -> bool {
-        matches!(
-            self.load_state,
-            SessionsLoadState::MetadataPending | SessionsLoadState::Discovering
-        )
-    }
-
-    pub fn mark_shell_ready(&mut self) {
-        self.load_state = SessionsLoadState::MetadataPending;
-    }
-
-    pub fn mark_ready(&mut self) {
-        self.load_state = SessionsLoadState::Ready;
-    }
-
-    /// If the initial-selection pin is active, reset selection to the first item.
-    pub fn apply_pin_first_selection(&mut self) {
-        if self.pin_first_selection && !self.list.filtered.is_empty() {
-            self.list.selected = Some(0);
-            self.list.scroll_offset = 0;
-        }
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub enum ActiveAgentPoller {
-    #[default]
-    None,
-    Branch(PollerHandle),
-    Sessions(PollerHandle),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ActiveAgentPollerKind {
-    None,
-    Branch,
-    Sessions,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AgentPollerScope {
-    None,
-    Branch,
-    Sessions,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PollerInstallError {
-    InvalidMode {
-        mode: Mode,
-        expected_scope: &'static str,
-    },
-}
-
-impl ActiveAgentPoller {
-    fn scope(&self) -> AgentPollerScope {
-        match self {
-            ActiveAgentPoller::None => AgentPollerScope::None,
-            ActiveAgentPoller::Branch(_) => AgentPollerScope::Branch,
-            ActiveAgentPoller::Sessions(_) => AgentPollerScope::Sessions,
-        }
-    }
-}
-
-/// What mode the app is in
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Mode {
-    RepoSelect,
-    BranchSelect,
-    Sessions,
-    SelectBaseBranch,
-    /// Blocking loading state — shows spinner, no input except Ctrl+C
-    Loading(String),
-    /// Confirmation dialog for worktree deletion
-    ConfirmWorktreeDelete {
-        branch_name: String,
-        has_session: bool,
-    },
-    /// Help overlay showing key bindings
-    Help {
-        previous: Box<Mode>,
-    },
-    /// Setup wizard for first-time config
-    Setup(SetupStep),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TransitionError {
-    Invalid { from: Mode, to: Mode },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ModeContextAccessError {
-    MissingBaseBranchSelection { mode: Mode },
-    MissingHelpOverlay { mode: Mode },
-    MissingSetup { mode: Mode },
-}
-
-impl std::fmt::Display for ModeContextAccessError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::MissingBaseBranchSelection { mode } => {
-                write!(
-                    f,
-                    "base branch selection context not available in mode {mode:?}"
-                )
-            }
-            Self::MissingHelpOverlay { mode } => {
-                write!(f, "help overlay context not available in mode {mode:?}")
-            }
-            Self::MissingSetup { mode } => {
-                write!(f, "setup context not available in mode {mode:?}")
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum ModeTransition {
-    RepoSelect,
-    BranchSelect,
-    Sessions,
-    SelectBaseBranch {
-        flow: BaseBranchSelection,
-    },
-    ConfirmWorktreeDelete {
-        branch_name: String,
-        has_session: bool,
-    },
-    Loading {
-        message: String,
-    },
-    OpenHelp {
-        overlay: HelpOverlayState,
-    },
-    CloseHelp,
-    Setup {
-        step: SetupStep,
-        setup: SetupState,
-    },
-}
-
-impl ModeTransition {
-    #[must_use]
-    pub fn target_mode_with_current(&self, current: &Mode) -> Mode {
-        match self {
-            ModeTransition::RepoSelect => Mode::RepoSelect,
-            ModeTransition::BranchSelect => Mode::BranchSelect,
-            ModeTransition::Sessions => Mode::Sessions,
-            ModeTransition::SelectBaseBranch { .. } => Mode::SelectBaseBranch,
-            ModeTransition::ConfirmWorktreeDelete {
-                branch_name,
-                has_session,
-            } => Mode::ConfirmWorktreeDelete {
-                branch_name: branch_name.clone(),
-                has_session: *has_session,
-            },
-            ModeTransition::Loading { message } => Mode::Loading(message.clone()),
-            ModeTransition::OpenHelp { .. } => match current {
-                // Idempotent: if already in Help, don't nest another layer.
-                Mode::Help { .. } => current.clone(),
-                _ => Mode::Help {
-                    previous: Box::new(current.clone()),
-                },
-            },
-            ModeTransition::CloseHelp => match current {
-                Mode::Help { previous } => (**previous).clone(),
-                other => other.clone(),
-            },
-            ModeTransition::Setup { step, .. } => Mode::Setup(step.clone()),
-        }
-    }
-}
-
-impl Mode {
-    fn expected_agent_poller_scope(&self) -> AgentPollerScope {
-        match self.effective() {
-            Mode::BranchSelect => AgentPollerScope::Branch,
-            Mode::Sessions => AgentPollerScope::Sessions,
-            _ => AgentPollerScope::None,
-        }
-    }
-
-    /// The effective mode, looking through overlays like Help.
-    pub fn effective(&self) -> &Mode {
-        match self {
-            Mode::Help { previous } => previous.effective(),
-            other => other,
-        }
-    }
-
-    /// Commands to show in the footer bar, in display order.
-    pub fn footer_commands(&self) -> &'static [Command] {
-        match self {
-            Mode::RepoSelect => &[
-                Command::OpenRepo,
-                Command::EnterRepo,
-                Command::ShowHelp,
-                Command::Quit,
-            ],
-            Mode::Sessions => &[
-                Command::JumpToNextAgentSession,
-                Command::SwitchToSession,
-                Command::ShowHelp,
-                Command::Quit,
-            ],
-            Mode::BranchSelect => &[
-                Command::GoBack,
-                Command::OpenBranch,
-                Command::DeleteWorktree,
-                Command::ShowHelp,
-                Command::Quit,
-            ],
-            Mode::SelectBaseBranch => &[
-                Command::Cancel,
-                Command::Confirm,
-                Command::ShowHelp,
-                Command::Quit,
-            ],
-            Mode::ConfirmWorktreeDelete { .. } => &[
-                Command::Confirm,
-                Command::Cancel,
-                Command::ShowHelp,
-                Command::Quit,
-            ],
-            Mode::Setup(_) | Mode::Loading(_) | Mode::Help { .. } => &[],
-        }
-    }
-
-    pub fn supports_text_edit(&self) -> bool {
-        matches!(
-            self,
-            Mode::RepoSelect
-                | Mode::Sessions
-                | Mode::BranchSelect
-                | Mode::SelectBaseBranch
-                | Mode::Help { .. }
-                | Mode::Setup(SetupStep::SearchDirs)
-        )
-    }
-
-    pub(crate) fn supports_list_navigation(&self) -> bool {
-        matches!(
-            self,
-            Mode::RepoSelect
-                | Mode::Sessions
-                | Mode::BranchSelect
-                | Mode::SelectBaseBranch
-                | Mode::Help { .. }
-                | Mode::Setup(SetupStep::SearchDirs)
-        )
-    }
-
-    pub(crate) fn supports_modal_actions(&self) -> bool {
-        matches!(
-            self,
-            Mode::SelectBaseBranch | Mode::ConfirmWorktreeDelete { .. } | Mode::Setup(_)
-        )
-    }
-
-    pub(crate) fn supports_repo_select_actions(&self) -> bool {
-        matches!(self, Mode::RepoSelect)
-    }
-
-    pub(crate) fn supports_branch_select_actions(&self) -> bool {
-        matches!(self, Mode::BranchSelect)
-    }
-    pub(crate) fn supports_sessions_select_actions(&self) -> bool {
-        matches!(self, Mode::Sessions)
-    }
-}
-
-/// The new-branch flow state
-#[derive(Debug, Clone)]
-pub struct BaseBranchSelection {
-    /// The new branch name (what the user typed)
-    pub new_name: String,
-    /// Base branches to pick from
-    pub bases: Vec<String>,
-    pub list: SearchableList,
-}
-
-#[derive(Debug, Clone)]
-pub struct HelpOverlayState {
-    pub list: SearchableList,
-    pub rows: Vec<FlattenedKeybindingRow>,
-}
-
-#[derive(Debug, Clone)]
-enum ModeContextState {
-    None,
-    BaseBranchSelection(BaseBranchSelection),
-    HelpOverlay {
-        overlay: HelpOverlayState,
-        previous: Box<ModeContextState>,
-    },
-    Setup(SetupState),
-}
-
-/// Central application state. Components read from this, actions modify it.
-#[derive(Debug, Clone)]
-#[allow(clippy::struct_excessive_bools)]
-pub struct AppState {
-    pub repos: Vec<Repo>,
-    pub repo_list: SearchableList,
-    pub loading_repos: bool,
-
-    pub selected_repo_idx: Option<usize>,
-    pub branches: Vec<BranchEntry>,
-    pub branch_list: SearchableList,
-    mode_context: ModeContextState,
-
-    pub split_command: Option<String>,
-    mode: Mode,
-    pub loading_branches: bool,
-    pub fetching_remotes: bool,
-    pub error: Option<String>,
-    active_list_page_rows: usize,
-    pub pending_worktree_deletes: Vec<PendingWorktreeDelete>,
-    /// Worktree paths for which a removal task has already been spawned.
-    /// Prevents duplicate spawning across successive `BranchesLoaded` events.
-    pub in_flight_worktree_removals: HashSet<PathBuf>,
-    pub session_activity: HashMap<String, u64>,
-    /// Latest runtime snapshot keyed by tmux session name.
-    pub session_runtime: HashMap<String, SessionRuntimeState>,
-    /// Active agent poller token, scoped by mode.
-    /// At most one poller (branch or sessions) is active at a time.
-    active_agent_poller: ActiveAgentPoller,
-    /// Whether agent status detection is enabled (configurable via `[agent] enabled`).
-    pub agent_enabled: bool,
-    /// Agent poll interval (configurable via `[agent] poll_interval_ms`).
-    pub agent_poll_interval: std::time::Duration,
-    /// Label text for each agent state shown in the branch picker.
-    pub agent_labels: AgentLabelsConfig,
-    /// Main repo root path from CWD (for repo ordering)
-    pub current_repo_path: Option<PathBuf>,
-    /// CWD resolved to repo/worktree root (for branch current detection)
-    pub cwd_worktree_path: Option<PathBuf>,
-    /// Tracks repo paths already seen during streaming discovery (O(1) dedup).
-    /// Cleared when a new scan starts.
-    pub seen_repo_paths: HashSet<PathBuf>,
-    /// Configured search directories for repo/worktree discovery.
-    pub search_dirs: Vec<(PathBuf, u16)>,
-    /// Sessions view state. Grouped to reduce invalid cross-mode combinations.
-    pub sessions_view: SessionsViewState,
-}
-
-impl AppState {
-    fn base(mode: Mode) -> Self {
-        Self {
-            repos: Vec::new(),
-            repo_list: SearchableList::new(0),
-            loading_repos: false,
-            selected_repo_idx: None,
-            branches: Vec::new(),
-            branch_list: SearchableList::new(0),
-            mode_context: ModeContextState::None,
-            split_command: None,
-            mode,
-            loading_branches: false,
-            fetching_remotes: false,
-            error: None,
-            active_list_page_rows: 10,
-            pending_worktree_deletes: Vec::new(),
-            in_flight_worktree_removals: HashSet::new(),
-            session_activity: HashMap::new(),
-            session_runtime: HashMap::new(),
-            active_agent_poller: ActiveAgentPoller::None,
-            agent_enabled: true,
-            agent_poll_interval: std::time::Duration::from_millis(
-                AgentConfig::default().poll_interval_ms,
-            ),
-            agent_labels: AgentLabelsConfig::default(),
-            current_repo_path: None,
-            cwd_worktree_path: None,
-            seen_repo_paths: HashSet::new(),
-            search_dirs: Vec::new(),
-            sessions_view: SessionsViewState::new(),
-        }
-    }
-
-    pub fn new(repos: Vec<Repo>, split_command: Option<String>) -> Self {
-        let repo_list = SearchableList::new(repos.len());
-        let seen_repo_paths: HashSet<PathBuf> = repos.iter().map(|r| r.path.clone()).collect();
-        Self {
-            repos,
-            repo_list,
-            split_command,
-            seen_repo_paths,
-            mode: Mode::RepoSelect,
-            ..Self::base(Mode::RepoSelect)
-        }
-    }
-
-    pub fn new_loading(loading_message: &str, split_command: Option<String>) -> Self {
-        Self {
-            split_command,
-            ..Self::base(Mode::Loading(loading_message.to_string()))
-        }
-    }
-
-    pub fn set_error(&mut self, msg: &str) {
-        // Collapse newlines/whitespace runs into single spaces so multi-line
-        // stderr output (e.g. from git) renders cleanly in the error toast.
-        self.error = Some(msg.split_whitespace().collect::<Vec<_>>().join(" "));
-    }
-
-    pub fn clear_error(&mut self) {
-        self.error = None;
-    }
-
-    pub fn new_setup() -> Self {
-        Self {
-            mode_context: ModeContextState::Setup(SetupState::new()),
-            ..Self::base(Mode::Setup(SetupStep::Welcome))
-        }
-    }
-
-    #[must_use]
-    fn can_transition_to(&self, to: &Mode) -> bool {
-        // Look through Help overlays to the underlying mode so that, e.g.,
-        // Help opened over Sessions cannot bypass BranchSelect-only guards.
-        let effective_from = self.mode.effective();
-        match to {
-            Mode::SelectBaseBranch | Mode::ConfirmWorktreeDelete { .. } => {
-                // Allow from BranchSelect, or when unwinding Help back to the
-                // same mode (e.g. CloseHelp from Help { previous: SelectBaseBranch }).
-                matches!(effective_from, Mode::BranchSelect)
-                    || std::mem::discriminant(effective_from) == std::mem::discriminant(to)
-            }
-            _ => true,
-        }
-    }
-
-    pub fn transition(&mut self, transition: &ModeTransition) -> Result<(), TransitionError> {
-        let from = self.mode.clone();
-        let to = transition.target_mode_with_current(&from);
-        if !self.can_transition_to(&to) {
-            return Err(TransitionError::Invalid { from, to });
-        }
-
-        if matches!(from, Mode::Help { .. }) && !matches!(to, Mode::Help { .. }) {
-            self.clear_help_overlay();
-        }
-
-        match transition {
-            ModeTransition::SelectBaseBranch { flow } => {
-                self.set_base_branch_selection(flow.clone());
-            }
-            ModeTransition::OpenHelp { overlay } => {
-                self.set_help_overlay(overlay.clone());
-            }
-            ModeTransition::Setup { setup, .. } => match &mut self.mode_context {
-                ModeContextState::HelpOverlay { previous, .. } => {
-                    **previous = ModeContextState::Setup(setup.clone());
-                }
-                _ => {
-                    self.mode_context = ModeContextState::Setup(setup.clone());
-                }
-            },
-            ModeTransition::RepoSelect
-            | ModeTransition::BranchSelect
-            | ModeTransition::Sessions
-            | ModeTransition::CloseHelp
-            | ModeTransition::ConfirmWorktreeDelete { .. }
-            | ModeTransition::Loading { .. } => {}
-        }
-
-        self.mode = to;
-        self.reconcile_mode_context_for_mode();
-        self.reconcile_agent_poller_mode_invariant();
-        Ok(())
-    }
-
-    #[cfg(test)]
-    pub fn apply_transition(&mut self, transition: &ModeTransition) {
-        self.transition(transition)
-            .expect("transition failed in test");
-    }
-
-    #[must_use]
-    pub fn mode(&self) -> &Mode {
-        &self.mode
-    }
-
-    #[must_use]
-    pub fn effective_mode(&self) -> &Mode {
-        self.mode.effective()
-    }
-
-    #[must_use]
-    pub fn is_help_open(&self) -> bool {
-        matches!(self.mode, Mode::Help { .. })
-    }
-
-    #[must_use]
-    pub fn is_sessions_context(&self) -> bool {
-        self.effective_mode() == &Mode::Sessions
-    }
-
-    #[must_use]
-    pub fn is_branch_select_context(&self) -> bool {
-        self.effective_mode() == &Mode::BranchSelect
-    }
-
-    fn reconcile_agent_poller_mode_invariant(&mut self) {
-        if self.active_agent_poller.scope() != self.mode.expected_agent_poller_scope() {
-            self.cancel_all_agent_pollers();
-        }
-    }
-
-    #[must_use]
-    pub fn active_agent_poller_kind(&self) -> ActiveAgentPollerKind {
-        match &self.active_agent_poller {
-            ActiveAgentPoller::None => ActiveAgentPollerKind::None,
-            ActiveAgentPoller::Branch(_) => ActiveAgentPollerKind::Branch,
-            ActiveAgentPoller::Sessions(_) => ActiveAgentPollerKind::Sessions,
-        }
-    }
-
-    #[must_use]
-    pub fn active_agent_poller_matches(&self, handle: &PollerHandle) -> bool {
-        match &self.active_agent_poller {
-            ActiveAgentPoller::Branch(active) | ActiveAgentPoller::Sessions(active) => {
-                active.ptr_eq(handle)
-            }
-            ActiveAgentPoller::None => false,
-        }
-    }
-
-    /// Signal any active poller thread to stop and clear poller state.
-    pub fn cancel_all_agent_pollers(&mut self) {
-        match &self.active_agent_poller {
-            ActiveAgentPoller::None => {}
-            ActiveAgentPoller::Branch(handle) | ActiveAgentPoller::Sessions(handle) => {
-                handle.cancel();
-            }
-        }
-        self.active_agent_poller = ActiveAgentPoller::None;
-    }
-
-    /// Install a branch poller as the active poller, cancelling any existing poller.
-    pub fn install_branch_poller(
-        &mut self,
-        handle: PollerHandle,
-    ) -> Result<(), PollerInstallError> {
-        if self.mode.expected_agent_poller_scope() != AgentPollerScope::Branch {
-            handle.cancel();
-            return Err(PollerInstallError::InvalidMode {
-                mode: self.mode.clone(),
-                expected_scope: "BranchSelect",
-            });
-        }
-        self.cancel_all_agent_pollers();
-        self.active_agent_poller = ActiveAgentPoller::Branch(handle);
-        Ok(())
-    }
-
-    /// Install a sessions poller as the active poller, cancelling any existing poller.
-    pub fn install_sessions_poller(
-        &mut self,
-        handle: PollerHandle,
-    ) -> Result<(), PollerInstallError> {
-        if self.mode.expected_agent_poller_scope() != AgentPollerScope::Sessions {
-            handle.cancel();
-            return Err(PollerInstallError::InvalidMode {
-                mode: self.mode.clone(),
-                expected_scope: "Sessions",
-            });
-        }
-        self.cancel_all_agent_pollers();
-        self.active_agent_poller = ActiveAgentPoller::Sessions(handle);
-        Ok(())
-    }
-
-    /// Get the active text input for the current mode (mutable).
-    /// Works for both `SearchableList` modes and Setup mode.
-    pub fn active_text_input(&mut self) -> Option<&mut TextInput> {
-        match self.mode {
-            Mode::Setup(SetupStep::SearchDirs) => self.setup_mut().map(|s| &mut s.input),
-            _ => self.active_list_mut().map(|list| &mut list.input),
-        }
-    }
-
-    /// Get the active searchable list for the current mode (mutable)
-    pub fn active_list_mut(&mut self) -> Option<&mut SearchableList> {
-        match self.mode {
-            Mode::RepoSelect => Some(&mut self.repo_list),
-            Mode::Sessions => Some(&mut self.sessions_view.list),
-            Mode::BranchSelect => Some(&mut self.branch_list),
-            Mode::SelectBaseBranch => self.base_branch_selection_mut().map(|f| &mut f.list),
-            Mode::Help { .. } => self.active_help_list_mut(),
-            _ => None,
-        }
-    }
-
-    /// Get the active searchable list for the current mode (immutable)
-    pub fn active_list(&self) -> Option<&SearchableList> {
-        match self.mode {
-            Mode::RepoSelect => Some(&self.repo_list),
-            Mode::Sessions => Some(&self.sessions_view.list),
-            Mode::BranchSelect => Some(&self.branch_list),
-            Mode::SelectBaseBranch => self.require_base_branch_selection().ok().map(|f| &f.list),
-            Mode::Help { .. } => self.active_help_list(),
-            _ => None,
-        }
-    }
-
-    pub fn active_help_list_mut(&mut self) -> Option<&mut SearchableList> {
-        self.help_overlay_mut().map(|overlay| &mut overlay.list)
-    }
-
-    pub fn active_help_list(&self) -> Option<&SearchableList> {
-        self.require_help_overlay()
-            .ok()
-            .map(|overlay| &overlay.list)
-    }
-
-    fn base_branch_selection_mut(&mut self) -> Option<&mut BaseBranchSelection> {
-        match &mut self.mode_context {
-            ModeContextState::BaseBranchSelection(flow) => Some(flow),
-            ModeContextState::HelpOverlay { previous, .. } => match previous.as_mut() {
-                ModeContextState::BaseBranchSelection(flow) => Some(flow),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
-    pub fn update_base_branch_selection<R>(
-        &mut self,
-        f: impl FnOnce(&mut BaseBranchSelection) -> R,
-    ) -> Result<R, ModeContextAccessError> {
-        self.base_branch_selection_mut().map(f).ok_or_else(|| {
-            ModeContextAccessError::MissingBaseBranchSelection {
-                mode: self.mode.clone(),
-            }
-        })
-    }
-
-    pub fn require_base_branch_selection(
-        &self,
-    ) -> Result<&BaseBranchSelection, ModeContextAccessError> {
-        match &self.mode_context {
-            ModeContextState::BaseBranchSelection(flow) => Ok(flow),
-            ModeContextState::HelpOverlay { previous, .. } => match previous.as_ref() {
-                ModeContextState::BaseBranchSelection(flow) => Ok(flow),
-                _ => Err(ModeContextAccessError::MissingBaseBranchSelection {
-                    mode: self.mode.clone(),
-                }),
-            },
-            _ => Err(ModeContextAccessError::MissingBaseBranchSelection {
-                mode: self.mode.clone(),
-            }),
-        }
-    }
-
-    fn set_base_branch_selection(&mut self, flow: BaseBranchSelection) {
-        match &mut self.mode_context {
-            ModeContextState::HelpOverlay { previous, .. } => {
-                **previous = ModeContextState::BaseBranchSelection(flow);
-            }
-            _ => {
-                self.mode_context = ModeContextState::BaseBranchSelection(flow);
-            }
-        }
-    }
-
-    fn clear_base_branch_selection(&mut self) {
-        match &mut self.mode_context {
-            ModeContextState::BaseBranchSelection(_) => {
-                self.mode_context = ModeContextState::None;
-            }
-            ModeContextState::HelpOverlay { previous, .. } => {
-                if matches!(previous.as_ref(), ModeContextState::BaseBranchSelection(_)) {
-                    **previous = ModeContextState::None;
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn help_overlay_mut(&mut self) -> Option<&mut HelpOverlayState> {
-        if let ModeContextState::HelpOverlay { overlay, .. } = &mut self.mode_context {
-            Some(overlay)
-        } else {
-            None
-        }
-    }
-
-    pub fn update_help_overlay<R>(
-        &mut self,
-        f: impl FnOnce(&mut HelpOverlayState) -> R,
-    ) -> Result<R, ModeContextAccessError> {
-        self.help_overlay_mut()
-            .map(f)
-            .ok_or_else(|| ModeContextAccessError::MissingHelpOverlay {
-                mode: self.mode.clone(),
-            })
-    }
-
-    pub fn require_help_overlay(&self) -> Result<&HelpOverlayState, ModeContextAccessError> {
-        if let ModeContextState::HelpOverlay { overlay, .. } = &self.mode_context {
-            Ok(overlay)
-        } else {
-            Err(ModeContextAccessError::MissingHelpOverlay {
-                mode: self.mode.clone(),
-            })
-        }
-    }
-
-    fn set_help_overlay(&mut self, overlay: HelpOverlayState) {
-        // Idempotent: if a help overlay is already active, update it in place
-        // rather than nesting a second layer.
-        if let ModeContextState::HelpOverlay {
-            overlay: current, ..
-        } = &mut self.mode_context
-        {
-            *current = overlay;
-            return;
-        }
-        let previous = std::mem::replace(&mut self.mode_context, ModeContextState::None);
-        self.mode_context = ModeContextState::HelpOverlay {
-            overlay,
-            previous: Box::new(previous),
-        };
-    }
-
-    fn clear_help_overlay(&mut self) {
-        if let ModeContextState::HelpOverlay { previous, .. } = &mut self.mode_context {
-            self.mode_context = std::mem::replace(previous.as_mut(), ModeContextState::None);
-        }
-    }
-
-    fn clear_setup(&mut self) {
-        match &mut self.mode_context {
-            ModeContextState::Setup(_) => {
-                self.mode_context = ModeContextState::None;
-            }
-            ModeContextState::HelpOverlay { previous, .. } => {
-                if matches!(previous.as_ref(), ModeContextState::Setup(_)) {
-                    **previous = ModeContextState::None;
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn setup_mut(&mut self) -> Option<&mut SetupState> {
-        match &mut self.mode_context {
-            ModeContextState::Setup(setup) => Some(setup),
-            ModeContextState::HelpOverlay { previous, .. } => match previous.as_mut() {
-                ModeContextState::Setup(setup) => Some(setup),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
-    pub fn update_setup<R>(
-        &mut self,
-        f: impl FnOnce(&mut SetupState) -> R,
-    ) -> Result<R, ModeContextAccessError> {
-        self.setup_mut()
-            .map(f)
-            .ok_or_else(|| ModeContextAccessError::MissingSetup {
-                mode: self.mode.clone(),
-            })
-    }
-
-    pub fn require_setup(&self) -> Result<&SetupState, ModeContextAccessError> {
-        match &self.mode_context {
-            ModeContextState::Setup(setup) => Ok(setup),
-            ModeContextState::HelpOverlay { previous, .. } => match previous.as_ref() {
-                ModeContextState::Setup(setup) => Ok(setup),
-                _ => Err(ModeContextAccessError::MissingSetup {
-                    mode: self.mode.clone(),
-                }),
-            },
-            _ => Err(ModeContextAccessError::MissingSetup {
-                mode: self.mode.clone(),
-            }),
-        }
-    }
-
-    pub fn ensure_setup(&mut self) -> &mut SetupState {
-        let needs_setup = match &self.mode_context {
-            ModeContextState::Setup(_) => false,
-            ModeContextState::HelpOverlay { previous, .. } => {
-                !matches!(previous.as_ref(), ModeContextState::Setup(_))
-            }
-            _ => true,
-        };
-
-        if needs_setup {
-            match &mut self.mode_context {
-                ModeContextState::HelpOverlay { previous, .. } => {
-                    **previous = ModeContextState::Setup(SetupState::new());
-                }
-                _ => {
-                    self.mode_context = ModeContextState::Setup(SetupState::new());
-                }
-            }
-        }
-
-        self.setup_mut()
-            .expect("setup context should exist after ensure_setup")
-    }
-
-    fn reconcile_mode_context_for_mode(&mut self) {
-        let keep_base_branch = matches!(self.mode, Mode::SelectBaseBranch | Mode::Help { .. });
-        if !keep_base_branch {
-            self.clear_base_branch_selection();
-        }
-
-        let keep_setup = matches!(self.mode, Mode::Setup(_) | Mode::Help { .. });
-        if !keep_setup {
-            self.clear_setup();
-        }
-    }
-
-    pub fn is_branch_pending_delete(&self, repo_path: &Path, branch_name: &str) -> bool {
-        self.pending_worktree_deletes
-            .iter()
-            .any(|pending| pending.repo_path == repo_path && pending.branch_name == branch_name)
-    }
-
-    pub fn set_active_list_page_rows(&mut self, rows: usize) {
-        self.active_list_page_rows = rows.max(1);
-    }
-
-    pub fn active_list_page_rows(&self) -> usize {
-        self.active_list_page_rows.max(1)
-    }
-
-    pub fn mark_pending_worktree_delete(&mut self, pending: PendingWorktreeDelete) {
-        self.pending_worktree_deletes.retain(|entry| {
-            !(entry.repo_path == pending.repo_path && entry.branch_name == pending.branch_name)
-        });
-        self.pending_worktree_deletes.push(pending);
-    }
-
-    pub fn clear_pending_worktree_delete_by_path(&mut self, worktree_path: &Path) -> bool {
-        let before = self.pending_worktree_deletes.len();
-        self.pending_worktree_deletes
-            .retain(|pending| pending.worktree_path != worktree_path);
-        before != self.pending_worktree_deletes.len()
-    }
-
-    pub fn clear_pending_worktree_delete_by_branch(
-        &mut self,
-        repo_path: &Path,
-        branch_name: &str,
-    ) -> bool {
-        let before = self.pending_worktree_deletes.len();
-        self.pending_worktree_deletes.retain(|pending| {
-            !(pending.repo_path == repo_path && pending.branch_name == branch_name)
-        });
-        before != self.pending_worktree_deletes.len()
-    }
-
-    /// Drop stale pending delete entries that no longer correspond to an existing worktree.
-    pub fn reconcile_pending_worktree_deletes(&mut self) -> bool {
-        let active_worktree_paths: HashSet<&Path> = self
-            .repos
-            .iter()
-            .flat_map(|repo| repo.worktrees.iter().map(|wt| wt.path.as_path()))
-            .collect();
-
-        let before = self.pending_worktree_deletes.len();
-        self.pending_worktree_deletes.retain(|pending| {
-            !pending.is_expired() && active_worktree_paths.contains(pending.worktree_path.as_path())
-        });
-        before != self.pending_worktree_deletes.len()
-    }
-}
-
-/// Determine where to put a new worktree for a branch, avoiding collisions.
-///
-/// Worktrees are placed in `.kiosk_worktrees/` inside the repo's parent directory:
-/// ```text
-/// ~/Development/.kiosk_worktrees/kiosk--feat-awesome/
-/// ~/Development/.kiosk_worktrees/scooter--fix-bug/
-/// ```
-pub fn worktree_dir(repo: &Repo, branch: &str) -> anyhow::Result<PathBuf> {
-    let parent = repo.path.parent().unwrap_or(&repo.path);
-    let worktree_root = parent.join(WORKTREE_DIR_NAME);
-    let safe_branch = branch.replace('/', "-");
-    let base = format!("{}{WORKTREE_NAME_SEPARATOR}{safe_branch}", repo.name);
-    let candidate = worktree_root.join(&base);
-    if !candidate.exists() {
-        return Ok(candidate);
-    }
-    for i in 2..WORKTREE_DIR_DEDUP_MAX_ATTEMPTS {
-        let candidate = worktree_root.join(format!("{base}-{i}"));
-        if !candidate.exists() {
-            return Ok(candidate);
-        }
-    }
-    anyhow::bail!(
-        "Could not find an available worktree directory name after {WORKTREE_DIR_DEDUP_MAX_ATTEMPTS} attempts"
-    )
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::{git::Worktree, product::TEST_PRODUCT};
+
     use super::*;
-    use crate::git::{Repo, Worktree};
-    use crate::pending_delete::PendingWorktreeDelete;
-    use std::fs;
-    use tempfile::tempdir;
 
-    fn make_repo(dir: &std::path::Path, name: &str) -> Repo {
+    fn repo(path: &str) -> Repo {
         Repo {
-            name: name.to_string(),
-            session_name: name.to_string(),
-            path: dir.join(name),
-            worktrees: vec![],
+            name: Path::new(path)
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+            path: path.into(),
+            is_git: true,
+            worktrees: Vec::new(),
         }
     }
 
     #[test]
-    fn test_cursor_grapheme_combining_mark() {
-        let mut list = SearchableList::new(0);
-        list.input.text = "e\u{0301}".to_string();
-        list.input.cursor_end();
-
-        list.input.cursor_left();
-        assert_eq!(list.input.cursor, 0);
-
-        list.input.cursor_right();
-        assert_eq!(list.input.cursor, list.input.text.len());
-
-        list.input.cursor_end();
-        assert!(list.input.backspace());
-        assert_eq!(list.input.text, "");
-        assert_eq!(list.input.cursor, 0);
-    }
-
-    #[test]
-    fn test_cursor_grapheme_zwj_sequence() {
-        let emoji = "👩‍💻";
-        let mut list = SearchableList::new(0);
-        list.input.text = format!("{emoji}a");
-
-        list.input.cursor_start();
-        list.input.cursor_right();
-        assert_eq!(list.input.cursor, emoji.len());
-
-        list.input.cursor_right();
-        assert_eq!(list.input.cursor, list.input.text.len());
-    }
-
-    #[test]
-    fn test_cursor_clamps_inside_grapheme() {
-        let mut list = SearchableList::new(0);
-        list.input.text = "café".to_string();
-        list.input.cursor = 4;
-
-        list.input.cursor_left();
-        assert_eq!(list.input.cursor, 2);
-
-        list.input.cursor = 4;
-        list.input.cursor_right();
-        assert_eq!(list.input.cursor, 5);
-    }
-
-    #[test]
-    fn test_delete_forward_grapheme() {
-        let emoji = "👩‍💻";
-        let mut list = SearchableList::new(0);
-        list.input.text = format!("{emoji}a");
-        list.input.cursor = 0;
-
-        assert!(list.input.delete_forward_char());
-        assert_eq!(list.input.text, "a");
-        assert_eq!(list.input.cursor, 0);
-    }
-
-    #[test]
-    fn test_word_boundaries_unicode_whitespace() {
-        let text = "alpha\u{00A0}\u{00A0}beta";
-        let mut list = SearchableList::new(0);
-        list.input.text = text.to_string();
-        let beta_idx = text.find('b').unwrap();
-        let alpha_end = text.find('\u{00A0}').unwrap();
-
-        list.input.cursor_end();
-        list.input.cursor_word_left();
-        assert_eq!(list.input.cursor, beta_idx);
-
-        list.input.cursor_start();
-        list.input.cursor_word_right();
-        assert_eq!(list.input.cursor, alpha_end);
-    }
-
-    #[test]
-    fn test_delete_word_respects_whitespace() {
-        let text = "alpha  beta";
-        let mut list = SearchableList::new(0);
-        list.input.text = text.to_string();
-        list.input.cursor_end();
-
-        list.input.delete_word();
-        assert_eq!(list.input.text, "alpha  ");
-        assert_eq!(list.input.cursor, "alpha  ".len());
-    }
-
-    #[test]
-    fn test_delete_word_forward_respects_whitespace() {
-        let text = "alpha  beta";
-        let mut list = SearchableList::new(0);
-        list.input.text = text.to_string();
-        list.input.cursor_start();
-
-        list.input.delete_word_forward();
-        assert_eq!(list.input.text, "  beta");
-        assert_eq!(list.input.cursor, 0);
-    }
-
-    #[test]
-    fn test_cursor_word_from_whitespace() {
-        let text = "alpha   beta";
-        let mut list = SearchableList::new(0);
-        list.input.text = text.to_string();
-        list.input.cursor = 6;
-
-        list.input.cursor_word_left();
-        assert_eq!(list.input.cursor, 0);
-
-        list.input.cursor = 5;
-        list.input.cursor_word_right();
-        assert_eq!(list.input.cursor, text.len());
-    }
-
-    #[test]
-    fn test_delete_word_forward_from_whitespace() {
-        let text = "alpha   beta";
-        let mut list = SearchableList::new(0);
-        list.input.text = text.to_string();
-        list.input.cursor = 5;
-
-        list.input.delete_word_forward();
-        assert_eq!(list.input.text, "alpha");
-        assert_eq!(list.input.cursor, 5);
-    }
-
-    #[test]
-    fn test_delete_to_start_clamps_cursor() {
-        let mut list = SearchableList::new(0);
-        list.input.text = "café".to_string();
-        list.input.cursor = 4;
-
-        list.input.delete_to_start();
-        assert_eq!(list.input.text, "é");
-        assert_eq!(list.input.cursor, 0);
-    }
-
-    #[test]
-    fn test_delete_to_end_clamps_cursor() {
-        let mut list = SearchableList::new(0);
-        list.input.text = "café".to_string();
-        list.input.cursor = 4;
-
-        list.input.delete_to_end();
-        assert_eq!(list.input.text, "caf");
-        assert_eq!(list.input.cursor, 3);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn test_sort_repos_prefers_current_with_symlinked_paths() {
-        use std::os::unix::fs::symlink;
-
-        let tmp = tempdir().unwrap();
-        let repo_dir = tmp.path().join("repo");
-        let other_dir = tmp.path().join("other");
-        fs::create_dir_all(&repo_dir).unwrap();
-        fs::create_dir_all(&other_dir).unwrap();
-
-        let link_dir = tmp.path().join("repo-link");
-        symlink(&repo_dir, &link_dir).unwrap();
-
-        let mut repos = vec![
-            Repo {
-                name: "repo-link".to_string(),
-                session_name: "repo-link".to_string(),
-                path: link_dir.clone(),
-                worktrees: vec![],
-            },
-            Repo {
-                name: "other".to_string(),
-                session_name: "other".to_string(),
-                path: other_dir.clone(),
-                worktrees: vec![],
-            },
-        ];
-
-        sort_repos(&mut repos, Some(&repo_dir), &HashMap::new());
-        assert_eq!(repos[0].path, link_dir);
-    }
-
-    #[test]
-    fn test_worktree_dir_basic() {
-        let tmp = tempdir().unwrap();
-        let repo = make_repo(tmp.path(), "myrepo");
-        let result = worktree_dir(&repo, "main").unwrap();
-        assert_eq!(
-            result,
-            tmp.path()
-                .join(WORKTREE_DIR_NAME)
-                .join(format!("myrepo{WORKTREE_NAME_SEPARATOR}main"))
-        );
-    }
-
-    #[test]
-    fn test_worktree_dir_slash_in_branch() {
-        let tmp = tempdir().unwrap();
-        let repo = make_repo(tmp.path(), "repo");
-        let result = worktree_dir(&repo, "feat/awesome").unwrap();
-        assert_eq!(
-            result,
-            tmp.path()
-                .join(WORKTREE_DIR_NAME)
-                .join(format!("repo{WORKTREE_NAME_SEPARATOR}feat-awesome"))
-        );
-    }
-
-    #[test]
-    fn test_worktree_dir_dedup() {
-        let tmp = tempdir().unwrap();
-        let repo = make_repo(tmp.path(), "repo");
-        let first = tmp
-            .path()
-            .join(WORKTREE_DIR_NAME)
-            .join(format!("repo{WORKTREE_NAME_SEPARATOR}main"));
-        fs::create_dir_all(&first).unwrap();
-        let result = worktree_dir(&repo, "main").unwrap();
-        assert_eq!(
-            result,
-            tmp.path()
-                .join(WORKTREE_DIR_NAME)
-                .join(format!("repo{WORKTREE_NAME_SEPARATOR}main-2"))
-        );
-    }
-
-    #[test]
-    fn test_worktree_dir_bounded_error() {
-        let tmp = tempdir().unwrap();
-        let repo = make_repo(tmp.path(), "repo");
-        let wt_root = tmp.path().join(WORKTREE_DIR_NAME);
-        // Create the base and 2..999 suffixed dirs to exhaust the loop
-        let base = format!("repo{WORKTREE_NAME_SEPARATOR}main");
-        fs::create_dir_all(wt_root.join(&base)).unwrap();
-        for i in 2..WORKTREE_DIR_DEDUP_MAX_ATTEMPTS {
-            fs::create_dir_all(wt_root.join(format!("{base}-{i}"))).unwrap();
+    fn text_input_deletes_unicode_graphemes_and_words() {
+        let mut input = TextInput::default();
+        for character in "one 👩‍💻".chars() {
+            input.insert_char(character);
         }
-        let result = worktree_dir(&repo, "main");
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains(&format!("{WORKTREE_DIR_DEDUP_MAX_ATTEMPTS} attempts"))
-        );
+        input.backspace();
+        assert_eq!(input.text, "one ");
+        input.delete_word();
+        assert_eq!(input.text, "");
     }
 
     #[test]
-    fn test_worktree_dir_in_kiosk_worktrees_subdir() {
-        let tmp = tempdir().unwrap();
-        let repo = make_repo(tmp.path(), "myrepo");
-        let result = worktree_dir(&repo, "dev").unwrap();
-        assert!(result.to_string_lossy().contains(WORKTREE_DIR_NAME));
-    }
-
-    #[test]
-    fn test_build_sorted_basic() {
-        let repo = Repo {
-            name: "myrepo".to_string(),
-            session_name: "myrepo".to_string(),
-            path: PathBuf::from("/tmp/myrepo"),
-            worktrees: vec![
-                Worktree {
-                    path: PathBuf::from("/tmp/myrepo"),
-                    branch: Some("main".to_string()),
-                    is_main: true,
-                },
-                Worktree {
-                    path: PathBuf::from("/tmp/myrepo-dev"),
-                    branch: Some("dev".to_string()),
-                    is_main: false,
-                },
-            ],
-        };
-
-        let branches = vec!["main".into(), "dev".into(), "feature".into()];
-        let sessions = vec!["myrepo-dev".to_string()];
-
-        let entries = BranchEntry::build_sorted(&repo, &branches, &sessions);
-
-        // main is current → first
-        assert_eq!(entries[0].name, "main");
-        assert!(entries[0].is_current);
-        assert!(entries[0].worktree_path.is_some());
-
-        // dev has session → second
-        assert_eq!(entries[1].name, "dev");
-        assert!(entries[1].has_session);
-        assert!(entries[1].worktree_path.is_some());
-
-        // feature has nothing → last
-        assert_eq!(entries[2].name, "feature");
-        assert!(!entries[2].has_session);
-        assert!(entries[2].worktree_path.is_none());
-    }
-
-    #[test]
-    fn test_build_remote_deduplication() {
-        let remote = vec!["main".into(), "dev".into(), "remote-only".into()];
-        let local = vec!["main".into(), "dev".into()];
-
-        let entries = BranchEntry::build_remote("origin", &remote, &local);
-
-        // Only "remote-only" should appear (main and dev are local)
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].name, "remote-only");
-        assert!(entries[0].remote.is_some());
-    }
-
-    #[test]
-    fn test_build_remote_empty_when_all_local() {
-        let remote = vec!["main".into(), "dev".into()];
-        let local = vec!["main".into(), "dev".into()];
-
-        let entries = BranchEntry::build_remote("origin", &remote, &local);
-        assert_eq!(entries, []);
-    }
-
-    #[test]
-    fn test_sort_remote_after_local() {
-        let repo = Repo {
-            name: "myrepo".to_string(),
-            session_name: "myrepo".to_string(),
-            path: PathBuf::from("/tmp/myrepo"),
-            worktrees: vec![Worktree {
-                path: PathBuf::from("/tmp/myrepo"),
-                branch: Some("main".to_string()),
-                is_main: true,
-            }],
-        };
-
-        let local_names = vec!["main".into(), "dev".into()];
-        let mut entries = BranchEntry::build_sorted(&repo, &local_names, &[]);
-
-        // Add remote branches
-        let remote_names = vec!["feature-a".into(), "feature-b".into()];
-        let remote = BranchEntry::build_remote("origin", &remote_names, &local_names);
-        entries.extend(remote);
-        BranchEntry::sort_entries(&mut entries);
-
-        // Local branches should come before remote
-        assert!(entries[0].remote.is_none()); // main (current)
-        assert!(entries[1].remote.is_none()); // dev
-        assert!(entries[2].remote.is_some()); // feature-a
-        assert!(entries[3].remote.is_some()); // feature-b
-    }
-
-    #[test]
-    fn test_pending_delete_mark_and_clear() {
-        let mut state = AppState::new(vec![make_repo(std::path::Path::new("/tmp"), "repo")], None);
-        let repo_path = PathBuf::from("/tmp/repo");
-        let worktree_path = PathBuf::from("/tmp/repo-dev");
-        let pending =
-            PendingWorktreeDelete::new(repo_path.clone(), "dev".to_string(), worktree_path.clone());
-        state.mark_pending_worktree_delete(pending);
-        assert!(state.is_branch_pending_delete(&repo_path, "dev"));
-
-        assert!(state.clear_pending_worktree_delete_by_path(&worktree_path));
-        assert!(!state.is_branch_pending_delete(&repo_path, "dev"));
-    }
-
-    #[test]
-    fn test_scroll_anchor_behavior_down_then_up() {
-        let mut list = SearchableList::new(100);
-        let viewport_rows = 20;
-
-        // Move down into the middle: selection should be anchored one row above bottom.
-        for _ in 0..25 {
-            list.move_selection(1);
-            list.update_scroll_offset_for_selection(viewport_rows);
-        }
-        let selected = list.selected.unwrap_or(0);
-        assert_eq!(selected - list.scroll_offset, 18);
-
-        // Move to bottom: selection may reach the actual bottom row.
-        for _ in 0..200 {
-            list.move_selection(1);
-            list.update_scroll_offset_for_selection(viewport_rows);
-        }
-        let selected = list.selected.unwrap_or(0);
-        assert_eq!(selected, 99);
-        assert_eq!(selected - list.scroll_offset, 19);
-
-        // Move up: keep viewport stationary first, then anchor one below top.
-        list.move_selection(-1);
-        list.update_scroll_offset_for_selection(viewport_rows);
-        let selected = list.selected.unwrap_or(0);
-        assert_eq!(selected, 98);
-        assert_eq!(selected - list.scroll_offset, 18);
-
-        for _ in 0..17 {
-            list.move_selection(-1);
-            list.update_scroll_offset_for_selection(viewport_rows);
-        }
-        let selected = list.selected.unwrap_or(0);
-        assert_eq!(selected, 81);
-        assert_eq!(selected - list.scroll_offset, 1);
-
-        list.move_selection(-1);
-        list.update_scroll_offset_for_selection(viewport_rows);
-        let selected = list.selected.unwrap_or(0);
-        assert_eq!(selected, 80);
-        assert_eq!(selected - list.scroll_offset, 1);
-    }
-
-    #[test]
-    fn test_scroll_down_starts_before_last_viewport_row() {
-        let mut list = SearchableList::new(100);
-        let viewport_rows = 20;
-
-        for _ in 0..18 {
-            list.move_selection(1);
-            list.update_scroll_offset_for_selection(viewport_rows);
-        }
-        assert_eq!(list.selected, Some(18));
-        assert_eq!(list.scroll_offset, 0);
-
-        list.move_selection(1);
-        list.update_scroll_offset_for_selection(viewport_rows);
-        assert_eq!(list.selected, Some(19));
+    fn searchable_list_scroll_follows_keyboard_selection() {
+        let mut list = SearchableList::new(8);
+        list.move_selection(6);
+        list.update_scroll_offset(3);
+        assert_eq!(list.selected, Some(6));
+        assert_eq!(list.scroll_offset, 4);
+        list.move_selection(-5);
+        list.update_scroll_offset(3);
+        assert_eq!(list.selected, Some(1));
         assert_eq!(list.scroll_offset, 1);
     }
 
     #[test]
-    fn test_scroll_up_from_bottom_keeps_offset_until_top_anchor_hit() {
-        let mut list = SearchableList::new(100);
-        let viewport_rows = 20;
+    fn searchable_list_materializes_only_the_visible_window_and_selection() {
+        let mut list = SearchableList::new(20_000);
+        list.scroll_offset = 10_000;
+        list.selected = Some(19_999);
 
-        for _ in 0..200 {
-            list.move_selection(1);
-            list.update_scroll_offset_for_selection(viewport_rows);
-        }
-        let offset_at_bottom = list.scroll_offset;
-        assert_eq!(list.selected, Some(99));
+        let visible = list.visible_items(12);
 
-        for expected_selected in (81..=98).rev() {
-            list.move_selection(-1);
-            list.update_scroll_offset_for_selection(viewport_rows);
-            assert_eq!(list.selected, Some(expected_selected));
-            assert_eq!(list.scroll_offset, offset_at_bottom);
-        }
+        assert_eq!(visible.len(), 13);
+        assert_eq!(visible.first(), Some(&(10_000, 10_000)));
+        assert_eq!(visible[11], (10_011, 10_011));
+        assert_eq!(visible.last(), Some(&(19_999, 19_999)));
     }
 
     #[test]
-    fn test_scroll_reversing_direction_near_bottom_does_not_move_offset() {
-        let mut list = SearchableList::new(100);
-        let viewport_rows = 20;
-        for _ in 0..200 {
-            list.move_selection(1);
-            list.update_scroll_offset_for_selection(viewport_rows);
+    fn scan_warnings_are_aggregated_into_one_toast() {
+        let mut state = AppState::new(&TEST_PRODUCT, None);
+
+        for _ in 0..1_000 {
+            state.push_scan_warning();
         }
 
-        let offset_before = list.scroll_offset;
-        list.move_selection(-1);
-        list.update_scroll_offset_for_selection(viewport_rows);
-        let offset_after_up = list.scroll_offset;
-        list.move_selection(1);
-        list.update_scroll_offset_for_selection(viewport_rows);
-        let offset_after_down = list.scroll_offset;
-
-        assert_eq!(offset_before, offset_after_up);
-        assert_eq!(offset_after_up, offset_after_down);
-    }
-
-    #[test]
-    fn test_first_up_from_bottom_does_not_change_offset_across_viewports() {
-        for viewport_rows in 3..=40 {
-            let mut list = SearchableList::new(35);
-            for _ in 0..200 {
-                list.move_selection(1);
-                list.update_scroll_offset_for_selection(viewport_rows);
-            }
-            let offset_before = list.scroll_offset;
-            list.move_selection(-1);
-            list.update_scroll_offset_for_selection(viewport_rows);
-            assert_eq!(
-                list.scroll_offset, offset_before,
-                "Offset changed for viewport_rows={viewport_rows}"
-            );
-        }
-    }
-
-    #[test]
-    fn test_prev_word_boundary_edges() {
-        let mut list = SearchableList::new(0);
-        list.input.text = "alpha   beta".to_string();
-
-        assert_eq!(list.input.prev_word_boundary(0), 0);
-        assert_eq!(list.input.prev_word_boundary(list.input.text.len()), 8);
-        assert_eq!(list.input.prev_word_boundary(7), 0);
-        assert_eq!(list.input.prev_word_boundary(usize::MAX), 8);
-    }
-
-    #[test]
-    fn test_next_word_boundary_edges() {
-        let mut list = SearchableList::new(0);
-        list.input.text = "alpha   beta".to_string();
-
-        assert_eq!(list.input.next_word_boundary(0), 5);
-        assert_eq!(list.input.next_word_boundary(5), 12);
+        assert_eq!(state.toasts.len(), 1);
         assert_eq!(
-            list.input.next_word_boundary(list.input.text.len()),
-            list.input.text.len()
+            state.toasts[0].message,
+            "1000 directories could not be scanned"
         );
+        assert_eq!(state.toast_messages.len(), 1);
+    }
+
+    #[test]
+    fn toast_queue_is_bounded_and_dedup_index_stays_in_sync() {
+        let mut state = AppState::new(&TEST_PRODUCT, None);
+
+        for index in 0..100 {
+            state.push_toast(ToastKind::Warning, format!("warning {index}"));
+        }
+        for _ in 0..100 {
+            state.push_toast(ToastKind::Warning, "warning 99");
+        }
+
+        assert_eq!(state.toasts.len(), 8);
+        assert_eq!(state.toast_messages.len(), state.toasts.len());
         assert_eq!(
-            list.input.next_word_boundary(usize::MAX),
-            list.input.text.len()
+            state.toasts.front().map(|toast| toast.message.as_str()),
+            Some("warning 92")
         );
+        state.dismiss_toast();
+        assert_eq!(state.toast_messages.len(), state.toasts.len());
     }
 
     #[test]
-    fn test_word_boundary_empty_and_spaces_only() {
-        let empty = SearchableList::new(0);
-        assert_eq!(empty.input.prev_word_boundary(3), 0);
-        assert_eq!(empty.input.next_word_boundary(3), 0);
+    fn toast_timer_arms_and_dismisses_at_the_ttl() {
+        let mut state = AppState::new(&TEST_PRODUCT, None);
+        let start = Instant::now();
+        let ttl = Duration::from_secs(5);
+        let before_ttl = ttl.saturating_sub(Duration::from_millis(1));
+        state.push_toast(ToastKind::Warning, "first");
 
-        let mut spaces = SearchableList::new(0);
-        spaces.input.text = "   ".to_string();
-        assert_eq!(spaces.input.prev_word_boundary(3), 0);
-        assert_eq!(spaces.input.next_word_boundary(0), 3);
+        assert!(!state.tick_toasts(start, ttl));
+        assert!(!state.tick_toasts(start + before_ttl, ttl));
+        assert_eq!(state.toasts.len(), 1);
+        assert!(state.tick_toasts(start + ttl, ttl));
+        assert!(state.toasts.is_empty());
+        assert!(!state.tick_toasts(start + ttl, ttl));
     }
 
     #[test]
-    fn test_branch_sort_order_with_activity() {
+    fn queued_toast_does_not_restart_the_front_timer_and_gets_a_fresh_ttl() {
+        let mut state = AppState::new(&TEST_PRODUCT, None);
+        let start = Instant::now();
+        let ttl = Duration::from_secs(5);
+        let before_ttl = ttl.saturating_sub(Duration::from_millis(1));
+        state.push_toast(ToastKind::Warning, "first");
+        assert!(!state.tick_toasts(start, ttl));
+
+        state.push_toast(ToastKind::Error, "second");
+        assert!(!state.tick_toasts(start + Duration::from_secs(4), ttl));
+        assert!(state.tick_toasts(start + ttl, ttl));
+        assert_eq!(
+            state.toasts.front().map(|toast| toast.message.as_str()),
+            Some("second")
+        );
+
+        let second_start = start + ttl + Duration::from_millis(40);
+        assert!(!state.tick_toasts(second_start, ttl));
+        assert!(!state.tick_toasts(second_start + before_ttl, ttl));
+        assert!(state.tick_toasts(second_start + ttl, ttl));
+        assert!(state.toasts.is_empty());
+    }
+
+    #[test]
+    fn manual_dismiss_gives_the_next_toast_a_fresh_ttl() {
+        let mut state = AppState::new(&TEST_PRODUCT, None);
+        let start = Instant::now();
+        let ttl = Duration::from_secs(5);
+        let before_ttl = ttl.saturating_sub(Duration::from_millis(1));
+        state.push_toast(ToastKind::Warning, "first");
+        state.push_toast(ToastKind::Error, "second");
+        assert!(!state.tick_toasts(start, ttl));
+
+        let second_start = start + Duration::from_secs(4);
+        state.dismiss_toast();
+        assert!(!state.tick_toasts(second_start, ttl));
+        assert!(!state.tick_toasts(second_start + before_ttl, ttl));
+        assert!(state.tick_toasts(second_start + ttl, ttl));
+        assert!(state.toasts.is_empty());
+    }
+
+    #[test]
+    fn branch_entries_derive_current_default_worktree_and_open_markers() {
         let repo = Repo {
-            name: "myrepo".to_string(),
-            session_name: "myrepo".to_string(),
-            path: PathBuf::from("/tmp/myrepo"),
+            name: "repo".into(),
+            path: "/repo".into(),
+            is_git: true,
             worktrees: vec![
                 Worktree {
-                    path: PathBuf::from("/tmp/myrepo"),
-                    branch: Some("main".to_string()),
-                    is_main: true,
+                    path: "/repo".into(),
+                    branch: Some("main".into()),
                 },
                 Worktree {
-                    path: PathBuf::from("/tmp/myrepo--dev"),
-                    branch: Some("dev".to_string()),
-                    is_main: false,
-                },
-                Worktree {
-                    path: PathBuf::from("/tmp/myrepo--hotfix"),
-                    branch: Some("hotfix".to_string()),
-                    is_main: false,
+                    path: "/repo-feature".into(),
+                    branch: Some("feature".into()),
                 },
             ],
         };
-
-        let branches = vec![
-            "main".into(),
-            "dev".into(),
-            "hotfix".into(),
-            "feature".into(),
-        ];
-        let sessions = vec!["myrepo--dev".to_string(), "myrepo--hotfix".to_string()];
-        let mut activity = HashMap::new();
-        activity.insert("myrepo--dev".to_string(), 100);
-        activity.insert("myrepo--hotfix".to_string(), 200);
-
-        let entries = BranchEntry::build_sorted_with_activity(
+        let mut entries = BranchEntry::build_local(
             &repo,
-            &branches,
-            &sessions,
+            &["main".into(), "feature".into(), "plain".into()],
             Some("main"),
-            &activity,
-            None,
+            Some(Path::new("/repo-feature/src")),
         );
+        for entry in &mut entries {
+            entry.apply_open_checkouts(&["/repo-feature".into()]);
+        }
+        let feature = entries
+            .iter()
+            .find(|entry| entry.name == "feature")
+            .unwrap();
+        assert!(feature.is_current);
+        assert!(feature.worktree_path().is_some());
+        assert!(feature.is_open());
+        let main = entries.iter().find(|entry| entry.name == "main").unwrap();
+        assert!(main.is_default);
+        assert!(!main.is_current);
+        let plain = entries.iter().find(|entry| entry.name == "plain").unwrap();
+        assert!(plain.worktree_path().is_none());
+    }
 
-        // Order: current (main), default (main, but already current), sessions by recency, worktrees, rest
-        assert_eq!(entries[0].name, "main"); // current + default
-        assert!(entries[0].is_current);
+    #[test]
+    fn branch_entries_have_no_current_marker_when_context_is_outside_repo_worktrees() {
+        let mut repo = repo("/repo");
+        repo.worktrees.push(Worktree {
+            path: "/repo".into(),
+            branch: Some("main".into()),
+        });
+        let entries = BranchEntry::build_local(
+            &repo,
+            &["main".into()],
+            Some("main"),
+            Some(Path::new("/somewhere-else")),
+        );
+        assert!(!entries[0].is_current);
         assert!(entries[0].is_default);
-        assert_eq!(entries[1].name, "hotfix"); // session ts=200
-        assert_eq!(entries[2].name, "dev"); // session ts=100
-        assert_eq!(entries[3].name, "feature"); // no session, no worktree
     }
 
     #[test]
-    fn test_branch_sort_default_after_current() {
-        let repo = Repo {
-            name: "myrepo".to_string(),
-            session_name: "myrepo".to_string(),
-            path: PathBuf::from("/tmp/myrepo"),
-            worktrees: vec![Worktree {
-                path: PathBuf::from("/tmp/myrepo"),
-                branch: Some("dev".to_string()),
-                is_main: true,
-            }],
-        };
-
-        let branches = vec!["main".into(), "dev".into(), "feature".into()];
-        let entries = BranchEntry::build_sorted_with_activity(
-            &repo,
-            &branches,
-            &[],
-            Some("main"),
-            &HashMap::new(),
-            None,
+    fn remote_entries_are_deduplicated_against_local_names() {
+        let entries = BranchEntry::build_remote(
+            "upstream",
+            &["main".into(), "feature".into()],
+            &["main".into()],
         );
-
-        assert_eq!(entries[0].name, "dev"); // current (main worktree has dev checked out)
-        assert_eq!(entries[1].name, "main"); // default
-        assert_eq!(entries[2].name, "feature");
-    }
-
-    #[test]
-    fn test_sort_repos_ordering() {
-        let mut repos = vec![
-            Repo {
-                name: "zebra".to_string(),
-                session_name: "zebra".to_string(),
-                path: PathBuf::from("/tmp/zebra"),
-                worktrees: vec![Worktree {
-                    path: PathBuf::from("/tmp/zebra"),
-                    branch: Some("main".to_string()),
-                    is_main: true,
-                }],
-            },
-            Repo {
-                name: "alpha".to_string(),
-                session_name: "alpha".to_string(),
-                path: PathBuf::from("/tmp/alpha"),
-                worktrees: vec![Worktree {
-                    path: PathBuf::from("/tmp/alpha"),
-                    branch: Some("main".to_string()),
-                    is_main: true,
-                }],
-            },
-            Repo {
-                name: "current".to_string(),
-                session_name: "current".to_string(),
-                path: PathBuf::from("/tmp/current"),
-                worktrees: vec![],
-            },
-        ];
-
-        let mut activity = HashMap::new();
-        activity.insert("zebra".to_string(), 500);
-
-        sort_repos(&mut repos, Some(Path::new("/tmp/current")), &activity);
-
-        assert_eq!(repos[0].name, "current"); // current repo
-        assert_eq!(repos[1].name, "zebra"); // has session
-        assert_eq!(repos[2].name, "alpha"); // alphabetical
-    }
-
-    #[test]
-    fn test_reconcile_pending_deletes_removes_missing_worktree() {
-        let repo = Repo {
-            name: "repo".to_string(),
-            session_name: "repo".to_string(),
-            path: PathBuf::from("/tmp/repo"),
-            worktrees: vec![Worktree {
-                path: PathBuf::from("/tmp/repo"),
-                branch: Some("main".to_string()),
-                is_main: true,
-            }],
-        };
-        let mut state = AppState::new(vec![repo], None);
-        state.mark_pending_worktree_delete(PendingWorktreeDelete::new(
-            PathBuf::from("/tmp/repo"),
-            "dev".to_string(),
-            PathBuf::from("/tmp/repo-dev"),
-        ));
-
-        assert!(state.reconcile_pending_worktree_deletes());
-        assert_eq!(state.pending_worktree_deletes, []);
-    }
-
-    #[test]
-    fn test_sort_repos_no_current_repo() {
-        let mut repos = vec![
-            Repo {
-                name: "zebra".to_string(),
-                session_name: "zebra".to_string(),
-                path: PathBuf::from("/tmp/zebra"),
-                worktrees: vec![Worktree {
-                    path: PathBuf::from("/tmp/zebra"),
-                    branch: Some("main".to_string()),
-                    is_main: true,
-                }],
-            },
-            Repo {
-                name: "alpha".to_string(),
-                session_name: "alpha".to_string(),
-                path: PathBuf::from("/tmp/alpha"),
-                worktrees: vec![],
-            },
-            Repo {
-                name: "mango".to_string(),
-                session_name: "mango".to_string(),
-                path: PathBuf::from("/tmp/mango"),
-                worktrees: vec![Worktree {
-                    path: PathBuf::from("/tmp/mango"),
-                    branch: Some("main".to_string()),
-                    is_main: true,
-                }],
-            },
-        ];
-
-        let mut activity = HashMap::new();
-        activity.insert("mango".to_string(), 300);
-        activity.insert("zebra".to_string(), 100);
-
-        sort_repos(&mut repos, None, &activity);
-
-        // Sessions by recency first, then alphabetical
-        assert_eq!(repos[0].name, "mango"); // session ts=300
-        assert_eq!(repos[1].name, "zebra"); // session ts=100
-        assert_eq!(repos[2].name, "alpha"); // no session, alphabetical
-    }
-
-    #[test]
-    fn test_sort_repos_multiple_worktree_sessions() {
-        let mut repos = vec![
-            Repo {
-                name: "repo-a".to_string(),
-                session_name: "repo-a".to_string(),
-                path: PathBuf::from("/tmp/repo-a"),
-                worktrees: vec![
-                    Worktree {
-                        path: PathBuf::from("/tmp/repo-a"),
-                        branch: Some("main".to_string()),
-                        is_main: true,
-                    },
-                    Worktree {
-                        path: PathBuf::from("/tmp/repo-a--feat"),
-                        branch: Some("feat".to_string()),
-                        is_main: false,
-                    },
-                ],
-            },
-            Repo {
-                name: "repo-b".to_string(),
-                session_name: "repo-b".to_string(),
-                path: PathBuf::from("/tmp/repo-b"),
-                worktrees: vec![Worktree {
-                    path: PathBuf::from("/tmp/repo-b"),
-                    branch: Some("main".to_string()),
-                    is_main: true,
-                }],
-            },
-        ];
-
-        let mut activity = HashMap::new();
-        // repo-a has two worktree sessions: main at 50, feat at 500
-        activity.insert("repo-a".to_string(), 50);
-        activity.insert("repo-a--feat".to_string(), 500);
-        // repo-b has one session at 200
-        activity.insert("repo-b".to_string(), 200);
-
-        sort_repos(&mut repos, None, &activity);
-
-        // repo-a max activity is 500 > repo-b's 200
-        assert_eq!(repos[0].name, "repo-a");
-        assert_eq!(repos[1].name, "repo-b");
-    }
-
-    #[test]
-    fn test_sort_repos_empty() {
-        let mut repos: Vec<Repo> = vec![];
-        sort_repos(&mut repos, None, &HashMap::new());
-        assert_eq!(repos, []);
-    }
-
-    #[test]
-    fn test_branch_sort_current_is_also_default() {
-        let repo = Repo {
-            name: "myrepo".to_string(),
-            session_name: "myrepo".to_string(),
-            path: PathBuf::from("/tmp/myrepo"),
-            worktrees: vec![Worktree {
-                path: PathBuf::from("/tmp/myrepo"),
-                branch: Some("main".to_string()),
-                is_main: true,
-            }],
-        };
-
-        let branches = vec!["main".into(), "dev".into(), "feature".into()];
-        let entries = BranchEntry::build_sorted_with_activity(
-            &repo,
-            &branches,
-            &[],
-            Some("main"),
-            &HashMap::new(),
-            None,
-        );
-
-        // main is both current and default — should appear exactly once at position 0
-        assert_eq!(entries.len(), 3);
-        assert_eq!(entries[0].name, "main");
-        assert!(entries[0].is_current);
-        assert!(entries[0].is_default);
-        // No duplicate
-        assert_eq!(
-            entries.iter().filter(|e| e.name == "main").count(),
-            1,
-            "main should appear exactly once"
-        );
-    }
-
-    #[test]
-    fn test_branch_sort_session_without_activity_ts() {
-        let repo = Repo {
-            name: "myrepo".to_string(),
-            session_name: "myrepo".to_string(),
-            path: PathBuf::from("/tmp/myrepo"),
-            worktrees: vec![
-                Worktree {
-                    path: PathBuf::from("/tmp/myrepo"),
-                    branch: Some("main".to_string()),
-                    is_main: true,
-                },
-                Worktree {
-                    path: PathBuf::from("/tmp/myrepo--dev"),
-                    branch: Some("dev".to_string()),
-                    is_main: false,
-                },
-                Worktree {
-                    path: PathBuf::from("/tmp/myrepo--hotfix"),
-                    branch: Some("hotfix".to_string()),
-                    is_main: false,
-                },
-                Worktree {
-                    path: PathBuf::from("/tmp/myrepo--no-ts"),
-                    branch: Some("no-ts".to_string()),
-                    is_main: false,
-                },
-            ],
-        };
-
-        let branches = vec![
-            "main".into(),
-            "dev".into(),
-            "hotfix".into(),
-            "no-ts".into(),
-            "plain".into(),
-        ];
-        // no-ts has a session but no activity timestamp
-        let sessions = vec![
-            "myrepo--dev".to_string(),
-            "myrepo--hotfix".to_string(),
-            "myrepo--no-ts".to_string(),
-        ];
-        let mut activity = HashMap::new();
-        activity.insert("myrepo--dev".to_string(), 100);
-        activity.insert("myrepo--hotfix".to_string(), 200);
-        // no-ts intentionally missing from activity map
-
-        let entries = BranchEntry::build_sorted_with_activity(
-            &repo,
-            &branches,
-            &sessions,
-            Some("main"),
-            &activity,
-            None,
-        );
-
-        assert_eq!(entries[0].name, "main"); // current + default
-        assert_eq!(entries[1].name, "hotfix"); // session ts=200
-        assert_eq!(entries[2].name, "dev"); // session ts=100
-        // no-ts has session but no timestamp — has_session=true but session_activity_ts=None
-        // It has a worktree, so it sorts among worktree branches
-        // The sort_entries sorts by session_activity_ts first (Some before None),
-        // then worktree presence. no-ts has no activity_ts so it falls to worktree tier.
-        let no_ts_pos = entries.iter().position(|e| e.name == "no-ts").unwrap();
-        let plain_pos = entries.iter().position(|e| e.name == "plain").unwrap();
-        assert!(
-            no_ts_pos < plain_pos,
-            "no-ts (has worktree) should sort before plain (no worktree)"
-        );
-    }
-
-    #[test]
-    fn test_branch_sort_no_default_no_current() {
-        // No default branch; CWD is None so fallback picks first worktree as current
-        let repo = Repo {
-            name: "myrepo".to_string(),
-            session_name: "myrepo".to_string(),
-            path: PathBuf::from("/tmp/myrepo"),
-            worktrees: vec![
-                Worktree {
-                    path: PathBuf::from("/tmp/myrepo--alpha"),
-                    branch: Some("alpha".to_string()),
-                    is_main: false,
-                },
-                Worktree {
-                    path: PathBuf::from("/tmp/myrepo--beta"),
-                    branch: Some("beta".to_string()),
-                    is_main: false,
-                },
-            ],
-        };
-
-        let branches = vec![
-            "alpha".into(),
-            "beta".into(),
-            "gamma".into(),
-            "delta".into(),
-        ];
-        let sessions = vec!["myrepo--alpha".to_string()];
-        let mut activity = HashMap::new();
-        activity.insert("myrepo--alpha".to_string(), 999);
-
-        let entries = BranchEntry::build_sorted_with_activity(
-            &repo, &branches, &sessions, None, // no default
-            &activity, None,
-        );
-
-        // alpha has session with ts → first
-        assert_eq!(entries[0].name, "alpha");
-        // beta has worktree but no session → next
-        assert_eq!(entries[1].name, "beta");
-        // gamma and delta are plain, alphabetical
-        assert_eq!(entries[2].name, "delta");
-        assert_eq!(entries[3].name, "gamma");
-    }
-
-    #[test]
-    fn test_branch_sort_worktrees_before_plain() {
-        let repo = Repo {
-            name: "myrepo".to_string(),
-            session_name: "myrepo".to_string(),
-            path: PathBuf::from("/tmp/myrepo"),
-            worktrees: vec![
-                Worktree {
-                    path: PathBuf::from("/tmp/myrepo"),
-                    branch: Some("main".to_string()),
-                    is_main: true,
-                },
-                Worktree {
-                    path: PathBuf::from("/tmp/myrepo--wt-branch"),
-                    branch: Some("wt-branch".to_string()),
-                    is_main: false,
-                },
-            ],
-        };
-
-        let branches = vec![
-            "main".into(),
-            "aaa-plain".into(),
-            "wt-branch".into(),
-            "zzz-plain".into(),
-        ];
-
-        let entries = BranchEntry::build_sorted_with_activity(
-            &repo,
-            &branches,
-            &[],
-            None,
-            &HashMap::new(),
-            None,
-        );
-
-        assert_eq!(entries[0].name, "main"); // current
-        assert_eq!(entries[1].name, "wt-branch"); // has worktree
-        // plain branches alphabetical
-        assert_eq!(entries[2].name, "aaa-plain");
-        assert_eq!(entries[3].name, "zzz-plain");
-    }
-
-    #[test]
-    fn test_branch_sort_agent_waiting_idle_running_priority() {
-        use crate::agent::{AgentKind, AgentState, AgentStatus};
-
-        let mut entries = vec![
-            BranchEntry {
-                name: "feat-running".to_string(),
-                worktree_path: Some(PathBuf::from("/tmp/r")),
-                has_session: true,
-                is_current: false,
-                is_default: false,
-                remote: None,
-                session_activity_ts: Some(100),
-                agent_statuses: vec![AgentStatus {
-                    kind: AgentKind::ClaudeCode,
-                    state: AgentState::Running,
-                }],
-            },
-            BranchEntry {
-                name: "feat-waiting".to_string(),
-                worktree_path: Some(PathBuf::from("/tmp/w")),
-                has_session: true,
-                is_current: false,
-                is_default: false,
-                remote: None,
-                session_activity_ts: Some(100),
-                agent_statuses: vec![AgentStatus {
-                    kind: AgentKind::Codex,
-                    state: AgentState::Waiting,
-                }],
-            },
-            BranchEntry {
-                name: "feat-idle".to_string(),
-                worktree_path: Some(PathBuf::from("/tmp/i")),
-                has_session: true,
-                is_current: false,
-                is_default: false,
-                remote: None,
-                session_activity_ts: Some(100),
-                agent_statuses: vec![AgentStatus {
-                    kind: AgentKind::ClaudeCode,
-                    state: AgentState::Idle,
-                }],
-            },
-        ];
-        BranchEntry::sort_entries(&mut entries);
-        assert_eq!(entries[0].name, "feat-waiting", "Waiting should sort first");
-        assert_eq!(entries[1].name, "feat-idle", "Idle should sort second");
-        assert_eq!(entries[2].name, "feat-running", "Running should sort third");
-    }
-
-    #[test]
-    fn test_branch_sort_remote_always_last() {
-        let mut entries = vec![
-            BranchEntry {
-                name: "aaa-remote".to_string(),
-                worktree_path: None,
-                has_session: false,
-                is_current: false,
-                is_default: false,
-                remote: Some("origin".to_string()),
-                session_activity_ts: None,
-                agent_statuses: Vec::new(),
-            },
-            BranchEntry {
-                name: "zzz-local".to_string(),
-                worktree_path: None,
-                has_session: false,
-                is_current: false,
-                is_default: false,
-                remote: None,
-                session_activity_ts: None,
-                agent_statuses: Vec::new(),
-            },
-            BranchEntry {
-                name: "mmm-local".to_string(),
-                worktree_path: None,
-                has_session: false,
-                is_current: false,
-                is_default: false,
-                remote: None,
-                session_activity_ts: None,
-                agent_statuses: Vec::new(),
-            },
-        ];
-
-        BranchEntry::sort_entries(&mut entries);
-
-        // Local branches first (alphabetical), then remote
-        assert_eq!(entries[0].name, "mmm-local");
-        assert!(entries[0].remote.is_none());
-        assert_eq!(entries[1].name, "zzz-local");
-        assert!(entries[1].remote.is_none());
-        assert_eq!(entries[2].name, "aaa-remote");
-        assert!(entries[2].remote.is_some());
-    }
-
-    #[test]
-    fn test_cwd_worktree_determines_current_branch() {
-        let repo = Repo {
-            name: "myrepo".to_string(),
-            session_name: "myrepo".to_string(),
-            path: PathBuf::from("/tmp/myrepo"),
-            worktrees: vec![
-                Worktree {
-                    path: PathBuf::from("/tmp/myrepo"),
-                    branch: Some("main".to_string()),
-                    is_main: true,
-                },
-                Worktree {
-                    path: PathBuf::from("/tmp/myrepo--feature"),
-                    branch: Some("feature".to_string()),
-                    is_main: false,
-                },
-            ],
-        };
-
-        let branches = vec!["main".into(), "feature".into(), "dev".into()];
-
-        // CWD is in the feature worktree — feature should be current, not main
-        let entries = BranchEntry::build_sorted_with_activity(
-            &repo,
-            &branches,
-            &[],
-            Some("main"),
-            &HashMap::new(),
-            Some(Path::new("/tmp/myrepo--feature")),
-        );
-
-        assert_eq!(entries[0].name, "feature"); // current (CWD worktree)
-        assert!(entries[0].is_current);
-        assert_eq!(entries[1].name, "main"); // default
-        assert!(entries[1].is_default);
-        assert!(!entries[1].is_current);
-        assert_eq!(entries[2].name, "dev");
-    }
-
-    #[test]
-    fn test_cwd_main_repo_marks_main_worktree_current() {
-        let repo = Repo {
-            name: "myrepo".to_string(),
-            session_name: "myrepo".to_string(),
-            path: PathBuf::from("/tmp/myrepo"),
-            worktrees: vec![
-                Worktree {
-                    path: PathBuf::from("/tmp/myrepo"),
-                    branch: Some("main".to_string()),
-                    is_main: true,
-                },
-                Worktree {
-                    path: PathBuf::from("/tmp/myrepo--feature"),
-                    branch: Some("feature".to_string()),
-                    is_main: false,
-                },
-            ],
-        };
-
-        let branches = vec!["main".into(), "feature".into()];
-
-        // CWD is the main repo dir — main should be current
-        let entries = BranchEntry::build_sorted_with_activity(
-            &repo,
-            &branches,
-            &[],
-            Some("main"),
-            &HashMap::new(),
-            Some(Path::new("/tmp/myrepo")),
-        );
-
-        assert_eq!(entries[0].name, "main"); // current + default
-        assert!(entries[0].is_current);
-        assert_eq!(entries[1].name, "feature");
-        assert!(!entries[1].is_current);
-    }
-
-    #[test]
-    fn test_cwd_unrelated_falls_back_to_main_worktree() {
-        let repo = Repo {
-            name: "myrepo".to_string(),
-            session_name: "myrepo".to_string(),
-            path: PathBuf::from("/tmp/myrepo"),
-            worktrees: vec![
-                Worktree {
-                    path: PathBuf::from("/tmp/myrepo"),
-                    branch: Some("main".to_string()),
-                    is_main: true,
-                },
-                Worktree {
-                    path: PathBuf::from("/tmp/myrepo--feature"),
-                    branch: Some("feature".to_string()),
-                    is_main: false,
-                },
-            ],
-        };
-
-        let branches = vec!["main".into(), "feature".into()];
-
-        // CWD doesn't match any worktree — falls back to first (main)
-        let entries = BranchEntry::build_sorted_with_activity(
-            &repo,
-            &branches,
-            &[],
-            Some("main"),
-            &HashMap::new(),
-            Some(Path::new("/tmp/unrelated-dir")),
-        );
-
-        assert_eq!(entries[0].name, "main"); // current (fallback to first worktree)
-        assert!(entries[0].is_current);
-    }
-
-    #[test]
-    fn test_build_remote_has_correct_defaults() {
-        let remote = vec!["feat-x".into(), "feat-y".into()];
-        let local: Vec<String> = vec![];
-
-        let entries = BranchEntry::build_remote("origin", &remote, &local);
-
-        assert_eq!(entries.len(), 2);
-        for entry in &entries {
-            assert!(!entry.is_default, "remote entries should not be default");
-            assert!(
-                entry.session_activity_ts.is_none(),
-                "remote entries should have no activity ts"
-            );
-            assert!(
-                entry.remote.is_some(),
-                "remote entries should be marked remote"
-            );
-            assert!(!entry.has_session);
-            assert!(!entry.is_current);
-            assert!(entry.worktree_path.is_none());
-        }
-    }
-
-    #[test]
-    fn test_active_list_points_to_help_overlay_in_help_mode() {
-        let mut state = AppState::new(vec![make_repo(std::path::Path::new("/tmp"), "repo")], None);
-        state.set_help_overlay(HelpOverlayState {
-            list: SearchableList::new(3),
-            rows: Vec::new(),
-        });
-        state.mode = Mode::Help {
-            previous: Box::new(Mode::RepoSelect),
-        };
-
-        assert!(state.active_list().is_some());
-        assert_eq!(state.active_list().and_then(|list| list.selected), Some(0));
-
-        if let Some(list) = state.active_list_mut() {
-            list.move_selection(1);
-        }
-        assert_eq!(
-            state
-                .require_help_overlay()
-                .ok()
-                .and_then(|overlay| overlay.list.selected),
-            Some(1)
-        );
-    }
-
-    #[test]
-    fn test_branch_entry_serde_round_trip() {
-        let entry = BranchEntry {
-            name: "feat/test".to_string(),
-            worktree_path: Some(PathBuf::from("/tmp/repo-feat-test")),
-            has_session: true,
-            is_current: false,
-            is_default: false,
-            remote: None,
-            session_activity_ts: Some(12345),
-            agent_statuses: Vec::new(),
-        };
-
-        let json = serde_json::to_string(&entry).unwrap();
-        let decoded: BranchEntry = serde_json::from_str(&json).unwrap();
-        assert_eq!(decoded, entry);
-    }
-
-    #[test]
-    fn test_setup_state_new() {
-        let setup = SetupState::new();
-        assert_eq!(setup.input.text, "");
-        assert_eq!(setup.input.cursor, 0);
-        assert_eq!(setup.completions, Vec::<String>::new());
-        assert!(setup.selected_completion.is_none());
-        assert_eq!(setup.dirs, Vec::<String>::new());
-    }
-
-    #[test]
-    fn test_app_state_new_setup() {
-        let state = AppState::new_setup();
-        assert!(state.require_setup().is_ok());
-        assert_eq!(state.mode, Mode::Setup(SetupStep::Welcome));
-        assert_eq!(state.repos, []);
-    }
-
-    #[test]
-    fn test_mode_context_help_overlay_preserves_previous_variant() {
-        let mut state = AppState::new(vec![], None);
-        let _ = state.ensure_setup();
-        assert!(state.require_setup().is_ok());
-        assert!(state.require_help_overlay().is_err());
-        assert!(state.require_base_branch_selection().is_err());
-
-        state.set_help_overlay(HelpOverlayState {
-            list: SearchableList::new(1),
-            rows: Vec::new(),
-        });
-        assert!(state.require_setup().is_ok());
-        assert!(state.require_help_overlay().is_ok());
-        assert!(state.require_base_branch_selection().is_err());
-        state.clear_help_overlay();
-        assert!(state.require_setup().is_ok());
-        assert!(state.require_help_overlay().is_err());
-
-        state.set_base_branch_selection(BaseBranchSelection {
-            new_name: "feat/new".to_string(),
-            bases: vec!["main".to_string()],
-            list: SearchableList::new(1),
-        });
-        assert!(state.require_setup().is_err());
-        assert!(state.require_help_overlay().is_err());
-        assert!(state.require_base_branch_selection().is_ok());
-
-        state.set_help_overlay(HelpOverlayState {
-            list: SearchableList::new(1),
-            rows: Vec::new(),
-        });
-        assert!(state.require_help_overlay().is_ok());
-        assert!(state.require_base_branch_selection().is_ok());
-        state.clear_help_overlay();
-        assert!(state.require_help_overlay().is_err());
-        assert!(state.require_base_branch_selection().is_ok());
-    }
-
-    #[test]
-    fn test_mode_context_clear_is_scoped_to_active_variant() {
-        let mut state = AppState::new(vec![], None);
-        state.set_base_branch_selection(BaseBranchSelection {
-            new_name: "feat/new".to_string(),
-            bases: vec!["main".to_string()],
-            list: SearchableList::new(1),
-        });
-
-        state.clear_help_overlay();
-        assert!(state.require_base_branch_selection().is_ok());
-
-        state.clear_base_branch_selection();
-        assert!(state.require_base_branch_selection().is_err());
-    }
-
-    #[test]
-    fn test_mode_context_require_accessors_match_mode_invariants() {
-        fn assert_access(
-            state: &AppState,
-            expect_setup: bool,
-            expect_help: bool,
-            expect_base: bool,
-        ) {
-            assert_eq!(state.require_setup().is_ok(), expect_setup);
-            assert_eq!(state.require_help_overlay().is_ok(), expect_help);
-            assert_eq!(state.require_base_branch_selection().is_ok(), expect_base);
-        }
-
-        let mut state = AppState::new(vec![], None);
-        assert_access(&state, false, false, false); // loading
-
-        state.apply_transition(&ModeTransition::RepoSelect);
-        assert_access(&state, false, false, false);
-
-        state.apply_transition(&ModeTransition::BranchSelect);
-        assert_access(&state, false, false, false);
-
-        state.apply_transition(&ModeTransition::ConfirmWorktreeDelete {
-            branch_name: "main".to_string(),
-            has_session: false,
-        });
-        assert_access(&state, false, false, false);
-
-        state.apply_transition(&ModeTransition::Sessions);
-        assert_access(&state, false, false, false);
-
-        state.apply_transition(&ModeTransition::Setup {
-            step: SetupStep::SearchDirs,
-            setup: SetupState::new(),
-        });
-        assert_access(&state, true, false, false);
-
-        state.apply_transition(&ModeTransition::OpenHelp {
-            overlay: HelpOverlayState {
-                list: SearchableList::new(0),
-                rows: Vec::new(),
-            },
-        });
-        assert_access(&state, true, true, false);
-
-        state.apply_transition(&ModeTransition::CloseHelp);
-        assert_access(&state, true, false, false);
-
-        state.apply_transition(&ModeTransition::BranchSelect);
-        state.apply_transition(&ModeTransition::SelectBaseBranch {
-            flow: BaseBranchSelection {
-                new_name: "feat/new".to_string(),
-                bases: vec!["main".to_string()],
-                list: SearchableList::new(1),
-            },
-        });
-        assert_access(&state, false, false, true);
-
-        state.apply_transition(&ModeTransition::OpenHelp {
-            overlay: HelpOverlayState {
-                list: SearchableList::new(0),
-                rows: Vec::new(),
-            },
-        });
-        assert_access(&state, false, true, true);
-
-        state.apply_transition(&ModeTransition::CloseHelp);
-        assert_access(&state, false, false, true);
-    }
-
-    #[test]
-    fn test_setup_step_supports_text_edit() {
-        assert!(Mode::Setup(SetupStep::SearchDirs).supports_text_edit());
-        assert!(!Mode::Setup(SetupStep::Welcome).supports_text_edit());
-    }
-
-    #[test]
-    fn test_setup_step_supports_modal() {
-        assert!(Mode::Setup(SetupStep::Welcome).supports_modal_actions());
-        assert!(Mode::Setup(SetupStep::SearchDirs).supports_modal_actions());
-    }
-
-    #[test]
-    fn test_set_error_collapses_newlines_to_spaces() {
-        let mut state = AppState::new(Vec::new(), None);
-        state.set_error("line one\nline two\nline three");
-        assert_eq!(state.error.as_deref(), Some("line one line two line three"));
-    }
-
-    #[test]
-    fn test_set_error_collapses_carriage_return_newlines() {
-        let mut state = AppState::new(Vec::new(), None);
-        state.set_error("first\r\nsecond\r\nthird");
-        assert_eq!(state.error.as_deref(), Some("first second third"));
-    }
-
-    #[test]
-    fn test_set_error_collapses_multiple_whitespace() {
-        let mut state = AppState::new(Vec::new(), None);
-        state.set_error("spaced   out\n\n\ntext");
-        assert_eq!(state.error.as_deref(), Some("spaced out text"));
-    }
-
-    #[test]
-    fn test_clear_error() {
-        let mut state = AppState::new(Vec::new(), None);
-        state.set_error("something failed");
-        assert!(state.error.is_some());
-        state.clear_error();
-        assert!(state.error.is_none());
-    }
-
-    #[test]
-    fn test_mode_effective_plain() {
-        assert_eq!(*Mode::BranchSelect.effective(), Mode::BranchSelect);
-        assert_eq!(*Mode::RepoSelect.effective(), Mode::RepoSelect);
-    }
-
-    #[test]
-    fn test_mode_effective_sees_through_help() {
-        let mode = Mode::Help {
-            previous: Box::new(Mode::BranchSelect),
-        };
-        assert_eq!(*mode.effective(), Mode::BranchSelect);
-    }
-
-    #[test]
-    fn test_mode_effective_nested_help() {
-        let mode = Mode::Help {
-            previous: Box::new(Mode::Help {
-                previous: Box::new(Mode::RepoSelect),
-            }),
-        };
-        assert_eq!(*mode.effective(), Mode::RepoSelect);
-    }
-
-    #[test]
-    fn test_agent_enabled_defaults_to_true() {
-        let state = AppState::new(vec![], None);
-        assert!(state.agent_enabled);
-    }
-
-    #[test]
-    fn test_agent_poll_interval_defaults_to_config_default() {
-        let state = AppState::new(vec![], None);
-        assert_eq!(
-            state.agent_poll_interval,
-            std::time::Duration::from_millis(500)
-        );
-    }
-
-    #[test]
-    fn test_agent_poll_interval_can_be_overridden() {
-        let mut state = AppState::new(vec![], None);
-        state.agent_poll_interval = std::time::Duration::from_secs(5);
-        assert_eq!(state.agent_poll_interval, std::time::Duration::from_secs(5));
-    }
-
-    #[test]
-    fn test_agent_enabled_can_be_disabled() {
-        let mut state = AppState::new(vec![], None);
-        state.agent_enabled = false;
-        assert!(!state.agent_enabled);
-    }
-
-    #[test]
-    fn test_agent_labels_stored_in_state() {
-        let mut state = AppState::new(vec![], None);
-        assert_eq!(state.agent_labels.running, "[RUNNING]");
-        assert_eq!(state.agent_labels.waiting, "[WAITING]");
-
-        state.agent_labels = AgentLabelsConfig {
-            running: "GO".to_string(),
-            waiting: "PEND".to_string(),
-            idle: "OFF".to_string(),
-            unknown: "N/A".to_string(),
-        };
-        assert_eq!(state.agent_labels.running, "GO");
-        assert_eq!(state.agent_labels.waiting, "PEND");
-    }
-
-    #[test]
-    fn test_mode_transition_helpers_set_expected_modes() {
-        let mut state = AppState::new(vec![], None);
-
-        state.apply_transition(&ModeTransition::RepoSelect);
-        assert_eq!(state.mode, Mode::RepoSelect);
-
-        state.apply_transition(&ModeTransition::BranchSelect);
-        assert_eq!(state.mode, Mode::BranchSelect);
-
-        state.apply_transition(&ModeTransition::Sessions);
-        assert_eq!(state.mode, Mode::Sessions);
-
-        state.apply_transition(&ModeTransition::BranchSelect);
-        state.apply_transition(&ModeTransition::SelectBaseBranch {
-            flow: BaseBranchSelection {
-                new_name: "feat/test".to_string(),
-                bases: vec!["main".to_string()],
-                list: SearchableList::new(1),
-            },
-        });
-        assert_eq!(state.mode, Mode::SelectBaseBranch);
-
-        state.apply_transition(&ModeTransition::Loading {
-            message: "Loading...".to_string(),
-        });
-        assert_eq!(state.mode, Mode::Loading("Loading...".to_string()));
-    }
-
-    #[test]
-    fn test_mode_transition_helpers_set_parameterized_modes() {
-        let mut state = AppState::new(vec![], None);
-
-        state.apply_transition(&ModeTransition::BranchSelect);
-        state.apply_transition(&ModeTransition::ConfirmWorktreeDelete {
-            branch_name: "feat-x".to_string(),
-            has_session: true,
-        });
-        assert_eq!(
-            state.mode,
-            Mode::ConfirmWorktreeDelete {
-                branch_name: "feat-x".to_string(),
-                has_session: true,
-            }
-        );
-
-        state.apply_transition(&ModeTransition::OpenHelp {
-            overlay: HelpOverlayState {
-                list: SearchableList::new(0),
-                rows: Vec::new(),
-            },
-        });
-        assert_eq!(
-            state.mode,
-            Mode::Help {
-                previous: Box::new(Mode::ConfirmWorktreeDelete {
-                    branch_name: "feat-x".to_string(),
-                    has_session: true,
-                }),
-            }
-        );
-
-        state.apply_transition(&ModeTransition::Setup {
-            step: SetupStep::SearchDirs,
-            setup: SetupState::new(),
-        });
-        assert_eq!(state.mode, Mode::Setup(SetupStep::SearchDirs));
-
-        state.apply_transition(&ModeTransition::OpenHelp {
-            overlay: HelpOverlayState {
-                list: SearchableList::new(0),
-                rows: Vec::new(),
-            },
-        });
-        state.apply_transition(&ModeTransition::CloseHelp);
-        assert_eq!(state.mode, Mode::Setup(SetupStep::SearchDirs));
-    }
-
-    #[test]
-    fn test_transition_rejects_invalid_target_modes() {
-        let mut state = AppState::new(vec![], None);
-        state.apply_transition(&ModeTransition::RepoSelect);
-
-        let result = state.transition(&ModeTransition::SelectBaseBranch {
-            flow: BaseBranchSelection {
-                new_name: "feat/test".to_string(),
-                bases: vec!["main".to_string()],
-                list: SearchableList::new(1),
-            },
-        });
-        assert!(matches!(
-            result,
-            Err(TransitionError::Invalid {
-                from: Mode::RepoSelect,
-                to: Mode::SelectBaseBranch
-            })
-        ));
-
-        let result = state.transition(&ModeTransition::ConfirmWorktreeDelete {
-            branch_name: "feat-x".to_string(),
-            has_session: false,
-        });
-        assert!(matches!(
-            result,
-            Err(TransitionError::Invalid {
-                from: Mode::RepoSelect,
-                to: Mode::ConfirmWorktreeDelete { .. }
-            })
-        ));
-    }
-
-    #[test]
-    fn test_mode_transition_intents_map_to_expected_modes() {
-        assert_eq!(
-            ModeTransition::RepoSelect.target_mode_with_current(&Mode::RepoSelect),
-            Mode::RepoSelect
-        );
-        assert_eq!(
-            ModeTransition::BranchSelect.target_mode_with_current(&Mode::RepoSelect),
-            Mode::BranchSelect
-        );
-        assert_eq!(
-            ModeTransition::Sessions.target_mode_with_current(&Mode::RepoSelect),
-            Mode::Sessions
-        );
-        assert_eq!(
-            ModeTransition::SelectBaseBranch {
-                flow: BaseBranchSelection {
-                    new_name: "feat-a".to_string(),
-                    bases: vec!["main".to_string()],
-                    list: SearchableList::new(1),
-                },
-            }
-            .target_mode_with_current(&Mode::BranchSelect),
-            Mode::SelectBaseBranch
-        );
-        assert_eq!(
-            ModeTransition::ConfirmWorktreeDelete {
-                branch_name: "feat-a".to_string(),
-                has_session: true,
-            }
-            .target_mode_with_current(&Mode::BranchSelect),
-            Mode::ConfirmWorktreeDelete {
-                branch_name: "feat-a".to_string(),
-                has_session: true,
-            }
-        );
-    }
-
-    #[test]
-    fn test_transition_with_intent_respects_mode_policy() {
-        let mut state = AppState::new(vec![], None);
-        state.apply_transition(&ModeTransition::RepoSelect);
-
-        let result = state.transition(&ModeTransition::SelectBaseBranch {
-            flow: BaseBranchSelection {
-                new_name: "feat/test".to_string(),
-                bases: vec!["main".to_string()],
-                list: SearchableList::new(1),
-            },
-        });
-        assert!(
-            result.is_err(),
-            "RepoSelect -> SelectBaseBranch should fail"
-        );
-
-        state.apply_transition(&ModeTransition::BranchSelect);
-        let result = state.transition(&ModeTransition::SelectBaseBranch {
-            flow: BaseBranchSelection {
-                new_name: "feat/test".to_string(),
-                bases: vec!["main".to_string()],
-                list: SearchableList::new(1),
-            },
-        });
-        assert!(
-            result.is_ok(),
-            "BranchSelect -> SelectBaseBranch should succeed"
-        );
-    }
-
-    #[test]
-    fn test_transition_allows_branch_select_flow_modes() {
-        let mut state = AppState::new(vec![], None);
-        state.apply_transition(&ModeTransition::BranchSelect);
-
-        assert!(
-            state
-                .transition(&ModeTransition::SelectBaseBranch {
-                    flow: BaseBranchSelection {
-                        new_name: "feat/test".to_string(),
-                        bases: vec!["main".to_string()],
-                        list: SearchableList::new(1),
-                    },
-                })
-                .is_ok()
-        );
-        assert_eq!(state.mode, Mode::SelectBaseBranch);
-
-        state.apply_transition(&ModeTransition::BranchSelect);
-        assert!(
-            state
-                .transition(&ModeTransition::ConfirmWorktreeDelete {
-                    branch_name: "feat-y".to_string(),
-                    has_session: true,
-                })
-                .is_ok()
-        );
-        assert!(matches!(state.mode, Mode::ConfirmWorktreeDelete { .. }));
-    }
-
-    #[test]
-    fn test_transition_table_matches_policy_for_all_mode_pairs() {
-        let all_modes = vec![
-            Mode::RepoSelect,
-            Mode::BranchSelect,
-            Mode::Sessions,
-            Mode::SelectBaseBranch,
-            Mode::Loading("loading".to_string()),
-            Mode::ConfirmWorktreeDelete {
-                branch_name: "feat-z".to_string(),
-                has_session: false,
-            },
-            Mode::Help {
-                previous: Box::new(Mode::RepoSelect),
-            },
-            Mode::Setup(SetupStep::Welcome),
-        ];
-
-        for from in &all_modes {
-            for to in &all_modes {
-                let mut state = AppState::new(vec![], None);
-                state.mode = from.clone();
-
-                // Policy: SelectBaseBranch and ConfirmWorktreeDelete are only
-                // reachable from BranchSelect, or when returning to that same
-                // mode via CloseHelp (effective mode == target mode).
-                let effective_from = from.effective();
-                let expected = if matches!(
-                    to,
-                    Mode::SelectBaseBranch | Mode::ConfirmWorktreeDelete { .. }
-                ) {
-                    matches!(effective_from, Mode::BranchSelect)
-                        || std::mem::discriminant(effective_from) == std::mem::discriminant(to)
-                } else {
-                    true
-                };
-
-                let transition = match to {
-                    Mode::RepoSelect => ModeTransition::RepoSelect,
-                    Mode::BranchSelect => ModeTransition::BranchSelect,
-                    Mode::Sessions => ModeTransition::Sessions,
-                    Mode::SelectBaseBranch => ModeTransition::SelectBaseBranch {
-                        flow: BaseBranchSelection {
-                            new_name: "feat-z".to_string(),
-                            bases: vec!["main".to_string()],
-                            list: SearchableList::new(1),
-                        },
-                    },
-                    Mode::Loading(message) => ModeTransition::Loading {
-                        message: message.clone(),
-                    },
-                    Mode::ConfirmWorktreeDelete {
-                        branch_name,
-                        has_session,
-                    } => ModeTransition::ConfirmWorktreeDelete {
-                        branch_name: branch_name.clone(),
-                        has_session: *has_session,
-                    },
-                    Mode::Help { .. } => ModeTransition::OpenHelp {
-                        overlay: HelpOverlayState {
-                            list: SearchableList::new(0),
-                            rows: Vec::new(),
-                        },
-                    },
-                    Mode::Setup(step) => ModeTransition::Setup {
-                        step: step.clone(),
-                        setup: SetupState::new(),
-                    },
-                };
-
-                let result = state.transition(&transition);
-                assert_eq!(
-                    result.is_ok(),
-                    expected,
-                    "transition result mismatch from {from:?} to {to:?}",
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn test_install_sessions_poller_rejected_outside_sessions_mode() {
-        let mut state = AppState::new(vec![], None);
-        let sessions = PollerHandle::new();
-        let result = state.install_sessions_poller(sessions.clone());
-
-        assert!(matches!(
-            result,
-            Err(PollerInstallError::InvalidMode {
-                expected_scope: "Sessions",
-                ..
-            })
-        ));
-        assert!(sessions.is_cancelled());
-        assert_eq!(
-            state.active_agent_poller_kind(),
-            ActiveAgentPollerKind::None
-        );
-    }
-
-    #[test]
-    fn test_install_branch_poller_rejected_outside_branch_mode() {
-        let mut state = AppState::new(vec![], None);
-        let branch = PollerHandle::new();
-        let result = state.install_branch_poller(branch.clone());
-
-        assert!(
-            branch.is_cancelled(),
-            "Invalid branch poller installs should cancel the handle"
-        );
-        assert!(matches!(
-            result,
-            Err(PollerInstallError::InvalidMode {
-                expected_scope: "BranchSelect",
-                ..
-            })
-        ));
-        assert_eq!(
-            state.active_agent_poller_kind(),
-            ActiveAgentPollerKind::None
-        );
-    }
-
-    #[test]
-    fn test_install_sessions_poller_replaces_branch_poller() {
-        let mut state = AppState::new(vec![], None);
-        state.apply_transition(&ModeTransition::BranchSelect);
-        let branch = PollerHandle::new();
-        assert!(state.install_branch_poller(branch.clone()).is_ok());
-
-        state.apply_transition(&ModeTransition::Sessions);
-        let sessions = PollerHandle::new();
-        assert!(state.install_sessions_poller(sessions).is_ok());
-
-        assert!(
-            branch.is_cancelled(),
-            "Switching poller scopes should cancel previous branch poller"
-        );
-        assert_eq!(
-            state.active_agent_poller_kind(),
-            ActiveAgentPollerKind::Sessions
-        );
-    }
-
-    #[test]
-    fn test_cancel_all_agent_pollers_cancels_active_poller() {
-        let mut state = AppState::new(vec![], None);
-        state.apply_transition(&ModeTransition::Sessions);
-        let sessions = PollerHandle::new();
-        assert!(state.install_sessions_poller(sessions.clone()).is_ok());
-
-        state.cancel_all_agent_pollers();
-
-        assert!(
-            sessions.is_cancelled(),
-            "cancel_all_agent_pollers should cancel active sessions poller"
-        );
-        assert_eq!(
-            state.active_agent_poller_kind(),
-            ActiveAgentPollerKind::None
-        );
-    }
-
-    #[test]
-    fn test_transition_cancels_mismatched_branch_poller() {
-        let mut state = AppState::new(vec![], None);
-        state.apply_transition(&ModeTransition::BranchSelect);
-        let branch = PollerHandle::new();
-        assert!(state.install_branch_poller(branch.clone()).is_ok());
-
-        state.apply_transition(&ModeTransition::RepoSelect);
-
-        assert!(branch.is_cancelled());
-        assert_eq!(
-            state.active_agent_poller_kind(),
-            ActiveAgentPollerKind::None
-        );
-    }
-
-    #[test]
-    fn test_transition_keeps_sessions_poller_for_help_overlay() {
-        let mut state = AppState::new(vec![], None);
-        state.apply_transition(&ModeTransition::Sessions);
-        let sessions = PollerHandle::new();
-        assert!(state.install_sessions_poller(sessions.clone()).is_ok());
-
-        state.apply_transition(&ModeTransition::OpenHelp {
-            overlay: HelpOverlayState {
-                list: SearchableList::new(0),
-                rows: Vec::new(),
-            },
-        });
-
-        assert!(!sessions.is_cancelled());
-        assert_eq!(
-            state.active_agent_poller_kind(),
-            ActiveAgentPollerKind::Sessions
-        );
-    }
-
-    #[test]
-    fn test_sessions_context_looks_through_help_overlay() {
-        let mut state = AppState::new(vec![], None);
-        state.apply_transition(&ModeTransition::Sessions);
-        state.apply_transition(&ModeTransition::OpenHelp {
-            overlay: HelpOverlayState {
-                list: SearchableList::new(0),
-                rows: Vec::new(),
-            },
-        });
-
-        assert!(state.is_help_open());
-        assert!(state.is_sessions_context());
-        assert!(!state.is_branch_select_context());
-    }
-
-    #[test]
-    fn test_branch_select_context_looks_through_help_overlay() {
-        let mut state = AppState::new(vec![], None);
-        state.apply_transition(&ModeTransition::BranchSelect);
-        state.apply_transition(&ModeTransition::OpenHelp {
-            overlay: HelpOverlayState {
-                list: SearchableList::new(0),
-                rows: Vec::new(),
-            },
-        });
-
-        assert!(state.is_help_open());
-        assert!(state.is_branch_select_context());
-        assert!(!state.is_sessions_context());
-    }
-
-    #[test]
-    fn test_sorted_unique_agent_states_priority_order() {
-        use crate::agent::{AgentKind, AgentState, AgentStatus};
-
-        let statuses = vec![
-            AgentStatus {
-                kind: AgentKind::ClaudeCode,
-                state: AgentState::Running,
-            },
-            AgentStatus {
-                kind: AgentKind::Codex,
-                state: AgentState::Waiting,
-            },
-            AgentStatus {
-                kind: AgentKind::Codex,
-                state: AgentState::Idle,
-            },
-            AgentStatus {
-                kind: AgentKind::Codex,
-                state: AgentState::Waiting,
-            },
-        ];
-
-        let states = sorted_unique_agent_states(&statuses);
-        assert_eq!(
-            states,
-            vec![AgentState::Waiting, AgentState::Idle, AgentState::Running]
-        );
-    }
-
-    #[test]
-    fn test_normalized_agent_statuses_are_sorted_and_deduped() {
-        use crate::agent::{AgentKind, AgentState, AgentStatus};
-
-        let statuses = vec![
-            AgentStatus {
-                kind: AgentKind::Codex,
-                state: AgentState::Idle,
-            },
-            AgentStatus {
-                kind: AgentKind::ClaudeCode,
-                state: AgentState::Waiting,
-            },
-            AgentStatus {
-                kind: AgentKind::Codex,
-                state: AgentState::Idle,
-            },
-        ];
-
-        assert_eq!(
-            normalized_agent_statuses(&statuses),
-            vec![
-                AgentStatus {
-                    kind: AgentKind::ClaudeCode,
-                    state: AgentState::Waiting,
-                },
-                AgentStatus {
-                    kind: AgentKind::Codex,
-                    state: AgentState::Idle,
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn test_cmp_by_agent_priority_then_oldest_activity() {
-        use crate::agent::{AgentKind, AgentState, AgentStatus};
-
-        let waiting = vec![AgentStatus {
-            kind: AgentKind::ClaudeCode,
-            state: AgentState::Waiting,
-        }];
-        let idle = vec![AgentStatus {
-            kind: AgentKind::ClaudeCode,
-            state: AgentState::Idle,
-        }];
-
-        assert!(
-            cmp_by_agent_priority_then_oldest_activity(&waiting, 200, &idle, 100).is_lt(),
-            "waiting should outrank idle"
-        );
-        assert!(
-            cmp_by_agent_priority_then_oldest_activity(&idle, 100, &idle, 200).is_lt(),
-            "older activity should sort first within the same priority"
-        );
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].remote.as_deref(), Some("upstream"));
+        assert_eq!(entries[0].name, "feature");
     }
 }

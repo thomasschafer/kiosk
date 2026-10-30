@@ -179,3 +179,20 @@ fn outside_tmux_kiosk_needs_no_server_to_list_agents() {
     assert!(!next.status.success());
     assert!(String::from_utf8_lossy(&next.stderr).contains("must run inside tmux"));
 }
+
+#[test]
+fn a_session_started_in_a_folder_with_a_tab_or_newline_does_not_break_reads() {
+    let env = TestEnv::new("");
+    let odd = env.path("odd\tfolder\nname\\t");
+    std::fs::create_dir_all(&odd).unwrap();
+    env.tmux_ok(&[
+        "new-session",
+        "-d",
+        "-s",
+        "odd",
+        "-c",
+        odd.to_str().unwrap(),
+    ]);
+    let agents = env.kiosk_ok(&["agents", "--json"]);
+    assert!(agents.trim_start().starts_with('['), "{agents}");
+}

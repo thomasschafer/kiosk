@@ -2,6 +2,7 @@
 //! call.
 
 use std::{
+    borrow::Cow,
     fmt,
     path::{Path, PathBuf},
     process::Command,
@@ -274,30 +275,69 @@ pub struct Session {
     pub panes: Vec<Pane>,
 }
 
-/// tmux 3.4 prints most control characters in formats as octal escapes, but not tabs. Kiosk
-/// refuses paths with control characters, so its own fields cannot hold one.
+/// Separates the fields of a listing line. Values can hold tabs and newlines (a session can
+/// start in any folder), so each field is escaped by tmux with [`escaped`] and read back
+/// with [`unescape`].
 pub(crate) const FIELD_SEPARATOR: char = '\t';
 const SNAPSHOT_FIELDS: &[&str] = &[
-    "#{session_id}",
-    "#{session_name}",
-    "#{session_activity}",
-    "#{session_path}",
-    "#{@kiosk_path}",
-    "#{pane_id}",
-    "#{pane_pid}",
-    "#{pane_dead}",
-    "#{pane_pipe}",
-    "#{@kiosk_collector}",
-    "#{@kiosk_status}",
-    "#{pane_current_command}",
-    // Last, so a separator in a title cannot shift the other fields.
-    "#{pane_title}",
+    "session_id",
+    "session_name",
+    "session_activity",
+    "session_path",
+    "@kiosk_path",
+    "pane_id",
+    "pane_pid",
+    "pane_dead",
+    "pane_pipe",
+    "@kiosk_collector",
+    "@kiosk_status",
+    "pane_current_command",
+    "pane_title",
 ];
+
+/// A format for `variable` in which tmux writes `\` as `\\` and tab, newline and carriage
+/// return as `\t`, `\n` and `\r`, so the value holds no separator. tmux applies the
+/// substitutions in order, so the backslashes the later ones add are not doubled.
+fn escaped(variable: &str) -> String {
+    format!("#{{s/\\\\/\\\\\\\\/;s/\t/\\\\t/;s/\n/\\\\n/;s/\r/\\\\r/:{variable}}}")
+}
+
+/// Reverses [`escaped`]. Any other backslash sequence is kept as it is, as tmux may write
+/// its own escapes for other control characters.
+fn unescape(field: &str) -> Cow<'_, str> {
+    if !field.contains('\\') {
+        return Cow::Borrowed(field);
+    }
+    let mut value = String::with_capacity(field.len());
+    let mut characters = field.chars();
+    while let Some(character) = characters.next() {
+        if character != '\\' {
+            value.push(character);
+            continue;
+        }
+        match characters.next() {
+            Some('\\') => value.push('\\'),
+            Some('t') => value.push('\t'),
+            Some('n') => value.push('\n'),
+            Some('r') => value.push('\r'),
+            Some(other) => {
+                value.push('\\');
+                value.push(other);
+            }
+            None => value.push('\\'),
+        }
+    }
+    Cow::Owned(value)
+}
 
 /// Every session on the server with its panes, in tmux's order. No server means no
 /// sessions.
 pub fn sessions(tmux: &dyn Tmux) -> Result<Vec<Session>, TmuxError> {
-    let format = SNAPSHOT_FIELDS.join(&FIELD_SEPARATOR.to_string());
+    let format = SNAPSHOT_FIELDS
+        .iter()
+        .map(|variable| escaped(variable))
+        .collect::<Vec<_>>()
+        .join(&FIELD_SEPARATOR.to_string());
     let output = match tmux.run(args!["list-panes", "-a", "-F", format]) {
         Ok(output) => output,
         Err(TmuxError::NoServer) => return Ok(Vec::new()),
@@ -305,9 +345,8 @@ pub fn sessions(tmux: &dyn Tmux) -> Result<Vec<Session>, TmuxError> {
     };
     let mut sessions: Vec<Session> = Vec::new();
     for line in output.lines().filter(|line| !line.is_empty()) {
-        let fields: Vec<&str> = line
-            .splitn(SNAPSHOT_FIELDS.len(), FIELD_SEPARATOR)
-            .collect();
+        let fields: Vec<Cow<'_, str>> = line.split(FIELD_SEPARATOR).map(unescape).collect();
+        let fields: Vec<&str> = fields.iter().map(AsRef::as_ref).collect();
         let [
             session_id,
             name,
@@ -411,6 +450,14 @@ mod tests {
     }
 
     #[test]
+    fn unescape_reverses_the_escapes_tmux_is_asked_for() {
+        assert_eq!(unescape("plain"), "plain");
+        assert_eq!(unescape("a\\tb\\nc\\rd\\\\e"), "a\tb\nc\rd\\e");
+        assert_eq!(unescape("\\\\t"), "\\t");
+        assert_eq!(unescape("\\001 and \\"), "\\001 and \\");
+    }
+
+    #[test]
     fn panes_are_grouped_by_session_with_their_place_and_pipe() {
         let tmux = MockTmux::default();
         tmux.respond(Ok(format!(
@@ -428,13 +475,25 @@ mod tests {
                 "123",
                 "state=idle",
                 "zsh",
-                "t\title"
+                "t\\title"
             ]),
             line(&[
                 "$1", "repo", "100", "/start", "/repo", "%2", "11", "1", "1", "", "", "claude", ""
             ]),
             line(&[
-                "$2", "notes", "50", "/notes", "", "%3", "12", "0", "0", "", "", "zsh", "x"
+                "$2",
+                "notes",
+                "50",
+                "/no\\ttes\\n\\\\t\\q",
+                "",
+                "%3",
+                "12",
+                "0",
+                "0",
+                "",
+                "",
+                "zsh",
+                "x"
             ]),
         )));
         let sessions = sessions(&tmux).unwrap();
@@ -453,7 +512,7 @@ mod tests {
         assert!(sessions[0].panes[1].dead);
         assert_eq!(
             sessions[1].place,
-            Some(SessionPlace::Started("/notes".into()))
+            Some(SessionPlace::Started("/no\ttes\n\\t\\q".into()))
         );
         assert_eq!(sessions[1].panes[0].pipe, PanePipe::None);
         assert_eq!(sessions[1].activity, 50);

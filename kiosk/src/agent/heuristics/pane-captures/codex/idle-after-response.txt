@@ -1,0 +1,40 @@
+    [
+    T(n)=T(n-1)+\Theta(n)=\Theta(n^2)
+    ]
+
+  ———
+
+  ## Worst-case analysis in detail
+
+  Worst case happens when pivot is always smallest or largest element (with bad pivot strategy, like
+  “always choose first element” on already sorted input).
+
+  Then recursion looks like:
+
+  - Level 1: partition n elements → cost c n
+  - Level 2: partition n-1 elements → cost c(n-1)
+  - ...
+  - Level n: partition 1 element → cost c
+
+  Total:
+  [
+  cn + c(n-1) + \cdots + c = c\frac{n(n+1)}{2} = \Theta(n^2)
+  ]
+
+  So worst-case comparisons are quadratic.
+
+  ### Worst-case recursion depth
+
+  Depth becomes n (a chain), so auxiliary stack space is Θ(n) (if not optimized).
+
+  ———
+
+  ### Space complexity
+
+  - In-place partition implementations use O(1) extra array storage.
+  - But recursion uses stack:
+
+
+› Use /skills to list available skills
+
+  ? for shortcuts                                                                100% context left

@@ -1,0 +1,40 @@
+  - Quantum computers are not known to solve NP-complete problems efficiently. Grover's algorithm
+  gives only a quadratic speedup for NP search problems, not an exponential one.
+  - The relationship: P ⊆ BQP ⊆ PSPACE, with the containments widely believed (but not proven) to be
+   strict.
+
+  Current state and challenges
+
+  Where things stand: Current machines are in the NISQ (Noisy Intermediate-Scale Quantum) era — tens
+   to thousands of noisy qubits without full error correction. Google demonstrated "quantum
+  supremacy" in 2019 (a specific sampling task faster than classical), and IBM and others have
+  continued scaling qubit counts.
+
+  Key challenges:
+  - Scaling to enough high-quality qubits for error correction
+  - Reducing gate error rates below fault-tolerance thresholds
+  - Developing practical algorithms that provide advantage on near-term hardware
+  - Building the classical control and software stack
+
+  What quantum computers won't do: They are not universally faster than classical computers. They
+  excel at specific structured problems (simulation, factoring, optimization) but do not speed up
+  general-purpose computing.
+
+  Practical implications
+
+  - Cryptography: Post-quantum cryptography standards (lattice-based, hash-based, etc.) are being
+  standardized now (NIST finalized initial standards in 2024) to prepare for a future where Shor's
+  algorithm threatens current public-key schemes.
+  - Chemistry/materials: Simulating molecular behavior is a near-term practical target.
+  - Optimization: Logistics, finance, and scheduling problems may benefit, though proven quantum
+  advantage for optimization remains an open question.
+  - Machine learning: Quantum ML is an active research area but has not yet demonstrated clear
+  practical advantage.
+
+✻ Crunched for 37s
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+❯  
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle)
+

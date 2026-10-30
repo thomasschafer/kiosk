@@ -1,0 +1,40 @@
+    • A mechanical calculator using geared wheels to add and subtract numbers up to 8 digits.
+    • Each wheel represented a digit; carrying over from one wheel to the next was handled
+      mechanically.
+    • Manufactured in small numbers, it was too complex and expensive to become widespread but
+      was conceptually important.
+  • Gottfried Wilhelm Leibniz’s Stepped Reckoner (1670s–1690s):
+    • Extended beyond Pascal’s design to support multiplication and division via repeated
+      addition and subtraction.
+    • Used the Leibniz wheel (stepped drum), a key mechanical element later adopted in many
+      calculators.
+    • Leibniz imagined a “universal calculus” of reasoning, anticipating later ideas about
+      symbolic logic and mechanized thought.
+
+  These machines showed that arithmetic could be automated with gears and mechanisms. However,
+  they implemented specific operations, not general-purpose computation.
+
+
+  2.2 19th-Century Mechanical Calculation and Office Automation
+
+  As administrative and scientific needs grew, demand for more powerful and specialized
+  calculators increased.
+  • Thomas de Colmar’s Arithmometer (c. 1820s):
+    • The first commercially successful mechanical calculator.
+    • Used in offices and government departments for routine calculations.
+    • Provided reliable, standardized computation power before electrical devices.
+  • Table-making and scientific computation:
+    • Large tables (e.g., logarithms, trigonometric values, navigation tables) were computed
+      by human “computers”—people whose job was to perform calculations.
+    • Errors and the high cost of labor motivated attempts to mechanize repetitive numeric
+      work.
+
+
+  ⬡ Generating..   1.47k tokens
+ ┌────────────────────────────────────────────────────────────────────────────────────────────────┐
+ │ → Add a follow-up                                                               ctrl+c to stop │
+ └────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+  Auto
+  / commands · @ files · ! shell
+

@@ -1,0 +1,40 @@
+     traversal to retrieve them in sorted order.
+   * Bitonic Sort: A parallel algorithm for sorting, often used in hardware implementations.
+   * Bogosort: A purely theoretical (and humorous) algorithm that randomly shuffles the list until
+     it happens to be sorted. Its average complexity is $O(n \cdot n!)$, making it the gold standard
+     for inefficiency.
+   * Sleep Sort: A curiosity where a thread is started for each element x, and each thread sleeps
+     for x seconds before printing x.
+
+
+  Conclusion
+  No single sorting algorithm is superior in every scenario. The "best" choice depends on the
+  specific constraints: Merge Sort is preferred for stability and linked lists; Quick Sort for
+  general-purpose internal sorting; Insertion Sort for small or nearly sorted arrays; and
+  Radix/Counting Sort for large sets of integers with a limited range. Modern hybrids like Timsort
+  and IntroSort provide a robust "best-of-both-worlds" solution for the majority of software
+  engineering tasks.
+
+▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+ > Please create a file called test.txt containing hello world
+▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+✦ I will create a file named test.txt with the content "hello world".
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Action Required                                                                                  │
+│                                                                                                  │
+│ ?  WriteFile Writing to test.txt                                                                 │
+│                                                                                                  │
+│ 1 hello world                                                                                    │
+│ Apply this change?                                                                               │
+│                                                                                                  │
+│ ● 1. Allow once                                                                                  │
+│   2. Allow for this session                                                                      │
+│   3. Modify with external editor                                                                 │
+│   4. No, suggest changes (esc)                                                                   │
+│                                                                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ shift+tab to accept edits
+ /tmp/gemini-test2                  no sandbox (see /docs)                   /model Auto (Gemini 3)
+

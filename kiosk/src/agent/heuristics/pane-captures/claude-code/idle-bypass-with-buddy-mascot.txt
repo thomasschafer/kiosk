@@ -1,0 +1,31 @@
+                                                                                                                
+
+
+❯ Can you explain how the agent status polling works?
+
+⏺ The TUI polls agent status on a ~2s interval via stream_session_agent_states, which calls
+  list_all_panes_with_activity to fetch pane metadata for all sessions in a single tmux
+  subprocess, then spawns one thread per session to run detect_all_for_session_from_pane_data.
+
+  Each detection thread checks the pane command, child process args, pane title, and finally
+  captured content to determine agent kind. State is inferred from content patterns — for
+  Claude Code, the primary signals are "esc to interrupt" (running), permission prompts
+  (waiting), and the ❯ prompt character or "? for shortcuts" footer (idle).
+
+  Read 3 files, ran 1 bash command
+
+⏺ One subtlety: capture_pane_content uses tmux capture-pane -J (join wrapped lines) without
+  -e, so the output is plain text with no ANSI escape codes. When Claude Code renders the
+  buddy mascot to the right of the ❯ prompt on the same terminal row, -J merges them onto
+  one line. The idle check must therefore look for a large whitespace gap after ❯ rather
+  than a bare ❯, since the mascot art follows after many spaces.
+
+  The gap is reliably ≥80 columns on any normal terminal, so counting Unicode whitespace
+  characters (to handle U+00A0 non-breaking space, which Claude Code emits after ❯) and
+  requiring ≥20 correctly identifies idle without false-matching user queries.
+                                                                                                        \^^^/   
+                                                                                                        /\_/\   
+────────────────────────────────────────────────────────────────────────────────────────────────────   ( °   °) 
+❯                                                                                                      (  ω  )  
+────────────────────────────────────────────────────────────────────────────────────────────────────   (")_(")  
+  ⏵⏵ bypass permissions on (shift+tab to cycle)                                                         Gravy

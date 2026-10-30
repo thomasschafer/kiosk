@@ -1,0 +1,40 @@
+  How the two theories connect
+
+  ┌───────────┬────────────────────────────────┬───────────────────────────────────────────────┐
+  │           │       Special relativity       │              General relativity               │
+  ├───────────┼────────────────────────────────┼───────────────────────────────────────────────┤
+  │ Scope     │ Inertial frames, flat          │ All frames, curved spacetime                  │
+  │           │ spacetime                      │                                               │
+  ├───────────┼────────────────────────────────┼───────────────────────────────────────────────┤
+  │ Gravity   │ Not included                   │ Described as spacetime curvature              │
+  ├───────────┼────────────────────────────────┼───────────────────────────────────────────────┤
+  │ Geometry  │ Minkowski (flat)               │ Riemannian/pseudo-Riemannian (curved)         │
+  ├───────────┼────────────────────────────────┼───────────────────────────────────────────────┤
+  │ Reduces   │ Newtonian mechanics at v ≪ c   │ Newtonian gravity in weak fields at low       │
+  │ to        │                                │ speeds                                        │
+  └───────────┴────────────────────────────────┴───────────────────────────────────────────────┘
+
+  Special relativity is the limiting case of general relativity in the absence of gravity (flat
+  spacetime).
+
+  ---
+  Open frontiers
+
+  Quantum gravity: General relativity is a classical theory. It is incompatible with quantum
+  mechanics at extreme scales (singularities inside black holes, the Big Bang). Unifying the two is
+  one of the great unsolved problems in physics. Approaches include string theory, loop quantum
+  gravity, and others, but none are experimentally confirmed.
+
+  Dark matter and dark energy: General relativity, combined with observations, implies that ~95% of
+  the universe's mass-energy content is in forms we don't yet understand. Whether this requires
+  modifying general relativity itself or discovering new particles/fields remains an open question.
+
+✻ Cooked for 1m 11s
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ Some follow-up question here 
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle)
+
+
+

@@ -1,0 +1,40 @@
+
+  ———
+
+  ## 13. Completeness landscape around NP
+
+  ### Classes near NP
+
+  - DP: differences of NP sets (L1 \ L2 with L1,L2 ∈ NP).
+  - Boolean hierarchy over NP (BH): finite boolean combinations of NP languages.
+  - NP ∩ coNP: e.g., integer factoring decision variant likely here; not known NP-complete.
+
+  ### Sparse sets and implications
+
+  - If an NP-complete language is sparse under many-one reductions, major collapses follow (Mahaney-
+    type phenomena).
+
+  ———
+
+  ## 14. Known barriers to proving P vs NP
+
+  Three famous meta-barriers explain why many proof attempts fail:
+
+  1. Relativization (Baker-Gill-Solovay):
+     There are oracles where P=NP and others where P≠NP, so relativizing techniques can’t settle it.
+  2. Natural Proofs (Razborov-Rudich):
+     A broad class of combinatorial circuit lower-bound arguments would break standard cryptographic
+     assumptions, so likely insufficient as-is.
+  3. Algebrization (Aaronson-Wigderson):
+     Extends relativization barrier to algebraic oracle access; blocks many additional techniques.
+
+  These do not show impossibility, only that certain broad methods are inadequate.
+
+  ———
+
+  ## 15. What would follow from either answer
+
+
+› Use /skills to list available skills
+
+  ? for shortcuts                                                                100% context left

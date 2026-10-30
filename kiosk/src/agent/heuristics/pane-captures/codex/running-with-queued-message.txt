@@ -1,0 +1,40 @@
+  - Odd-even merge sort: Sorting network variant. O(n log^2 n).
+  - Batcher sort: Family including odd-even and bitonic network methods.
+  - Sample sort: Parallel partitioning via sampled splitters; common in distributed systems.
+
+  Linked-list-friendly
+
+  - List merge sort: Ideal for linked lists (O(n log n), stable, no random access needed).
+  - Insertion sort on list: Good for small/nearly sorted lists.
+
+  Specialized / External / Distributed
+
+  - External merge sort: For data larger than RAM; sort chunks then multi-way merge.
+  - Polyphase merge sort: Tape/disk-oriented external merge variant.
+  - Replacement selection: Produces long initial runs for external sorting.
+  - MapReduce/TeraSort-style: Distributed range partition + local sort + global merge/shuffle.
+
+  Educational / Rare / Mostly theoretical
+
+  - Comb sort: Bubble-like with shrinking gap.
+  - Cocktail shaker sort: Bidirectional bubble.
+  - Gnome sort: Swap-back walking variant of insertion style.
+  - Cycle sort: Minimizes writes; O(n^2).
+  - Pancake sort: Prefix reversals.
+  - Strand sort: Pull increasing strands then merge.
+  - Patience sort: Card-pile method; linked to LIS; O(n log n) with structures.
+  - Smoothsort: Heapsort variant, near-O(n) on nearly sorted data.
+  - Spreadsort / Flashsort: Hybrid distribution-based approaches.
+  - Stooge sort / Slow sort / Bogo sort / Bozo sort: pedagogical “bad” sorts (very inefficient).
+  - Sleep sort: joke/concurrency-based, not practical.
+
+  When to use what (quick rule)
+
+  1. General arrays: Timsort (stable) or Introsort (fast, robust).
+  2. Need guaranteed O(n log n) + low memory: Heapsort.
+  3. Linked lists: Merge sort.
+
+
+› Follow up question while running
+
+  tab to queue message                                                           100% context left

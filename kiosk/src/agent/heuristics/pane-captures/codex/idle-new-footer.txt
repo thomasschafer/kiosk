@@ -1,0 +1,7 @@
+• Updated tests for Codex footer detection.
+
+• Reviewed live capture from tmux.
+
+› Write tests for @filename
+
+  gpt-5.4 default · 79% left · ~/Development/kiosk

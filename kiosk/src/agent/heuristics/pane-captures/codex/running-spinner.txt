@@ -1,0 +1,40 @@
+
+  So worst-case comparisons are quadratic.
+
+  ### Worst-case recursion depth
+
+  Depth becomes n (a chain), so auxiliary stack space is Θ(n) (if not optimized).
+
+  ———
+
+  ### Space complexity
+
+  - In-place partition implementations use O(1) extra array storage.
+  - But recursion uses stack:
+      - average/balanced: O(log n)
+      - worst case: O(n)
+
+  ———
+
+  ### Why quicksort is still popular
+
+  Despite worst-case O(n^2), it is often fastest in practice because:
+
+  - good cache locality,
+  - low constant factors,
+  - in-place behavior,
+  - randomized or median-of-three pivot selection usually avoids pathological splits.
+
+  Many libraries use introsort (quicksort + fallback to heapsort) to guarantee O(n log n) worst-case
+  while keeping quicksort speed on average.
+
+
+› Write a very detailed analysis of the P vs NP problem including all known complexity classes
+
+
+• Working (3s • esc to interrupt)
+
+
+› Use /skills to list available skills
+
+  ? for shortcuts                                                                100% context left

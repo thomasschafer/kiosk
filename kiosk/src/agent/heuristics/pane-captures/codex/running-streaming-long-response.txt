@@ -1,0 +1,40 @@
+  ## 1) Linear Storage: Arrays, Dynamic Arrays, and Linked Lists
+
+  ### Arrays
+
+  An array is contiguous memory storing elements of fixed size. Its core strength is O(1) random
+  access by index through pointer arithmetic. This is not just asymptotic convenience; it is a
+  hardware advantage. Sequential scans over arrays are cache-friendly, prefetchable, and
+  vectorizable, making them exceptionally fast in practice.
+
+  Implementation-wise, static arrays have fixed capacity known at allocation. Dynamic arrays
+  (vector, ArrayList, list in Python-like runtimes with over-allocation strategies) track size and
+  capacity. When full, they allocate a larger block (often 1.5x–2x), copy elements, and free the old
+  block. This gives amortized O(1) append: expensive resize events happen rarely enough that average
+  cost per insertion remains constant.
+
+  Trade-offs:
+
+  - Pros: fast indexing, compact memory, great locality, simple implementation.
+  - Cons: middle insert/delete is O(n) due to shifts; resizing causes occasional O(n) copies;
+    contiguous allocation can fail for huge blocks in fragmented heaps.
+
+  Real-world use:
+
+  - Numeric computing (NumPy, BLAS buffers).
+  - Web backends storing dense records in memory.
+  - Internal buffers in parsers, image/video pipelines, and game engines.
+
+  ### Linked Lists (Singly, Doubly, Circular)
+
+  A linked list stores each element in a node containing payload + pointer(s). Singly linked nodes
+  point next; doubly linked add prev; circular variants connect tail back to head.
+
+  Implementation details matter:
+
+  - Node allocation is often per element, causing allocator overhead.
+
+
+› Use /skills to list available skills
+
+  ? for shortcuts                                                                100% context left

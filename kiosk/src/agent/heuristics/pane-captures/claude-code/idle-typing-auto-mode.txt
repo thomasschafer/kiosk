@@ -1,0 +1,47 @@
+ ▐▛███▜▌   Claude Code v2.1.142
+▝▜█████▛▘  Opus 4.7 (1M context) with high effort · API Usage Billing
+  ▘▘ ▝▝    ~/Development/scooter
+
+❯ HelloSay hi in 3 words only, no tools
+
+⏺ Hi there friend
+
+✻ Cooked for 1s
+
+❯ follow up question/config
+
+⏺ /config is a built-in Claude Code command that opens settings (theme, model, etc.). What would you like to configure?
+
+✻ Brewed for 4s
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ Hello
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle)

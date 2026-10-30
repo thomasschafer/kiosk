@@ -1,0 +1,40 @@
+  The Sumerians, who flourished in southern Mesopotamia from roughly 4500 to 1900 BCE, developed one
+   of the earliest known number systems. Their system was sexagesimal, meaning it was based on the
+  number 60 rather than the number 10 used in most modern systems. This choice, whose origins remain
+   somewhat mysterious, proved remarkably practical. The number 60 has an unusually large number of
+  divisors — it is divisible by 1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, and 60 — making it
+  exceptionally well-suited for calculations involving fractions. The legacy of this system persists
+   today in our division of hours into 60 minutes and minutes into 60 seconds, as well as the
+  division of circles into 360 degrees.
+
+  The Babylonians, who succeeded the Sumerians as the dominant power in Mesopotamia, inherited and
+  significantly expanded upon Sumerian mathematical knowledge. Babylonian mathematical tablets,
+  thousands of which have been recovered by archaeologists, reveal a tradition of remarkable
+  sophistication. Babylonian scribes developed efficient algorithms for multiplication, division,
+  and the extraction of square and cube roots. They compiled extensive tables of reciprocals,
+  squares, cubes, and exponential functions that served as computational aids.
+
+  Perhaps most impressively, the Babylonians developed methods for solving what we would now call
+  quadratic and even some cubic equations. The famous tablet YBC 7289, dating to approximately 1800
+  BCE, contains a diagram of a square with its diagonals and an approximation of the square root of
+  2 accurate to six decimal places — 1.414213, compared to the true value of approximately 1.414214.
+   This demonstrates not only computational skill but also a conceptual understanding of irrational
+  numbers, more than a thousand years before the Greeks famously grappled with the same concept.
+
+  Babylonian mathematics was also deeply intertwined with astronomy. Mesopotamian astronomers
+  developed sophisticated mathematical models for predicting the movements of celestial bodies,
+  including the sun, moon, and the five planets visible to the naked eye. These models, which
+  employed arithmetic progressions and other algebraic techniques, achieved a level of predictive
+  accuracy that would not be surpassed until the work
+  ⎿  Interrupted · What should Claude do instead?
+
+❯ /model invalid-model-name
+  ⎿  Model 'invalid-model-name' not found
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ? for shortcuts
+
+
+

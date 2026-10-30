@@ -1,0 +1,40 @@
+   1. Mechanism: It uses a hash function to transform a key into an integer (hash code), which is
+      then mapped to an index in an underlying array (buckets).
+   2. Collision Resolution:
+       * Separate Chaining: Each bucket stores a pointer to a linked list (or tree) of entries that
+         hash to the same index.
+       * Open Addressing: If a collision occurs, the algorithm searches for the next available slot
+         (e.g., linear probing, quadratic probing, or double hashing).
+   3. Complexity Analysis:
+       * Average Case: $O(1)$ for Search, Insert, and Delete, assuming a good hash function that
+         distributes keys uniformly.
+       * Worst Case: $O(n)$ if all keys hash to the same bucket (effectively becoming a linked
+         list). Modern implementations often use balanced trees for buckets to reduce this to
+         $O(\log n)$.
+   4. Resizing (Rehashing): To maintain efficiency, the map tracks its load factor (number of
+      entries / number of buckets). When it exceeds a threshold (typically 0.75), the array size is
+      usually doubled and all existing keys are re-indexed.
+
+▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+ > Run the command: touch /tmp/gemini_test.txt
+▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+✦ I will create a new empty file at /tmp/gemini_test.txt using the touch command.
+
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Action Required                                                                                  │
+│                                                                                                  │
+│ ?  Shell touch /tmp/gemini_test.txt [current working directory /tmp/tmp.cw61kkdWkE] (Create an … │
+│                                                                                                  │
+│ touch /tmp/gemini_test.txt                                                                       │
+│ Allow execution of: 'touch'?                                                                     │
+│                                                                                                  │
+│ ● 1. Allow once                                                                                  │
+│   2. Allow for this session                                                                      │
+│   3. No, suggest changes (esc)                                                                   │
+│                                                                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ shift+tab to accept edits
+ /tmp/tmp.cw61kkdWkE (master*)            no sandbox (see /docs)             /model Auto (Gemini 3)
+

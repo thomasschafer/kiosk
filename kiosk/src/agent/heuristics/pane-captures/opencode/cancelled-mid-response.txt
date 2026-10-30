@@ -1,0 +1,40 @@
+
+  ┃
+  ┃  # History of computer science: complete overview and milestones           11,533  3% ($0.00)
+  ┃
+
+     trie variants foundational.
+
+     Heap structures address repeated minimum/maximum extraction. The binary heap gives O(log n)
+     insert/delete and O(1) peek with array-backed compactness. Fibonacci heaps improved
+     amortized decrease-key complexity theoretically, supporting graph algorithms like Dijkstra
+     and Prim in asymptotic analyses, though constants and complexity often limit practical use.
+     Pairing heaps, binomial heaps, rank-pairing heaps, d-ary heaps, Brodal queues, soft heaps (
+     allowing controlled key corruption), and hollow heaps represent decades of attempts to
+     reconcile theory with engineering. In systems practice, binary and d-ary heaps often win due
+     to simplicity and cache behavior, reminding us that asymptotic elegance is not the same as
+     wall-clock superiority.
+
+     Union-find (disjoint set union, DSU) is a jewel of algorithmic data structure design. With
+     union by rank/size and path compression, it supports near-constant amortized connectivity
+     operations, with inverse-Ackermann complexity so slow-growing it is effectively constant for
+     all realistic input sizes. Its conceptual simplicity and deep analysis make it central to
+     Kruskal’s algorithm, dynamic connectivity variants, image segmentation, and clustering
+     pipelines. Few structures so clearly demonstrate how amortization can turn apparently costly
+     operations into practical constants.
+
+     Range query structures emerged from geometric and analytic workloads. Segment trees support
+     interval aggregates and updates, often with lazy propagation. Fenwick trees (binary indexed
+     trees) provide compact prefix-sum updates/queries with elegant bit manipulation. Sparse
+     tables support static idempotent range queries in O(1) after preprocessing. Interval trees,
+     range trees, kd-trees, quadtrees,
+
+     ▣  Build · gpt-5.3-codex · interrupted
+
+  ┃
+  ┃
+  ┃
+  ┃  Build  GPT-5.3 Codex OpenAI
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+                                                      ctrl+t variants  tab agents  ctrl+p commands
+

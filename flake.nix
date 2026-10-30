@@ -24,6 +24,7 @@
               rustfmt
               clippy
               gcc
+              tmux
             ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
               pkgs.libiconv
             ];

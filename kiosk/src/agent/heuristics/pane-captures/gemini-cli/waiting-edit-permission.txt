@@ -1,0 +1,40 @@
+      usually doubled and all existing keys are re-indexed.
+
+▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+ > Run the command: touch /tmp/gemini_test.txt
+▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+✦ I will create a new empty file at /tmp/gemini_test.txt using the touch command.
+
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────╮
+│ -  Shell touch /tmp/gemini_test.txt [current working directory /tmp/tmp.cw61kkdWkE] (Create… │
+│                                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ℹ Request cancelled.
+▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+ > Edit test.txt and add a new line that says hello world
+▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+✦ I will add "hello world" to the end of test.txt.
+
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Action Required                                                                                  │
+│                                                                                                  │
+│ ?  Shell echo "hello world" >> test.txt [current working directory /tmp/tmp.cw61kkdWkE] (Append… │
+│                                                                                                  │
+│ echo "hello world" >> test.txt                                                                   │
+│                                                                                                  │
+│ Note: Command contains redirection which can be undesirable.                                     │
+│ Tip:  Toggle auto-edit (Shift+Tab) to allow redirection in the future.                           │
+│ Allow execution of: 'echo, redirection (>)'?                                                     │
+│                                                                                                  │
+│ ● 1. Allow once                                                                                  │
+│   2. Allow for this session                                                                      │
+│   3. No, suggest changes (esc)                                                                   │
+│                                                                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ shift+tab to accept edits
+ /tmp/tmp.cw61kkdWkE (master*)            no sandbox (see /docs)             /model Auto (Gemini 3)
+

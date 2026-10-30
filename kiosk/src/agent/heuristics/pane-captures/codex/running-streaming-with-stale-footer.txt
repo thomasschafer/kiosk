@@ -1,0 +1,40 @@
+■ Conversation interrupted - tell the model what to do differently. Something went wrong? Hit `/
+feedback` to report the issue.
+
+
+› Explain every sorting algorithm you know
+
+
+• Covering literally “every” sorting algorithm is unbounded, but here is a broad, practical catalog
+  with what each does and typical complexity.
+
+  Comparison Sorts (general-purpose)
+
+  - Bubble sort: Repeatedly swaps adjacent out-of-order pairs. O(n^2) time, O(1) space.
+  - Selection sort: Repeatedly selects minimum and places it at front. O(n^2), O(1).
+  - Insertion sort: Inserts each element into sorted prefix. Best O(n), worst O(n^2), O(1).
+  - Shell sort: Insertion sort on gap-separated elements; gap shrinks. Depends on gaps; often
+    ~O(n^(3/2)) or better in practice.
+  - Merge sort: Divide array, sort halves, merge. O(n log n) always, O(n) extra space (array
+    version), stable.
+  - Quicksort: Partition around pivot, recurse. Average O(n log n), worst O(n^2), usually O(log n)
+    stack, not stable (typical in-place version).
+  - Heapsort: Build heap, repeatedly extract max/min. O(n log n) worst-case, O(1) extra, not stable.
+  - Tree sort: Insert into BST then inorder traversal. Average O(n log n), worst O(n^2) unless
+    balanced tree.
+  - Timsort: Hybrid of merge + insertion; exploits runs. O(n log n) worst, excellent on partially
+    sorted data, stable (Python/Java uses variants).
+  - Introsort: Quicksort with fallback to heapsort + insertion for small ranges. O(n log n) worst
+    (C++ std::sort style).
+  - Block sort / Grailsort / WikiSort: Stable in-place merge-based families; aim to reduce memory
+    overhead.
+
+  Non-Comparison Sorts (need assumptions on keys)
+
+  - Counting sort: Count frequency of integer keys in range [0..k]. O(n + k), stable variant
+    possible.
+
+
+› Use /skills to list available skills
+
+  ? for shortcuts                                                                100% context left

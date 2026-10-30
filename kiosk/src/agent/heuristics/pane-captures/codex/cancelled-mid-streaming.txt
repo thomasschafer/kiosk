@@ -1,0 +1,40 @@
+
+  - Function call stacks, expression evaluation, parser state, undo systems, DFS traversal.
+
+  ### Queues (FIFO)
+
+  Common implementations:
+
+  - Linked list with head/tail pointers.
+  - Circular buffer (ring buffer) over an array.
+    Ring buffers avoid allocation churn and are extremely efficient for bounded queues.
+
+  Trade-offs:
+
+  - Linked queues are flexible in size but allocate nodes dynamically.
+  - Circular buffers are fast and cache-friendly but bounded unless resized.
+
+  Use cases:
+
+  - Task queues, message passing, breadth-first search, IO buffering.
+
+  ### Deques (Double-ended queues)
+
+  Support push/pop at both ends. Implemented with:
+
+  - Doubly linked lists.
+  - Block-based segmented arrays (used by C++ deque) to balance random access with efficient end
+    operations.
+
+  Use cases:
+
+  - Sliding window algorithms, work stealing schedulers, monotonic queues in optimization problems.
+
+  ## 3) Hash-Based Structures: Hash Tables, Sets, and Variants
+
+  ### Hash Tables
+
+
+› Use /skills to list available skills
+
+  ? for shortcuts                                                                100% context left

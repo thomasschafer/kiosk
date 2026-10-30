@@ -1,0 +1,40 @@
+
+  ┃                                                                                               
+  ┃  # Merge sort explained with complexity analysis                           10,034  3% ($0.00) 
+  ┃                                                                                               
+
+     - Better for dense graphs; space O(V^2).
+
+     Edge list
+     - Just list of edges; simple and useful for some algorithms/input formats.
+
+     Related structures
+     - Disjoint Set Union (Union-Find): dynamic connectivity.
+     - Good for Kruskal’s MST, connected component maintenance.
+
+     9) Specialized range-query structures
+     Segment tree
+     - Efficient range query + point update (O(log n)).
+     - Supports sum/min/max and more with custom merge function.
+
+     Fenwick tree (Binary Indexed Tree)
+     - Lighter than segment tree for prefix/range sums.
+     - Great constant factors, O(log n) update/query.
+
+     Sparse table
+     - Static arrays, no updates; fast idempotent range queries (e.g., RMQ) in O(1) after 
+     preprocessing.
+
+     Interval tree
+     - Store intervals, query overlaps efficiently.
+     - Useful in scheduling, geometry, compiler/live-range
+
+     ▣  Build · gpt-5.3-codex · interrupted
+
+  ┃                                                                                               
+  ┃                                                                                               
+  ┃                                                                                               
+  ┃  Build  GPT-5.3 Codex OpenAI                                                                  
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+                                                      ctrl+t variants  tab agents  ctrl+p commands
+

@@ -1,0 +1,40 @@
+
+
+  Shape and performance
+
+  • If the tree is balanced (roughly the same number of nodes on left and right subtrees), the
+    height is about \(\log_2 n\), so:
+    • Search, insert, delete: \(O(\log n)\) on average.
+  • If the tree becomes skewed (like a linked list), height becomes \(O(n)\) and operations
+    degrade to \(O(n)\).
+
+  Self-balancing trees (like AVL trees, Red‑Black trees) automatically rearrange themselves on
+  insert/delete to keep height near \(\log n\).
+
+  ────────────────────────────────────────
+
+  If you tell me your preferred language (e.g., Python, Java, C++), I can show you a minimal
+  binary tree / BST implementation and walk through the code.
+
+                                                                                                   
+  Run this shell command: sleep 10                                                                 
+                                                                                                   
+
+  I'll run sleep 10 in your repo directory and wait for it to complete.
+
+  $ sleep 10 Waiting for approval... in current dir
+
+
+ ┌────────────────────────────────────────────────────────────────────────────────────────────────┐
+ │ $  sleep 10 in .                                                                               │
+ └────────────────────────────────────────────────────────────────────────────────────────────────┘
+ ┌────────────────────────────────────────────────────────────────────────────────────────────────┐
+ │ Run this command?                                                                              │
+ │ Not in allowlist: sleep 10                                                                     │
+ │  → Run (once) (y)                                                                              │
+ │    Add Shell(sleep) to allowlist? (tab)                                                        │
+ │    Run Everything (shift+tab)                                                                  │
+ │    Skip (esc or n)                                                                             │
+ └────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+

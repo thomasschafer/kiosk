@@ -40,23 +40,41 @@ impl RemoteBranchPrompt {
         if remote_matches.is_empty() && !remotes_pending {
             return None;
         }
-        assert!(
-            remote_matches
-                .iter()
-                .all(|branch| branch.remote.is_some() && branch.name == name),
-            "remote branch prompt built from non-matching branches"
-        );
-        let choices = remote_matches
-            .into_iter()
-            .map(RemoteBranchChoice::Track)
-            .chain(std::iter::once(RemoteBranchChoice::CreateNew))
-            .collect();
+        let choices = Self::choices_for(&name, remote_matches);
         Some(Self {
             name,
             choices,
             selected: 0,
             remotes_pending,
         })
+    }
+
+    fn choices_for(name: &str, remote_matches: Vec<BranchEntry>) -> Vec<RemoteBranchChoice> {
+        assert!(
+            remote_matches
+                .iter()
+                .all(|branch| branch.remote.is_some() && branch.name == name),
+            "remote branch prompt built from non-matching branches"
+        );
+        remote_matches
+            .into_iter()
+            .map(RemoteBranchChoice::Track)
+            .chain(std::iter::once(RemoteBranchChoice::CreateNew))
+            .collect()
+    }
+
+    /// Replaces the choices with `remote_matches` as remotes finish loading, keeping the
+    /// selected choice when it is still offered. Once nothing is pending and nothing
+    /// matches, only creating a new branch is left.
+    fn refresh(&mut self, remote_matches: Vec<BranchEntry>, remotes_pending: bool) {
+        let selected = self.selected_choice().clone();
+        self.choices = Self::choices_for(&self.name, remote_matches);
+        self.selected = self
+            .choices
+            .iter()
+            .position(|choice| *choice == selected)
+            .unwrap_or(0);
+        self.remotes_pending = remotes_pending;
     }
 
     pub fn name(&self) -> &str {
@@ -282,15 +300,10 @@ fn route(state: &AppState) -> Result<NewBranchRoute, &'static str> {
     {
         return Ok(NewBranchRoute::Existing(branch.clone()));
     }
-    let remote_matches = state
-        .branch_view
-        .entries
-        .iter()
-        .filter(|branch| branch.remote.is_some() && branch.name == name)
-        .cloned()
-        .collect();
     let remotes_pending = state.branch_view.fetching_remote_repo.is_some();
-    if let Some(prompt) = RemoteBranchPrompt::new(name.clone(), remote_matches, remotes_pending) {
+    if let Some(prompt) =
+        RemoteBranchPrompt::new(name.clone(), remote_matches(state, &name), remotes_pending)
+    {
         return Ok(NewBranchRoute::ConfirmRemote {
             context: context.clone(),
             prompt,
@@ -300,6 +313,29 @@ fn route(state: &AppState) -> Result<NewBranchRoute, &'static str> {
         context: context.clone(),
         name,
     })
+}
+
+fn remote_matches(state: &AppState, name: &str) -> Vec<BranchEntry> {
+    state
+        .branch_view
+        .entries
+        .iter()
+        .filter(|branch| branch.remote.is_some() && branch.name == name)
+        .cloned()
+        .collect()
+}
+
+/// Brings an open remote branch prompt up to date with remote branches that have loaded
+/// since it opened.
+pub(crate) fn refresh_remote_prompt(state: &mut AppState) {
+    let Mode::ConfirmRemoteBranch { prompt, .. } = &state.mode else {
+        return;
+    };
+    let matches = remote_matches(state, prompt.name());
+    let pending = state.branch_view.fetching_remote_repo.is_some();
+    if let Mode::ConfirmRemoteBranch { prompt, .. } = &mut state.mode {
+        prompt.refresh(matches, pending);
+    }
 }
 
 fn handle_validation(
@@ -429,15 +465,18 @@ fn apply_filter_result(
     flow.list.scroll_offset = 0;
 }
 
-/// A prompt for `name` existing on `remotes`, for tests.
+/// A prompt for `name` existing on `remotes`, for tests. It opens while remotes are
+/// loading, so with no remotes and nothing pending it is a prompt whose remotes finished
+/// loading without a match.
 #[cfg(any(test, feature = "test-support"))]
 pub fn test_remote_prompt(
     name: &str,
     remotes: &[&str],
     remotes_pending: bool,
 ) -> RemoteBranchPrompt {
-    RemoteBranchPrompt::new(
-        name.into(),
+    let mut prompt = RemoteBranchPrompt::new(name.into(), Vec::new(), true)
+        .expect("a prompt opens while remotes are pending");
+    prompt.refresh(
         remotes
             .iter()
             .map(|remote| BranchEntry {
@@ -446,8 +485,9 @@ pub fn test_remote_prompt(
             })
             .collect(),
         remotes_pending,
-    )
-    .expect("remote matches or pending remotes")
+    );
+    prompt.selected = 0;
+    prompt
 }
 
 #[cfg(test)]

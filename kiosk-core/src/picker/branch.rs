@@ -248,6 +248,7 @@ pub(crate) fn handle_event(
                 merge_remote_snapshot(state, changes, remote, branches);
                 state.branch_view.apply_open_indicators();
                 changes.branches_changed = true;
+                super::new_branch::refresh_remote_prompt(state);
                 warn_unsupported_refs(state, generation, skipped_unsupported_refs);
             }
         }
@@ -291,6 +292,7 @@ pub(crate) fn handle_event(
                 {
                     state.branch_view.fetching_remote_repo = None;
                 }
+                super::new_branch::refresh_remote_prompt(state);
                 warn_unsupported_refs(state, generation, skipped_unsupported_refs);
             }
         }

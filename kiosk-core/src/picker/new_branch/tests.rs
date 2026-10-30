@@ -594,3 +594,74 @@ fn remote_prompt_rejects_branches_with_a_different_name() {
         false,
     );
 }
+
+fn fetch_completed(state: &mut AppState, remote: &str, branches: Vec<BranchEntry>, is_final: bool) {
+    let generation = state.branch_view.generation;
+    process_app_event(
+        AppEvent::GitFetchCompleted {
+            remote: Some(remote.into()),
+            branches,
+            repo_path: "/repo".into(),
+            generation,
+            error: None,
+            is_final,
+            skipped_unsupported_refs: false,
+        },
+        state,
+        &mut TickChanges::default(),
+    );
+}
+
+#[test]
+fn an_open_remote_prompt_takes_in_branches_that_arrive_and_keeps_its_selection() {
+    let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+    let (sender, _rx) = sender();
+    let mut state = state_with_remote_branches("feat/x", &[]);
+    state.branch_view.fetching_remote_repo = Some("/repo".into());
+    fetch_completed(
+        &mut state,
+        "origin-a",
+        vec![remote_branch("feat/x", "origin-a")],
+        false,
+    );
+    start::<MockBackend>(&mut state, &git, None, &sender);
+    assert_eq!(prompt_labels(&state), ["origin-a/feat/x", "<create>"]);
+    move_selection(&mut state, 1);
+
+    fetch_completed(
+        &mut state,
+        "origin-b",
+        vec![remote_branch("feat/x", "origin-b")],
+        true,
+    );
+
+    assert_eq!(
+        prompt_labels(&state),
+        ["origin-a/feat/x", "origin-b/feat/x", "<create>"]
+    );
+    let Mode::ConfirmRemoteBranch { prompt, .. } = &state.mode else {
+        unreachable!()
+    };
+    assert!(!prompt.remotes_pending());
+    assert!(matches!(
+        prompt.choices()[prompt.selected()],
+        RemoteBranchChoice::CreateNew
+    ));
+}
+
+#[test]
+fn a_remote_prompt_opened_while_loading_stops_waiting_when_nothing_matches() {
+    let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
+    let (sender, _rx) = sender();
+    let mut state = state_with_remote_branches("feat/x", &[]);
+    state.branch_view.fetching_remote_repo = Some("/repo".into());
+    start::<MockBackend>(&mut state, &git, None, &sender);
+
+    fetch_completed(&mut state, "origin", Vec::new(), true);
+
+    assert_eq!(prompt_labels(&state), ["<create>"]);
+    let Mode::ConfirmRemoteBranch { prompt, .. } = &state.mode else {
+        unreachable!()
+    };
+    assert!(!prompt.remotes_pending());
+}

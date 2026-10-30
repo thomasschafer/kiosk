@@ -67,6 +67,7 @@ pub fn picker() -> Result<()> {
             message: format!("agent status: {error:#}"),
         });
     }
+    let agent = loaded.extension.agent.clone();
     let placement = loaded
         .extension
         .worktrees
@@ -77,7 +78,7 @@ pub fn picker() -> Result<()> {
         Arc::clone(&git),
         placement,
         loaded.extension.on_open.clone(),
-        loaded.extension.agent.clone(),
+        agent.clone(),
     ));
     kiosk_tui::launch::run(
         &PRODUCT,
@@ -90,6 +91,10 @@ pub fn picker() -> Result<()> {
         eprintln!("{notice}");
     }
     if let Some(session) = backend.take_attach() {
+        // The server may have started just now, without kiosk's hooks.
+        if let Err(error) = sync_collectors(&cli, &agent) {
+            eprintln!("{}: agent status: {error:#}", PRODUCT.name);
+        }
         attach(&cli, &session)?;
     }
     Ok(())

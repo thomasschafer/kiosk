@@ -1,9 +1,12 @@
 use std::path::{Path, PathBuf};
 
 const DEFAULT_SLUG: &str = "worktree";
+/// How many numbered folders `checkout_path` tries before giving up.
+const MAX_SUFFIX: u32 = 100;
 
 /// Where kiosk puts the checkouts it creates: `<root>/<repo folder name>/<branch slug>`,
-/// the layout herdr uses for its own worktrees.
+/// the layout herdr uses for its own worktrees, with a numbered suffix when that folder is
+/// taken.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorktreePlacement {
     root: PathBuf,
@@ -25,7 +28,11 @@ impl WorktreePlacement {
         &self.root
     }
 
-    /// The checkout path for `branch` of the repository whose main checkout is `repo`.
+    /// A free path for a new checkout of `branch` of the repository whose main checkout is
+    /// `repo`. Different branches can share a slug (`feat/x` and `feat-x`), as can
+    /// repositories with the same folder name, so a taken folder gets the first free
+    /// numbered suffix (`feat-x-2`). Callers reuse a branch's existing checkout rather than
+    /// asking for a path.
     pub fn checkout_path(&self, repo: &Path, branch: &str) -> Result<PathBuf, String> {
         let repo_name = repo.file_name().ok_or_else(|| {
             format!(
@@ -33,7 +40,31 @@ impl WorktreePlacement {
                 crate::path::display(repo)
             )
         })?;
-        Ok(self.root.join(repo_name).join(branch_slug(branch)))
+        let parent = self.root.join(repo_name);
+        let slug = branch_slug(branch);
+        for suffix in 1..=MAX_SUFFIX {
+            let candidate = if suffix == 1 {
+                parent.join(&slug)
+            } else {
+                parent.join(format!("{slug}-{suffix}"))
+            };
+            match candidate.symlink_metadata() {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return Ok(candidate);
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    return Err(format!(
+                        "could not check whether {} is free: {error}",
+                        crate::path::display(&candidate)
+                    ));
+                }
+            }
+        }
+        Err(format!(
+            "no free checkout folder for {branch} in {} after {MAX_SUFFIX} tries",
+            crate::path::display(&parent)
+        ))
     }
 }
 
@@ -79,6 +110,26 @@ mod tests {
                 .checkout_path(&std::env::temp_dir().join("repo"), "feat/x")
                 .unwrap(),
             root.join("repo").join("feat-x")
+        );
+    }
+
+    #[test]
+    fn taken_checkout_folders_get_a_numbered_suffix() {
+        let temp = tempfile::tempdir().unwrap();
+        let placement = WorktreePlacement::new(temp.path().join("trees")).unwrap();
+        let repo = temp.path().join("one/app");
+        let first = placement.checkout_path(&repo, "feat/x").unwrap();
+        std::fs::create_dir_all(&first).unwrap();
+
+        // `feat-x` slugs like `feat/x`, and another repo named `app` shares its folder.
+        let second = placement.checkout_path(&repo, "feat-x").unwrap();
+        assert_eq!(second, temp.path().join("trees/app/feat-x-2"));
+        std::fs::create_dir_all(&second).unwrap();
+        assert_eq!(
+            placement
+                .checkout_path(&temp.path().join("two/app"), "feat/x")
+                .unwrap(),
+            temp.path().join("trees/app/feat-x-3")
         );
     }
 

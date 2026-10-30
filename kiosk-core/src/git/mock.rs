@@ -42,6 +42,8 @@ pub struct MockGitProvider {
     pub prune_calls: Mutex<Vec<PathBuf>>,
     pub fetch_calls: Mutex<Vec<(PathBuf, String)>>,
     pub fetch_gate: Option<Arc<(Mutex<bool>, Condvar)>>,
+    /// Fails fetches once `fetch_gate` opens.
+    pub fetch_failure: Option<String>,
 }
 
 impl MockGitProvider {
@@ -121,6 +123,9 @@ impl GitProvider for MockGitProvider {
             while !*released {
                 released = condition.wait(released).unwrap();
             }
+        }
+        if let Some(message) = &self.fetch_failure {
+            bail!("{message}");
         }
         Ok(())
     }

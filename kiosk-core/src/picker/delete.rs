@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -430,6 +430,9 @@ pub(crate) fn resume<B: Backend>(
     }
 }
 
+/// Drops `repo_path`'s saved deletions that have expired or whose checkout no longer holds
+/// the branch they were confirmed for. A path reused by another branch needs a fresh
+/// confirmation, as a saved `force` would otherwise discard the new checkout's changes.
 pub(crate) fn reconcile_pending(state: &mut AppState, repo_path: &Path) {
     let active = state
         .repo_view
@@ -440,14 +443,16 @@ pub(crate) fn reconcile_pending(state: &mut AppState, repo_path: &Path) {
             repo.repo
                 .worktrees
                 .iter()
-                .map(|worktree| worktree.path.as_path())
-                .collect::<HashSet<_>>()
+                .map(|worktree| (worktree.path.as_path(), worktree.branch.as_deref()))
+                .collect::<HashMap<_, _>>()
         })
         .unwrap_or_default();
     let before = state.delete.pending.len();
     state.delete.pending.retain(|pending| {
         pending.repo_path != repo_path
-            || !pending.is_expired() && active.contains(pending.worktree_path.as_path())
+            || !pending.is_expired()
+                && active.get(pending.worktree_path.as_path())
+                    == Some(&Some(pending.branch_name.as_str()))
     });
     if before != state.delete.pending.len() {
         persist(state);

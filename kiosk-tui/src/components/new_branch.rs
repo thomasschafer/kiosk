@@ -25,9 +25,10 @@ pub fn draw_remote_prompt(
 ) {
     let name = kiosk_core::display::sanitize(prompt.name()).into_owned();
     let mut lines = match prompt.remote_count() {
-        0 => vec![Line::raw(format!(
+        0 if prompt.remotes_pending() => vec![Line::raw(format!(
             "Remotes are still loading, so {name} may already exist on one."
         ))],
+        0 => vec![Line::raw(format!("No remote has a branch named {name}."))],
         count => {
             let mut lines = vec![Line::raw(if count == 1 {
                 format!("{name} already exists on a remote.")
@@ -72,10 +73,10 @@ pub fn draw_remote_prompt(
         lines.push(Line::raw(""));
         lines.push(hints);
     }
-    let title = if prompt.remote_count() == 0 {
-        " Remotes still loading "
-    } else {
-        " Branch exists on remote "
+    let title = match (prompt.remote_count(), prompt.remotes_pending()) {
+        (0, true) => " Remotes still loading ",
+        (0, false) => " New branch ",
+        _ => " Branch exists on remote ",
     };
     super::dialog::Dialog::new(title, lines, theme.secondary).render(frame, area);
 }

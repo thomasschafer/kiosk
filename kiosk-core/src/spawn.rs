@@ -1,8 +1,8 @@
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{HashMap, VecDeque},
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex,
+        Arc, Condvar, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc,
     },
@@ -24,33 +24,76 @@ pub const FETCH_POOL_SIZE: usize = 4;
 
 type FetchKey = (PathBuf, String);
 
+/// The remotes being fetched, so a second request for one waits for the running fetch
+/// and shares its outcome instead of starting another.
 #[derive(Clone, Default)]
 pub struct FetchDeduplicator {
-    in_flight: Arc<Mutex<HashSet<FetchKey>>>,
+    in_flight: Arc<Mutex<HashMap<FetchKey, Arc<SharedFetch>>>>,
+}
+
+/// What a request for a fetch should do.
+enum FetchTurn {
+    /// Fetch, then report the outcome through the claim.
+    Fetch(FetchClaim),
+    /// Another request is fetching this remote; wait for its outcome.
+    Wait(Arc<SharedFetch>),
 }
 
 impl FetchDeduplicator {
-    fn claim(&self, repo_path: &Path, remote: &str) -> Option<FetchClaim> {
+    fn claim(&self, repo_path: &Path, remote: &str) -> FetchTurn {
         let key = (repo_path.to_path_buf(), remote.to_string());
-        self.in_flight
-            .lock()
-            .unwrap()
-            .insert(key.clone())
-            .then(|| FetchClaim {
-                key,
-                in_flight: Arc::clone(&self.in_flight),
-            })
+        let mut in_flight = self.in_flight.lock().unwrap();
+        if let Some(shared) = in_flight.get(&key) {
+            return FetchTurn::Wait(Arc::clone(shared));
+        }
+        let shared = Arc::new(SharedFetch::default());
+        in_flight.insert(key.clone(), Arc::clone(&shared));
+        FetchTurn::Fetch(FetchClaim {
+            key,
+            shared,
+            in_flight: Arc::clone(&self.in_flight),
+        })
+    }
+}
+
+/// The outcome of one running fetch: `None` until it finishes, then its error, if any.
+#[derive(Default)]
+struct SharedFetch {
+    outcome: Mutex<Option<Result<(), String>>>,
+    finished: Condvar,
+}
+
+impl SharedFetch {
+    fn wait(&self) -> Result<(), String> {
+        let mut outcome = self.outcome.lock().unwrap();
+        loop {
+            if let Some(outcome) = outcome.as_ref() {
+                return outcome.clone();
+            }
+            outcome = self.finished.wait(outcome).unwrap();
+        }
     }
 }
 
 struct FetchClaim {
     key: FetchKey,
-    in_flight: Arc<Mutex<HashSet<FetchKey>>>,
+    shared: Arc<SharedFetch>,
+    in_flight: Arc<Mutex<HashMap<FetchKey, Arc<SharedFetch>>>>,
+}
+
+impl FetchClaim {
+    fn finish(self, outcome: Result<(), String>) {
+        *self.shared.outcome.lock().unwrap() = Some(outcome);
+    }
 }
 
 impl Drop for FetchClaim {
+    /// Releases the remote and wakes waiters. A claim dropped without [`Self::finish`]
+    /// fetched nothing, so waiters read the refs as they are.
     fn drop(&mut self) {
         self.in_flight.lock().unwrap().remove(&self.key);
+        self.shared.outcome.lock().unwrap().get_or_insert(Ok(()));
+        self.shared.finished.notify_all();
     }
 }
 
@@ -416,15 +459,14 @@ pub fn spawn_git_fetch(
                 return;
             }
         };
-        let claimed = remotes
+        let turns = remotes
             .into_iter()
-            .filter_map(|remote| {
-                deduplicator
-                    .claim(&repo_path, &remote)
-                    .map(|claim| (remote, claim))
+            .map(|remote| {
+                let turn = deduplicator.claim(&repo_path, &remote);
+                (remote, turn)
             })
             .collect::<Vec<_>>();
-        if claimed.is_empty() {
+        if turns.is_empty() {
             sender.send(AppEvent::GitFetchCompleted {
                 remote: None,
                 branches: Vec::new(),
@@ -437,20 +479,32 @@ pub fn spawn_git_fetch(
             return;
         }
 
-        let remaining = Arc::new(AtomicUsize::new(claimed.len()));
+        let remaining = Arc::new(AtomicUsize::new(turns.len()));
         let local_names = Arc::new(local_names);
-        spawn_work_parallel(FETCH_POOL_SIZE, claimed, |(remote, claim)| {
+        spawn_work_parallel(FETCH_POOL_SIZE, turns, |(remote, turn)| {
             let git = Arc::clone(&git);
             let sender = sender.clone();
             let repo_path = repo_path.clone();
             let local_names = Arc::clone(&local_names);
             let remaining = Arc::clone(&remaining);
             move || {
-                let _claim = claim;
+                // A request that waited shares the other fetch's outcome and reads the
+                // refs it left, so every view gets the remote's branches and errors.
+                let fetched = match turn {
+                    FetchTurn::Fetch(claim) if !sender.is_cancelled() => {
+                        let fetched = git
+                            .fetch_remote(&repo_path, &remote)
+                            .map_err(|error| error.to_string());
+                        claim.finish(fetched.clone());
+                        fetched
+                    }
+                    FetchTurn::Fetch(_) => Ok(()),
+                    FetchTurn::Wait(shared) => shared.wait(),
+                };
                 let (branches, error, skipped_unsupported_refs) = if sender.is_cancelled() {
                     (Vec::new(), None, false)
                 } else {
-                    match git.fetch_remote(&repo_path, &remote) {
+                    match fetched {
                         Ok(()) => match git.list_remote_branches_for_remote(&repo_path, &remote) {
                             Ok(remote_names) => (
                                 BranchEntry::build_remote(
@@ -469,7 +523,7 @@ pub fn spawn_git_fetch(
                                 false,
                             ),
                         },
-                        Err(error) => (Vec::new(), Some(error.to_string()), false),
+                        Err(error) => (Vec::new(), Some(error), false),
                     }
                 };
                 let is_final = remaining.fetch_sub(1, Ordering::AcqRel) == 1;
@@ -1004,12 +1058,21 @@ mod tests {
         );
     }
 
-    #[test]
-    fn rapid_reentry_does_not_start_a_duplicate_in_flight_fetch() {
+    /// Each view's fetched branch names and error, by generation.
+    type CompletionsByGeneration = HashMap<u64, (Vec<String>, Option<String>)>;
+
+    /// Starts a fetch of `origin` held at its gate, then a second request for the same repo
+    /// while it runs, and returns both completions by generation once the gate opens.
+    fn reentered_fetch(fetch_failure: Option<&str>) -> (CompletionsByGeneration, usize) {
         let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
         let git_mock = Arc::new(MockGitProvider {
             remotes: vec!["origin".into()],
+            remote_branches_by_remote: HashMap::from([(
+                "origin".to_string(),
+                vec!["fetched".to_string()],
+            )]),
             fetch_gate: Some(Arc::clone(&gate)),
+            fetch_failure: fetch_failure.map(Into::into),
             ..MockGitProvider::default()
         });
         let git: Arc<dyn GitProvider> = git_mock.clone();
@@ -1025,23 +1088,57 @@ mod tests {
         assert_eq!(git_mock.fetch_calls.lock().unwrap().len(), 1);
 
         spawn_git_fetch(&git, &sender, &deduplicator, "/repo".into(), Vec::new(), 8);
-        assert!(matches!(
-            rx.recv_timeout(Duration::from_secs(1)).unwrap(),
-            AppEvent::GitFetchCompleted {
-                generation: 8,
-                remote: None,
-                is_final: true,
-                ..
-            }
-        ));
-        assert_eq!(git_mock.fetch_calls.lock().unwrap().len(), 1);
+        assert!(
+            rx.recv_timeout(Duration::from_millis(200)).is_err(),
+            "the re-entered view waits for the running fetch"
+        );
 
         *gate.0.lock().unwrap() = true;
         gate.1.notify_all();
-        assert!(matches!(
-            rx.recv_timeout(Duration::from_secs(1)).unwrap(),
-            AppEvent::GitFetchCompleted { generation: 7, .. }
-        ));
+        let mut by_generation = HashMap::new();
+        for _ in 0..2 {
+            let AppEvent::GitFetchCompleted {
+                generation,
+                remote,
+                branches,
+                error,
+                is_final,
+                ..
+            } = rx.recv_timeout(Duration::from_secs(1)).unwrap()
+            else {
+                panic!("expected fetch completions");
+            };
+            assert_eq!(remote.as_deref(), Some("origin"));
+            assert!(is_final);
+            let names = branches.into_iter().map(|branch| branch.name).collect();
+            by_generation.insert(generation, (names, error));
+        }
+        let fetches = git_mock.fetch_calls.lock().unwrap().len();
+        (by_generation, fetches)
+    }
+
+    #[test]
+    fn rapid_reentry_waits_for_the_running_fetch_and_gets_its_branches() {
+        let (by_generation, fetches) = reentered_fetch(None);
+        assert_eq!(by_generation[&7], (vec!["fetched".to_string()], None));
+        assert_eq!(by_generation[&8], (vec!["fetched".to_string()], None));
+        assert_eq!(fetches, 1);
+    }
+
+    #[test]
+    fn rapid_reentry_shares_the_running_fetch_error() {
+        let (by_generation, fetches) = reentered_fetch(Some("network down"));
+        for generation in [7, 8] {
+            let (branches, error) = &by_generation[&generation];
+            assert!(branches.is_empty(), "generation {generation}");
+            assert!(
+                error
+                    .as_deref()
+                    .is_some_and(|error| error.contains("network down")),
+                "generation {generation}: {error:?}"
+            );
+        }
+        assert_eq!(fetches, 1);
     }
 
     #[test]

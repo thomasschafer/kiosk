@@ -447,3 +447,59 @@ fn late_recovered_delete_completion_does_not_change_a_newer_mode() {
     assert_eq!(state.repo_view.entries[0].repo.worktrees, vec![]);
     assert!(changes.refresh_branch.is_none());
 }
+
+fn branches_loaded_with_checkout_of(state: &mut AppState, branch: &str) {
+    let generation = state.branch_view.generation;
+    state.branch_view.loading = true;
+    process_app_event(
+        AppEvent::BranchesLoaded {
+            repo_path: "/repo".into(),
+            generation,
+            branches: vec![BranchEntry {
+                checkout: Some(BranchCheckout::closed("/repo-feature".into())),
+                ..BranchEntry::local(branch)
+            }],
+            worktrees: vec![Worktree {
+                path: "/repo-feature".into(),
+                branch: Some(branch.into()),
+            }],
+            skipped_unsupported_refs: false,
+        },
+        state,
+        &mut TickChanges::default(),
+    );
+}
+
+fn forced_pending_delete_of_feature(state: &mut AppState) {
+    mark_pending(
+        state,
+        PendingWorktreeDelete {
+            force: true,
+            ..PendingWorktreeDelete::new("/repo".into(), "feature".into(), "/repo-feature".into())
+        },
+    );
+}
+
+#[test]
+fn a_saved_force_deletion_resumes_while_its_branch_is_still_checked_out_there() {
+    let mut state = state_with_branch(true);
+    forced_pending_delete_of_feature(&mut state);
+    branches_loaded_with_checkout_of(&mut state, "feature");
+    assert_eq!(state.delete.pending.len(), 1);
+}
+
+#[test]
+fn a_saved_force_deletion_is_dropped_when_another_branch_now_uses_its_path() {
+    let git = git_provider();
+    let backend = Arc::new(MockBackend::native());
+    let (sender, _rx) = sender();
+    let mut state = state_with_branch(true);
+    forced_pending_delete_of_feature(&mut state);
+
+    branches_loaded_with_checkout_of(&mut state, "replacement");
+    resume(&mut state, &git, Some(&backend), &sender);
+
+    assert_eq!(state.delete.pending, vec![]);
+    assert!(state.delete.in_flight.is_empty());
+    assert_eq!(backend.calls(), []);
+}

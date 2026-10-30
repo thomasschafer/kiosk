@@ -248,6 +248,7 @@ pub(crate) fn handle_event(
                 merge_remote_snapshot(state, changes, remote, branches);
                 state.branch_view.apply_open_indicators();
                 changes.branches_changed = true;
+                super::new_branch::refresh_remote_prompt(state);
                 warn_unsupported_refs(state, generation, skipped_unsupported_refs);
             }
         }
@@ -291,6 +292,7 @@ pub(crate) fn handle_event(
                 {
                     state.branch_view.fetching_remote_repo = None;
                 }
+                super::new_branch::refresh_remote_prompt(state);
                 warn_unsupported_refs(state, generation, skipped_unsupported_refs);
             }
         }
@@ -571,6 +573,8 @@ pub(crate) fn enter<B: Backend>(
         repo_name: entry.repo.name.clone(),
     };
     let repo = entry.repo.clone();
+    // The user chose this repo, so a late preselection must not move off it.
+    state.repo_view.selection_touched = true;
     let repo_path = context.repo_path.clone();
     state.mode = Mode::BranchSelect(context);
     state.branch_view.entries.clear();

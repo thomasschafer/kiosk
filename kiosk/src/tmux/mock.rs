@@ -2,7 +2,7 @@
 
 use std::{collections::VecDeque, sync::Mutex};
 
-use super::{FIELD_SEPARATOR, Tmux, TmuxError};
+use super::{FIELD_SEPARATOR, Tmux, TmuxError, escape};
 
 /// Answers each invocation with the next queued response. An invocation with nothing
 /// queued fails, so tests notice calls they did not expect.
@@ -72,6 +72,7 @@ impl PaneLine<'_> {
             self.command,
             "",
         ]
+        .map(escape)
         .join(&FIELD_SEPARATOR.to_string())
     }
 }

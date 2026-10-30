@@ -467,4 +467,23 @@ mod tests {
             "{rendered}"
         );
     }
+
+    #[test]
+    fn remote_prompt_says_when_loaded_remotes_have_no_match() {
+        let rendered = render_remote_prompt(kiosk_core::picker::new_branch::test_remote_prompt(
+            "feat/x",
+            &[],
+            false,
+        ));
+        assert!(rendered.contains(" New branch "), "{rendered}");
+        assert!(
+            rendered.contains("No remote has a branch named feat/x."),
+            "{rendered}"
+        );
+        assert!(!rendered.contains("still loading"), "{rendered}");
+        assert!(
+            rendered.contains("▸ Create new branch feat/x"),
+            "{rendered}"
+        );
+    }
 }

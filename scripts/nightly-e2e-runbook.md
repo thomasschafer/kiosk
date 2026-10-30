@@ -45,9 +45,8 @@ Recommended report payload:
 ## Failure triage flow
 
 1. Read the run log and identify whether the failure is a test failure (`exit 1`) or infrastructure failure (`exit 2`).
-2. For surprising agent status (`UNKNOWN`, `IDLE`, stale `WAITING`), gather:
-   - `kiosk status <repo> <branch> --json --debug-agent | jq '{agent_status, agent_debug}'`
-   - `kiosk panes <repo> <branch> --json`
+2. For surprising agent status (`unknown`, `idle`, stale `waiting`), gather:
+   - `kiosk agents --json`, which gives each pane's status, its source (`osc7501` or `heuristics`) and, for heuristics, the screen rule that matched
    - `tmux list-panes -t "<session>" -F '#{pane_id} cmd=#{pane_current_command} title=#{pane_title} dead=#{pane_dead}'`
    - `tmux capture-pane -ep -t "<pane_id>" -S -2000 | tail -n 120`
 3. Include the relevant snippets and command outputs in the failure report.

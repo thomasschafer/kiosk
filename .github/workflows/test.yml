@@ -35,6 +35,17 @@ jobs:
       - name: Run cargo check
         run: cargo check --workspace
 
+      - name: Check README is up to date
+        id: check-readme
+        run: cargo xtask readme --check
+
+      - name: Show diff (if outdated)
+        if: failure() && steps.check-readme.outcome == 'failure'
+        run: |
+          cargo xtask readme
+          git diff README.md
+          echo "Run \`cargo xtask readme\` to regenerate"
+
   test:
     name: Test (${{ matrix.os }})
     needs: [check]
@@ -52,6 +63,16 @@ jobs:
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
+
+      - name: Install tmux
+        # The E2E tests drive tmux, which does not run on Windows; they compile to nothing there.
+        if: runner.os != 'Windows'
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get update && sudo apt-get install -y tmux
+          elif [ "$RUNNER_OS" = "macOS" ]; then
+            brew install tmux
+          fi
 
       - name: Run tests
         run: cargo test --workspace --all-targets --verbose

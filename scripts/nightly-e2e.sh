@@ -71,6 +71,10 @@ log_agent_versions() {
 
 # --- Pre-flight checks ---
 
+# The rebuilt e2e_agent suite drives fake agents only; running it here would pass without
+# testing any real agent.
+die "real-agent mode has not been ported to the rebuilt kiosk e2e_agent suite yet"
+
 log "=== Nightly E2E run started ==="
 log "Repo: ${REPO_DIR}"
 

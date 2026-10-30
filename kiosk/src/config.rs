@@ -42,7 +42,7 @@ pub struct OnOpenConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
-/// Agent status shown beside open checkouts and used by `kiosk next`.
+/// Agent status is shown beside open checkouts and used by `kiosk next`.
 pub struct AgentConfig {
     /// Whether to show agent status at all. Set to `false` to stop kiosk looking at
     /// panes.
@@ -86,7 +86,7 @@ impl AgentConfig {
 /// `$KIOSK_CONFIG_DIR` when that is set. All sections are optional, and the defaults are
 /// shown below alongside curated examples for settings that benefit from one.
 pub struct Config {
-    /// Where kiosk creates worktrees for branches that have none.
+    /// Configure worktree placement.
     pub worktrees: ManagedWorktreesConfig,
     /// Configure command panes created after kiosk creates a session.
     pub on_open: OnOpenConfig,

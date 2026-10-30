@@ -11,7 +11,7 @@ use ratatui::{
 use crate::theme::Theme;
 use kiosk_core::state::AppState;
 
-use super::list_row::{right_align_suffix, truncate_spans};
+use super::list_row::with_status;
 
 pub const SPINNER_FOR_LOADING: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
@@ -63,16 +63,13 @@ pub fn draw(
                     Span::styled("  dir", Style::default().fg(theme.muted)),
                 ]
             };
-            let spans = if entry.is_open {
-                right_align_suffix(
-                    &left,
-                    &[Span::styled("● open", Style::default().fg(theme.open))],
-                    row_width,
-                )
-            } else {
-                truncate_spans(&left, row_width)
-            };
-            ListItem::new(Line::from(spans))
+            ListItem::new(Line::from(with_status(
+                &left,
+                state.annotations.repo(&entry.repo.path),
+                entry.is_open,
+                theme,
+                row_width,
+            )))
         })
         .collect();
     let placeholder = if state.repo_view.loading {

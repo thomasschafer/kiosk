@@ -21,10 +21,10 @@ use crate::{
     git::{GitProvider, Repo},
     keyboard::Action,
     spawn::{
-        EventSender, FetchDeduplicator, spawn_git_fetch, spawn_open_folders, spawn_open_repos,
-        spawn_remote_branch_loading, spawn_repo_discovery,
+        EventSender, FetchDeduplicator, spawn_annotation_poller, spawn_git_fetch,
+        spawn_open_folders, spawn_open_repos, spawn_remote_branch_loading, spawn_repo_discovery,
     },
-    state::{AppState, BranchId, HelpOverlayState, Mode, SearchableList},
+    state::{AppState, BranchId, HelpOverlayState, Mode, SearchableList, ToastKind},
 };
 
 pub mod branch;
@@ -75,6 +75,7 @@ impl<B: Backend> Picker<B> {
         spawn_repo_discovery(&git, &sender, search_dirs);
         if let Some(backend) = &backend {
             spawn_open_repos(backend, &sender);
+            spawn_annotation_poller(backend, &sender);
         }
         Self {
             git,
@@ -317,6 +318,8 @@ pub(crate) fn process_app_event(event: AppEvent, state: &mut AppState, changes: 
             | FilterTarget::Bases
             | FilterTarget::Help => {}
         },
+        AppEvent::AnnotationsLoaded(index) => state.annotations = index,
+        AppEvent::AnnotationsFailed(message) => state.push_toast(ToastKind::Warning, message),
         AppEvent::RepoOpened { warning } => {
             changes.open_warning = warning;
             changes.workspace_opened = true;

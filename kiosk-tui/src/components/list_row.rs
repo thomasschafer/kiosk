@@ -1,6 +1,9 @@
-use ratatui::text::Span;
+use kiosk_core::backend::Label;
+use ratatui::{style::Style, text::Span};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
+
+use crate::theme::Theme;
 
 pub fn truncate_spans<'a>(spans: &[Span<'a>], max_width: usize) -> Vec<Span<'a>> {
     if max_width == 0 {
@@ -50,8 +53,42 @@ pub fn right_align_suffix<'a>(
     result
 }
 
+/// A row's left content followed by the backend's labels and, for an open row, the open
+/// marker, right-aligned.
+pub fn with_status<'a>(
+    left: &[Span<'a>],
+    labels: &[Label],
+    is_open: bool,
+    theme: &Theme,
+    row_width: usize,
+) -> Vec<Span<'a>> {
+    let mut right = Vec::new();
+    for label in labels {
+        if !right.is_empty() {
+            right.push(Span::raw(" "));
+        }
+        right.push(Span::styled(
+            kiosk_core::display::sanitize(&label.text).into_owned(),
+            Style::default().fg(theme.tone(label.tone)),
+        ));
+    }
+    if is_open {
+        if !right.is_empty() {
+            right.push(Span::raw("  "));
+        }
+        right.push(Span::styled("● open", Style::default().fg(theme.open)));
+    }
+    if right.is_empty() {
+        truncate_spans(left, row_width)
+    } else {
+        right_align_suffix(left, &right, row_width)
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use kiosk_core::{backend::Tone, config::ThemeConfig};
+
     use super::*;
 
     fn text(spans: &[Span<'_>]) -> String {
@@ -68,6 +105,38 @@ mod tests {
         assert_eq!(spans.iter().map(Span::width).sum::<usize>(), 15);
         assert!(text(&spans).ends_with("● open"));
         assert!(text(&spans).contains('…'));
+    }
+
+    #[test]
+    fn labels_come_before_the_open_marker_and_rows_without_either_are_unchanged() {
+        let theme = Theme::from_config(&ThemeConfig::default());
+        let labels = [
+            Label {
+                text: "claude waiting".into(),
+                tone: Tone::Attention,
+            },
+            Label {
+                text: "codex working".into(),
+                tone: Tone::Progress,
+            },
+        ];
+        let spans = with_status(&[Span::raw("main")], &labels, true, &theme, 50);
+        assert!(text(&spans).ends_with("claude waiting codex working  ● open"));
+        assert_eq!(spans.iter().map(Span::width).sum::<usize>(), 50);
+        assert_eq!(
+            text(&with_status(&[Span::raw("main")], &[], false, &theme, 50)),
+            "main"
+        );
+        assert_eq!(
+            text(&with_status(
+                &[Span::raw("main")],
+                &labels[..1],
+                false,
+                &theme,
+                30
+            )),
+            format!("main{}claude waiting", " ".repeat(12))
+        );
     }
 
     #[test]

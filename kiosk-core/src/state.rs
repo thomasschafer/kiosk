@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::{
+    backend::annotation::AnnotationIndex,
     config::keys::{BindingMode, KeysConfig},
     git::Repo,
     picker::{
@@ -276,6 +277,8 @@ pub struct AppState {
     pub(crate) delete: DeleteState,
     pub(crate) new_branch: NewBranchState,
     pub product: &'static Product,
+    /// The backend's latest labels for open checkouts and folders.
+    pub annotations: AnnotationIndex,
 }
 
 impl AppState {
@@ -294,6 +297,7 @@ impl AppState {
             delete: DeleteState::default(),
             new_branch: NewBranchState::default(),
             product,
+            annotations: AnnotationIndex::default(),
         }
     }
 

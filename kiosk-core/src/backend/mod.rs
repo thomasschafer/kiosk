@@ -12,12 +12,14 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub mod annotation;
 pub mod identity;
 #[cfg(any(test, feature = "test-support"))]
 pub mod mock;
 pub mod placement;
 pub(crate) mod worktree;
 
+pub use annotation::{Annotations, Annotator, Label, Tone};
 pub use placement::WorktreePlacement;
 
 pub trait Backend: Send + Sync + 'static {
@@ -38,6 +40,10 @@ pub trait Backend: Send + Sync + 'static {
     /// Tells the user something after the picker has closed.
     fn notify(&self, title: &str, body: &str) -> Result<(), Self::Error>;
     fn worktrees(&self) -> Worktrees<'_, Self>;
+    /// Labels for open checkouts and folders, if the backend has any to show.
+    fn annotator(&self) -> Option<&dyn Annotator<Self>> {
+        None
+    }
 }
 
 /// How a backend's worktrees are created and removed.

@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use crate::{
+    backend::annotation::AnnotationIndex,
     git::{Repo, ScanWarning, Worktree},
     state::{BranchEntry, BranchId},
 };
@@ -123,4 +124,7 @@ pub enum AppEvent {
     },
     OpenReposFailed(String),
     OpenFoldersFailed(String),
+    /// The backend's labels changed.
+    AnnotationsLoaded(AnnotationIndex),
+    AnnotationsFailed(String),
 }

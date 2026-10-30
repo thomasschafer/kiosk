@@ -9,12 +9,12 @@ use ratatui::{
 };
 
 use crate::theme::Theme;
-use kiosk_core::state::{AppState, BranchEntry};
-
-use super::{
-    list_row::{right_align_suffix, truncate_spans},
-    repo_list::SPINNER_FOR_LOADING,
+use kiosk_core::{
+    backend::annotation::AnnotationIndex,
+    state::{AppState, BranchEntry},
 };
+
+use super::{list_row::with_status, repo_list::SPINNER_FOR_LOADING};
 
 pub fn draw(
     frame: &mut Frame,
@@ -58,7 +58,7 @@ pub fn draw(
     let mut items: Vec<_> = visible
         .iter()
         .filter_map(|(_, index)| state.branch_view.entries.get(*index))
-        .map(|branch| branch_item(branch, theme, row_width))
+        .map(|branch| branch_item(branch, &state.annotations, theme, row_width))
         .collect();
     if state.branch_view.loading && items.is_empty() {
         items.push(ListItem::new(Span::styled(
@@ -104,7 +104,12 @@ pub fn draw(
     frame.render_stateful_widget(list, list_area, &mut list_state);
 }
 
-fn branch_item(branch: &BranchEntry, theme: &Theme, row_width: usize) -> ListItem<'static> {
+fn branch_item(
+    branch: &BranchEntry,
+    annotations: &AnnotationIndex,
+    theme: &Theme,
+    row_width: usize,
+) -> ListItem<'static> {
     let mut left = if branch.remote.is_some() {
         vec![Span::styled(
             kiosk_core::display::sanitize(&branch.display_name()).into_owned(),
@@ -127,16 +132,16 @@ fn branch_item(branch: &BranchEntry, theme: &Theme, row_width: usize) -> ListIte
     if branch.remote.is_none() && branch.is_default {
         left.push(Span::styled(" (default)", Style::default().fg(theme.muted)));
     }
-    let spans = if branch.is_open() {
-        right_align_suffix(
-            &left,
-            &[Span::styled("● open", Style::default().fg(theme.open))],
-            row_width,
-        )
-    } else {
-        truncate_spans(&left, row_width)
-    };
-    ListItem::new(Line::from(spans))
+    let labels = branch
+        .worktree_path()
+        .map_or(&[][..], |path| annotations.checkout(path));
+    ListItem::new(Line::from(with_status(
+        &left,
+        labels,
+        branch.is_open(),
+        theme,
+        row_width,
+    )))
 }
 
 #[cfg(test)]

@@ -8,8 +8,8 @@ use std::{
 };
 
 use super::{
-    Backend, CheckoutState, KnownCheckout, ManagedWorktrees, NativeWorktrees, Opened, RemoveError,
-    Removed, WorktreePlacement, Worktrees,
+    Annotations, Annotator, Backend, CheckoutState, KnownCheckout, ManagedWorktrees,
+    NativeWorktrees, Opened, RemoveError, Removed, WorktreePlacement, Worktrees,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,6 +84,9 @@ pub struct MockBackend {
     pub create_branch_results: Queue<Opened>,
     pub remove_results: Mutex<VecDeque<Result<Removed, RemoveError<MockError>>>>,
     pub close_results: Queue<()>,
+    /// Whether the mock has an annotator, which answers from `annotations_results`.
+    pub annotates: bool,
+    pub annotations_results: Queue<Annotations>,
 }
 
 impl MockBackend {
@@ -111,6 +114,8 @@ impl MockBackend {
             create_branch_results: Mutex::default(),
             remove_results: Mutex::default(),
             close_results: Mutex::default(),
+            annotates: false,
+            annotations_results: Mutex::default(),
         }
     }
 
@@ -179,6 +184,10 @@ impl Backend for MockBackend {
             MockWorktrees::Managed(_) => Worktrees::Managed(self),
         }
     }
+
+    fn annotator(&self) -> Option<&dyn Annotator<Self>> {
+        self.annotates.then_some(self as &dyn Annotator<Self>)
+    }
 }
 
 impl NativeWorktrees<Self> for MockBackend {
@@ -235,5 +244,15 @@ impl ManagedWorktrees<Self> for MockBackend {
             session: session.clone(),
         });
         next(&self.close_results, "close")
+    }
+}
+
+impl Annotator<MockBackend> for MockBackend {
+    fn interval(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(1)
+    }
+
+    fn annotations(&self) -> Result<Annotations, MockError> {
+        next(&self.annotations_results, "annotations")
     }
 }

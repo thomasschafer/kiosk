@@ -12,7 +12,7 @@ use std::{
 use rayon::ThreadPoolBuilder;
 
 use crate::{
-    backend::{Backend, KnownCheckout, Opened, worktree},
+    backend::{Backend, KnownCheckout, Opened, annotation::AnnotationIndex, worktree},
     config::ResolvedSearchDir,
     event::{AppEvent, BranchOperationFailure},
     git::{GitProvider, Repo, ScanWarning, is_local_branch_already_exists},
@@ -176,6 +176,44 @@ pub fn spawn_open_repos<B: Backend>(backend: &Arc<B>, sender: &EventSender) {
             sender.send(AppEvent::OpenReposFailed(format!(
                 "could not load open workspace indicators: {error}"
             )));
+        }
+    });
+}
+
+/// Asks the backend's annotator for labels until the picker closes, reporting only
+/// changes. A failure is reported once until a later refresh succeeds.
+pub fn spawn_annotation_poller<B: Backend>(backend: &Arc<B>, sender: &EventSender) {
+    if backend.annotator().is_none() {
+        return;
+    }
+    let backend = Arc::clone(backend);
+    let sender = sender.clone();
+    thread::spawn(move || {
+        let mut last: Option<AnnotationIndex> = None;
+        let mut failing = false;
+        while !sender.is_cancelled() {
+            let Some(annotator) = backend.annotator() else {
+                return;
+            };
+            match annotator.annotations() {
+                Ok(annotations) => {
+                    failing = false;
+                    let index = AnnotationIndex::new(annotations);
+                    if last.as_ref() != Some(&index) {
+                        last = Some(index.clone());
+                        sender.send(AppEvent::AnnotationsLoaded(index));
+                    }
+                }
+                Err(error) => {
+                    if !failing {
+                        failing = true;
+                        sender.send(AppEvent::AnnotationsFailed(format!(
+                            "could not refresh status labels: {error}"
+                        )));
+                    }
+                }
+            }
+            thread::sleep(annotator.interval());
         }
     });
 }
@@ -636,6 +674,64 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn annotation_poller_reports_changes_and_one_failure_per_failing_run() {
+        use crate::backend::{Annotations, Label, Tone};
+
+        let annotations = |text: &str| Annotations {
+            repos: vec![(
+                PathBuf::from("/repo"),
+                vec![Label {
+                    text: text.into(),
+                    tone: Tone::Progress,
+                }],
+            )],
+            checkouts: Vec::new(),
+        };
+        let mut backend = MockBackend::native();
+        backend.annotates = true;
+        backend.annotations_results = Mutex::new(
+            [
+                Ok(annotations("a")),
+                Ok(annotations("a")),
+                Err(MockError("down".into())),
+                Err(MockError("down".into())),
+                Ok(annotations("b")),
+            ]
+            .into(),
+        );
+        let backend = Arc::new(backend);
+        let (tx, rx) = mpsc::channel();
+        let sender = EventSender::new(tx, Arc::new(AtomicBool::new(false)));
+        spawn_annotation_poller(&backend, &sender);
+
+        let mut received = Vec::new();
+        while received.len() < 3 {
+            received.push(rx.recv_timeout(Duration::from_secs(5)).unwrap());
+        }
+        sender.cancel();
+        let labels = |event: &AppEvent| match event {
+            AppEvent::AnnotationsLoaded(index) => index.repo(Path::new("/repo"))[0].text.clone(),
+            AppEvent::AnnotationsFailed(message) => message.clone(),
+            other => panic!("unexpected event {other:?}"),
+        };
+        assert_eq!(
+            received.iter().map(labels).collect::<Vec<_>>(),
+            ["a", "could not refresh status labels: down", "b"]
+        );
+    }
+
+    #[test]
+    fn backends_without_an_annotator_are_not_polled() {
+        let backend = Arc::new(MockBackend::native());
+        let (tx, rx) = mpsc::channel();
+        spawn_annotation_poller(
+            &backend,
+            &EventSender::new(tx, Arc::new(AtomicBool::new(false))),
+        );
+        assert!(rx.recv_timeout(Duration::from_millis(50)).is_err());
+    }
 
     #[test]
     fn parallel_work_runs_every_item() {

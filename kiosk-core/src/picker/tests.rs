@@ -266,3 +266,36 @@ fn sender() -> (EventSender, mpsc::Receiver<AppEvent>) {
     let (tx, rx) = mpsc::channel();
     (EventSender::new(tx, Arc::new(AtomicBool::new(false))), rx)
 }
+
+#[test]
+fn annotation_events_replace_labels_and_failures_warn() {
+    use crate::backend::{Annotations, Label, Tone, annotation::AnnotationIndex};
+
+    let mut state = AppState::new(&TEST_PRODUCT, None);
+    let index = AnnotationIndex::new(Annotations {
+        repos: Vec::new(),
+        checkouts: vec![(
+            "/repo".into(),
+            vec![Label {
+                text: "claude working".into(),
+                tone: Tone::Progress,
+            }],
+        )],
+    });
+    let mut changes = TickChanges::default();
+    process_app_event(
+        AppEvent::AnnotationsLoaded(index.clone()),
+        &mut state,
+        &mut changes,
+    );
+    assert_eq!(state.annotations, index);
+    process_app_event(
+        AppEvent::AnnotationsFailed("could not refresh status labels: down".into()),
+        &mut state,
+        &mut changes,
+    );
+    assert_eq!(
+        state.toasts.front().map(|toast| toast.message.as_str()),
+        Some("could not refresh status labels: down")
+    );
+}

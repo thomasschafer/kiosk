@@ -1,6 +1,9 @@
 use ratatui::style::Color;
 
-use kiosk_core::config::{ThemeColor, ThemeConfig};
+use kiosk_core::{
+    backend::Tone,
+    config::{ThemeColor, ThemeConfig},
+};
 
 pub struct Theme {
     pub accent: Color,
@@ -28,6 +31,18 @@ impl Theme {
             hint: color(config.hint),
             highlight_fg: color(config.highlight_fg),
             open: color(config.open),
+        }
+    }
+
+    /// The colour for a backend label of `tone`.
+    pub fn tone(&self, tone: Tone) -> Color {
+        match tone {
+            Tone::Neutral => self.secondary,
+            Tone::Progress => self.tertiary,
+            Tone::Attention => self.warning,
+            Tone::Success => self.accent,
+            Tone::Failure => self.error,
+            Tone::Muted => self.muted,
         }
     }
 }

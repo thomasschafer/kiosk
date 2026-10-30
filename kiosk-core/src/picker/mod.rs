@@ -21,8 +21,9 @@ use crate::{
     git::{GitProvider, Repo},
     keyboard::Action,
     spawn::{
-        EventSender, FetchDeduplicator, spawn_annotation_poller, spawn_git_fetch,
-        spawn_open_folders, spawn_open_repos, spawn_remote_branch_loading, spawn_repo_discovery,
+        EventSender, FetchDeduplicator, spawn_annotation_poller, spawn_current_repo_resolution,
+        spawn_git_fetch, spawn_open_folders, spawn_open_repos, spawn_remote_branch_loading,
+        spawn_repo_discovery,
     },
     state::{AppState, BranchId, HelpOverlayState, Mode, SearchableList, ToastKind},
 };
@@ -61,18 +62,23 @@ pub struct Tick {
 }
 
 impl<B: Backend> Picker<B> {
-    /// Starts scanning `search_dirs` and asks the backend what is open. Without a backend
-    /// nothing can be opened, but the picker can still be browsed.
+    /// Starts scanning `search_dirs`, finding the repository `state` was started in and
+    /// asking the backend what is open. Without a backend nothing can be opened, but the picker can
+    /// still be browsed.
     pub fn start(
         git: Arc<dyn GitProvider>,
         backend: Option<Arc<B>>,
         keys: KeysConfig,
         search_dirs: Vec<ResolvedSearchDir>,
+        state: &AppState,
     ) -> Self {
         let (tx, receiver) = mpsc::channel();
         let sender = EventSender::new(tx, Arc::new(AtomicBool::new(false)));
         let filter_worker = FilterWorker::spawn(sender.clone());
         spawn_repo_discovery(&git, &sender, search_dirs);
+        if let Some(cwd) = &state.repo_view.current_cwd {
+            spawn_current_repo_resolution(&git, &sender, cwd.clone());
+        }
         if let Some(backend) = &backend {
             spawn_open_repos(backend, &sender);
             spawn_annotation_poller(backend, &sender);

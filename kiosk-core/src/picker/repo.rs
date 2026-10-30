@@ -19,14 +19,19 @@ pub struct RepoEntry {
     pub repo: Repo,
     pub disambiguator: Option<String>,
     pub is_open: bool,
+    /// `repo.path` with symlinks resolved, for comparing against paths from git and the
+    /// backend.
+    canonical_path: PathBuf,
 }
 
 impl RepoEntry {
     pub fn new(repo: Repo) -> Self {
+        let canonical_path = crate::path::canonical_or_original(&repo.path);
         Self {
             repo,
             disambiguator: None,
             is_open: false,
+            canonical_path,
         }
     }
 
@@ -51,6 +56,10 @@ pub struct RepoViewState {
     open_folder_roots: HashSet<PathBuf>,
     folder_indicators_requested: bool,
     pub(crate) current_cwd: Option<PathBuf>,
+    /// The main checkout of the repository `current_cwd` is in, once git has resolved it.
+    /// It identifies the repository even from a linked worktree outside the search
+    /// directories.
+    current_main_checkout: Option<PathBuf>,
     pub(crate) filter_generation: u64,
 }
 
@@ -67,6 +76,7 @@ impl RepoViewState {
             open_folder_roots: HashSet::new(),
             folder_indicators_requested: false,
             current_cwd,
+            current_main_checkout: None,
             filter_generation: 0,
         }
     }
@@ -128,6 +138,9 @@ impl RepoViewState {
         }
     }
 
+    /// Preselects the repository the user is in, unless they have moved the selection:
+    /// the one git resolves as `current_cwd`'s main checkout, or else the deepest entry
+    /// containing `current_cwd`, which also covers folders that are not repositories.
     pub(crate) fn apply_current_selection(&mut self) {
         if self.selection_touched {
             return;
@@ -135,16 +148,25 @@ impl RepoViewState {
         let Some(cwd) = self.current_cwd.as_deref() else {
             return;
         };
-        let best = self
-            .list
-            .filtered
-            .iter()
-            .enumerate()
-            .filter(|(_, (index, _))| {
-                crate::path::starts_with(cwd, &self.entries[*index].repo.path)
-            })
-            .max_by_key(|(_, (index, _))| self.entries[*index].repo.path.components().count())
-            .map(|(position, _)| position);
+        let entries = &self.entries;
+        let filtered = || {
+            self.list
+                .filtered
+                .iter()
+                .enumerate()
+                .map(|(position, (index, _))| (position, &entries[*index]))
+        };
+        let main_checkout = self.current_main_checkout.as_deref().and_then(|main| {
+            filtered()
+                .find(|(_, entry)| crate::path::equivalent(&entry.canonical_path, main))
+                .map(|(position, _)| position)
+        });
+        let best = main_checkout.or_else(|| {
+            filtered()
+                .filter(|(_, entry)| crate::path::starts_with(cwd, &entry.canonical_path))
+                .max_by_key(|(_, entry)| entry.canonical_path.components().count())
+                .map(|(position, _)| position)
+        });
         if best.is_some() {
             self.list.selected = best;
         }
@@ -170,6 +192,11 @@ pub(crate) fn handle_event(
         }
         AppEvent::ScanWarning(_warning) => {
             state.push_scan_warning();
+        }
+        AppEvent::CurrentRepoResolved { main_checkout } => {
+            state.repo_view.current_main_checkout =
+                Some(crate::path::canonical_or_original(&main_checkout));
+            state.repo_view.apply_current_selection();
         }
         AppEvent::OpenReposLoaded { roots } => {
             state.repo_view.open_roots = roots
@@ -199,7 +226,9 @@ pub(crate) fn handle_event(
             state.mode = Mode::RepoSelect;
             state.push_toast(ToastKind::Error, message);
         }
-        AppEvent::OpenReposFailed(message) | AppEvent::OpenFoldersFailed(message) => {
+        AppEvent::CurrentRepoFailed(message)
+        | AppEvent::OpenReposFailed(message)
+        | AppEvent::OpenFoldersFailed(message) => {
             state.push_toast(ToastKind::Warning, message);
         }
         event => return Some(event),
@@ -306,11 +335,13 @@ fn add(state: &mut AppState, repo: Repo) -> bool {
         return false;
     }
     let mut entry = RepoEntry::new(repo);
-    let canonical = crate::path::canonical_or_original(&entry.repo.path);
     entry.is_open = if entry.repo.is_git {
-        state.repo_view.open_roots.contains(&canonical)
+        state.repo_view.open_roots.contains(&entry.canonical_path)
     } else {
-        state.repo_view.open_folder_roots.contains(&canonical)
+        state
+            .repo_view
+            .open_folder_roots
+            .contains(&entry.canonical_path)
     };
     state.repo_view.entries.push(entry);
     true
@@ -331,7 +362,6 @@ fn apply_collisions(state: &mut AppState) {
 
 fn apply_open_indicators(state: &mut AppState) {
     for entry in &mut state.repo_view.entries {
-        let repo_path = crate::path::canonical_or_original(&entry.repo.path);
         let open_paths = if entry.repo.is_git {
             &state.repo_view.open_roots
         } else {
@@ -339,7 +369,7 @@ fn apply_open_indicators(state: &mut AppState) {
         };
         entry.is_open = open_paths
             .iter()
-            .any(|open_path| crate::path::equivalent(open_path, &repo_path));
+            .any(|open_path| crate::path::equivalent(open_path, &entry.canonical_path));
     }
 }
 

@@ -96,6 +96,30 @@ fn a_new_branch_gets_a_worktree_session_and_on_open_panes() {
 }
 
 #[test]
+fn a_linked_worktree_outside_the_search_dirs_preselects_its_repo_and_branch() {
+    let env = TestEnv::new("");
+    env.repo("alpha");
+    let beta = env.repo("beta");
+    let checkout = env.path("trees/beta/feature");
+    run_test_git(
+        &beta,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "feature",
+            checkout.to_str().unwrap(),
+        ],
+    );
+    env.start_picker(&checkout);
+    env.wait_for_screen("beta preselected", |screen| screen.contains("▸ beta"));
+    env.keys(&["Tab"]);
+    env.wait_for_screen("the worktree's branch preselected", |screen| {
+        screen.lines().any(|line| line.contains("▸ feature"))
+    });
+}
+
+#[test]
 fn deleting_a_worktree_closes_its_session() {
     let env = TestEnv::new("");
     let alpha = env.repo("alpha");

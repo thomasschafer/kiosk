@@ -165,6 +165,28 @@ pub fn spawn_repo_discovery(
     });
 }
 
+/// Asks git which repository `cwd` belongs to, so the picker can preselect it even when `cwd`
+/// is a linked worktree outside the search directories.
+pub fn spawn_current_repo_resolution(
+    git: &Arc<dyn GitProvider>,
+    sender: &EventSender,
+    cwd: PathBuf,
+) {
+    let git = Arc::clone(git);
+    let sender = sender.clone();
+    thread::spawn(move || {
+        let event = match git.main_checkout(&cwd) {
+            Ok(Some(main_checkout)) => AppEvent::CurrentRepoResolved { main_checkout },
+            Ok(None) => return,
+            Err(error) => AppEvent::CurrentRepoFailed(format!(
+                "could not find the repository of {}: {error:#}",
+                crate::path::display(&cwd)
+            )),
+        };
+        sender.send(event);
+    });
+}
+
 pub fn spawn_open_repos<B: Backend>(backend: &Arc<B>, sender: &EventSender) {
     let backend = Arc::clone(backend);
     let sender = sender.clone();
@@ -765,6 +787,40 @@ mod tests {
         })));
         assert!(rx.recv_timeout(Duration::from_secs(1)).is_ok());
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn current_repo_resolution_reports_the_main_checkout_or_a_failure() {
+        let resolve = |git: MockGitProvider, cwd: &str| {
+            let git: Arc<dyn GitProvider> = Arc::new(git);
+            let (tx, rx) = mpsc::channel();
+            spawn_current_repo_resolution(
+                &git,
+                &EventSender::new(tx, Arc::new(AtomicBool::new(false))),
+                cwd.into(),
+            );
+            rx.recv_timeout(Duration::from_secs(1))
+        };
+        let git = MockGitProvider {
+            main_checkouts: [("/trees/repo/feature".into(), "/code/repo".into())].into(),
+            ..MockGitProvider::default()
+        };
+
+        assert!(matches!(
+            resolve(git, "/trees/repo/feature").unwrap(),
+            AppEvent::CurrentRepoResolved { main_checkout } if main_checkout == Path::new("/code/repo")
+        ));
+        assert!(
+            resolve(MockGitProvider::default(), "/not/a/repo").is_err(),
+            "a directory outside any repository sends nothing"
+        );
+        let failing = MockGitProvider::default();
+        *failing.failure.lock().unwrap() = Some("git exploded".into());
+        assert!(matches!(
+            resolve(failing, "/somewhere").unwrap(),
+            AppEvent::CurrentRepoFailed(message)
+                if message.contains("/somewhere") && message.contains("git exploded")
+        ));
     }
 
     #[test]

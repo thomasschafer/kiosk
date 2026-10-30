@@ -121,6 +121,6 @@ mod tests {
         });
         assert_eq!(index.checkout(&checkout), [label("a"), label("b")]);
         assert_eq!(index.repo(dir.path()), []);
-        assert!(index.checkout(&dir.path().join("missing")).is_empty());
+        assert_eq!(index.checkout(&dir.path().join("missing")), []);
     }
 }

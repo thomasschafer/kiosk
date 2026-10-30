@@ -415,6 +415,16 @@ mod tests {
     }
 
     #[test]
+    fn without_home_windows_keeps_state_below_userprofile() {
+        let profile = absolute_test_path("profile");
+        let values = HashMap::from([("USERPROFILE", path_string(&profile))]);
+        assert_eq!(
+            resolve_state_path(&TEST_PRODUCT, |name| values.get(name).cloned()).path,
+            cfg!(windows).then(|| profile.join(".local/state/kiosk-test/pending_deletes.toml"))
+        );
+    }
+
+    #[test]
     fn relative_state_paths_are_refused_and_fall_through() {
         let xdg_path = absolute_test_path("xdg-fallback");
         let home_path = absolute_test_path("home-fallback");

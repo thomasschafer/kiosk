@@ -325,7 +325,8 @@ pub fn resolve_config_path(
 }
 
 /// The first trusted location for `file_name`: the directory in `product_dir_var` itself,
-/// then the product's directory below the XDG home or its fallback below `HOME`.
+/// then the product's directory below the XDG home or its fallback below the home directory
+/// (`HOME`, or `USERPROFILE` on Windows).
 pub(crate) fn resolve_trusted_file_path(
     product: &Product,
     product_dir_var: Option<&'static str>,
@@ -338,10 +339,15 @@ pub(crate) fn resolve_trusted_file_path(
     let candidates = [
         product_dir_var.and_then(|name| get(name).map(|value| (name, PathBuf::from(value), false))),
         get(xdg_var).map(|value| (xdg_var, PathBuf::from(value), true)),
-        get("HOME").map(|value| ("HOME", PathBuf::from(value).join(home_fallback), true)),
-    ];
+    ]
+    .into_iter()
+    .chain(
+        crate::path::HOME_VARS.iter().map(|&name| {
+            get(name).map(|value| (name, PathBuf::from(value).join(home_fallback), true))
+        }),
+    );
     let mut warnings = Vec::new();
-    for (source, base, add_product_dir) in candidates.into_iter().flatten() {
+    for (source, base, add_product_dir) in candidates.flatten() {
         if !base.is_absolute() {
             // A cwd-relative fallback lets a browsed repository supply plugin
             // files, so only absolute environment-derived locations are trusted.
@@ -912,6 +918,15 @@ search_dirs = [
         ]);
         let resolution = resolve_config_path(&TEST_PRODUCT, |name| values.get(name).cloned());
         assert_eq!(resolution.path, Some(plugin.join("config.toml")));
+    }
+
+    #[test]
+    fn without_home_windows_falls_back_to_userprofile() {
+        let profile = absolute_test_path("profile");
+        let values = HashMap::from([("USERPROFILE", path_string(&profile))]);
+        let resolution = resolve_config_path(&TEST_PRODUCT, |name| values.get(name).cloned());
+        let expected = cfg!(windows).then(|| profile.join(".config/kiosk-test/config.toml"));
+        assert_eq!(resolution.path, expected);
     }
 
     #[test]

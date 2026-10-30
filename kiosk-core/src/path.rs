@@ -4,12 +4,20 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// The variables that can name the user's home directory, in order of preference. Windows
+/// sets `USERPROFILE` and often leaves `HOME` unset.
+pub(crate) const HOME_VARS: &[&str] = if cfg!(windows) {
+    &["HOME", "USERPROFILE"]
+} else {
+    &["HOME"]
+};
+
 /// The user's home directory from the environment, if it is set.
 pub fn home_dir() -> Option<PathBuf> {
-    let home = std::env::var_os("HOME").filter(|value| !value.is_empty());
-    #[cfg(windows)]
-    let home = home.or_else(|| std::env::var_os("USERPROFILE").filter(|value| !value.is_empty()));
-    home.map(PathBuf::from)
+    HOME_VARS
+        .iter()
+        .find_map(|name| std::env::var_os(name).filter(|value| !value.is_empty()))
+        .map(PathBuf::from)
 }
 
 pub fn canonical_or_original(path: &Path) -> PathBuf {

@@ -274,7 +274,9 @@ pub struct Session {
     pub panes: Vec<Pane>,
 }
 
-pub(crate) const FIELD_SEPARATOR: char = '\u{1f}';
+/// tmux 3.4 prints most control characters in formats as octal escapes, but not tabs. Kiosk
+/// refuses paths with control characters, so its own fields cannot hold one.
+pub(crate) const FIELD_SEPARATOR: char = '\t';
 const SNAPSHOT_FIELDS: &[&str] = &[
     "#{session_id}",
     "#{session_name}",
@@ -426,7 +428,7 @@ mod tests {
                 "123",
                 "state=idle",
                 "zsh",
-                "t\u{1f}itle"
+                "t\title"
             ]),
             line(&[
                 "$1", "repo", "100", "/start", "/repo", "%2", "11", "1", "1", "", "", "claude", ""
@@ -442,7 +444,7 @@ mod tests {
             Some(SessionPlace::Tagged("/repo".into()))
         );
         assert_eq!(sessions[0].panes[0].pipe, PanePipe::Kiosk);
-        assert_eq!(sessions[0].panes[0].title, "t\u{1f}itle");
+        assert_eq!(sessions[0].panes[0].title, "t\title");
         assert_eq!(
             sessions[0].panes[0].program_status.as_deref(),
             Some("state=idle")

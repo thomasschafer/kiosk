@@ -316,7 +316,7 @@ fn unescape(field: &str) -> Cow<'_, str> {
             continue;
         }
         match characters.next() {
-            Some('\\') => value.push('\\'),
+            Some('\\') | None => value.push('\\'),
             Some('t') => value.push('\t'),
             Some('n') => value.push('\n'),
             Some('r') => value.push('\r'),
@@ -324,7 +324,6 @@ fn unescape(field: &str) -> Cow<'_, str> {
                 value.push('\\');
                 value.push(other);
             }
-            None => value.push('\\'),
         }
     }
     Cow::Owned(value)

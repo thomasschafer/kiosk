@@ -2,14 +2,12 @@ use std::path::{Path, PathBuf};
 
 use kiosk_core::{
     backend::{Label, Tone},
+    config::on_open::OnOpenPaneConfig,
     git::{Worktree, mock::MockGitProvider},
 };
 
 use super::*;
-use crate::{
-    config::OnOpenPaneConfig,
-    tmux::mock::{MockTmux, PaneLine, listing},
-};
+use crate::tmux::mock::{MockTmux, PaneLine, listing};
 
 fn root() -> PathBuf {
     std::env::temp_dir().join("kiosk-backend-tests")

@@ -10,14 +10,17 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use crate::product::Product;
 
 pub mod keys;
+pub mod on_open;
 pub mod worktrees;
 pub use keys::KeysConfig;
+pub use on_open::OnOpenConfig;
 pub use worktrees::ManagedWorktreesConfig;
 
 /// The Rust source of the config types, for generating their reference documentation.
 pub const SOURCES: &[&str] = &[
     include_str!("mod.rs"),
     include_str!("keys.rs"),
+    include_str!("on_open.rs"),
     include_str!("worktrees.rs"),
 ];
 pub const DEFAULT_SEARCH_DEPTH: u16 = 1;

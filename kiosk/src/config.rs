@@ -3,42 +3,10 @@
 use std::time::Duration;
 
 use anyhow::{Result, bail};
-use kiosk_core::config::{ConfigExtension, ManagedWorktreesConfig};
+use kiosk_core::config::{ConfigExtension, ManagedWorktreesConfig, OnOpenConfig};
 use serde::{Deserialize, Serialize};
 
 const MIN_POLL_INTERVAL_MS: u64 = 100;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-/// Direction in which tmux splits off a configured pane.
-pub enum OnOpenPaneDirection {
-    Right,
-    Down,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-/// A command pane split off a new session's first pane.
-pub struct OnOpenPaneConfig {
-    /// Shell command typed into the new pane's shell, which stays when the command ends.
-    /// The command must not be empty.
-    pub command: String,
-    /// Split direction: `right` or `down`.
-    pub direction: OnOpenPaneDirection,
-    /// Fraction of the split occupied by the new command pane. The value must be greater
-    /// than 0 and less than 1, and defaults to 0.5 when omitted.
-    #[serde(default)]
-    pub ratio: Option<f32>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-/// The section is optional and contains no pane definitions by default.
-pub struct OnOpenConfig {
-    /// Pane definitions, created in order without moving focus from the first pane.
-    /// Commands run from the opened repository or worktree. They run only when kiosk
-    /// creates a session, not when it switches to an existing one.
-    pub panes: Vec<OnOpenPaneConfig>,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -97,20 +65,7 @@ pub struct Config {
 impl ConfigExtension for Config {
     fn validate(&self) -> Result<()> {
         self.worktrees.validate()?;
-        for (index, pane) in self.on_open.panes.iter().enumerate() {
-            if pane.command.trim().is_empty() {
-                bail!("on_open pane {} command must not be empty", index + 1);
-            }
-            if pane
-                .ratio
-                .is_some_and(|ratio| !ratio.is_finite() || ratio <= 0.0 || ratio >= 1.0)
-            {
-                bail!(
-                    "on_open pane {} ratio must be greater than 0 and less than 1",
-                    index + 1
-                );
-            }
-        }
+        self.on_open.validate()?;
         if self.agent.poll_interval_ms < MIN_POLL_INTERVAL_MS {
             bail!("agent poll_interval_ms must be at least {MIN_POLL_INTERVAL_MS}");
         }
@@ -123,7 +78,7 @@ pub const SOURCE: &str = include_str!("config.rs");
 
 #[cfg(test)]
 mod tests {
-    use kiosk_core::config::parse_config;
+    use kiosk_core::config::{on_open::OnOpenPaneDirection, parse_config};
 
     use super::*;
 

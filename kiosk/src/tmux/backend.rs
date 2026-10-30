@@ -18,6 +18,7 @@ use kiosk_core::{
         WorktreePlacement, Worktrees,
         identity::{LiveFolder, session_in_folder, session_showing_checkout},
     },
+    config::{OnOpenConfig, on_open::OnOpenPaneDirection},
     git::GitProvider,
 };
 
@@ -28,7 +29,7 @@ use super::{
 use crate::{
     agent::{self, Detector},
     args,
-    config::{AgentConfig, OnOpenConfig, OnOpenPaneDirection},
+    config::AgentConfig,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -297,7 +298,7 @@ fn live_folders(sessions: &[Session]) -> Vec<LiveFolder<SessionId>> {
 }
 
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-fn percent(ratio: f32) -> u8 {
+fn percent(ratio: f64) -> u8 {
     (ratio * 100.0).round().clamp(1.0, 99.0) as u8
 }
 

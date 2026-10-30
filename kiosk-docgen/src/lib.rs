@@ -4,6 +4,7 @@
 //! reference cannot silently fall behind the code.
 
 use std::{
+    cell::RefCell,
     collections::{HashMap, HashSet},
     fmt::Write as _,
     fs,
@@ -32,6 +33,10 @@ pub struct ProductDocs<'a> {
     pub order: &'a [&'a str],
     /// TOML examples shown with the product's own sections, by section name.
     pub examples: &'a [(&'a str, &'a str)],
+    /// The product's wording for shared types and fields whose doc comments describe
+    /// behaviour that differs between products, keyed by `Type` or `Type::field`. Each
+    /// replaces that item's doc comment, and each must name an item the reference documents.
+    pub wording: &'a [(&'a str, &'a str)],
 }
 
 /// Regenerates the marked config section of the README at `readme_path`, or with `check`
@@ -69,7 +74,10 @@ fn normalize_line_endings(input: &str) -> String {
 
 /// The Markdown reference for the core sections and `E`'s.
 pub fn config_reference<E: ConfigExtension>(docs: &ProductDocs<'_>) -> Result<String> {
-    let model = ConfigModel::parse(kiosk_core::config::SOURCES.iter().chain(docs.sources))?;
+    let model = ConfigModel::parse(
+        kiosk_core::config::SOURCES.iter().chain(docs.sources),
+        docs.wording,
+    )?;
     let core = model
         .structs
         .get(CORE_ROOT)
@@ -117,6 +125,7 @@ pub fn config_reference<E: ConfigExtension>(docs: &ProductDocs<'_>) -> Result<St
             .with_context(|| format!("the section order names unknown section `{name}`"))?;
         render_config_field(&mut output, field, &model, &defaults, docs.examples)?;
     }
+    model.check_wording_used()?;
     Ok(output)
 }
 
@@ -153,7 +162,7 @@ fn render_config_field(
             "ThemeConfig" => render_theme(docs, nested, model, default)?,
             "KeysConfig" => render_keys(docs),
             _ => {
-                push_distinct_doc(docs, &field_doc, &required_doc(&nested.attrs, &type_name)?);
+                push_distinct_doc(docs, &field_doc, &model.doc(&nested.attrs, &type_name)?);
                 render_curated_example(docs, &name, examples);
                 render_struct_fields(docs, nested, model, default)?;
             }
@@ -197,7 +206,7 @@ fn render_struct_fields(
         writeln!(docs, "#### `{name}`\n")?;
         push_doc(
             docs,
-            &required_doc(&field.attrs, &format!("{}::{name}", item.ident))?,
+            &model.doc(&field.attrs, &format!("{}::{name}", item.ident))?,
         );
         render_collection_schema(docs, field, model)?;
         render_default(docs, defaults.and_then(|value| value.get(&name)))?;
@@ -211,19 +220,19 @@ fn render_collection_schema(docs: &mut String, field: &Field, model: &ConfigMode
     };
 
     if let Some(item) = model.structs.get(&element_name) {
-        push_doc(docs, &required_doc(&item.attrs, &element_name)?);
+        push_doc(docs, &model.doc(&item.attrs, &element_name)?);
         docs.push_str("Each entry is an inline table with:\n\n");
         for nested in named_fields(item)? {
             let name = field_name(nested)?;
-            let prose = required_list_item_doc(&nested.attrs, &format!("{element_name}::{name}"))?;
+            let prose = model.list_item_doc(&nested.attrs, &format!("{element_name}::{name}"))?;
             writeln!(docs, "- `{name}` — {prose}")?;
         }
         docs.push('\n');
     } else if let Some(item) = model.enums.get(&element_name) {
-        push_doc(docs, &required_doc(&item.attrs, &element_name)?);
+        push_doc(docs, &model.doc(&item.attrs, &element_name)?);
         docs.push_str("Accepted forms:\n\n");
         for variant in &item.variants {
-            let variant_doc = required_list_item_doc(
+            let variant_doc = model.list_item_doc(
                 &variant.attrs,
                 &format!("{element_name}::{}", variant.ident),
             )?;
@@ -231,7 +240,7 @@ fn render_collection_schema(docs: &mut String, field: &Field, model: &ConfigMode
                 Fields::Unnamed(fields) => {
                     writeln!(docs, "- {variant_doc}")?;
                     for (index, nested) in fields.unnamed.iter().enumerate() {
-                        let prose = required_list_item_doc(
+                        let prose = model.list_item_doc(
                             &nested.attrs,
                             &format!("{element_name}::{} field {index}", variant.ident),
                         )?;
@@ -245,7 +254,7 @@ fn render_collection_schema(docs: &mut String, field: &Field, model: &ConfigMode
                     writeln!(docs, "- {variant_doc}")?;
                     for nested in &fields.named {
                         let name = field_name(nested)?;
-                        let prose = required_list_item_doc(
+                        let prose = model.list_item_doc(
                             &nested.attrs,
                             &format!("{element_name}::{}::{name}", variant.ident),
                         )?;
@@ -386,11 +395,6 @@ fn required_doc(attrs: &[Attribute], item: &str) -> Result<String> {
     Ok(doc)
 }
 
-/// Joins wrapped doc-comment lines so the prose stays within one Markdown list item.
-fn required_list_item_doc(attrs: &[Attribute], item: &str) -> Result<String> {
-    required_doc(attrs, item).map(|doc| doc.replace('\n', " "))
-}
-
 fn push_doc(output: &mut String, doc: &str) {
     output.push_str(doc);
     output.push_str("\n\n");
@@ -444,15 +448,32 @@ fn replace_generated_section(readme: &str, docs: &str) -> Result<String> {
     Ok(format!("{before}{CONFIG_START}\n{docs}{CONFIG_END}{after}"))
 }
 
-#[derive(Default)]
-struct ConfigModel {
+struct ConfigModel<'a> {
     structs: HashMap<String, ItemStruct>,
     enums: HashMap<String, ItemEnum>,
+    wording: HashMap<&'a str, &'a str>,
+    used_wording: RefCell<HashSet<&'a str>>,
 }
 
-impl ConfigModel {
-    fn parse<'a>(sources: impl IntoIterator<Item = &'a &'a str>) -> Result<Self> {
-        let mut model = Self::default();
+impl<'a> ConfigModel<'a> {
+    fn parse<'s>(
+        sources: impl IntoIterator<Item = &'s &'s str>,
+        wording: &'a [(&'a str, &'a str)],
+    ) -> Result<Self> {
+        let mut model = Self {
+            structs: HashMap::new(),
+            enums: HashMap::new(),
+            wording: HashMap::new(),
+            used_wording: RefCell::new(HashSet::new()),
+        };
+        for (item, text) in wording {
+            if text.trim().is_empty() {
+                bail!("the product's wording for `{item}` is empty");
+            }
+            if model.wording.insert(item, text).is_some() {
+                bail!("the product words `{item}` twice");
+            }
+        }
         for source in sources {
             let syntax = parse_file(source).context("failed to parse config source")?;
             for item in syntax.items {
@@ -468,6 +489,36 @@ impl ConfigModel {
             }
         }
         Ok(model)
+    }
+
+    /// The user-facing doc of `item`: the product's wording if it gives one, else the doc
+    /// comment in `attrs`, which must exist.
+    fn doc(&self, attrs: &[Attribute], item: &str) -> Result<String> {
+        if let Some((key, text)) = self.wording.get_key_value(item) {
+            self.used_wording.borrow_mut().insert(key);
+            return Ok(text.trim().to_owned());
+        }
+        required_doc(attrs, item)
+    }
+
+    /// [`Self::doc`] with wrapped lines joined, so the prose stays within one Markdown list
+    /// item.
+    fn list_item_doc(&self, attrs: &[Attribute], item: &str) -> Result<String> {
+        self.doc(attrs, item).map(|doc| doc.replace('\n', " "))
+    }
+
+    fn check_wording_used(&self) -> Result<()> {
+        let used = self.used_wording.borrow();
+        let mut unused: Vec<_> = self
+            .wording
+            .keys()
+            .filter(|item| !used.contains(*item))
+            .collect();
+        unused.sort_unstable();
+        if let Some(item) = unused.first() {
+            bail!("the product words `{item}`, which the reference does not document");
+        }
+        Ok(())
     }
 }
 
@@ -503,6 +554,7 @@ pub struct TestExtension {
             extension: "TestExtension",
             order,
             examples: &[("extra", "extra = [\"a\"]")],
+            wording: &[],
         }
     }
 
@@ -537,9 +589,77 @@ pub struct TestExtension {
             extension: "NoExtension",
             order: &["search_dirs", "include_non_git", "theme", "keys"],
             examples: &[],
+            wording: &[],
         })
         .unwrap();
         assert!(reference.contains("### `[keys]`"));
+    }
+
+    const ON_OPEN_EXTENSION: &str = r"
+/// Read from the on_open product's config file.
+pub struct OnOpenExtension {
+    /// Panes for each opened checkout.
+    pub on_open: OnOpenConfig,
+}
+";
+
+    #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+    struct OnOpenExtension {
+        on_open: kiosk_core::config::OnOpenConfig,
+    }
+
+    impl ConfigExtension for OnOpenExtension {
+        fn validate(&self) -> Result<()> {
+            self.on_open.validate()
+        }
+    }
+
+    fn on_open_reference(wording: &[(&str, &str)]) -> Result<String> {
+        config_reference::<OnOpenExtension>(&ProductDocs {
+            sources: &[ON_OPEN_EXTENSION],
+            extension: "OnOpenExtension",
+            order: &["search_dirs", "include_non_git", "on_open", "theme", "keys"],
+            examples: &[],
+            wording,
+        })
+    }
+
+    #[test]
+    fn product_wording_replaces_shared_doc_comments() {
+        let shared = on_open_reference(&[]).unwrap();
+        assert!(shared.contains("Panes for each opened checkout."));
+        assert!(shared.contains("- `command` — Shell command run in the new pane"));
+
+        let worded = on_open_reference(&[
+            ("OnOpenPaneConfig", "A pane the test product creates."),
+            (
+                "OnOpenPaneConfig::command",
+                "Command the test product runs.\nIt must not be empty.",
+            ),
+        ])
+        .unwrap();
+        assert!(worded.contains("A pane the test product creates.\n\nEach entry"));
+        assert!(
+            worded.contains("- `command` — Command the test product runs. It must not be empty.\n")
+        );
+        assert!(worded.contains("- `direction` — Split direction: `right` or `down`."));
+        assert!(!worded.contains("Shell command run in the new pane"));
+    }
+
+    #[test]
+    fn product_wording_must_name_a_documented_item() {
+        for (item, expected) in [
+            ("OnOpenPaneConfig::colour", "does not document"),
+            ("ThemeConfig::accent", "does not document"),
+        ] {
+            let error = on_open_reference(&[(item, "Unused.")]).unwrap_err();
+            assert!(error.to_string().contains(expected), "{item}: {error}");
+        }
+        let empty = on_open_reference(&[("OnOpenPaneConfig", " ")]).unwrap_err();
+        assert!(empty.to_string().contains("is empty"), "{empty}");
+        let twice = on_open_reference(&[("OnOpenPaneConfig", "A."), ("OnOpenPaneConfig", "B.")])
+            .unwrap_err();
+        assert!(twice.to_string().contains("twice"), "{twice}");
     }
 
     #[test]

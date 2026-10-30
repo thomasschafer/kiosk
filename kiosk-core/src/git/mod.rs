@@ -3,8 +3,8 @@ mod cli;
 pub mod mock;
 mod provider;
 mod repo;
-#[cfg(test)]
-pub(crate) mod test_fixtures;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_fixtures;
 
 pub use cli::CliGitProvider;
 pub use provider::{

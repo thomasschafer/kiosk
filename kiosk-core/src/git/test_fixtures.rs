@@ -6,7 +6,7 @@ use std::{
     process::Command,
 };
 
-pub(crate) fn init_test_repo(dir: &Path) {
+pub fn init_test_repo(dir: &Path) {
     run_test_git(dir, &["init"]);
     run_test_git(dir, &["config", "user.email", "test@example.com"]);
     run_test_git(dir, &["config", "user.name", "Test"]);
@@ -15,7 +15,7 @@ pub(crate) fn init_test_repo(dir: &Path) {
     run_test_git(dir, &["commit", "-m", "init"]);
 }
 
-pub(crate) fn run_test_git(dir: &Path, args: &[&str]) {
+pub fn run_test_git(dir: &Path, args: &[&str]) {
     let output = Command::new("git")
         .args(args)
         .current_dir(dir)
@@ -29,7 +29,7 @@ pub(crate) fn run_test_git(dir: &Path, args: &[&str]) {
     );
 }
 
-pub(crate) fn repo_fixture(parent: &Path, name: &str) -> PathBuf {
+pub fn repo_fixture(parent: &Path, name: &str) -> PathBuf {
     let repo = parent.join(name);
     fs::create_dir_all(&repo).unwrap();
     init_test_repo(&repo);

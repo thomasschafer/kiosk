@@ -99,10 +99,16 @@ pub(crate) fn remove_checkout<B: Backend>(
     checkout: &Path,
     force: bool,
 ) -> WorktreeRemovalOutcome {
+    let canonical_checkout = crate::path::canonical_or_original(checkout);
     let session = match backend.checkouts(repo) {
         Ok(checkouts) => checkouts
             .into_iter()
-            .find(|state| crate::path::equivalent(&state.path, checkout))
+            .find(|state| {
+                crate::path::equivalent(
+                    &crate::path::canonical_or_original(&state.path),
+                    &canonical_checkout,
+                )
+            })
             .map(|state| state.session),
         Err(error) => {
             return WorktreeRemovalOutcome::Failed(format!(

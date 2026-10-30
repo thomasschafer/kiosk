@@ -61,7 +61,7 @@ pub fn run<B: Backend>(
     theme: &Theme,
     keys: KeysConfig,
 ) -> Result<RunOutcome> {
-    let picker = Picker::start(git, backend, keys, search_dirs);
+    let picker = Picker::start(git, backend, keys, search_dirs, state);
     let spinner_start = Instant::now();
     let mut redraw = RedrawState::new();
 

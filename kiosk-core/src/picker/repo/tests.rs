@@ -136,6 +136,107 @@ fn current_repo_selection_prefers_the_deepest_containing_repo() {
     assert_eq!(state.repo_view.list.selected, Some(1));
 }
 
+fn state_in(cwd: &str, repos: &[&str]) -> AppState {
+    let mut state = AppState::new(&TEST_PRODUCT, Some(cwd.into()));
+    state.repo_view.entries = repos
+        .iter()
+        .map(|path| RepoEntry::new(repo(path)))
+        .collect();
+    state.repo_view.list = SearchableList::new(repos.len());
+    state.repo_view.list.selected = Some(0);
+    state
+}
+
+fn resolve_current_repo(state: &mut AppState, main_checkout: &str) {
+    process_app_event(
+        AppEvent::CurrentRepoResolved {
+            main_checkout: main_checkout.into(),
+        },
+        state,
+        &mut TickChanges::default(),
+    );
+}
+
+#[test]
+fn current_repo_selection_finds_a_linked_worktree_outside_the_search_dirs() {
+    let mut state = state_in("/trees/repo/feature/src", &["/code/other", "/code/repo"]);
+    state.repo_view.apply_current_selection();
+    assert_eq!(state.repo_view.list.selected, Some(0));
+
+    resolve_current_repo(&mut state, "/code/repo");
+    assert_eq!(
+        state.selected_repo().unwrap().repo.path,
+        Path::new("/code/repo")
+    );
+
+    // Later scan results re-apply the preselection rather than losing it.
+    state
+        .repo_view
+        .entries
+        .insert(0, RepoEntry::new(repo("/code/alpha")));
+    state.repo_view.list = SearchableList::new(3);
+    state.repo_view.apply_current_selection();
+    assert_eq!(
+        state.selected_repo().unwrap().repo.path,
+        Path::new("/code/repo")
+    );
+}
+
+#[test]
+fn current_repo_selection_prefers_the_main_checkout_over_a_containing_entry() {
+    let mut state = state_in("/work/outer/linked", &["/work/outer", "/work/repo"]);
+    state.repo_view.apply_current_selection();
+    assert_eq!(
+        state.selected_repo().unwrap().repo.path,
+        Path::new("/work/outer")
+    );
+
+    resolve_current_repo(&mut state, "/work/repo");
+    assert_eq!(
+        state.selected_repo().unwrap().repo.path,
+        Path::new("/work/repo")
+    );
+}
+
+#[test]
+fn an_unlisted_main_checkout_falls_back_to_the_containing_entry() {
+    let mut state = state_in("/work/outer/linked", &["/work/other", "/work/outer"]);
+    resolve_current_repo(&mut state, "/elsewhere/repo");
+    assert_eq!(
+        state.selected_repo().unwrap().repo.path,
+        Path::new("/work/outer")
+    );
+}
+
+#[test]
+fn current_repo_resolution_leaves_a_selection_the_user_moved() {
+    let mut state = state_in("/trees/repo/feature", &["/code/other", "/code/repo"]);
+    move_selection(&mut state, 0);
+    resolve_current_repo(&mut state, "/code/repo");
+    assert_eq!(state.repo_view.list.selected, Some(0));
+}
+
+#[test]
+fn current_repo_resolution_only_considers_filtered_entries() {
+    let mut state = state_in("/trees/repo/feature", &["/code/other", "/code/repo"]);
+    state.repo_view.list.filtered = vec![(0, 1)];
+    resolve_current_repo(&mut state, "/code/repo");
+    assert_eq!(state.repo_view.list.selected, Some(0));
+}
+
+#[test]
+fn a_failed_current_repo_resolution_is_a_warning() {
+    let mut state = state_in("/somewhere", &["/code/repo"]);
+    process_app_event(
+        AppEvent::CurrentRepoFailed("could not find the repository".into()),
+        &mut state,
+        &mut TickChanges::default(),
+    );
+    let toast = state.toasts.front().unwrap();
+    assert_eq!(toast.kind, ToastKind::Warning);
+    assert_eq!(toast.message, "could not find the repository");
+}
+
 #[test]
 fn current_logical_selection_survives_current_generation_filter_results() {
     let mut state = AppState::new(&TEST_PRODUCT, None);

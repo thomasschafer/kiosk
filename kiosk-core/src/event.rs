@@ -45,6 +45,11 @@ pub enum AppEvent {
         repo: Repo,
     },
     ScanComplete,
+    /// The main checkout of the repository the picker was started in.
+    CurrentRepoResolved {
+        main_checkout: PathBuf,
+    },
+    CurrentRepoFailed(String),
     ScanWarning(ScanWarning),
     FilterCompleted {
         target: FilterTarget,

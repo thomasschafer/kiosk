@@ -1,146 +1,89 @@
-use kiosk_core::config::{NamedColor, ThemeColor};
 use ratatui::style::Color;
 
-/// Runtime status badge colors derived from theme config.
-///
-/// Keep field list in sync with [`kiosk_core::config::ThemeStatusConfig`] —
-/// add new agent states to both structs together.
-pub struct ThemeStatus {
-    pub running: Color,
-    pub waiting: Color,
-    pub idle: Color,
-    pub unknown: Color,
+use kiosk_core::config::{ThemeColor, ThemeConfig};
+
+pub struct Theme {
+    pub accent: Color,
+    pub secondary: Color,
+    pub tertiary: Color,
+    pub error: Color,
+    pub warning: Color,
+    pub muted: Color,
+    pub border: Color,
+    pub hint: Color,
+    pub highlight_fg: Color,
+    pub open: Color,
 }
 
-impl From<&kiosk_core::config::ThemeStatusConfig> for ThemeStatus {
-    fn from(cfg: &kiosk_core::config::ThemeStatusConfig) -> Self {
+impl Theme {
+    pub fn from_config(config: &ThemeConfig) -> Self {
         Self {
-            running: to_ratatui_color(&cfg.running),
-            waiting: to_ratatui_color(&cfg.waiting),
-            idle: to_ratatui_color(&cfg.idle),
-            unknown: to_ratatui_color(&cfg.unknown),
+            accent: color(config.accent),
+            secondary: color(config.secondary),
+            tertiary: color(config.tertiary),
+            error: color(config.error),
+            warning: color(config.warning),
+            muted: color(config.muted),
+            border: color(config.border),
+            hint: color(config.hint),
+            highlight_fg: color(config.highlight_fg),
+            open: color(config.open),
         }
     }
 }
 
-/// Generates `Theme` and `from_config` from a list of field names,
-/// mirroring `ThemeConfig` without manual repetition.
-macro_rules! define_theme {
-    ($($field:ident),* $(,)?) => {
-        pub struct Theme {
-            $(pub $field: Color,)*
-            pub status: ThemeStatus,
-        }
-
-        impl Theme {
-            pub fn from_config(config: &kiosk_core::config::ThemeConfig) -> Self {
-                Self {
-                    $($field: to_ratatui_color(&config.$field),)*
-                    status: ThemeStatus::from(&config.status),
-                }
-            }
-        }
-    };
-}
-
-define_theme!(
-    accent,
-    secondary,
-    tertiary,
-    success,
-    error,
-    warning,
-    muted,
-    border,
-    hint,
-    highlight_fg
-);
-
-fn to_ratatui_color(color: &ThemeColor) -> Color {
+fn color(color: ThemeColor) -> Color {
     match color {
-        ThemeColor::Rgb(r, g, b) => Color::Rgb(*r, *g, *b),
-        ThemeColor::Named(named) => match named {
-            NamedColor::Black => Color::Black,
-            NamedColor::Red => Color::Red,
-            NamedColor::Green => Color::Green,
-            NamedColor::Yellow => Color::Yellow,
-            NamedColor::Blue => Color::Blue,
-            NamedColor::Magenta => Color::Magenta,
-            NamedColor::Cyan => Color::Cyan,
-            NamedColor::White => Color::White,
-            NamedColor::Gray => Color::Gray,
-            NamedColor::DarkGray => Color::DarkGray,
-        },
+        ThemeColor::Black => Color::Black,
+        ThemeColor::Red => Color::Red,
+        ThemeColor::Green => Color::Green,
+        ThemeColor::Yellow => Color::Yellow,
+        ThemeColor::Blue => Color::Blue,
+        ThemeColor::Magenta => Color::Magenta,
+        ThemeColor::Cyan => Color::Cyan,
+        ThemeColor::White => Color::White,
+        ThemeColor::Gray => Color::Gray,
+        ThemeColor::DarkGray => Color::DarkGray,
+        ThemeColor::Reset => Color::Reset,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kiosk_core::config::ThemeConfig;
 
     #[test]
-    fn test_theme_defaults() {
+    fn theme_is_limited_to_terminal_palette_colors() {
         let theme = Theme::from_config(&ThemeConfig::default());
         assert_eq!(theme.accent, Color::Magenta);
         assert_eq!(theme.secondary, Color::Cyan);
         assert_eq!(theme.tertiary, Color::Green);
-        assert_eq!(theme.success, Color::Green);
-        assert_eq!(theme.error, Color::Red);
-        assert_eq!(theme.warning, Color::Yellow);
-        assert_eq!(theme.muted, Color::DarkGray);
-        assert_eq!(theme.border, Color::DarkGray);
-        assert_eq!(theme.hint, Color::Blue);
-        assert_eq!(theme.highlight_fg, Color::Black);
-        assert_eq!(theme.status.running, Color::Green);
-        assert_eq!(theme.status.waiting, Color::Yellow);
-        assert_eq!(theme.status.idle, Color::Cyan);
-        assert_eq!(theme.status.unknown, Color::Blue);
+        assert_eq!(theme.open, Color::Green);
+        assert!(matches!(
+            theme.accent,
+            Color::Reset
+                | Color::Black
+                | Color::Red
+                | Color::Green
+                | Color::Yellow
+                | Color::Blue
+                | Color::Magenta
+                | Color::Cyan
+                | Color::Gray
+                | Color::DarkGray
+                | Color::White
+        ));
     }
 
     #[test]
-    fn test_theme_custom() {
+    fn semantic_accents_remain_overridable_terminal_colors() {
         let config = ThemeConfig {
-            accent: ThemeColor::Named(NamedColor::Blue),
-            secondary: ThemeColor::Rgb(255, 0, 255),
-            error: ThemeColor::Named(NamedColor::Magenta),
-            highlight_fg: ThemeColor::Named(NamedColor::Yellow),
+            secondary: ThemeColor::Blue,
+            tertiary: ThemeColor::Yellow,
             ..ThemeConfig::default()
         };
         let theme = Theme::from_config(&config);
-        assert_eq!(theme.accent, Color::Blue);
-        assert_eq!(theme.secondary, Color::Rgb(255, 0, 255));
-        assert_eq!(theme.success, Color::Green); // default
-        assert_eq!(theme.error, Color::Magenta);
-        assert_eq!(theme.highlight_fg, Color::Yellow);
-        assert_eq!(theme.status.running, Color::Green); // default
-        assert_eq!(theme.status.waiting, Color::Yellow); // default
-        assert_eq!(theme.status.idle, Color::Cyan); // default
-        assert_eq!(theme.status.unknown, Color::Blue); // default
-    }
-
-    #[test]
-    fn test_theme_custom_status_colors() {
-        let mut config = ThemeConfig::default();
-        config.status.running = ThemeColor::Rgb(10, 20, 30);
-        config.status.waiting = ThemeColor::Named(NamedColor::Red);
-        config.status.idle = ThemeColor::Named(NamedColor::White);
-        config.status.unknown = ThemeColor::Rgb(200, 210, 220);
-
-        let theme = Theme::from_config(&config);
-        assert_eq!(theme.status.running, Color::Rgb(10, 20, 30));
-        assert_eq!(theme.status.waiting, Color::Red);
-        assert_eq!(theme.status.idle, Color::White);
-        assert_eq!(theme.status.unknown, Color::Rgb(200, 210, 220));
-    }
-
-    #[test]
-    fn test_theme_dark_gray_color() {
-        let config = ThemeConfig {
-            muted: ThemeColor::Named(NamedColor::DarkGray),
-            ..ThemeConfig::default()
-        };
-        let theme = Theme::from_config(&config);
-        assert_eq!(theme.muted, Color::DarkGray);
+        assert_eq!(theme.secondary, Color::Blue);
+        assert_eq!(theme.tertiary, Color::Yellow);
     }
 }

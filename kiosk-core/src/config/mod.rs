@@ -1,814 +1,617 @@
-pub mod keys;
-
-use anyhow::Result;
-use serde::{Deserialize, Serialize};
 use std::{
-    fmt::Write as _,
-    fs,
-    io::Write as _,
+    collections::HashSet,
+    fmt, fs, io,
     path::{Path, PathBuf},
 };
 
-pub use keys::{
-    BranchSelectCommand, Command, GeneralCommand, KeysConfig, ListNavigationCommand, ModalCommand,
-    RepoSelectCommand, TextEditCommand,
-};
+use anyhow::{Context, Result, bail};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-pub const APP_NAME: &str = "kiosk";
+use crate::product::Product;
 
-fn config_dir() -> PathBuf {
-    // Use ~/.config on both Linux and macOS (not ~/Library/Application Support)
-    #[cfg(unix)]
-    {
-        if let Ok(xdg_config_home) = std::env::var("XDG_CONFIG_HOME")
-            && !xdg_config_home.is_empty()
-        {
-            return PathBuf::from(xdg_config_home).join(APP_NAME);
-        }
-        dirs::home_dir()
-            .expect("Unable to find home directory")
-            .join(".config")
-            .join(APP_NAME)
-    }
-    #[cfg(windows)]
-    {
-        dirs::config_dir()
-            .expect("Unable to find config directory")
-            .join(APP_NAME)
-    }
-}
+pub mod keys;
+pub mod worktrees;
+pub use keys::KeysConfig;
+pub use worktrees::ManagedWorktreesConfig;
 
-fn config_file() -> PathBuf {
-    config_dir().join("config.toml")
-}
-
+/// The Rust source of the config types, for generating their reference documentation.
+pub const SOURCES: &[&str] = &[
+    include_str!("mod.rs"),
+    include_str!("keys.rs"),
+    include_str!("worktrees.rs"),
+];
 pub const DEFAULT_SEARCH_DEPTH: u16 = 1;
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
+/// A repository search root, written either as a path string or an inline table.
 pub enum SearchDirEntry {
-    Simple(String),
-    Rich { path: String, depth: Option<u16> },
+    /// String form.
+    Simple(
+        /// Directory to scan with the default depth of 1. `~` and paths beginning
+        /// with `~/` expand from the user's home directory.
+        String,
+    ),
+    /// A path with optional per-directory scan depth, plain-folder override, and
+    /// missing-directory tolerance.
+    Rich {
+        /// Directory to scan. `~` and paths beginning with `~/` expand from the
+        /// user's home directory; other relative paths are accepted as written.
+        path: String,
+        /// Maximum directory depth to scan. The value must be at least 1 and
+        /// defaults to 1 when omitted.
+        depth: Option<u16>,
+        /// Whether to include plain folders for this search root. When omitted,
+        /// the global `include_non_git` value is used.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        include_non_git: Option<bool>,
+        /// Whether this directory may be absent. A missing optional directory is
+        /// skipped without a warning; a path that exists but is not a readable
+        /// directory still warns. Defaults to `false`.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        optional: bool,
+    },
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
-#[serde(deny_unknown_fields)]
-pub struct Config {
-    /// Directories to scan for git repositories. Each directory can be scanned to a specified depth, with a default of 1 (i.e. just the top level).
-    /// Supports `~` for the home directory. For example:
-    /// ```toml
-    /// search_dirs = ["~/Development", { path = "~/Work", depth = 2 }]
-    /// ```
-    pub search_dirs: Vec<SearchDirEntry>,
+impl SearchDirEntry {
+    fn path_and_depth(&self) -> (&str, u16) {
+        match self {
+            Self::Simple(path) => (path, DEFAULT_SEARCH_DEPTH),
+            Self::Rich { path, depth, .. } => (path, depth.unwrap_or(DEFAULT_SEARCH_DEPTH)),
+        }
+    }
 
-    /// Layout when creating a new tmux session.
-    #[serde(default)]
-    pub session: SessionConfig,
+    const fn optional(&self) -> bool {
+        match self {
+            Self::Simple(_) => false,
+            Self::Rich { optional, .. } => *optional,
+        }
+    }
 
-    /// Color theme configuration.
-    #[serde(default)]
-    pub theme: ThemeConfig,
-
-    /// Key binding configuration.
-    /// To unbind an inherited key mapping, assign it to `noop`.
-    #[serde(default)]
-    pub keys: KeysConfig,
-
-    /// Agent detection configuration.
-    #[serde(default)]
-    pub agent: AgentConfig,
-}
-
-/// Agent detection configuration.
-///
-/// ```toml
-/// [agent]
-/// enabled = true
-/// poll_interval_ms = 2000
-/// ```
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(deny_unknown_fields, default)]
-pub struct AgentConfig {
-    /// Whether agent status detection is enabled.
-    /// Set to `false` to completely disable agent polling and status display.
-    pub enabled: bool,
-    /// Interval in milliseconds between agent status polls.
-    pub poll_interval_ms: u64,
-    /// Label text for each agent state shown in the branch picker.
-    #[serde(default)]
-    pub labels: AgentLabelsConfig,
-}
-
-impl Default for AgentConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            poll_interval_ms: 500,
-            labels: AgentLabelsConfig::default(),
+    pub const fn resolved_include_non_git(&self, global: bool) -> bool {
+        match self {
+            Self::Simple(_) => global,
+            Self::Rich {
+                include_non_git, ..
+            } => match include_non_git {
+                Some(value) => *value,
+                None => global,
+            },
         }
     }
 }
 
-/// Label text for each agent state shown in the branch picker.
-///
-/// ```toml
-/// [agent.labels]
-/// running = "[RUNNING]"
-/// waiting = "[WAITING]"
-/// idle = "[IDLE]"
-/// unknown = "[UNKNOWN]"
-/// ```
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(deny_unknown_fields, default)]
-pub struct AgentLabelsConfig {
-    pub running: String,
-    pub waiting: String,
-    pub idle: String,
-    pub unknown: String,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+/// A color from the terminal's ANSI palette.
+pub enum ThemeColor {
+    Black,
+    Red,
+    Green,
+    Yellow,
+    Blue,
+    Magenta,
+    Cyan,
+    White,
+    Gray,
+    DarkGray,
+    Reset,
 }
 
-impl Default for AgentLabelsConfig {
-    fn default() -> Self {
-        Self {
-            running: "[RUNNING]".to_string(),
-            waiting: "[WAITING]".to_string(),
-            idle: "[IDLE]".to_string(),
-            unknown: "[UNKNOWN]".to_string(),
-        }
-    }
-}
-
-impl AgentLabelsConfig {
-    /// Maximum char count across all labels (for fixed-width column padding).
-    pub fn max_label_width(&self) -> usize {
-        [&self.running, &self.waiting, &self.idle, &self.unknown]
-            .iter()
-            .map(|s| s.chars().count())
-            .max()
-            .unwrap_or(0)
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
-#[serde(deny_unknown_fields)]
-pub struct SessionConfig {
-    /// Command to run in a split pane when creating a new session. For example, to open
-    /// Helix in a vertical split:
-    /// ```toml
-    /// [session]
-    /// split_command = "hx"
-    /// ```
-    pub split_command: Option<String>,
-}
-
-/// Agent status color configuration for TUI badges.
-#[derive(Debug, Deserialize, Serialize, Clone)]
-#[serde(deny_unknown_fields, default)]
-pub struct ThemeStatusConfig {
-    /// Color for Running agent badges.
-    #[serde(deserialize_with = "deserialize_color")]
-    pub running: ThemeColor,
-    /// Color for Waiting agent badges.
-    #[serde(deserialize_with = "deserialize_color")]
-    pub waiting: ThemeColor,
-    /// Color for Idle agent badges.
-    #[serde(deserialize_with = "deserialize_color")]
-    pub idle: ThemeColor,
-    /// Color for Unknown agent badges.
-    #[serde(deserialize_with = "deserialize_color")]
-    pub unknown: ThemeColor,
-}
-
-impl Default for ThemeStatusConfig {
-    fn default() -> Self {
-        Self {
-            running: ThemeColor::Named(NamedColor::Green),
-            waiting: ThemeColor::Named(NamedColor::Yellow),
-            idle: ThemeColor::Named(NamedColor::Cyan),
-            unknown: ThemeColor::Named(NamedColor::Blue),
-        }
-    }
-}
-
-// The struct must be defined outside the macro so that xtask's syn parser
-// can discover it for README doc generation.
-#[derive(Debug, Deserialize, Serialize, Clone)]
-#[serde(deny_unknown_fields, default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+/// Every field is optional and falls back to the default shown below.
 pub struct ThemeConfig {
-    /// Primary accent color.
-    #[serde(deserialize_with = "deserialize_color")]
+    /// Repository-picker accent, used for its active border and selected row.
     pub accent: ThemeColor,
-    /// Secondary accent color.
-    #[serde(deserialize_with = "deserialize_color")]
+    /// Branch and new-branch accent, used for active borders, selections, and
+    /// branch status markers.
     pub secondary: ThemeColor,
-    /// Tertiary accent color.
-    #[serde(deserialize_with = "deserialize_color")]
+    /// Help-view accent, used for its border and selected row.
     pub tertiary: ThemeColor,
-    /// Success/positive color.
-    #[serde(deserialize_with = "deserialize_color")]
-    pub success: ThemeColor,
-    /// Error color.
-    #[serde(deserialize_with = "deserialize_color")]
+    /// Error notification title color.
     pub error: ThemeColor,
-    /// Warning color.
-    #[serde(deserialize_with = "deserialize_color")]
+    /// Warning notification title and setup-warning color.
     pub warning: ThemeColor,
-    /// Muted/dim text color.
-    #[serde(deserialize_with = "deserialize_color")]
+    /// De-emphasized text color for metadata, counts, inactive content, and
+    /// explanatory labels.
     pub muted: ThemeColor,
-    /// Border color.
-    #[serde(deserialize_with = "deserialize_color")]
+    /// Inactive list-border color.
     pub border: ThemeColor,
-    /// Hint/key binding color.
-    #[serde(deserialize_with = "deserialize_color")]
+    /// Keyboard-hint color in dialogs, setup, and notifications.
     pub hint: ThemeColor,
-    /// Foreground color for highlighted/selected items.
-    #[serde(deserialize_with = "deserialize_color")]
+    /// Foreground color for text on selected-row accent backgrounds in every view.
     pub highlight_fg: ThemeColor,
-    /// Agent status badge colors.
-    #[serde(default)]
-    pub status: ThemeStatusConfig,
+    /// Color of the marker shown beside an open repository or worktree.
+    pub open: ThemeColor,
 }
 
-/// Single source of truth for theme defaults. Generates the `Default` impl
-/// so adding a field only requires updating one place (plus the struct above).
-macro_rules! theme_defaults {
-    ($($field:ident => $value:expr),* $(,)?) => {
-        impl Default for ThemeConfig {
-            fn default() -> Self {
-                Self {
-                    $($field: $value),*
-                }
-            }
+impl Default for ThemeConfig {
+    fn default() -> Self {
+        Self {
+            accent: ThemeColor::Magenta,
+            secondary: ThemeColor::Cyan,
+            tertiary: ThemeColor::Green,
+            error: ThemeColor::Red,
+            warning: ThemeColor::Yellow,
+            muted: ThemeColor::DarkGray,
+            border: ThemeColor::DarkGray,
+            hint: ThemeColor::Blue,
+            highlight_fg: ThemeColor::Black,
+            open: ThemeColor::Green,
         }
-    };
+    }
 }
 
-use NamedColor as N;
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+/// The settings every kiosk product shares. Products add their own sections through a
+/// [`ConfigExtension`].
+pub struct CoreConfig {
+    /// Directories searched recursively for Git repositories and, when enabled,
+    /// plain folders. Entries can be simple strings such as `"~/Code"` or inline
+    /// tables such as `{ path = "~/Work", depth = 3 }`, and both forms can be mixed.
+    /// Missing directories are reported as warnings unless marked `optional`.
+    pub search_dirs: Vec<SearchDirEntry>,
+    /// Include plain folders in search results globally. Rich search-directory
+    /// entries can override this value with their own `include_non_git` setting.
+    #[serde(default)]
+    pub include_non_git: bool,
+    /// Customize terminal-palette colors used by the picker. Light-terminal users
+    /// can set `muted`, `border`, and other colors explicitly.
+    pub theme: ThemeConfig,
+    /// Customize key bindings grouped by where they are active.
+    pub keys: KeysConfig,
+}
 
-theme_defaults! {
-    accent       => ThemeColor::Named(N::Magenta),
-    secondary    => ThemeColor::Named(N::Cyan),
-    tertiary     => ThemeColor::Named(N::Green),
-    success      => ThemeColor::Named(N::Green),
-    error        => ThemeColor::Named(N::Red),
-    warning      => ThemeColor::Named(N::Yellow),
-    muted        => ThemeColor::Named(N::DarkGray),
-    border       => ThemeColor::Named(N::DarkGray),
-    hint         => ThemeColor::Named(N::Blue),
-    highlight_fg => ThemeColor::Named(N::Black),
-    status       => ThemeStatusConfig::default(),
+/// A product's own top-level config sections, read from the same file as
+/// [`CoreConfig`]. Its fields must not reuse a core section's name.
+pub trait ConfigExtension:
+    DeserializeOwned + Serialize + Default + Clone + fmt::Debug + Send + Sync + 'static
+{
+    /// Checks what the types alone cannot, failing with a message for the user.
+    fn validate(&self) -> Result<()>;
+}
+
+/// For a product with no sections of its own.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NoExtension {}
+
+impl ConfigExtension for NoExtension {
+    fn validate(&self) -> Result<()> {
+        Ok(())
+    }
+}
+
+impl CoreConfig {
+    pub fn resolved_search_dirs_with(
+        &self,
+        home: Option<&Path>,
+        probe: impl Fn(&Path) -> SearchDirStatus,
+    ) -> Result<ResolvedSearchDirs> {
+        let expanded = self
+            .search_dirs
+            .iter()
+            .map(|entry| {
+                let (path, depth) = entry.path_and_depth();
+                expand_tilde(path, home).map(|path| {
+                    let dir = ResolvedSearchDir {
+                        path,
+                        depth,
+                        include_non_git: entry.resolved_include_non_git(self.include_non_git),
+                    };
+                    (dir, entry.optional())
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let mut resolved = ResolvedSearchDirs {
+            dirs: Vec::with_capacity(expanded.len()),
+            missing_optional: Vec::new(),
+            warnings: Vec::new(),
+        };
+        for (dir, optional) in expanded {
+            let problem = match probe(&dir.path) {
+                SearchDirStatus::Directory => {
+                    resolved.dirs.push(dir);
+                    continue;
+                }
+                SearchDirStatus::Missing if optional => {
+                    resolved.missing_optional.push(dir.path);
+                    continue;
+                }
+                SearchDirStatus::Missing => "does not exist".to_string(),
+                SearchDirStatus::NotADirectory => "is not a directory".to_string(),
+                SearchDirStatus::Inaccessible(error) => format!("cannot be read ({error})"),
+            };
+            resolved.warnings.push(ConfigWarning {
+                message: format!(
+                    "configured search directory {problem}: {}",
+                    dir.path.display()
+                ),
+            });
+        }
+        Ok(resolved)
+    }
+}
+
+#[derive(Debug)]
+/// What a configured search directory path refers to on disk.
+pub enum SearchDirStatus {
+    Directory,
+    /// Nothing exists at the path, including a symlink whose target is missing.
+    Missing,
+    /// The path, or one of its ancestors, is not a directory.
+    NotADirectory,
+    Inaccessible(io::Error),
+}
+
+pub fn probe_search_dir(path: &Path) -> SearchDirStatus {
+    match fs::metadata(path) {
+        Ok(metadata) if metadata.is_dir() => SearchDirStatus::Directory,
+        Ok(_) => SearchDirStatus::NotADirectory,
+        Err(error) if error.kind() == io::ErrorKind::NotADirectory => {
+            SearchDirStatus::NotADirectory
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => probe_missing_ancestry(path),
+        Err(error) => SearchDirStatus::Inaccessible(error),
+    }
+}
+
+/// Windows reports a path beneath a file as not found, so the nearest existing
+/// ancestor decides whether the path is genuinely missing.
+fn probe_missing_ancestry(path: &Path) -> SearchDirStatus {
+    for ancestor in path.ancestors().skip(1) {
+        match fs::metadata(ancestor) {
+            Ok(metadata) if metadata.is_dir() => return SearchDirStatus::Missing,
+            Ok(_) => return SearchDirStatus::NotADirectory,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return SearchDirStatus::Inaccessible(error),
+        }
+    }
+    SearchDirStatus::Missing
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ThemeColor {
-    Named(NamedColor),
-    Rgb(u8, u8, u8),
+pub struct ConfigWarning {
+    pub message: String,
 }
 
-/// Single source of truth for every `NamedColor` variant, its canonical config
-/// string, and any accepted aliases. The macro generates the enum plus `all()`,
-/// `as_str()`, `resolve_alias()`, and `aliases()`.
-macro_rules! define_named_colors {
-    ($(
-        $variant:ident {
-            name: $name:literal
-            $(, aliases: [$($alias:literal),+ $(,)?])?
-        }
-    ),* $(,)?) => {
-        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-        pub enum NamedColor { $($variant),* }
-
-        impl NamedColor {
-            /// All named colours with their canonical config strings.
-            pub const fn all() -> &'static [(&'static str, NamedColor)] {
-                &[$(($name, NamedColor::$variant)),*]
-            }
-
-            pub const fn as_str(self) -> &'static str {
-                match self {
-                    $(NamedColor::$variant => $name),*
-                }
-            }
-
-            /// Resolve alternative spellings to canonical names.
-            pub fn resolve_alias(s: &str) -> &str {
-                match s {
-                    $($($($alias)|+ => $name,)?)*
-                    other => other,
-                }
-            }
-
-            /// All (alias, canonical) pairs for documentation.
-            pub const fn aliases() -> &'static [(&'static str, &'static str)] {
-                &[$($( $( ($alias, $name), )+ )?)*]
-            }
-        }
-    };
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedSearchDirs {
+    pub dirs: Vec<ResolvedSearchDir>,
+    /// Optional search directories that were skipped because they do not exist.
+    pub missing_optional: Vec<PathBuf>,
+    pub warnings: Vec<ConfigWarning>,
 }
 
-define_named_colors! {
-    Black   { name: "black" },
-    Red     { name: "red" },
-    Green   { name: "green" },
-    Yellow  { name: "yellow" },
-    Blue    { name: "blue" },
-    Magenta { name: "magenta" },
-    Cyan    { name: "cyan" },
-    White   { name: "white" },
-    Gray    { name: "gray", aliases: ["grey"] },
-    DarkGray { name: "dark_gray", aliases: ["darkgray", "dark_grey", "darkgrey"] },
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedSearchDir {
+    pub path: PathBuf,
+    pub depth: u16,
+    pub include_non_git: bool,
 }
 
-impl std::fmt::Display for ThemeColor {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Named(n) => f.write_str(n.as_str()),
-            Self::Rgb(r, g, b) => write!(f, "#{r:02x}{g:02x}{b:02x}"),
+#[derive(Debug, Clone, PartialEq)]
+pub struct LoadedConfig<E> {
+    pub core: CoreConfig,
+    pub extension: E,
+    pub path: Option<PathBuf>,
+    pub exists: bool,
+    pub warnings: Vec<ConfigWarning>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigPathResolution {
+    pub path: Option<PathBuf>,
+    pub warnings: Vec<ConfigWarning>,
+}
+
+pub fn resolve_config_path(
+    product: &Product,
+    get_env: impl Fn(&str) -> Option<String>,
+) -> ConfigPathResolution {
+    let (path, warnings) = resolve_trusted_file_path(
+        product,
+        product.config_dir_var,
+        ("XDG_CONFIG_HOME", ".config"),
+        &get_env,
+        "config.toml",
+        "config",
+    );
+    ConfigPathResolution { path, warnings }
+}
+
+/// The first trusted location for `file_name`: the directory in `product_dir_var` itself,
+/// then the product's directory below the XDG home or its fallback below `HOME`.
+pub(crate) fn resolve_trusted_file_path(
+    product: &Product,
+    product_dir_var: Option<&'static str>,
+    (xdg_var, home_fallback): (&'static str, &str),
+    get_env: &impl Fn(&str) -> Option<String>,
+    file_name: &str,
+    directory_kind: &str,
+) -> (Option<PathBuf>, Vec<ConfigWarning>) {
+    let get = |name: &str| get_env(name).filter(|value| !value.is_empty());
+    let candidates = [
+        product_dir_var.and_then(|name| get(name).map(|value| (name, PathBuf::from(value), false))),
+        get(xdg_var).map(|value| (xdg_var, PathBuf::from(value), true)),
+        get("HOME").map(|value| ("HOME", PathBuf::from(value).join(home_fallback), true)),
+    ];
+    let mut warnings = Vec::new();
+    for (source, base, add_product_dir) in candidates.into_iter().flatten() {
+        if !base.is_absolute() {
+            // A cwd-relative fallback lets a browsed repository supply plugin
+            // files, so only absolute environment-derived locations are trusted.
+            warnings.push(ConfigWarning {
+                message: format!(
+                    "refusing relative {directory_kind} directory from {source}: {}",
+                    base.display()
+                ),
+            });
+            continue;
         }
+        let path = if add_product_dir {
+            base.join(product.name).join(file_name)
+        } else {
+            base.join(file_name)
+        };
+        return (Some(path), warnings);
+    }
+    (None, warnings)
+}
+
+/// A key that one deserialization pass ignored, and the top-level key it sits under.
+struct IgnoredKey {
+    path: String,
+    top_level: Option<String>,
+    is_top_level: bool,
+}
+
+/// Deserializes `T` from `contents`, recording the keys it does not know.
+fn parse_part<T: DeserializeOwned>(contents: &str) -> Result<(T, Vec<IgnoredKey>)> {
+    let mut ignored = Vec::new();
+    let deserializer = toml::Deserializer::parse(contents).context("invalid config TOML")?;
+    let value = serde_ignored::deserialize(deserializer, |path| {
+        ignored.push(IgnoredKey {
+            path: path.to_string(),
+            top_level: top_level_key(&path),
+            is_top_level: matches!(
+                &path,
+                serde_ignored::Path::Map { parent, .. } if matches!(parent, serde_ignored::Path::Root)
+            ),
+        });
+    })
+    .context("invalid config TOML")?;
+    Ok((value, ignored))
+}
+
+fn top_level_key(path: &serde_ignored::Path<'_>) -> Option<String> {
+    use serde_ignored::Path;
+    match path {
+        Path::Root => None,
+        Path::Map {
+            parent: Path::Root,
+            key,
+        } => Some(key.clone()),
+        Path::Map { parent, .. }
+        | Path::Seq { parent, .. }
+        | Path::Some { parent }
+        | Path::NewtypeStruct { parent }
+        | Path::NewtypeVariant { parent } => top_level_key(parent),
     }
 }
 
-impl Serialize for ThemeColor {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&self.to_string())
-    }
-}
+/// Parses the core sections and the product's extension from one file.
+///
+/// Each part is deserialized from the whole file, so its errors keep their positions, and
+/// each ignores the other's sections. A key is unknown when it belongs to neither: its
+/// top-level section was ignored as a whole by the other part.
+pub fn parse_config<E: ConfigExtension>(
+    contents: &str,
+) -> Result<(CoreConfig, E, Vec<ConfigWarning>)> {
+    let (core, core_ignored) = parse_part::<CoreConfig>(contents)?;
+    let (extension, extension_ignored) = parse_part::<E>(contents)?;
+    validate_core(&core)?;
+    extension.validate()?;
 
-impl ThemeColor {
-    pub fn parse(s: &str) -> Option<Self> {
-        if let Some(hex) = s.strip_prefix('#')
-            && hex.len() == 6
-        {
-            let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
-            let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
-            let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
-            return Some(Self::Rgb(r, g, b));
-        }
-        let lower = s.to_lowercase();
-        let lookup = NamedColor::resolve_alias(&lower);
-        NamedColor::all()
+    let wholly_ignored = |ignored: &[IgnoredKey]| -> HashSet<String> {
+        ignored
             .iter()
-            .find(|(name, _)| *name == lookup)
-            .map(|(_, color)| Self::Named(*color))
-    }
+            .filter(|key| key.is_top_level)
+            .filter_map(|key| key.top_level.clone())
+            .collect()
+    };
+    let core_wholly = wholly_ignored(&core_ignored);
+    let extension_wholly = wholly_ignored(&extension_ignored);
+    let unknown = |ignored: Vec<IgnoredKey>, other_wholly: &HashSet<String>| -> Vec<IgnoredKey> {
+        ignored
+            .into_iter()
+            .filter(|key| {
+                key.top_level
+                    .as_ref()
+                    .is_some_and(|top_level| other_wholly.contains(top_level))
+            })
+            .collect()
+    };
+    let mut seen = HashSet::new();
+    let warnings = unknown(core_ignored, &extension_wholly)
+        .into_iter()
+        .chain(unknown(extension_ignored, &core_wholly))
+        .filter(|key| seen.insert(key.path.clone()))
+        .map(|key| ConfigWarning {
+            message: format!("unknown config key ignored: {}", key.path),
+        })
+        .collect();
+    Ok((core, extension, warnings))
 }
 
-fn deserialize_color<'de, D>(deserializer: D) -> Result<ThemeColor, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let s = String::deserialize(deserializer)?;
-    ThemeColor::parse(&s).ok_or_else(|| {
-        let names: Vec<&str> = NamedColor::all().iter().map(|(name, _)| *name).collect();
-        serde::de::Error::custom(format!(
-            "invalid color '{s}': expected a named color ({}) or hex (#rrggbb)",
-            names.join(", "),
-        ))
+pub fn load_config_with<E: ConfigExtension>(
+    product: &Product,
+    get_env: impl Fn(&str) -> Option<String>,
+    read_file: impl Fn(&Path) -> io::Result<Option<String>>,
+) -> Result<LoadedConfig<E>> {
+    let resolution = resolve_config_path(product, get_env);
+    let missing = |path| LoadedConfig {
+        core: CoreConfig::default(),
+        extension: E::default(),
+        path,
+        exists: false,
+        warnings: resolution.warnings.clone(),
+    };
+    let Some(path) = resolution.path.clone() else {
+        return Ok(missing(None));
+    };
+    let Some(contents) =
+        read_file(&path).with_context(|| format!("failed to read config {}", path.display()))?
+    else {
+        return Ok(missing(Some(path)));
+    };
+
+    let (core, extension, mut parse_warnings) =
+        parse_config::<E>(&contents).with_context(|| format!("in {}", path.display()))?;
+    let mut warnings = resolution.warnings;
+    warnings.append(&mut parse_warnings);
+    Ok(LoadedConfig {
+        core,
+        extension,
+        path: Some(path),
+        exists: true,
+        warnings,
     })
 }
 
-impl Config {
-    pub fn resolved_search_dirs(&self) -> Vec<(PathBuf, u16)> {
-        self.search_dirs
-            .iter()
-            .filter_map(|entry| {
-                let (path_str, depth) = match entry {
-                    SearchDirEntry::Simple(path) => (path.as_str(), DEFAULT_SEARCH_DEPTH),
-                    SearchDirEntry::Rich { path, depth } => {
-                        (path.as_str(), depth.unwrap_or(DEFAULT_SEARCH_DEPTH))
-                    }
-                };
-
-                let resolved_path =
-                    crate::paths::expand_tilde(path_str).unwrap_or_else(|| PathBuf::from(path_str));
-
-                if resolved_path.is_dir() {
-                    Some((resolved_path, depth))
-                } else {
-                    None
-                }
-            })
-            .collect()
-    }
+pub fn load_config<E: ConfigExtension>(product: &Product) -> Result<LoadedConfig<E>> {
+    load_config_with(
+        product,
+        |name| std::env::var(name).ok(),
+        |path| match fs::read_to_string(path) {
+            Ok(contents) => Ok(Some(contents)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        },
+    )
 }
 
-/// Minimum allowed poll interval to prevent accidental busy loops.
-pub const MIN_POLL_INTERVAL_MS: u64 = 100;
-
-pub fn load_config_from_str(s: &str) -> Result<Config> {
-    let config: Config = toml::from_str(s)?;
-    validate_config(&config)?;
-    Ok(config)
-}
-
-fn validate_config(config: &Config) -> Result<()> {
-    if config.agent.poll_interval_ms < MIN_POLL_INTERVAL_MS {
-        anyhow::bail!(
-            "agent.poll_interval_ms must be at least {MIN_POLL_INTERVAL_MS}ms, got {}",
-            config.agent.poll_interval_ms
-        );
+fn validate_core(config: &CoreConfig) -> Result<()> {
+    for entry in &config.search_dirs {
+        let (path, depth) = entry.path_and_depth();
+        if path.trim().is_empty() {
+            bail!("search directory path must not be empty");
+        }
+        if depth == 0 {
+            bail!("search directory depth must be at least 1 for {path}");
+        }
     }
     Ok(())
 }
 
-/// Check whether the default config file exists
-pub fn config_file_exists() -> bool {
-    config_file().exists()
-}
-
-/// Format a minimal config TOML string from search directories.
-pub fn format_default_config(dirs: &[String]) -> String {
-    let mut content = String::from(
-        "# See https://github.com/thomasschafer/kiosk/?tab=readme-ov-file#configuration for all options\n\n",
-    );
-    content.push_str("search_dirs = [");
-    for (i, d) in dirs.iter().enumerate() {
-        if i > 0 {
-            content.push_str(", ");
-        }
-        content.push('"');
-        // Escape for valid TOML basic strings
-        for c in d.chars() {
-            match c {
-                '\\' => content.push_str("\\\\"),
-                '"' => content.push_str("\\\""),
-                c if c.is_control() => {
-                    write!(content, "\\u{:04X}", c as u32).unwrap();
-                }
-                _ => content.push(c),
-            }
-        }
-        content.push('"');
+pub(crate) fn expand_tilde(path: &str, home: Option<&Path>) -> Result<PathBuf> {
+    if path == "~" {
+        return home
+            .map(Path::to_path_buf)
+            .ok_or_else(|| anyhow::anyhow!("cannot expand '~' because HOME is unavailable"));
     }
-    content.push_str("]\n");
-    content
-}
-
-/// Write a default config file with the specified search directories.
-/// Creates parent directories as needed. Returns the path written to.
-pub fn write_default_config(dirs: &[String]) -> Result<PathBuf> {
-    let path = config_file();
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)?;
+    if let Some(rest) = path.strip_prefix("~/").or_else(|| path.strip_prefix("~\\")) {
+        return home
+            .map(|home| home.join(rest))
+            .ok_or_else(|| anyhow::anyhow!("cannot expand '{path}' because HOME is unavailable"));
     }
-    let content = format_default_config(dirs);
-    let mut file = match fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&path)
-    {
-        Ok(file) => file,
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            anyhow::bail!("Config file already exists at {}", path.display());
-        }
-        Err(e) => return Err(e.into()),
-    };
-    file.write_all(content.as_bytes())?;
-    Ok(path)
-}
-
-pub fn load_config(config_override: Option<&Path>) -> Result<Config> {
-    let config_file = match config_override {
-        Some(path) => path.to_path_buf(),
-        None => config_file(),
-    };
-    if !config_file.exists() {
-        anyhow::bail!("Config file not found at {}", config_file.display());
-    }
-    let contents = fs::read_to_string(&config_file)?;
-    let config: Config = toml::from_str(&contents)?;
-    validate_config(&config)?;
-    Ok(config)
+    Ok(PathBuf::from(path))
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
+    use crate::product::TEST_PRODUCT;
 
-    #[test]
-    fn test_minimal_config() {
-        let config = load_config_from_str(r#"search_dirs = ["~/Development"]"#).unwrap();
-        assert!(
-            matches!(&config.search_dirs[0], SearchDirEntry::Simple(s) if s == "~/Development")
-        );
-        assert!(config.session.split_command.is_none());
+    #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+    #[serde(default)]
+    struct TestExtension {
+        extra: ExtraSection,
+    }
+
+    #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+    #[serde(default)]
+    struct ExtraSection {
+        level: u8,
+    }
+
+    impl ConfigExtension for TestExtension {
+        fn validate(&self) -> Result<()> {
+            if self.extra.level > 3 {
+                bail!("extra level must be at most 3");
+            }
+            Ok(())
+        }
+    }
+
+    fn parse(contents: &str) -> Result<(CoreConfig, Vec<ConfigWarning>)> {
+        parse_config::<TestExtension>(contents).map(|(core, _, warnings)| (core, warnings))
     }
 
     #[test]
-    fn test_full_config() {
-        let config = load_config_from_str(
-            r#"
-search_dirs = ["~/Development", "~/Work"]
+    fn extension_sections_are_read_beside_the_core_ones_and_validated() {
+        let (core, extension, warnings) =
+            parse_config::<TestExtension>("search_dirs = [\"/repos\"]\n[extra]\nlevel = 2\n")
+                .unwrap();
+        assert_eq!(warnings, vec![]);
+        assert_eq!(core.search_dirs, [SearchDirEntry::Simple("/repos".into())]);
+        assert_eq!(extension.extra.level, 2);
 
-[session]
-split_command = "hx"
-"#,
+        let error = parse_config::<TestExtension>("[extra]\nlevel = 9").unwrap_err();
+        assert!(format!("{error:#}").contains("at most 3"), "{error:#}");
+    }
+
+    #[test]
+    fn unknown_keys_are_reported_once_whichever_part_they_sit_under() {
+        let (_, _, warnings) = parse_config::<TestExtension>(
+            "future = 1\n[theme]\nfuture_theme = 1\n[extra]\nlevel = 1\nfuture_extra = 1\n",
         )
         .unwrap();
-        assert_eq!(config.search_dirs.len(), 2);
-        assert!(
-            matches!(&config.search_dirs[0], SearchDirEntry::Simple(s) if s == "~/Development")
-        );
-        assert!(matches!(&config.search_dirs[1], SearchDirEntry::Simple(s) if s == "~/Work"));
-        assert_eq!(config.session.split_command.as_deref(), Some("hx"));
-    }
-
-    #[test]
-    fn test_empty_config_fails() {
-        let result = load_config_from_str("");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_unknown_field_rejected() {
-        let result = load_config_from_str(
-            r#"
-search_dirs = ["~/Development"]
-unknown_field = true
-"#,
-        );
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_tilde_expansion() {
-        let config =
-            load_config_from_str(r#"search_dirs = ["~/", "~/nonexistent_dir_xyz"]"#).unwrap();
-        let dirs = config.resolved_search_dirs();
-        // ~ should resolve to home (which exists), nonexistent should be filtered
-        assert!(dirs.len() <= 1);
-        if let Some((d, depth)) = dirs.first() {
-            assert!(!d.to_string_lossy().contains('~'));
-            assert_eq!(*depth, 1); // default depth
-        }
-    }
-
-    #[test]
-    fn test_theme_config_defaults() {
-        let config = load_config_from_str(r#"search_dirs = ["~/Development"]"#).unwrap();
-        assert_eq!(config.theme.accent, ThemeColor::Named(NamedColor::Magenta));
-        assert_eq!(config.theme.secondary, ThemeColor::Named(NamedColor::Cyan));
-        assert_eq!(config.theme.tertiary, ThemeColor::Named(NamedColor::Green));
-        assert_eq!(config.theme.success, ThemeColor::Named(NamedColor::Green));
-        assert_eq!(config.theme.error, ThemeColor::Named(NamedColor::Red));
-        assert_eq!(config.theme.warning, ThemeColor::Named(NamedColor::Yellow));
-        assert_eq!(config.theme.muted, ThemeColor::Named(NamedColor::DarkGray));
-        assert_eq!(config.theme.border, ThemeColor::Named(NamedColor::DarkGray));
-        assert_eq!(config.theme.hint, ThemeColor::Named(NamedColor::Blue));
+        let messages: Vec<_> = warnings.iter().map(|w| w.message.as_str()).collect();
         assert_eq!(
-            config.theme.highlight_fg,
-            ThemeColor::Named(NamedColor::Black)
+            messages,
+            [
+                "unknown config key ignored: future",
+                "unknown config key ignored: theme.future_theme",
+                "unknown config key ignored: extra.future_extra",
+            ]
         );
+    }
+
+    #[test]
+    fn a_product_without_an_extension_reports_extension_sections_as_unknown() {
+        let (_, _, warnings) = parse_config::<NoExtension>("[extra]\nlevel = 1").unwrap();
         assert_eq!(
-            config.theme.status.running,
-            ThemeColor::Named(NamedColor::Green)
-        );
-        assert_eq!(
-            config.theme.status.waiting,
-            ThemeColor::Named(NamedColor::Yellow)
-        );
-        assert_eq!(
-            config.theme.status.idle,
-            ThemeColor::Named(NamedColor::Cyan)
-        );
-        assert_eq!(
-            config.theme.status.unknown,
-            ThemeColor::Named(NamedColor::Blue)
+            warnings,
+            [ConfigWarning {
+                message: "unknown config key ignored: extra".into()
+            }]
         );
     }
 
     #[test]
-    fn test_theme_config_custom() {
-        let config = load_config_from_str(
-            r##"
-search_dirs = ["~/Development"]
+    fn type_errors_keep_their_position_in_the_file() {
+        let error =
+            parse_config::<TestExtension>("search_dirs = []\n[extra]\nlevel = \"x\"").unwrap_err();
+        assert!(format!("{error:#}").contains("line 3"), "{error:#}");
+    }
 
-[theme]
-accent = "blue"
-secondary = "#ff00ff"
-"##,
-        )
-        .unwrap();
-        assert_eq!(config.theme.accent, ThemeColor::Named(NamedColor::Blue));
-        assert_eq!(config.theme.secondary, ThemeColor::Rgb(255, 0, 255));
-        assert_eq!(config.theme.success, ThemeColor::Named(NamedColor::Green));
+    fn absolute_test_path(name: &str) -> PathBuf {
+        std::env::temp_dir()
+            .join("kiosk-test-config-tests")
+            .join(name)
+    }
+
+    fn path_string(path: &Path) -> String {
+        path.to_string_lossy().into_owned()
     }
 
     #[test]
-    fn test_theme_invalid_color_rejected() {
-        let result = load_config_from_str(
-            r#"
-search_dirs = ["~/Development"]
-
-[theme]
-accent = "notacolor"
-"#,
-        );
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(err.contains("invalid color"), "Error was: {err}");
-    }
-
-    #[test]
-    fn test_theme_color_parse() {
-        assert_eq!(
-            ThemeColor::parse("magenta"),
-            Some(ThemeColor::Named(NamedColor::Magenta))
-        );
-        assert_eq!(
-            ThemeColor::parse("RED"),
-            Some(ThemeColor::Named(NamedColor::Red))
-        );
-        assert_eq!(
-            ThemeColor::parse("#ff0000"),
-            Some(ThemeColor::Rgb(255, 0, 0))
-        );
-        assert_eq!(
-            ThemeColor::parse("gray"),
-            Some(ThemeColor::Named(NamedColor::Gray))
-        );
-        assert_eq!(
-            ThemeColor::parse("grey"),
-            Some(ThemeColor::Named(NamedColor::Gray))
-        );
-        assert_eq!(
-            ThemeColor::parse("dark_gray"),
-            Some(ThemeColor::Named(NamedColor::DarkGray))
-        );
-        assert_eq!(
-            ThemeColor::parse("darkgray"),
-            Some(ThemeColor::Named(NamedColor::DarkGray))
-        );
-        assert_eq!(
-            ThemeColor::parse("dark_grey"),
-            Some(ThemeColor::Named(NamedColor::DarkGray))
-        );
-        assert_eq!(ThemeColor::parse("notacolor"), None);
-        assert_eq!(ThemeColor::parse("#fff"), None);
-        assert_eq!(ThemeColor::parse("#zzzzzz"), None);
-    }
-
-    #[test]
-    fn test_theme_unknown_field_rejected() {
-        let result = load_config_from_str(
-            r#"
-search_dirs = ["~/Development"]
-
-[theme]
-accent = "blue"
-unknown = "bad"
-"#,
-        );
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_theme_status_custom() {
-        let config = load_config_from_str(
-            r##"
-search_dirs = ["~/Development"]
-
-[theme.status]
-running = "#ff0000"
-idle = "green"
-"##,
-        )
-        .unwrap();
-        assert_eq!(config.theme.status.running, ThemeColor::Rgb(255, 0, 0));
-        assert_eq!(
-            config.theme.status.waiting,
-            ThemeColor::Named(NamedColor::Yellow)
-        );
-        assert_eq!(
-            config.theme.status.idle,
-            ThemeColor::Named(NamedColor::Green)
-        );
-        assert_eq!(
-            config.theme.status.unknown,
-            ThemeColor::Named(NamedColor::Blue)
-        );
-    }
-
-    #[test]
-    fn test_theme_status_unknown_field_rejected() {
-        let result = load_config_from_str(
-            r#"
-search_dirs = ["~/Development"]
-
-[theme.status]
-running = "blue"
-unknown_field = "bad"
-"#,
-        );
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_named_color_all_matches_as_str() {
-        for (name, color) in NamedColor::all() {
-            assert_eq!(
-                color.as_str(),
-                *name,
-                "NamedColor::{color:?} has mismatched all() and as_str()"
-            );
-        }
-    }
-
-    #[test]
-    fn test_named_color_all_are_parseable() {
-        for (name, color) in NamedColor::all() {
-            assert_eq!(
-                ThemeColor::parse(name),
-                Some(ThemeColor::Named(*color)),
-                "NamedColor canonical name '{name}' should parse"
-            );
-        }
-    }
-
-    #[test]
-    fn test_named_color_aliases_resolve() {
-        for (alias, canonical) in NamedColor::aliases() {
-            assert_eq!(
-                NamedColor::resolve_alias(alias),
-                *canonical,
-                "Alias '{alias}' should resolve to '{canonical}'"
-            );
-            assert!(
-                ThemeColor::parse(alias).is_some(),
-                "Alias '{alias}' should parse as a valid color"
-            );
-        }
-    }
-
-    #[test]
-    fn test_format_default_config_is_valid_toml() {
-        let dirs = vec!["~/Development".to_string(), "~/Work".to_string()];
-        let content = format_default_config(&dirs);
-        assert!(content.contains("search_dirs"));
-        let _config: Config = toml::from_str(&content).unwrap();
-    }
-
-    #[test]
-    fn test_format_default_config_roundtrip() {
-        let dirs = vec!["~/Projects".to_string(), "~/Code".to_string()];
-        let content = format_default_config(&dirs);
-        let config = load_config_from_str(&content).unwrap();
-        let paths: Vec<String> = config
-            .search_dirs
-            .iter()
-            .map(|e| match e {
-                SearchDirEntry::Simple(s) => s.clone(),
-                SearchDirEntry::Rich { path, .. } => path.clone(),
-            })
-            .collect();
-        assert_eq!(paths, dirs);
-    }
-
-    #[test]
-    fn test_format_default_config_escapes_special_chars() {
-        let dirs = vec![
-            "C:\\Users\\Tom".to_string(),
-            "path with \"quotes\"".to_string(),
-        ];
-        let content = format_default_config(&dirs);
-        // Should produce valid TOML despite special characters
-        let config = load_config_from_str(&content).unwrap();
-        let paths: Vec<String> = config
-            .search_dirs
-            .iter()
-            .map(|e| match e {
-                SearchDirEntry::Simple(s) => s.clone(),
-                SearchDirEntry::Rich { path, .. } => path.clone(),
-            })
-            .collect();
-        assert_eq!(paths, dirs);
-    }
-
-    #[test]
-    fn test_format_default_config_empty_dirs() {
-        let content = format_default_config(&[]);
-        assert!(content.contains("search_dirs = []"));
-    }
-
-    #[test]
-    fn test_config_file_exists_returns_false_for_missing() {
-        // This relies on the test not having a kiosk config in the default location,
-        // which is fragile. Instead just verify the function doesn't panic.
-        let _ = config_file_exists();
-    }
-
-    #[test]
-    fn test_format_default_config_single_dir() {
-        let dirs = vec!["~/Dev".to_string()];
-        let content = format_default_config(&dirs);
-        let config = load_config_from_str(&content).unwrap();
-        assert_eq!(config.search_dirs.len(), 1);
-    }
-
-    #[test]
-    fn test_rich_search_dirs() {
-        let config = load_config_from_str(
+    fn parses_simple_and_depth_search_directory_forms() {
+        let (config, warnings) = parse(
             r#"search_dirs = [
                 "~/Development",
                 { path = "~/Work", depth = 3 },
@@ -816,300 +619,445 @@ unknown_field = "bad"
             ]"#,
         )
         .unwrap();
-        assert_eq!(config.search_dirs.len(), 3);
-
-        assert!(
-            matches!(&config.search_dirs[0], SearchDirEntry::Simple(s) if s == "~/Development")
-        );
-        match &config.search_dirs[1] {
-            SearchDirEntry::Rich { path, depth } => {
-                assert_eq!(path, "~/Work");
-                assert_eq!(*depth, Some(3));
-            }
-            SearchDirEntry::Simple(_) => panic!("Expected Rich variant"),
-        }
-        match &config.search_dirs[2] {
-            SearchDirEntry::Rich { path, depth } => {
-                assert_eq!(path, "~/Projects");
-                assert_eq!(*depth, None);
-            }
-            SearchDirEntry::Simple(_) => panic!("Expected Rich variant"),
-        }
-    }
-
-    #[test]
-    fn test_write_default_config_creates_file() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("kiosk").join("config.toml");
-        // Temporarily override config_file() is not possible, so test
-        // format_default_config + fs::write manually to verify the flow.
-        let dirs = vec!["~/Development".to_string()];
-        let content = format_default_config(&dirs);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(&path, &content).unwrap();
-        let loaded = load_config_from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(loaded.search_dirs.len(), 1);
-    }
-
-    #[test]
-    fn test_agent_config_defaults() {
-        let config = load_config_from_str(r#"search_dirs = ["~/Dev"]"#).unwrap();
-        assert_eq!(config.agent.poll_interval_ms, 500);
-    }
-
-    #[test]
-    fn test_agent_config_custom_poll_interval() {
-        let config = load_config_from_str(
-            r#"
-search_dirs = ["~/Dev"]
-
-[agent]
-poll_interval_ms = 5000
-"#,
-        )
-        .unwrap();
-        assert_eq!(config.agent.poll_interval_ms, 5000);
-    }
-
-    #[test]
-    fn test_agent_config_rejects_unknown_fields() {
-        let result = load_config_from_str(
-            r#"
-search_dirs = ["~/Dev"]
-
-[agent]
-poll_interval_ms = 2000
-unknown_field = true
-"#,
-        );
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_agent_config_enabled_defaults_to_true() {
-        let config = load_config_from_str(r#"search_dirs = ["~/Dev"]"#).unwrap();
-        assert!(config.agent.enabled);
-    }
-
-    #[test]
-    fn test_agent_config_enabled_false() {
-        let config = load_config_from_str(
-            r#"
-search_dirs = ["~/Dev"]
-
-[agent]
-enabled = false
-"#,
-        )
-        .unwrap();
-        assert!(!config.agent.enabled);
-        // poll_interval_ms should still default
-        assert_eq!(config.agent.poll_interval_ms, 500);
-    }
-
-    #[test]
-    fn test_agent_config_enabled_true_explicit() {
-        let config = load_config_from_str(
-            r#"
-search_dirs = ["~/Dev"]
-
-[agent]
-enabled = true
-poll_interval_ms = 3000
-"#,
-        )
-        .unwrap();
-        assert!(config.agent.enabled);
-        assert_eq!(config.agent.poll_interval_ms, 3000);
-    }
-
-    #[test]
-    fn test_agent_config_only_poll_interval() {
-        // Setting only poll_interval_ms should keep enabled as default (true)
-        let config = load_config_from_str(
-            r#"
-search_dirs = ["~/Dev"]
-
-[agent]
-poll_interval_ms = 500
-"#,
-        )
-        .unwrap();
-        assert!(config.agent.enabled);
-        assert_eq!(config.agent.poll_interval_ms, 500);
-    }
-
-    #[test]
-    fn test_agent_config_only_enabled() {
-        // Setting only enabled should keep poll_interval_ms as default
-        let config = load_config_from_str(
-            r#"
-search_dirs = ["~/Dev"]
-
-[agent]
-enabled = false
-"#,
-        )
-        .unwrap();
-        assert!(!config.agent.enabled);
-        assert_eq!(config.agent.poll_interval_ms, 500);
-    }
-
-    #[test]
-    fn test_agent_config_poll_interval_minimum_enforced() {
-        let result = load_config_from_str(
-            r#"
-search_dirs = ["~/Dev"]
-
-[agent]
-poll_interval_ms = 50
-"#,
-        );
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("at least"),
-            "Error should mention minimum: {err}"
-        );
-    }
-
-    #[test]
-    fn test_agent_config_poll_interval_zero_rejected() {
-        let result = load_config_from_str(
-            r#"
-search_dirs = ["~/Dev"]
-
-[agent]
-poll_interval_ms = 0
-"#,
-        );
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_agent_config_poll_interval_at_minimum_accepted() {
-        let config = load_config_from_str(
-            r#"
-search_dirs = ["~/Dev"]
-
-[agent]
-poll_interval_ms = 100
-"#,
-        )
-        .unwrap();
-        assert_eq!(config.agent.poll_interval_ms, 100);
-    }
-
-    #[test]
-    fn test_write_default_config_create_new_rejects_existing() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("config.toml");
-        fs::write(&path, "existing").unwrap();
-
-        let result = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path);
-        assert!(result.is_err());
+        assert_eq!(warnings, vec![]);
         assert_eq!(
-            result.unwrap_err().kind(),
-            std::io::ErrorKind::AlreadyExists
+            config.search_dirs,
+            [
+                SearchDirEntry::Simple("~/Development".into()),
+                SearchDirEntry::Rich {
+                    path: "~/Work".into(),
+                    depth: Some(3),
+                    include_non_git: None,
+                    optional: false,
+                },
+                SearchDirEntry::Rich {
+                    path: "~/Projects".into(),
+                    depth: None,
+                    include_non_git: None,
+                    optional: false,
+                },
+            ]
         );
     }
 
     #[test]
-    fn test_agent_labels_defaults() {
-        let labels = AgentLabelsConfig::default();
-        assert_eq!(labels.running, "[RUNNING]");
-        assert_eq!(labels.waiting, "[WAITING]");
-        assert_eq!(labels.idle, "[IDLE]");
-        assert_eq!(labels.unknown, "[UNKNOWN]");
-    }
-
-    #[test]
-    fn test_agent_labels_custom() {
-        let config = load_config_from_str(
+    fn resolves_global_and_per_directory_non_git_settings() {
+        let (config, warnings) = parse(
             r#"
-search_dirs = ["~/Dev"]
-
-[agent.labels]
-running = "ACTIVE"
-waiting = "PEND"
-idle = "OFF"
-unknown = "N/A"
+include_non_git = true
+search_dirs = [
+    "~/Inherited",
+    { path = "~/AlsoInherited" },
+    { path = "~/Included", include_non_git = true },
+    { path = "~/Excluded", include_non_git = false },
+]
 "#,
         )
         .unwrap();
-        assert_eq!(config.agent.labels.running, "ACTIVE");
-        assert_eq!(config.agent.labels.waiting, "PEND");
-        assert_eq!(config.agent.labels.idle, "OFF");
-        assert_eq!(config.agent.labels.unknown, "N/A");
-    }
 
-    #[test]
-    fn test_agent_labels_partial_override() {
-        let config = load_config_from_str(
-            r#"
-search_dirs = ["~/Dev"]
-
-[agent.labels]
-running = "GO"
-"#,
-        )
-        .unwrap();
-        assert_eq!(config.agent.labels.running, "GO");
-        assert_eq!(config.agent.labels.waiting, "[WAITING]");
-        assert_eq!(config.agent.labels.idle, "[IDLE]");
-        assert_eq!(config.agent.labels.unknown, "[UNKNOWN]");
-    }
-
-    #[test]
-    fn test_agent_labels_full_custom_no_brackets() {
-        let config = load_config_from_str(
-            r#"
-search_dirs = ["~/Dev"]
-
-[agent.labels]
-running = "RUN"
-waiting = "WAIT"
-idle = "IDLE"
-unknown = "??"
-"#,
-        )
-        .unwrap();
-        assert_eq!(config.agent.labels.running, "RUN");
-        assert_eq!(config.agent.labels.waiting, "WAIT");
-        assert_eq!(config.agent.labels.idle, "IDLE");
-        assert_eq!(config.agent.labels.unknown, "??");
-        assert_eq!(config.agent.labels.max_label_width(), 4);
-    }
-
-    #[test]
-    fn test_agent_labels_rejects_unknown_fields() {
-        let result = load_config_from_str(
-            r#"
-search_dirs = ["~/Dev"]
-
-[agent.labels]
-running = "RUN"
-bogus = "BAD"
-"#,
+        assert_eq!(warnings, vec![]);
+        assert!(config.include_non_git);
+        assert!(config.search_dirs[0].resolved_include_non_git(config.include_non_git));
+        assert!(config.search_dirs[1].resolved_include_non_git(config.include_non_git));
+        assert!(config.search_dirs[2].resolved_include_non_git(config.include_non_git));
+        assert!(!config.search_dirs[3].resolved_include_non_git(config.include_non_git));
+        assert!(matches!(
+            &config.search_dirs[1],
+            SearchDirEntry::Rich {
+                include_non_git: None,
+                ..
+            }
+        ));
+        assert!(matches!(
+            &config.search_dirs[2],
+            SearchDirEntry::Rich {
+                include_non_git: Some(true),
+                ..
+            }
+        ));
+        assert!(matches!(
+            &config.search_dirs[3],
+            SearchDirEntry::Rich {
+                include_non_git: Some(false),
+                ..
+            }
+        ));
+        assert!(
+            config.search_dirs[2].resolved_include_non_git(false),
+            "an explicit true must override a false global value"
         );
-        assert!(result.is_err());
+
+        let resolved = config
+            .resolved_search_dirs_with(Some(Path::new("/home/tester")), |_| {
+                SearchDirStatus::Directory
+            })
+            .unwrap();
+        assert_eq!(
+            resolved
+                .dirs
+                .iter()
+                .map(|dir| dir.include_non_git)
+                .collect::<Vec<_>>(),
+            [true, true, true, false]
+        );
     }
 
     #[test]
-    fn test_agent_labels_max_width() {
-        let labels = AgentLabelsConfig::default();
-        // "[RUNNING]", "[WAITING]", "[UNKNOWN]" are 9 chars; "[IDLE]" is 6
-        assert_eq!(labels.max_label_width(), 9);
+    fn expands_tilde_with_injected_home_and_preserves_depth() {
+        let (config, _) =
+            parse(r#"search_dirs = ["~", { path = "~/Work", depth = 4 }, "/absolute"]"#).unwrap();
+        let resolved = config
+            .resolved_search_dirs_with(Some(Path::new("/home/tester")), |_| {
+                SearchDirStatus::Directory
+            })
+            .unwrap();
+        assert_eq!(
+            resolved.dirs,
+            [
+                ResolvedSearchDir {
+                    path: PathBuf::from("/home/tester"),
+                    depth: 1,
+                    include_non_git: false,
+                },
+                ResolvedSearchDir {
+                    path: PathBuf::from("/home/tester/Work"),
+                    depth: 4,
+                    include_non_git: false,
+                },
+                ResolvedSearchDir {
+                    path: PathBuf::from("/absolute"),
+                    depth: 1,
+                    include_non_git: false,
+                },
+            ]
+        );
+        assert_eq!(resolved.warnings, vec![]);
+    }
 
-        let labels = AgentLabelsConfig {
-            running: "RUNNING".to_string(),
-            waiting: "W".to_string(),
-            idle: "I".to_string(),
-            unknown: "?".to_string(),
-        };
-        assert_eq!(labels.max_label_width(), 7);
+    #[test]
+    fn missing_home_makes_tilde_expansion_fail_loudly() {
+        let (config, _) = parse(r#"search_dirs = ["~/Work"]"#).unwrap();
+        assert!(
+            config
+                .resolved_search_dirs_with(None, |_| SearchDirStatus::Directory)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn unusable_search_directories_are_reported_instead_of_silently_dropped() {
+        let (config, _) =
+            parse(r#"search_dirs = ["/exists", "/missing", "/file", "/denied"]"#).unwrap();
+        let resolved = config
+            .resolved_search_dirs_with(None, |path| match path.to_str().unwrap() {
+                "/exists" => SearchDirStatus::Directory,
+                "/missing" => SearchDirStatus::Missing,
+                "/file" => SearchDirStatus::NotADirectory,
+                "/denied" => SearchDirStatus::Inaccessible(io::ErrorKind::PermissionDenied.into()),
+                other => panic!("unexpected probe for {other}"),
+            })
+            .unwrap();
+
+        assert_eq!(
+            resolved.dirs,
+            [ResolvedSearchDir {
+                path: PathBuf::from("/exists"),
+                depth: 1,
+                include_non_git: false,
+            }]
+        );
+        assert_eq!(resolved.missing_optional, Vec::<PathBuf>::new());
+        let messages = resolved
+            .warnings
+            .iter()
+            .map(|warning| warning.message.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(messages.len(), 3, "warnings were: {messages:?}");
+        assert!(messages[0].contains("does not exist: /missing"));
+        assert!(messages[1].contains("is not a directory: /file"));
+        assert!(messages[2].contains("cannot be read"));
+        assert!(messages[2].contains("/denied"));
+    }
+
+    #[test]
+    fn optional_search_directories_are_skipped_silently_only_when_missing() {
+        let (config, warnings) = parse(
+            r#"search_dirs = [
+                { path = "/present", optional = true },
+                { path = "/missing", optional = true },
+                { path = "/file", optional = true },
+                { path = "/denied", optional = true },
+                { path = "/required-missing", optional = false },
+            ]"#,
+        )
+        .unwrap();
+        assert_eq!(warnings, vec![]);
+        assert!(config.search_dirs[..4].iter().all(SearchDirEntry::optional));
+        assert!(!config.search_dirs[4].optional());
+
+        let resolved = config
+            .resolved_search_dirs_with(None, |path| match path.to_str().unwrap() {
+                "/present" => SearchDirStatus::Directory,
+                "/missing" | "/required-missing" => SearchDirStatus::Missing,
+                "/file" => SearchDirStatus::NotADirectory,
+                "/denied" => SearchDirStatus::Inaccessible(io::ErrorKind::PermissionDenied.into()),
+                other => panic!("unexpected probe for {other}"),
+            })
+            .unwrap();
+
+        assert_eq!(
+            resolved.dirs,
+            [ResolvedSearchDir {
+                path: PathBuf::from("/present"),
+                depth: 1,
+                include_non_git: false,
+            }]
+        );
+        assert_eq!(resolved.missing_optional, [PathBuf::from("/missing")]);
+        let messages = resolved
+            .warnings
+            .iter()
+            .map(|warning| warning.message.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(messages.len(), 3, "warnings were: {messages:?}");
+        assert!(messages[0].contains("is not a directory: /file"));
+        assert!(messages[1].contains("/denied"));
+        assert!(messages[2].contains("does not exist: /required-missing"));
+    }
+
+    #[test]
+    fn optional_defaults_to_false_and_is_omitted_when_serialized() {
+        let (config, _) = parse(
+            r#"search_dirs = ["/simple", { path = "/rich" }, { path = "/opt", optional = true }]"#,
+        )
+        .unwrap();
+        assert_eq!(
+            config
+                .search_dirs
+                .iter()
+                .map(SearchDirEntry::optional)
+                .collect::<Vec<_>>(),
+            [false, false, true]
+        );
+
+        let serialized = toml::to_string(&config.search_dirs[1]).unwrap();
+        assert!(!serialized.contains("optional"), "serialized: {serialized}");
+        let serialized = toml::to_string(&config.search_dirs[2]).unwrap();
+        assert!(
+            serialized.contains("optional = true"),
+            "serialized: {serialized}"
+        );
+    }
+
+    #[test]
+    fn probe_distinguishes_missing_paths_from_other_problems() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("file");
+        fs::write(&file, "").unwrap();
+
+        assert!(matches!(
+            probe_search_dir(temp.path()),
+            SearchDirStatus::Directory
+        ));
+        assert!(matches!(
+            probe_search_dir(&temp.path().join("missing")),
+            SearchDirStatus::Missing
+        ));
+        assert!(matches!(
+            probe_search_dir(&file),
+            SearchDirStatus::NotADirectory
+        ));
+        assert!(
+            matches!(
+                probe_search_dir(&file.join("child")),
+                SearchDirStatus::NotADirectory
+            ),
+            "a path beneath a file is misconfigured, not missing"
+        );
+        assert!(
+            matches!(
+                probe_search_dir(&file.join("child").join("grandchild")),
+                SearchDirStatus::NotADirectory
+            ),
+            "a path several levels beneath a file is misconfigured, not missing"
+        );
+        assert!(matches!(
+            probe_search_dir(&temp.path().join("missing").join("child")),
+            SearchDirStatus::Missing
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn probe_treats_a_dangling_symlink_as_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        let link = temp.path().join("unmounted");
+        std::os::unix::fs::symlink(temp.path().join("absent-target"), &link).unwrap();
+
+        assert!(matches!(probe_search_dir(&link), SearchDirStatus::Missing));
+    }
+
+    #[test]
+    fn config_path_uses_documented_precedence() {
+        let plugin = absolute_test_path("plugin-config");
+        let xdg = absolute_test_path("xdg");
+        let home = absolute_test_path("home");
+        let values = HashMap::from([
+            ("KIOSK_TEST_CONFIG_DIR", path_string(&plugin)),
+            ("XDG_CONFIG_HOME", path_string(&xdg)),
+            ("HOME", path_string(&home)),
+        ]);
+        let resolution = resolve_config_path(&TEST_PRODUCT, |name| values.get(name).cloned());
+        assert_eq!(resolution.path, Some(plugin.join("config.toml")));
+    }
+
+    #[test]
+    fn relative_config_fallbacks_are_refused() {
+        let values = HashMap::from([
+            ("KIOSK_TEST_CONFIG_DIR", "plugin-config"),
+            ("XDG_CONFIG_HOME", ".config"),
+            ("HOME", "relative-home"),
+        ]);
+        let resolution = resolve_config_path(&TEST_PRODUCT, |name| {
+            values.get(name).map(ToString::to_string)
+        });
+        assert!(resolution.path.is_none());
+        assert_eq!(resolution.warnings.len(), 3);
+        assert!(
+            resolution
+                .warnings
+                .iter()
+                .all(|warning| warning.message.contains("refusing relative"))
+        );
+    }
+
+    #[test]
+    fn relative_higher_priority_value_falls_through_to_absolute_xdg() {
+        let xdg = absolute_test_path("xdg-fallback");
+        let values = HashMap::from([
+            ("KIOSK_TEST_CONFIG_DIR", "plugin-config".to_string()),
+            ("XDG_CONFIG_HOME", path_string(&xdg)),
+        ]);
+        let resolution = resolve_config_path(&TEST_PRODUCT, |name| values.get(name).cloned());
+        assert_eq!(resolution.path, Some(xdg.join("kiosk-test/config.toml")));
+        assert_eq!(resolution.warnings.len(), 1);
+    }
+
+    #[test]
+    fn unknown_keys_are_ignored_with_warnings() {
+        let (config, warnings) = parse(
+            r#"
+search_dirs = []
+future_root_key = true
+
+[theme]
+future_theme_key = "blue"
+"#,
+        )
+        .unwrap();
+        assert_eq!(config.search_dirs, vec![]);
+        assert_eq!(warnings.len(), 2);
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.message.contains("future_root_key"))
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.message.contains("future_theme_key"))
+        );
+    }
+
+    #[test]
+    fn theme_accepts_named_terminal_colors_and_rejects_truecolor_values() {
+        let (config, warnings) = parse(
+            r#"
+[theme]
+accent = "cyan"
+secondary = "blue"
+tertiary = "yellow"
+highlight_fg = "reset"
+"#,
+        )
+        .unwrap();
+        assert_eq!(warnings, vec![]);
+        assert_eq!(config.theme.accent, ThemeColor::Cyan);
+        assert_eq!(config.theme.secondary, ThemeColor::Blue);
+        assert_eq!(config.theme.tertiary, ThemeColor::Yellow);
+        assert_eq!(config.theme.highlight_fg, ThemeColor::Reset);
+        assert!(parse("[theme]\naccent = \"#ff00ff\"").is_err());
+        assert!(parse("[theme]\nsecondary = \"#00ffff\"").is_err());
+        assert!(parse("[theme]\ntertiary = [0, 255, 0]").is_err());
+        assert!(parse("[theme]\naccent = [255, 0, 255]").is_err());
+    }
+
+    #[test]
+    fn missing_config_loads_empty_defaults_without_reading_relative_paths() {
+        let loaded = load_config_with::<TestExtension>(
+            &TEST_PRODUCT,
+            |_| None,
+            |_| panic!("no path should be read"),
+        )
+        .unwrap();
+        assert_eq!(loaded.core.search_dirs, vec![]);
+        assert!(loaded.path.is_none());
+        assert!(!loaded.exists);
+    }
+
+    #[test]
+    fn injected_reader_loads_config() {
+        let home = absolute_test_path("injected-home");
+        let expected = home.join(".config/kiosk-test/config.toml");
+        let loaded = load_config_with::<TestExtension>(
+            &TEST_PRODUCT,
+            |name| (name == "HOME").then(|| path_string(&home)),
+            |path| {
+                assert_eq!(path, expected);
+                Ok(Some("search_dirs = [\"/repos\"]".into()))
+            },
+        )
+        .unwrap();
+        assert_eq!(loaded.core.search_dirs.len(), 1);
+        assert!(loaded.exists);
+    }
+
+    #[test]
+    fn resolved_but_missing_and_existing_empty_configs_are_distinguished() {
+        let config_dir = absolute_test_path("resolved-config");
+        let missing = load_config_with::<TestExtension>(
+            &TEST_PRODUCT,
+            |name| (name == "KIOSK_TEST_CONFIG_DIR").then(|| path_string(&config_dir)),
+            |_| Ok(None),
+        )
+        .unwrap();
+        assert_eq!(
+            missing.path.as_deref(),
+            Some(config_dir.join("config.toml").as_path())
+        );
+        assert!(!missing.exists);
+
+        let empty = load_config_with::<TestExtension>(
+            &TEST_PRODUCT,
+            |name| (name == "KIOSK_TEST_CONFIG_DIR").then(|| path_string(&config_dir)),
+            |_| Ok(Some("search_dirs = []".into())),
+        )
+        .unwrap();
+        assert!(empty.exists);
+        assert_eq!(empty.core.search_dirs, vec![]);
+    }
+
+    #[test]
+    fn invalid_key_chords_and_unknown_actions_are_config_errors() {
+        let chord = parse("[keys.branch_select]\n\"Hyper-B\" = \"new_branch\"").unwrap_err();
+        assert!(format!("{chord:#}").contains("invalid key chord"));
+        let action = parse("[keys.branch_select]\n\"C-b\" = \"unknown_action\"").unwrap_err();
+        assert!(format!("{action:#}").contains("unknown key action"));
+    }
+
+    #[test]
+    fn invalid_config_is_an_error_and_zero_depth_is_rejected() {
+        assert!(parse("search_dirs = 1").is_err());
+        assert!(parse(r#"search_dirs = [{ path = "/repos", depth = 0 }]"#).is_err());
     }
 }

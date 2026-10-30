@@ -1,6 +1,5 @@
-use crate::theme::Theme;
-use kiosk_core::config::KeysConfig;
-use kiosk_core::state::AppState;
+use std::time::Instant;
+
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
@@ -9,129 +8,87 @@ use ratatui::{
     widgets::{Block, Borders, HighlightSpacing, List, ListItem, ListState},
 };
 
-#[allow(clippy::too_many_lines)]
+use crate::theme::Theme;
+use kiosk_core::state::{AppState, BranchEntry};
+
+use super::{
+    list_row::{right_align_suffix, truncate_spans},
+    repo_list::SPINNER_FOR_LOADING,
+};
+
 pub fn draw(
-    f: &mut Frame,
+    frame: &mut Frame,
     area: Rect,
-    state: &AppState,
+    state: &mut AppState,
     theme: &Theme,
-    _keys: &KeysConfig,
-    show_selection: bool,
+    spinner_start: Instant,
 ) {
+    let [search_area, list_area] =
+        Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).areas(area);
     let repo_name = state
-        .selected_repo_idx
-        .map_or("??", |i| state.repos[i].name.as_str());
-    let selected_repo_path = state.selected_repo_idx.map(|i| state.repos[i].path.clone());
-
-    let chunks = Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(area);
-
-    // Search bar
+        .branch_context()
+        .map_or("?", |context| context.repo_name.as_str());
+    let repo_name = kiosk_core::display::sanitize(repo_name);
     let title = format!("{repo_name} — select branch");
     super::search_bar::draw(
-        f,
-        chunks[0],
+        frame,
+        search_area,
         &super::search_bar::SearchBarStyle {
             title: &title,
-            placeholder: "Type to search branches (or type new branch name)...",
+            placeholder: "Type to search branches…",
             border_color: theme.secondary,
             muted_color: theme.muted,
         },
-        &state.branch_list.input.text,
-        state.branch_list.input.cursor,
+        &state.branch_view.list.input.text,
+        state.branch_view.list.input.cursor,
     );
 
-    // Row width available for content (list area minus borders minus highlight symbol "▸ ")
-    let row_width = (chunks[1].width as usize).saturating_sub(4);
-
-    // Branch list
-    let mut items: Vec<ListItem> = state
-        .branch_list
-        .filtered
+    state.active_list_rows = usize::from(list_area.height.saturating_sub(2)).max(1);
+    state
+        .branch_view
+        .list
+        .update_scroll_offset(state.active_list_rows);
+    let visible = state.branch_view.list.visible_items(state.active_list_rows);
+    let selected = state.branch_view.list.selected.and_then(|selected| {
+        visible
+            .iter()
+            .position(|(position, _)| *position == selected)
+    });
+    let row_width = usize::from(list_area.width.saturating_sub(4));
+    let mut items: Vec<_> = visible
         .iter()
-        .map(|(idx, _)| {
-            let branch = &state.branches[*idx];
-            let mut left_spans: Vec<Span<'_>> = Vec::new();
-
-            if let Some(remote) = &branch.remote {
-                left_spans.push(Span::styled(&branch.name, Style::default().fg(theme.muted)));
-                left_spans.push(Span::styled(
-                    format!(" ({remote})"),
-                    Style::default()
-                        .fg(theme.muted)
-                        .add_modifier(Modifier::ITALIC),
-                ));
-            } else {
-                left_spans.push(Span::raw(&branch.name));
-                let is_deleting = selected_repo_path.as_ref().is_some_and(|repo_path| {
-                    state.is_branch_pending_delete(repo_path, &branch.name)
-                });
-
-                if is_deleting {
-                    left_spans.push(Span::styled(
-                        " (deleting...)",
-                        Style::default().fg(theme.accent),
-                    ));
-                } else if branch.has_session {
-                    left_spans.push(Span::styled(
-                        " (session)",
-                        Style::default().fg(theme.success),
-                    ));
-                } else if branch.worktree_path.is_some() {
-                    left_spans.push(Span::styled(
-                        " (worktree)",
-                        Style::default().fg(theme.warning),
-                    ));
-                }
-
-                if branch.is_current {
-                    left_spans.push(Span::styled(" *", Style::default().fg(theme.accent)));
-                }
-            }
-
-            ListItem::new(Line::from(
-                super::list_row::render_with_optional_agent_badges(
-                    &left_spans,
-                    &branch.agent_statuses,
-                    &state.agent_labels,
-                    theme,
-                    row_width,
-                ),
-            ))
-        })
+        .filter_map(|(_, index)| state.branch_view.entries.get(*index))
+        .map(|branch| branch_item(branch, theme, row_width))
         .collect();
-
-    // If search doesn't match anything, show "create new branch" option
-    if state.loading_branches && state.branch_list.filtered.is_empty() {
-        items.push(ListItem::new(Line::from(Span::styled(
-            "Loading branches...",
+    if state.branch_view.loading && items.is_empty() {
+        items.push(ListItem::new(Span::styled(
+            "Loading branches…",
             Style::default().fg(theme.muted),
-        ))));
-    } else if state.branch_list.filtered.is_empty() && !state.branch_list.input.text.is_empty() {
-        items.push(ListItem::new(Line::from(vec![
-            Span::styled("+ Create branch ", Style::default().fg(theme.success)),
-            Span::styled(
-                format!("\"{}\"", state.branch_list.input.text),
-                Style::default()
-                    .fg(theme.success)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" (Enter to pick base)", Style::default().fg(theme.muted)),
-        ])));
+        )));
     }
 
-    let count = state.branch_list.filtered.len();
-    let loading_suffix = if state.loading_branches {
-        " | loading..."
-    } else if state.fetching_remotes {
-        " | fetching..."
+    let loading_suffix = if state.branch_view.loading
+        || state.branch_view.fetching_remote_repo.is_some()
+    {
+        let frame = (spinner_start.elapsed().as_millis() / 80) as usize % SPINNER_FOR_LOADING.len();
+        let label = if state.branch_view.loading {
+            "loading"
+        } else {
+            "fetching"
+        };
+        format!(" | {label}… {}", SPINNER_FOR_LOADING[frame])
     } else {
-        ""
+        String::new()
     };
     let list = List::new(items)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(format!(" {count} branches{loading_suffix} "))
+                .title(format!(
+                    " {} of {} branches{loading_suffix} ",
+                    state.branch_view.list.filtered.len(),
+                    state.branch_view.entries.len()
+                ))
                 .border_style(Style::default().fg(theme.border)),
         )
         .highlight_style(
@@ -142,13 +99,106 @@ pub fn draw(
         )
         .highlight_symbol("▸ ")
         .highlight_spacing(HighlightSpacing::Always);
-
     let mut list_state = ListState::default();
-    list_state.select(
-        show_selection
-            .then_some(state.branch_list.selected)
-            .flatten(),
-    );
-    *list_state.offset_mut() = state.branch_list.scroll_offset;
-    f.render_stateful_widget(list, chunks[1], &mut list_state);
+    list_state.select(selected);
+    frame.render_stateful_widget(list, list_area, &mut list_state);
+}
+
+fn branch_item(branch: &BranchEntry, theme: &Theme, row_width: usize) -> ListItem<'static> {
+    let mut left = if branch.remote.is_some() {
+        vec![Span::styled(
+            kiosk_core::display::sanitize(&branch.display_name()).into_owned(),
+            Style::default().fg(theme.muted).add_modifier(Modifier::DIM),
+        )]
+    } else {
+        vec![Span::raw(
+            kiosk_core::display::sanitize(&branch.name).into_owned(),
+        )]
+    };
+    if branch.remote.is_none() && branch.checkout.is_some() {
+        left.push(Span::styled(
+            " (worktree)",
+            Style::default().fg(theme.secondary),
+        ));
+    }
+    if branch.remote.is_none() && branch.is_current {
+        left.push(Span::styled(" *", Style::default().fg(theme.secondary)));
+    }
+    if branch.remote.is_none() && branch.is_default {
+        left.push(Span::styled(" (default)", Style::default().fg(theme.muted)));
+    }
+    let spans = if branch.is_open() {
+        right_align_suffix(
+            &left,
+            &[Span::styled("● open", Style::default().fg(theme.open))],
+            row_width,
+        )
+    } else {
+        truncate_spans(&left, row_width)
+    };
+    ListItem::new(Line::from(spans))
+}
+
+#[cfg(test)]
+mod tests {
+    use kiosk_core::product::TEST_PRODUCT;
+    use std::time::Instant;
+
+    use ratatui::{Terminal, backend::TestBackend, style::Modifier};
+
+    use crate::theme::Theme;
+    use kiosk_core::state::{AppState, BranchContext, BranchEntry, Mode, SearchableList};
+
+    use super::draw;
+
+    #[test]
+    fn remote_row_uses_qualified_name_without_redundant_suffix() {
+        let mut state = AppState::new(&TEST_PRODUCT, None);
+        state.mode = Mode::BranchSelect(BranchContext {
+            repo_path: "/repo".into(),
+            repo_name: "repo".into(),
+        });
+        state.branch_view.entries = BranchEntry::build_remote("origin", &["feature".into()], &[]);
+        state.branch_view.list = SearchableList::new(1);
+        state.branch_view.list.selected = None;
+        let theme = Theme::from_config(&kiosk_core::config::ThemeConfig::default());
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                draw(frame, area, &mut state, &theme, Instant::now());
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let rendered = buffer
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+        assert!(rendered.contains("origin/feature"));
+        assert!(!rendered.contains("(remote)"));
+        let label = "origin/feature"
+            .chars()
+            .map(|character| character.to_string())
+            .collect::<Vec<_>>();
+        let cells = buffer
+            .content()
+            .windows(label.len())
+            .find(|cells| {
+                cells
+                    .iter()
+                    .zip(&label)
+                    .all(|(cell, symbol)| cell.symbol() == symbol)
+            })
+            .expect("remote label cells");
+        assert!(cells.iter().all(|cell| cell.fg == theme.muted));
+        assert!(
+            cells
+                .iter()
+                .all(|cell| cell.modifier.contains(Modifier::DIM))
+        );
+    }
 }

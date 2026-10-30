@@ -1,48 +1,87 @@
-use super::repo::{Repo, Worktree};
-use anyhow::Result;
-use std::path::{Path, PathBuf};
+use std::{
+    error::Error,
+    fmt,
+    path::{Path, PathBuf},
+};
 
-pub trait GitProvider: Send + Sync {
-    /// Fast directory scan: returns repos with empty worktrees (no git calls).
-    fn scan_repos(&self, dirs: &[(PathBuf, u16)]) -> Vec<Repo>;
-    /// Fast directory scan for a single dir, calling `on_found` for each repo found.
-    /// Default implementation falls back to `scan_repos`.
-    fn scan_repos_streaming(&self, dir: &Path, depth: u16, on_found: &dyn Fn(Repo)) {
-        for repo in self.scan_repos(&[(dir.to_path_buf(), depth)]) {
-            on_found(repo);
+use anyhow::Result;
+
+use super::{Listed, Repo, ScanWarning, Worktree};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalBranchAlreadyExists {
+    branch: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirtyWorktreeRequiresForce;
+
+impl fmt::Display for DirtyWorktreeRequiresForce {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("worktree contains modified or untracked files")
+    }
+}
+
+impl Error for DirtyWorktreeRequiresForce {}
+
+impl LocalBranchAlreadyExists {
+    pub fn new(branch: impl Into<String>) -> Self {
+        Self {
+            branch: branch.into(),
         }
     }
-    /// Full discovery: dir scan + worktree enrichment (calls git per repo).
-    fn discover_repos(&self, dirs: &[(PathBuf, u16)]) -> Vec<Repo>;
-    fn list_branches(&self, repo_path: &Path) -> Vec<String>;
-    fn list_remote_branches(&self, repo_path: &Path) -> Vec<String>;
-    /// List remote branches for a specific remote only.
-    fn list_remote_branches_for_remote(&self, repo_path: &Path, remote: &str) -> Vec<String>;
-    fn list_worktrees(&self, repo_path: &Path) -> Vec<Worktree>;
-    fn add_worktree(&self, repo_path: &Path, branch: &str, worktree_path: &Path) -> Result<()>;
-    fn create_branch_and_worktree(
+}
+
+impl fmt::Display for LocalBranchAlreadyExists {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "local branch '{}' already exists", self.branch)
+    }
+}
+
+impl Error for LocalBranchAlreadyExists {}
+
+pub fn is_local_branch_already_exists(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<LocalBranchAlreadyExists>().is_some()
+}
+
+pub fn is_dirty_worktree_requires_force(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<DirtyWorktreeRequiresForce>().is_some()
+}
+
+pub trait GitProvider: Send + Sync {
+    fn scan_repos_streaming(
+        &self,
+        dir: &Path,
+        depth: u16,
+        include_non_git: bool,
+        is_cancelled: &dyn Fn() -> bool,
+        on_found: &dyn Fn(Repo),
+    ) -> Result<Vec<ScanWarning>>;
+    fn list_branches(&self, repo_path: &Path) -> Result<Listed<String>>;
+    fn list_remote_branches_for_remote(
         &self,
         repo_path: &Path,
-        new_branch: &str,
-        base: &str,
-        worktree_path: &Path,
-    ) -> Result<()>;
-    fn remove_worktree(&self, worktree_path: &Path) -> Result<()>;
-    fn prune_worktrees(&self, repo_path: &Path) -> Result<()>;
-    /// Create a local tracking branch from a remote branch and add a worktree for it
-    fn create_tracking_branch_and_worktree(
-        &self,
-        repo_path: &Path,
-        branch: &str,
-        worktree_path: &Path,
-    ) -> Result<()>;
-    /// List configured remotes for a repository.
-    fn list_remotes(&self, repo_path: &Path) -> Vec<String>;
-    /// Fetch a single remote.
+        remote: &str,
+    ) -> Result<Listed<String>>;
+    fn list_worktrees(&self, repo_path: &Path) -> Result<Listed<Worktree>>;
+    fn list_remotes(&self, repo_path: &Path) -> Result<Vec<String>>;
     fn fetch_remote(&self, repo_path: &Path, remote: &str) -> Result<()>;
-    /// Detect the default branch (main/master) for a repository.
-    /// Accepts the already-fetched local branch list to avoid redundant git calls in the fallback.
-    fn default_branch(&self, repo_path: &Path, local_branches: &[String]) -> Option<String>;
-    /// Resolve the current working directory to a git repository root
-    fn resolve_repo_from_cwd(&self) -> Option<PathBuf>;
+    fn create_tracking_branch(&self, repo_path: &Path, branch: &str, remote: &str) -> Result<()>;
+    fn is_valid_branch_name(&self, repo_path: &Path, branch: &str) -> Result<bool>;
+    /// Checks `branch` out in a new linked worktree at `worktree_path`. With `base`, the branch
+    /// is created from it; without, the branch must already exist.
+    fn add_worktree(
+        &self,
+        repo_path: &Path,
+        worktree_path: &Path,
+        branch: &str,
+        base: Option<&str>,
+    ) -> Result<()>;
+    /// The main checkout of the repository containing `path`, or `None` when `path` is not a
+    /// directory inside a Git repository.
+    fn main_checkout(&self, path: &Path) -> Result<Option<PathBuf>>;
+    fn remove_worktree(&self, repo_path: &Path, worktree_path: &Path, force: bool) -> Result<()>;
+    fn prune_worktrees(&self, repo_path: &Path) -> Result<()>;
+    fn default_branch(&self, repo_path: &Path, local_branches: &[String])
+    -> Result<Option<String>>;
 }

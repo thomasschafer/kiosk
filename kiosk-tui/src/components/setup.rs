@@ -1,219 +1,387 @@
-use crate::{
-    components::{centered_fixed_rect, centered_rect, path_input, search_bar},
-    theme::Theme,
-};
-use kiosk_core::state::{AppState, Mode, SetupStep};
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Layout},
-    style::{Color, Modifier, Style},
+    layout::{Alignment, Constraint, Flex, Layout, Rect},
+    style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{
-        Block, Borders, Clear, HighlightSpacing, List, ListItem, ListState, Padding, Paragraph,
-        Wrap,
-    },
+    widgets::{Block, Borders, Clear, List, ListItem, Padding, Paragraph, Wrap},
 };
 
-fn draw_welcome(f: &mut Frame, theme: &Theme) {
-    let term = f.area();
-    let w = (term.width * 9 / 10).min(60);
-    let h = (term.height * 9 / 10).min(20);
-    let area = centered_fixed_rect(w, h, term);
-    f.render_widget(Clear, area);
+use crate::theme::Theme;
+use kiosk_core::{
+    product::Product,
+    setup::{FolderMode, SetupState, SetupStep},
+};
 
-    let block = Block::default()
+fn centered(width: u16, height: u16, area: Rect) -> Rect {
+    let [horizontal] = Layout::horizontal([Constraint::Length(width.min(area.width))])
+        .flex(Flex::Center)
+        .areas(area);
+    let [vertical] = Layout::vertical([Constraint::Length(height.min(area.height))])
+        .flex(Flex::Center)
+        .areas(horizontal);
+    vertical
+}
+
+pub fn draw(
+    frame: &mut Frame,
+    state: &SetupState,
+    product: &Product,
+    theme: &Theme,
+    config_path: &str,
+) {
+    let area = centered(frame.area().width.saturating_mul(9) / 10, 24, frame.area());
+    frame.render_widget(Clear, area);
+    match &state.step {
+        SetupStep::Welcome => draw_welcome(frame, area, product, theme, config_path),
+        SetupStep::Directories | SetupStep::Depth { .. } => {
+            draw_directories(frame, area, state, theme);
+        }
+        SetupStep::FolderMode { path, depth } => {
+            draw_folder_mode(frame, area, state, theme, path, *depth);
+        }
+        SetupStep::Confirm => draw_confirm(frame, area, state, theme, config_path),
+    }
+}
+
+fn shell(title: &str, theme: &Theme) -> Block<'static> {
+    Block::default()
         .borders(Borders::ALL)
-        .title(" Welcome ")
+        .title(format!(" {title} "))
         .border_style(Style::default().fg(theme.accent))
-        .padding(Padding::uniform(1));
+        .padding(Padding::uniform(1))
+}
 
-    let content = vec![
-        Line::from(""),
+fn draw_welcome(frame: &mut Frame, area: Rect, product: &Product, theme: &Theme, path: &str) {
+    let lines = vec![
+        Line::raw(""),
         Line::from(Span::styled(
-            "Welcome to Kiosk!",
+            format!("Welcome to {}", product.name),
             Style::default()
                 .fg(theme.accent)
                 .add_modifier(Modifier::BOLD),
         )),
-        Line::from(""),
-        Line::from("Kiosk is a git-aware tmux session manager that helps"),
-        Line::from("you manage git repositories and their branches."),
-        Line::from(""),
-        Line::from("Let's set up your configuration file."),
-        Line::from(""),
+        Line::raw(""),
+        Line::raw(product.setup_intro),
+        Line::raw("This setup will choose the directories to scan."),
+        Line::raw(""),
         Line::from(vec![
-            Span::raw("Press "),
-            Span::styled(
-                "Enter",
-                Style::default().fg(theme.hint).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" to continue."),
+            Span::styled("Config: ", Style::default().fg(theme.muted)),
+            Span::raw(kiosk_core::display::sanitize(path).into_owned()),
+        ]),
+        Line::raw(""),
+        Line::from(vec![
+            Span::styled("enter", Style::default().fg(theme.hint)),
+            Span::raw(" continue   "),
+            Span::styled("esc", Style::default().fg(theme.hint)),
+            Span::raw(" quit"),
         ]),
     ];
-
-    let paragraph = Paragraph::new(content)
-        .block(block)
-        .alignment(Alignment::Center)
-        .wrap(Wrap { trim: false });
-
-    f.render_widget(paragraph, area);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(shell("Welcome", theme))
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: false }),
+        area,
+    );
 }
 
-#[allow(clippy::too_many_lines)]
-fn draw_search_dirs(f: &mut Frame, state: &AppState, theme: &Theme, show_selection: bool) {
-    let Ok(setup) = state.require_setup() else {
-        return;
-    };
-
-    let area = centered_rect(80, 80, f.area());
-    f.render_widget(Clear, area);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Add search directories ")
-        .border_style(Style::default().fg(theme.accent))
-        .padding(Padding::uniform(1));
+fn draw_directories(frame: &mut Frame, area: Rect, state: &SetupState, theme: &Theme) {
+    let block = shell("Search directories", theme);
     let inner = block.inner(area);
-    f.render_widget(block, area);
-
-    // Layout: description, input+completions, added dirs, instructions
-    let has_completions = !setup.completions.is_empty();
-    let completions_height = if has_completions {
-        u16::try_from(setup.completions.len())
-            .unwrap_or(u16::MAX)
-            .min(6)
-            + 1 // bottom border
-    } else {
-        0
+    frame.render_widget(block, area);
+    let pending_path = match &state.step {
+        SetupStep::Depth { path } => Some(path.as_str()),
+        _ => None,
     };
-
+    let auxiliary_height = pending_path.map_or_else(
+        || u16::try_from(state.completions.len().min(5)).unwrap_or(5),
+        |_| 3,
+    );
     let chunks = Layout::vertical([
-        Constraint::Length(2),                  // description
-        Constraint::Length(3),                  // input
-        Constraint::Length(completions_height), // completions dropdown
-        Constraint::Min(1),                     // added dirs
-        Constraint::Length(2),                  // instructions
+        Constraint::Length(2),
+        Constraint::Length(3),
+        Constraint::Length(auxiliary_height),
+        Constraint::Min(3),
+        Constraint::Length(2),
     ])
     .split(inner);
-
-    // Description
-    let desc = Paragraph::new("Kiosk scans these directories for git repos.")
-        .style(Style::default())
-        .alignment(Alignment::Center);
-    f.render_widget(desc, chunks[0]);
-
-    // Input (reuse search_bar)
-    search_bar::draw(
-        f,
+    frame.render_widget(
+        Paragraph::new("Add one or more directories. Submit an empty input when finished.")
+            .alignment(Alignment::Center),
+        chunks[0],
+    );
+    super::search_bar::draw(
+        frame,
         chunks[1],
-        &search_bar::SearchBarStyle {
-            title: "Add directory",
-            placeholder: "",
-            border_color: Color::Reset,
+        &super::search_bar::SearchBarStyle {
+            title: "Directory path",
+            placeholder: "~/Development",
+            border_color: theme.border,
             muted_color: theme.muted,
         },
-        &setup.input.text,
-        setup.input.cursor,
+        pending_path.unwrap_or(&state.input.text),
+        pending_path.map_or(state.input.cursor, str::len),
     );
-
-    // Completions dropdown
-    if has_completions {
-        let items: Vec<ListItem> = setup
-            .completions
-            .iter()
-            .map(|c| ListItem::new(c.as_str()))
-            .collect();
-
-        let list = List::new(items)
-            .block(
-                Block::default()
-                    .borders(Borders::LEFT | Borders::RIGHT | Borders::BOTTOM)
-                    .border_style(Style::default().fg(theme.border)),
-            )
-            .highlight_style(
-                Style::default()
-                    .fg(theme.highlight_fg)
-                    .bg(theme.accent)
-                    .add_modifier(Modifier::BOLD),
-            )
-            .highlight_symbol("▸ ")
-            .highlight_spacing(HighlightSpacing::Always);
-
-        let mut list_state = ListState::default();
-        list_state.select(
-            show_selection
-                .then_some(setup.selected_completion)
-                .flatten(),
-        );
-        f.render_stateful_widget(list, chunks[2], &mut list_state);
-    }
-
-    // Added dirs
-    let dirs_area = chunks[3];
-    if setup.dirs.is_empty() {
-        let msg = Paragraph::new("No directories added yet.")
-            .style(Style::default().fg(theme.muted))
-            .alignment(Alignment::Center);
-        f.render_widget(msg, dirs_area);
+    draw_directory_auxiliary(frame, chunks[2], state, theme, pending_path);
+    let dirs = if state.dirs.is_empty() {
+        vec![ListItem::new(Span::styled(
+            "No directories added yet",
+            Style::default().fg(theme.muted),
+        ))]
     } else {
-        let header_and_list =
-            Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).split(dirs_area);
-
-        let header = Paragraph::new(Span::styled(
-            "Added:",
-            Style::default().add_modifier(Modifier::BOLD),
-        ));
-        f.render_widget(header, header_and_list[0]);
-
-        let items: Vec<ListItem> = setup
+        state
             .dirs
             .iter()
-            .map(|dir| {
-                if path_input::path_exists(dir) {
-                    ListItem::new(Line::from(Span::styled(
-                        format!("  ✓ {dir}"),
-                        Style::default().fg(theme.success),
-                    )))
-                } else {
-                    ListItem::new(Line::from(Span::styled(
-                        format!("  ⚠ {dir} (doesn't exist yet)"),
-                        Style::default().fg(theme.warning),
-                    )))
+            .map(|entry| {
+                let mut spans = vec![
+                    Span::styled("✓ ", Style::default().fg(theme.open)),
+                    Span::raw(kiosk_core::display::sanitize(&entry.path).into_owned()),
+                    Span::styled(
+                        format!("  depth {}", entry.depth),
+                        Style::default().fg(theme.muted),
+                    ),
+                ];
+                if entry.include_non_git == Some(true) {
+                    spans.push(Span::styled(
+                        "  all folders",
+                        Style::default().fg(theme.muted),
+                    ));
                 }
+                ListItem::new(Line::from(spans))
             })
-            .collect();
-
-        let list = List::new(items);
-        f.render_widget(list, header_and_list[1]);
-    }
-
-    // Instructions
-    let instructions_area = chunks[4];
-    let hints = Line::from(vec![
-        Span::styled(
-            "[Enter]",
-            Style::default().fg(theme.hint).add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(" add / finish  "),
-        Span::styled(
-            "[Tab]",
-            Style::default().fg(theme.hint).add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(" autocomplete  "),
-        Span::styled(
-            "[Esc]",
-            Style::default().fg(theme.hint).add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(" deselect / quit"),
-    ]);
-    let instructions = Paragraph::new(hints).alignment(Alignment::Center);
-    f.render_widget(instructions, instructions_area);
+            .collect()
+    };
+    frame.render_widget(
+        List::new(dirs).block(Block::default().title(" Added ").borders(Borders::TOP)),
+        chunks[3],
+    );
+    let default_message = if pending_path.is_some() {
+        "enter add directory   esc edit path"
+    } else {
+        "enter add/finish   tab complete   ctrl+x remove last   esc quit"
+    };
+    let message = state.message.as_deref().unwrap_or(default_message);
+    frame.render_widget(
+        Paragraph::new(kiosk_core::display::sanitize(message))
+            .style(Style::default().fg(if state.message.is_some() {
+                theme.warning
+            } else {
+                theme.muted
+            }))
+            .alignment(Alignment::Center),
+        chunks[4],
+    );
 }
 
-pub fn draw(f: &mut Frame, state: &AppState, theme: &Theme, show_selection: bool) {
-    match state.mode() {
-        Mode::Setup(SetupStep::Welcome) => draw_welcome(f, theme),
-        Mode::Setup(SetupStep::SearchDirs) => draw_search_dirs(f, state, theme, show_selection),
-        _ => {}
+fn draw_directory_auxiliary(
+    frame: &mut Frame,
+    area: Rect,
+    state: &SetupState,
+    theme: &Theme,
+    pending_path: Option<&str>,
+) {
+    if pending_path.is_some() {
+        super::search_bar::draw(
+            frame,
+            area,
+            &super::search_bar::SearchBarStyle {
+                title: "Depth",
+                placeholder: "1",
+                border_color: theme.accent,
+                muted_color: theme.muted,
+            },
+            &state.input.text,
+            state.input.cursor,
+        );
+    } else {
+        let completions = state
+            .completions
+            .iter()
+            .take(5)
+            .enumerate()
+            .map(|(index, value)| {
+                let marker = if state.selected_completion == Some(index) {
+                    "▸ "
+                } else {
+                    "  "
+                };
+                ListItem::new(format!("{marker}{}", kiosk_core::display::sanitize(value)))
+            })
+            .collect::<Vec<_>>();
+        frame.render_widget(
+            List::new(completions).style(Style::default().fg(theme.muted)),
+            area,
+        );
+    }
+}
+
+fn draw_folder_mode(
+    frame: &mut Frame,
+    area: Rect,
+    state: &SetupState,
+    theme: &Theme,
+    path: &str,
+    depth: u16,
+) {
+    let block = shell("Folder inclusion", theme);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let chunks = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Length(3),
+        Constraint::Length(5),
+        Constraint::Fill(1),
+        Constraint::Length(2),
+    ])
+    .split(inner);
+    frame.render_widget(
+        Paragraph::new("List only git repositories in this directory, or every folder?")
+            .alignment(Alignment::Center),
+        chunks[0],
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("Directory: ", Style::default().fg(theme.muted)),
+            Span::raw(kiosk_core::display::sanitize(path).into_owned()),
+            Span::styled(format!("  depth {depth}"), Style::default().fg(theme.muted)),
+        ]))
+        .alignment(Alignment::Center),
+        chunks[1],
+    );
+    let options = [
+        (
+            FolderMode::GitRepositoriesOnly,
+            "Git repositories only (default)",
+        ),
+        (FolderMode::AllFolders, "All folders"),
+    ]
+    .into_iter()
+    .map(|(mode, label)| {
+        let selected = state.folder_mode == mode;
+        ListItem::new(format!("{} {label}", if selected { ">" } else { " " })).style(
+            Style::default()
+                .fg(if selected { theme.accent } else { theme.muted })
+                .add_modifier(if selected {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                }),
+        )
+    })
+    .collect::<Vec<_>>();
+    frame.render_widget(List::new(options), chunks[2]);
+    frame.render_widget(
+        Paragraph::new("Up/down select   enter confirm   esc back")
+            .style(Style::default().fg(theme.hint))
+            .alignment(Alignment::Center),
+        chunks[4],
+    );
+}
+
+fn draw_confirm(frame: &mut Frame, area: Rect, state: &SetupState, theme: &Theme, path: &str) {
+    let mut lines = vec![
+        Line::raw(""),
+        Line::from(Span::styled(
+            "Ready to start",
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::raw(""),
+    ];
+    for entry in &state.dirs {
+        lines.push(Line::from(vec![
+            Span::styled("✓ ", Style::default().fg(theme.open)),
+            Span::raw(format!(
+                "{}  (depth {})",
+                kiosk_core::display::sanitize(&entry.path),
+                entry.depth
+            )),
+        ]));
+    }
+    lines.extend([
+        Line::raw(""),
+        Line::from(vec![
+            Span::styled("Write to: ", Style::default().fg(theme.muted)),
+            Span::raw(kiosk_core::display::sanitize(path).into_owned()),
+        ]),
+        Line::raw(""),
+        Line::from(vec![
+            Span::styled("enter", Style::default().fg(theme.hint)),
+            Span::raw(" write config and open picker   "),
+            Span::styled("esc", Style::default().fg(theme.hint)),
+            Span::raw(" back"),
+        ]),
+    ]);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(shell("Confirm setup", theme))
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use kiosk_core::product::TEST_PRODUCT;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    use crate::theme::Theme;
+    use kiosk_core::{
+        config::ThemeConfig,
+        setup::{SetupDir, SetupState, SetupStep},
+    };
+
+    use super::draw;
+
+    #[test]
+    fn added_directories_tag_only_the_all_folders_mode() {
+        let mut state = SetupState {
+            step: SetupStep::Directories,
+            ..SetupState::default()
+        };
+        state.dirs = vec![
+            SetupDir {
+                path: "~/GitOnly".into(),
+                depth: 1,
+                include_non_git: None,
+            },
+            SetupDir {
+                path: "~/Everything".into(),
+                depth: 2,
+                include_non_git: Some(true),
+            },
+        ];
+        let theme = Theme::from_config(&ThemeConfig::default());
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| draw(frame, &state, &TEST_PRODUCT, &theme, "/config.toml"))
+            .unwrap();
+
+        let rows = terminal
+            .backend()
+            .buffer()
+            .content()
+            .chunks(100)
+            .map(|cells| {
+                cells
+                    .iter()
+                    .map(ratatui::buffer::Cell::symbol)
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        let git_only = rows
+            .iter()
+            .find(|row| row.contains("~/GitOnly"))
+            .expect("git-only directory row");
+        let all_folders = rows
+            .iter()
+            .find(|row| row.contains("~/Everything"))
+            .expect("all-folders directory row");
+        assert!(!git_only.contains("all folders"));
+        assert!(all_folders.contains("all folders"));
     }
 }

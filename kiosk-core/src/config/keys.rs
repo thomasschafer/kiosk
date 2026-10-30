@@ -1,1109 +1,631 @@
-use crate::keyboard::{KeyCode, KeyEvent, KeyModifiers};
-use crate::state::Mode;
-use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
-use std::str::FromStr;
+use std::{
+    collections::HashMap,
+    fmt::{self, Write as _},
+    str::FromStr,
+};
 
-/// Labels for a command: short hint for footer bar, long description for help overlay.
-pub struct CommandLabels {
-    /// Short label for the footer bar.
-    pub hint: &'static str,
-    /// Full description for the help overlay.
-    pub description: &'static str,
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use serde::{Deserialize, Deserializer, Serialize};
+
+use crate::state::Mode;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct KeyChord {
+    pub code: KeyCode,
+    pub modifiers: KeyModifiers,
 }
 
-/// Single source of truth for every `Command` variant and its metadata.
-///
-/// Each entry defines: variant name, config string, optional parse aliases,
-/// footer hint, and help description. The macro generates the enum plus
-/// `FromStr`, `Display`, `Serialize`, and `labels()` — so adding a new
-/// command is a one-line change with no risk of forgetting a match arm.
-macro_rules! define_commands {
-    (
-        $(
-            $variant:ident {
-                config_name: $config_name:literal,
-                $(aliases: [$($alias:literal),+ $(,)?],)?
-                hint: $hint:literal,
-                description: $desc:literal,
-            }
-        ),* $(,)?
-    ) => {
-        /// Commands that can be bound to keys
-        #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-        pub enum Command { $($variant),* }
+impl KeyChord {
+    pub const fn new(code: KeyCode, modifiers: KeyModifiers) -> Self {
+        Self { code, modifiers }
+    }
 
-        impl FromStr for Command {
-            type Err = String;
-            fn from_str(s: &str) -> Result<Self, Self::Err> {
-                match s {
-                    $($config_name $($(| $alias)+)? => Ok(Command::$variant),)*
-                    _ => Err(format!("Unknown command: {s}")),
-                }
+    pub fn from_event(event: KeyEvent) -> Self {
+        let (code, mut modifiers) = if event.code == KeyCode::BackTab {
+            (KeyCode::Tab, event.modifiers | KeyModifiers::SHIFT)
+        } else {
+            (event.code, event.modifiers)
+        };
+        let code = match code {
+            KeyCode::Char(character)
+                if modifiers.contains(KeyModifiers::SHIFT) && character.is_ascii_alphabetic() =>
+            {
+                KeyCode::Char(character.to_ascii_uppercase())
             }
-        }
-
-        impl std::fmt::Display for Command {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.write_str(match self {
-                    $(Command::$variant => $config_name),*
+            KeyCode::Char(character) => {
+                modifiers.remove(KeyModifiers::SHIFT);
+                KeyCode::Char(if character.is_ascii_alphabetic() {
+                    character.to_ascii_lowercase()
+                } else {
+                    character
                 })
             }
-        }
+            code => code,
+        };
+        Self { code, modifiers }
+    }
+}
 
-        impl Serialize for Command {
-            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-                serializer.serialize_str(&self.to_string())
+impl FromStr for KeyChord {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if value.is_empty() {
+            return Err("missing key chord".into());
+        }
+        let delimiter = value
+            .split_once('+')
+            .filter(|(first, _)| is_modifier_token(first))
+            .map_or('-', |_| '+');
+        let mut tokens = value.split(delimiter).collect::<Vec<_>>();
+        let key = tokens.pop().ok_or("missing key code")?;
+        let mut modifiers = KeyModifiers::NONE;
+        for token in tokens {
+            let modifier = match token.to_ascii_lowercase().as_str() {
+                "c" | "ctrl" | "control" => KeyModifiers::CONTROL,
+                "a" | "alt" | "m" => KeyModifiers::ALT,
+                "s" | "shift" => KeyModifiers::SHIFT,
+                _ => return Err(format!("invalid key modifier '{token}-'")),
+            };
+            if modifiers.contains(modifier) {
+                return Err(format!("repeated key modifier '{token}-'"));
             }
+            modifiers.insert(modifier);
         }
-
-        impl Command {
-            /// Get the labels (footer hint + help description) for this command.
-            pub fn labels(&self) -> CommandLabels {
-                match self {
-                    $(Command::$variant => CommandLabels {
-                        hint: $hint,
-                        description: $desc,
-                    }),*
+        let lower = key.to_ascii_lowercase();
+        let code = match lower.as_str() {
+            "enter" | "return" => KeyCode::Enter,
+            "esc" | "escape" => KeyCode::Esc,
+            "tab" => KeyCode::Tab,
+            "backspace" => KeyCode::Backspace,
+            "del" | "delete" => KeyCode::Delete,
+            "up" => KeyCode::Up,
+            "down" => KeyCode::Down,
+            "left" => KeyCode::Left,
+            "right" => KeyCode::Right,
+            "home" => KeyCode::Home,
+            "end" => KeyCode::End,
+            "pageup" | "page_up" => KeyCode::PageUp,
+            "pagedown" | "page_down" => KeyCode::PageDown,
+            "space" => KeyCode::Char(' '),
+            _ if key.chars().count() == 1 => {
+                let mut character = key.chars().next().expect("one character");
+                if modifiers.contains(KeyModifiers::SHIFT) {
+                    if !character.is_ascii_alphabetic() {
+                        return Err(format!(
+                            "shift modifier cannot be used with non-letter key '{key}'; bind the resulting character directly"
+                        ));
+                    }
+                    character = character.to_ascii_uppercase();
+                } else if character.is_ascii_alphabetic()
+                    || modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                {
+                    character = character.to_ascii_lowercase();
                 }
+                KeyCode::Char(character)
             }
+            _ => return Err(format!("invalid key code '{key}'")),
+        };
+        Ok(Self { code, modifiers })
+    }
+}
+
+fn is_modifier_token(token: &str) -> bool {
+    matches!(
+        token.to_ascii_lowercase().as_str(),
+        "c" | "ctrl" | "control" | "a" | "alt" | "m" | "s" | "shift"
+    )
+}
+
+impl fmt::Display for KeyChord {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.modifiers.contains(KeyModifiers::CONTROL) {
+            formatter.write_str("ctrl+")?;
         }
-    };
-}
-
-define_commands! {
-    // Special
-    Noop {
-        config_name: "noop",
-        aliases: ["none", "unbound"],
-        hint: "unbound",
-        description: "Unbound",
-    },
-
-    // General
-    Quit {
-        config_name: "quit",
-        hint: "quit",
-        description: "Quit the application",
-    },
-    ShowHelp {
-        config_name: "show_help",
-        hint: "help",
-        description: "Show help",
-    },
-
-    // Navigation
-    OpenRepo {
-        config_name: "open_repo",
-        hint: "open",
-        description: "Open repository in tmux",
-    },
-    EnterRepo {
-        config_name: "enter_repo",
-        hint: "branches",
-        description: "Browse branches",
-    },
-    OpenBranch {
-        config_name: "open_branch",
-        hint: "open/create branch",
-        description: "Open branch in tmux",
-    },
-    GoBack {
-        config_name: "go_back",
-        hint: "back",
-        description: "Go back",
-    },
-    NewBranch {
-        config_name: "new_branch",
-        hint: "new branch",
-        description: "New branch",
-    },
-    DeleteWorktree {
-        config_name: "delete_worktree",
-        hint: "delete worktree",
-        description: "Delete worktree",
-    },
-
-    // List movement
-    MoveUp {
-        config_name: "move_up",
-        hint: "up",
-        description: "Move up",
-    },
-    MoveDown {
-        config_name: "move_down",
-        hint: "down",
-        description: "Move down",
-    },
-    HalfPageUp {
-        config_name: "half_page_up",
-        hint: "half page up",
-        description: "Half page up",
-    },
-    HalfPageDown {
-        config_name: "half_page_down",
-        hint: "half page down",
-        description: "Half page down",
-    },
-    PageUp {
-        config_name: "page_up",
-        hint: "page up",
-        description: "Page up",
-    },
-    PageDown {
-        config_name: "page_down",
-        hint: "page down",
-        description: "Page down",
-    },
-    MoveTop {
-        config_name: "move_top",
-        hint: "top",
-        description: "Move to top",
-    },
-    MoveBottom {
-        config_name: "move_bottom",
-        hint: "bottom",
-        description: "Move to bottom",
-    },
-
-    // Text editing — cursor movement (char → word → line)
-    MoveCursorLeft {
-        config_name: "move_cursor_left",
-        hint: "cursor left",
-        description: "Move cursor left",
-    },
-    MoveCursorRight {
-        config_name: "move_cursor_right",
-        hint: "cursor right",
-        description: "Move cursor right",
-    },
-    MoveCursorWordLeft {
-        config_name: "move_cursor_word_left",
-        hint: "word left",
-        description: "Move cursor word left",
-    },
-    MoveCursorWordRight {
-        config_name: "move_cursor_word_right",
-        hint: "word right",
-        description: "Move cursor word right",
-    },
-    MoveCursorStart {
-        config_name: "move_cursor_start",
-        hint: "cursor start",
-        description: "Move cursor to start",
-    },
-    MoveCursorEnd {
-        config_name: "move_cursor_end",
-        hint: "cursor end",
-        description: "Move cursor to end",
-    },
-
-    // Text editing — deletion (char → word → line)
-    DeleteBackwardChar {
-        config_name: "delete_backward_char",
-        hint: "del char back",
-        description: "Delete backward char",
-    },
-    DeleteForwardChar {
-        config_name: "delete_forward_char",
-        hint: "del char fwd",
-        description: "Delete forward char",
-    },
-    DeleteBackwardWord {
-        config_name: "delete_backward_word",
-        hint: "del word back",
-        description: "Delete backward word",
-    },
-    DeleteForwardWord {
-        config_name: "delete_forward_word",
-        hint: "del word fwd",
-        description: "Delete forward word",
-    },
-    DeleteToStart {
-        config_name: "delete_to_start",
-        hint: "del to start",
-        description: "Delete to start of line",
-    },
-    DeleteToEnd {
-        config_name: "delete_to_end",
-        hint: "del to end",
-        description: "Delete to end of line",
-    },
-
-    // Modal
-    Confirm {
-        config_name: "confirm",
-        hint: "confirm",
-        description: "Confirm",
-    },
-    Cancel {
-        config_name: "cancel",
-        hint: "cancel",
-        description: "Cancel",
-    },
-    TabComplete {
-        config_name: "tab_complete",
-        hint: "complete",
-        description: "Tab completion",
-    },
-    ToggleSessions {
-        config_name: "toggle_sessions",
-        hint: "sessions",
-        description: "Toggle sessions view",
-    },
-    SwitchToSession {
-        config_name: "switch_to_session",
-        hint: "open",
-        description: "Open selected session",
-    },
-    JumpToNextAgentSession {
-        config_name: "jump_to_next_agent_session",
-        hint: "next agent",
-        description: "Jump to next session with an agent",
-    },
-    JumpToPreviousAgentSession {
-        config_name: "jump_to_previous_agent_session",
-        hint: "prev agent",
-        description: "Jump to previous session with an agent",
-    },
-}
-
-/// Effective key bindings after composing mode-relevant layers.
-pub type KeyMap = HashMap<KeyEvent, Command>;
-
-/// Key bindings for a specific command layer.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct LayerKeyMap<C>(HashMap<KeyEvent, C>);
-
-impl<C> LayerKeyMap<C> {
-    pub fn new() -> Self {
-        Self(HashMap::new())
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    pub fn get(&self, key: &KeyEvent) -> Option<&C> {
-        self.0.get(key)
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = (&KeyEvent, &C)> {
-        self.0.iter()
-    }
-
-    pub fn insert(&mut self, key: KeyEvent, command: C) {
-        self.0.insert(key, command);
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct DefaultBinding<C> {
-    key: KeyEvent,
-    command: C,
-}
-
-impl<C> DefaultBinding<C> {
-    fn new(key: KeyEvent, command: C) -> Self {
-        Self { key, command }
-    }
-}
-
-impl<C> Default for LayerKeyMap<C> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-macro_rules! define_layer_commands {
-    ($name:ident => [$($variant:ident),+ $(,)?]) => {
-        #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-        pub enum $name {
-            Noop,
-            $($variant),+
+        if self.modifiers.contains(KeyModifiers::ALT) {
+            formatter.write_str("alt+")?;
         }
-
-        impl From<$name> for Command {
-            fn from(value: $name) -> Self {
-                match value {
-                    $name::Noop => Command::Noop,
-                    $($name::$variant => Command::$variant),+
-                }
-            }
+        if self.modifiers.contains(KeyModifiers::SHIFT) {
+            formatter.write_str("shift+")?;
         }
-
-        impl TryFrom<Command> for $name {
-            type Error = String;
-
-            fn try_from(value: Command) -> Result<Self, Self::Error> {
-                match value {
-                    Command::Noop => Ok($name::Noop),
-                    $(Command::$variant => Ok($name::$variant),)+
-                    other => Err(format!(
-                        "Command '{}' is not allowed in {} layer",
-                        other,
-                        stringify!($name)
-                    )),
-                }
-            }
+        match self.code {
+            KeyCode::Char(' ') => formatter.write_str("space"),
+            KeyCode::Char(character) => write!(formatter, "{}", character.to_ascii_lowercase()),
+            KeyCode::Enter => formatter.write_str("enter"),
+            KeyCode::Esc => formatter.write_str("esc"),
+            KeyCode::Tab => formatter.write_str("tab"),
+            KeyCode::Backspace => formatter.write_str("backspace"),
+            KeyCode::Delete => formatter.write_str("delete"),
+            KeyCode::Up => formatter.write_str("↑"),
+            KeyCode::Down => formatter.write_str("↓"),
+            KeyCode::Left => formatter.write_str("←"),
+            KeyCode::Right => formatter.write_str("→"),
+            KeyCode::Home => formatter.write_str("home"),
+            KeyCode::End => formatter.write_str("end"),
+            KeyCode::PageUp => formatter.write_str("pageup"),
+            KeyCode::PageDown => formatter.write_str("pagedown"),
+            _ => formatter.write_str("unknown"),
         }
-
-        impl Serialize for $name {
-            fn serialize<S: serde::Serializer>(
-                &self,
-                serializer: S,
-            ) -> Result<S::Ok, S::Error> {
-                let command: Command = self.clone().into();
-                serializer.serialize_str(&command.to_string())
-            }
-        }
-    };
+    }
 }
 
-define_layer_commands!(GeneralCommand => [Quit, ShowHelp, ToggleSessions]);
-define_layer_commands!(TextEditCommand => [
-    MoveCursorLeft,
-    MoveCursorRight,
-    MoveCursorWordLeft,
-    MoveCursorWordRight,
-    MoveCursorStart,
-    MoveCursorEnd,
-    DeleteBackwardChar,
-    DeleteForwardChar,
-    DeleteBackwardWord,
-    DeleteForwardWord,
-    DeleteToStart,
-    DeleteToEnd
-]);
-define_layer_commands!(ListNavigationCommand => [
+impl Serialize for KeyChord {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Command {
+    Noop,
+    Quit,
+    Help,
+    DismissToast,
     MoveUp,
     MoveDown,
-    HalfPageUp,
-    HalfPageDown,
-    PageUp,
-    PageDown,
-    MoveTop,
-    MoveBottom
-]);
-define_layer_commands!(ModalCommand => [Confirm, Cancel, TabComplete]);
-define_layer_commands!(RepoSelectCommand => [OpenRepo, EnterRepo, Quit]);
-define_layer_commands!(BranchSelectCommand => [OpenBranch, GoBack, NewBranch, DeleteWorktree]);
-define_layer_commands!(SessionsSelectCommand => [
-    SwitchToSession,
-    JumpToNextAgentSession,
-    JumpToPreviousAgentSession
-]);
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct KeybindingEntry {
-    pub key: KeyEvent,
-    pub command: Command,
-    pub description: &'static str,
+    Open,
+    BranchesView,
+    Back,
+    NewBranch,
+    Delete,
+    Clear,
+    Backspace,
+    DeleteWord,
+    CursorLeft,
+    CursorRight,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct KeybindingSection {
-    pub name: &'static str,
-    pub entries: Vec<KeybindingEntry>,
-}
+impl Command {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Noop => "noop",
+            Self::Quit => "quit",
+            Self::Help => "help",
+            Self::DismissToast => "dismiss_toast",
+            Self::MoveUp => "move_up",
+            Self::MoveDown => "move_down",
+            Self::Open => "open",
+            Self::BranchesView => "branches_view",
+            Self::Back => "back",
+            Self::NewBranch => "new_branch",
+            Self::Delete => "delete",
+            Self::Clear => "clear",
+            Self::Backspace => "backspace",
+            Self::DeleteWord => "delete_word",
+            Self::CursorLeft => "cursor_left",
+            Self::CursorRight => "cursor_right",
+        }
+    }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FlattenedKeybindingRow {
-    pub section_index: usize,
-    pub section_name: &'static str,
-    pub key_display: String,
-    pub command: Command,
-    pub description: &'static str,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ModeKeybindingCatalog {
-    pub mode: Mode,
-    pub sections: Vec<KeybindingSection>,
-    pub flattened: Vec<FlattenedKeybindingRow>,
-}
-
-fn keybinding_entry<C>(key: KeyEvent, command: C) -> KeybindingEntry
-where
-    C: Into<Command>,
-{
-    let command: Command = command.into();
-    KeybindingEntry {
-        key,
-        description: command.labels().description,
-        command,
+    pub const fn description(self) -> &'static str {
+        match self {
+            Self::Noop => "Unbound",
+            Self::Quit => "Quit the picker",
+            Self::Help => "Show active key bindings",
+            Self::DismissToast => "Dismiss the visible notification",
+            Self::MoveUp => "Move selection up",
+            Self::MoveDown => "Move selection down",
+            Self::Open => "Open or confirm the selection",
+            Self::BranchesView => "Browse repository branches",
+            Self::Back => "Go back or cancel",
+            Self::NewBranch => "Create a new branch",
+            Self::Delete => "Delete the selected checkout",
+            Self::Clear => "Clear the search query",
+            Self::Backspace => "Delete the previous character",
+            Self::DeleteWord => "Delete the previous word",
+            Self::CursorLeft => "Move the cursor left",
+            Self::CursorRight => "Move the cursor right",
+        }
     }
 }
 
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum Layer {
-    // Layer precedence source of truth: earlier variants are lower precedence.
-    General,
-    TextEdit,
-    ListNavigation,
-    RepoSelect,
-    BranchSelect,
-    SessionsSelect,
+impl FromStr for Command {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "noop" | "none" | "unbound" => Ok(Self::Noop),
+            "quit" => Ok(Self::Quit),
+            "help" | "show_help" => Ok(Self::Help),
+            "dismiss_toast" => Ok(Self::DismissToast),
+            "move_up" => Ok(Self::MoveUp),
+            "move_down" => Ok(Self::MoveDown),
+            "open" => Ok(Self::Open),
+            "branches_view" | "enter_repo" => Ok(Self::BranchesView),
+            "back" | "go_back" => Ok(Self::Back),
+            "new_branch" => Ok(Self::NewBranch),
+            "delete" | "delete_worktree" => Ok(Self::Delete),
+            "clear" | "clear_query" => Ok(Self::Clear),
+            "backspace" => Ok(Self::Backspace),
+            "delete_word" => Ok(Self::DeleteWord),
+            "cursor_left" => Ok(Self::CursorLeft),
+            "cursor_right" => Ok(Self::CursorRight),
+            _ => Err(format!("unknown key action '{value}'")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// Layered key bindings for the picker and its dialogs. Keys use lowercase
+/// `ctrl+`, `alt+`, and `shift+` modifiers with a character or a named key such as
+/// `enter`, `esc`, `tab`, `backspace`, `delete`, an arrow name, `home`, `end`,
+/// `pageup`, `pagedown`, or `space`. User bindings extend the defaults; assign
+/// `"noop"` to unbind an inherited key.
+pub struct KeysConfig {
+    /// Bindings active everywhere. Accepted actions are `quit`, `help`,
+    /// `dismiss_toast`, and `noop`.
+    general: HashMap<KeyChord, Command>,
+    /// Bindings active while editing search or name text. Accepted actions are
+    /// `clear`, `backspace`, `delete_word`, `cursor_left`, `cursor_right`, and `noop`.
+    text_edit: HashMap<KeyChord, Command>,
+    /// Bindings active in navigable lists. Accepted actions are `move_up`,
+    /// `move_down`, and `noop`.
+    list_navigation: HashMap<KeyChord, Command>,
+    /// Bindings active in confirmation dialogs, the remote-branch prompt, and the
+    /// base-branch picker. Accepted actions are `open`, `back`, and `noop`.
+    modal: HashMap<KeyChord, Command>,
+    /// Bindings specific to the repository picker. Accepted actions are `open`,
+    /// `branches_view`, `quit`, and `noop`.
+    repo_select: HashMap<KeyChord, Command>,
+    /// Bindings specific to the branch picker. Accepted actions are `open`, `back`,
+    /// `new_branch`, `delete`, and `noop`.
+    branch_select: HashMap<KeyChord, Command>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct RawKeysConfig {
+    general: HashMap<String, String>,
+    text_edit: HashMap<String, String>,
+    list_navigation: HashMap<String, String>,
+    modal: HashMap<String, String>,
+    repo_select: HashMap<String, String>,
+    branch_select: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BindingMode {
+    Repo,
+    Branch,
+    BaseBranch,
+    Choice,
     Modal,
 }
 
-impl Layer {
-    const ORDER_ASC: [Layer; 7] = [
-        Layer::General,
-        Layer::TextEdit,
-        Layer::ListNavigation,
-        Layer::RepoSelect,
-        Layer::BranchSelect,
-        Layer::SessionsSelect,
-        Layer::Modal,
-    ];
-
-    fn section_name(self) -> &'static str {
-        match self {
-            Layer::General => "general",
-            Layer::TextEdit => "text_edit",
-            Layer::ListNavigation => "list_navigation",
-            Layer::RepoSelect => "repo_select",
-            Layer::BranchSelect => "branch_select",
-            Layer::SessionsSelect => "sessions_select",
-            Layer::Modal => "modal",
-        }
-    }
-}
-
-/// Complete key binding configuration, composed from reusable layers.
-#[derive(Debug, Clone, Serialize)]
-pub struct KeysConfig {
-    pub general: LayerKeyMap<GeneralCommand>,
-    pub text_edit: LayerKeyMap<TextEditCommand>,
-    pub list_navigation: LayerKeyMap<ListNavigationCommand>,
-    pub modal: LayerKeyMap<ModalCommand>,
-    pub repo_select: LayerKeyMap<RepoSelectCommand>,
-    pub branch_select: LayerKeyMap<BranchSelectCommand>,
-    pub sessions_select: LayerKeyMap<SessionsSelectCommand>,
-}
-
-/// Intermediate structure for deserializing key bindings
-#[derive(Debug, Deserialize)]
-struct KeysConfigRaw {
-    #[serde(default)]
-    general: HashMap<String, String>,
-    #[serde(default)]
-    text_edit: HashMap<String, String>,
-    #[serde(default)]
-    list_navigation: HashMap<String, String>,
-    #[serde(default)]
-    modal: HashMap<String, String>,
-    #[serde(default)]
-    repo_select: HashMap<String, String>,
-    #[serde(default)]
-    branch_select: HashMap<String, String>,
-    #[serde(default)]
-    sessions_select: HashMap<String, String>,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HelpSection {
+    pub name: &'static str,
+    pub bindings: Vec<(KeyChord, Command)>,
 }
 
 impl Default for KeysConfig {
     fn default() -> Self {
-        Self::new()
+        Self {
+            general: map(&[
+                ("C-c", Command::Quit),
+                ("C-h", Command::Help),
+                ("C-x", Command::DismissToast),
+            ]),
+            text_edit: map(&[
+                ("esc", Command::Clear),
+                ("backspace", Command::Backspace),
+                ("A-backspace", Command::DeleteWord),
+                ("C-w", Command::DeleteWord),
+                ("left", Command::CursorLeft),
+                ("right", Command::CursorRight),
+            ]),
+            list_navigation: map(&[
+                ("up", Command::MoveUp),
+                ("C-p", Command::MoveUp),
+                ("down", Command::MoveDown),
+                ("C-n", Command::MoveDown),
+            ]),
+            modal: map(&[("enter", Command::Open), ("esc", Command::Back)]),
+            repo_select: map(&[
+                ("enter", Command::Open),
+                ("tab", Command::BranchesView),
+                ("q", Command::Quit),
+            ]),
+            branch_select: map(&[
+                ("enter", Command::Open),
+                ("esc", Command::Back),
+                ("C-o", Command::NewBranch),
+                ("C-x", Command::Delete),
+            ]),
+        }
     }
+}
+
+fn map(entries: &[(&str, Command)]) -> HashMap<KeyChord, Command> {
+    entries
+        .iter()
+        .map(|(key, command)| (key.parse().expect("valid default chord"), *command))
+        .collect()
+}
+
+pub fn default_keys_toml() -> String {
+    let keys = KeysConfig::default();
+    let sections = [
+        ("general", &keys.general),
+        ("text_edit", &keys.text_edit),
+        ("list_navigation", &keys.list_navigation),
+        ("modal", &keys.modal),
+        ("repo_select", &keys.repo_select),
+        ("branch_select", &keys.branch_select),
+    ];
+    let mut output = String::from("```toml\n");
+    for (name, bindings) in sections {
+        let _ = writeln!(output, "[keys.{name}]");
+        let mut bindings = bindings.iter().collect::<Vec<_>>();
+        bindings.sort_by(|(left_key, left_command), (right_key, right_command)| {
+            config_key_name(left_key)
+                .cmp(&config_key_name(right_key))
+                .then_with(|| left_command.name().cmp(right_command.name()))
+        });
+        for (key, command) in bindings {
+            let _ = writeln!(
+                output,
+                "\"{}\" = \"{}\"",
+                escape_toml_string(&config_key_name(key)),
+                escape_toml_string(command.name())
+            );
+        }
+        output.push('\n');
+    }
+    output.push_str("```\n");
+    output
+}
+
+fn config_key_name(key: &KeyChord) -> String {
+    let mut output = String::new();
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        output.push_str("ctrl+");
+    }
+    if key.modifiers.contains(KeyModifiers::ALT) {
+        output.push_str("alt+");
+    }
+    if key.modifiers.contains(KeyModifiers::SHIFT) {
+        output.push_str("shift+");
+    }
+    output.push_str(match key.code {
+        KeyCode::Char(' ') => "space",
+        KeyCode::Enter => "enter",
+        KeyCode::Esc => "esc",
+        KeyCode::Tab => "tab",
+        KeyCode::Backspace => "backspace",
+        KeyCode::Delete => "delete",
+        KeyCode::Up => "up",
+        KeyCode::Down => "down",
+        KeyCode::Left => "left",
+        KeyCode::Right => "right",
+        KeyCode::Home => "home",
+        KeyCode::End => "end",
+        KeyCode::PageUp => "pageup",
+        KeyCode::PageDown => "pagedown",
+        KeyCode::Char(character) => return format!("{output}{}", character.to_ascii_lowercase()),
+        _ => "unknown",
+    });
+    output
+}
+
+fn escape_toml_string(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 impl KeysConfig {
-    pub fn new() -> Self {
-        Self {
-            general: Self::default_general(),
-            text_edit: Self::default_text_edit(),
-            list_navigation: Self::default_list_navigation(),
-            modal: Self::default_modal(),
-            repo_select: Self::default_repo_select(),
-            branch_select: Self::default_branch_select(),
-            sessions_select: Self::default_sessions_select(),
+    fn from_raw(raw: RawKeysConfig) -> Result<Self, String> {
+        let mut keys = Self::default();
+        extend_layer(&mut keys.general, raw.general, GENERAL)?;
+        extend_layer(&mut keys.text_edit, raw.text_edit, TEXT_EDIT)?;
+        extend_layer(
+            &mut keys.list_navigation,
+            raw.list_navigation,
+            LIST_NAVIGATION,
+        )?;
+        extend_layer(&mut keys.modal, raw.modal, MODAL)?;
+        extend_layer(&mut keys.repo_select, raw.repo_select, REPO_SELECT)?;
+        extend_layer(&mut keys.branch_select, raw.branch_select, BRANCH_SELECT)?;
+        Ok(keys)
+    }
+
+    pub fn command_for(&self, mode: BindingMode, chord: KeyChord) -> Option<Command> {
+        let mut command = self.general.get(&chord).copied();
+        if matches!(
+            mode,
+            BindingMode::Repo | BindingMode::Branch | BindingMode::BaseBranch
+        ) {
+            command = self.text_edit.get(&chord).copied().or(command);
+        }
+        if !matches!(mode, BindingMode::Modal) {
+            command = self.list_navigation.get(&chord).copied().or(command);
+        }
+        command = match mode {
+            BindingMode::Repo => self.repo_select.get(&chord).copied().or(command),
+            BindingMode::Branch => self.branch_select.get(&chord).copied().or(command),
+            BindingMode::BaseBranch | BindingMode::Choice | BindingMode::Modal => {
+                self.modal.get(&chord).copied().or(command)
+            }
+        };
+        command
+    }
+
+    pub fn is_dismiss_toast(&self, chord: KeyChord) -> bool {
+        self.general.get(&chord) == Some(&Command::DismissToast)
+    }
+
+    pub fn dismiss_toast_key(&self) -> Option<KeyChord> {
+        self.general
+            .iter()
+            .filter_map(|(key, command)| (*command == Command::DismissToast).then_some(*key))
+            .min_by_key(ToString::to_string)
+    }
+
+    pub fn mode_for(mode: &Mode) -> BindingMode {
+        match mode {
+            Mode::RepoSelect => BindingMode::Repo,
+            Mode::BranchSelect(_) => BindingMode::Branch,
+            Mode::SelectBaseBranch { .. } => BindingMode::BaseBranch,
+            Mode::ConfirmRemoteBranch { .. } => BindingMode::Choice,
+            Mode::ValidatingNewBranch { .. }
+            | Mode::ConfirmWorktreeDelete(_)
+            | Mode::Loading { .. } => BindingMode::Modal,
         }
     }
 
-    /// Build the effective keymap for a given app mode.
-    pub fn keymap_for_mode(&self, mode: &Mode) -> KeyMap {
-        let mut combined = KeyMap::new();
-        for layer in Layer::ORDER_ASC {
-            if Self::mode_uses_layer(mode, layer) {
-                match layer {
-                    Layer::General => Self::apply_layer(&mut combined, &self.general),
-                    Layer::TextEdit => Self::apply_layer(&mut combined, &self.text_edit),
-                    Layer::ListNavigation => {
-                        Self::apply_layer(&mut combined, &self.list_navigation);
-                    }
-                    Layer::RepoSelect => Self::apply_layer(&mut combined, &self.repo_select),
-                    Layer::BranchSelect => Self::apply_layer(&mut combined, &self.branch_select),
-                    Layer::SessionsSelect => {
-                        Self::apply_layer(&mut combined, &self.sessions_select);
-                    }
-                    Layer::Modal => Self::apply_layer(&mut combined, &self.modal),
-                }
+    pub fn first_key(&self, mode: BindingMode, wanted: Command) -> Option<KeyChord> {
+        self.sections(mode)
+            .into_iter()
+            .flat_map(|section| section.bindings)
+            .find_map(|(key, command)| (command == wanted).then_some(key))
+    }
+
+    /// Like `first_key`, but favours unmodified keys such as arrows over chords
+    /// like `ctrl+p`, which sort first but are the less obvious binding to show.
+    pub fn preferred_key(&self, mode: BindingMode, wanted: Command) -> Option<KeyChord> {
+        let keys = self
+            .sections(mode)
+            .into_iter()
+            .flat_map(|section| section.bindings)
+            .filter_map(|(key, command)| (command == wanted).then_some(key))
+            .collect::<Vec<_>>();
+        keys.iter()
+            .find(|key| key.modifiers == KeyModifiers::NONE)
+            .or_else(|| keys.first())
+            .copied()
+    }
+
+    pub fn sections(&self, mode: BindingMode) -> Vec<HelpSection> {
+        let effective = |key| self.command_for(mode, key);
+        let mut sections = Vec::new();
+        let layers: Vec<(&'static str, &HashMap<KeyChord, Command>)> = match mode {
+            BindingMode::Repo => vec![
+                ("repository", &self.repo_select),
+                ("navigation", &self.list_navigation),
+                ("search", &self.text_edit),
+                ("general", &self.general),
+            ],
+            BindingMode::Branch => vec![
+                ("branches", &self.branch_select),
+                ("navigation", &self.list_navigation),
+                ("search", &self.text_edit),
+                ("general", &self.general),
+            ],
+            BindingMode::BaseBranch => vec![
+                ("base branch", &self.modal),
+                ("navigation", &self.list_navigation),
+                ("search", &self.text_edit),
+                ("general", &self.general),
+            ],
+            BindingMode::Choice => vec![
+                ("dialog", &self.modal),
+                ("navigation", &self.list_navigation),
+                ("general", &self.general),
+            ],
+            BindingMode::Modal => vec![("dialog", &self.modal), ("general", &self.general)],
+        };
+        for (name, layer) in layers {
+            let mut bindings = layer
+                .iter()
+                .filter_map(|(key, command)| {
+                    (*command != Command::Noop && effective(*key) == Some(*command))
+                        .then_some((*key, *command))
+                })
+                .collect::<Vec<_>>();
+            bindings.sort_by(|left, right| {
+                command_rank(left.1)
+                    .cmp(&command_rank(right.1))
+                    .then_with(|| left.0.to_string().cmp(&right.0.to_string()))
+            });
+            if !bindings.is_empty() {
+                sections.push(HelpSection { name, bindings });
             }
         }
-
-        combined
-    }
-
-    /// Build keybinding sections for a mode, filtering out entries that are
-    /// overridden or unbound by higher-priority layers in the effective keymap.
-    pub fn sections_for_mode(&self, mode: &Mode) -> Vec<KeybindingSection> {
-        let effective = self.keymap_for_mode(mode);
-        Layer::ORDER_ASC
-            .into_iter()
-            .filter(|layer| Self::mode_uses_layer(mode, *layer))
-            .map(|layer| KeybindingSection {
-                name: layer.section_name(),
-                entries: match layer {
-                    Layer::General => {
-                        Self::entries_for_layer(&self.general, &Self::default_general_bindings())
-                    }
-                    Layer::TextEdit => Self::entries_for_layer(
-                        &self.text_edit,
-                        &Self::default_text_edit_bindings(),
-                    ),
-                    Layer::ListNavigation => Self::entries_for_layer(
-                        &self.list_navigation,
-                        &Self::default_list_navigation_bindings(),
-                    ),
-                    Layer::RepoSelect => Self::entries_for_layer(
-                        &self.repo_select,
-                        &Self::default_repo_select_bindings(),
-                    ),
-                    Layer::BranchSelect => Self::entries_for_layer(
-                        &self.branch_select,
-                        &Self::default_branch_select_bindings(),
-                    ),
-                    Layer::SessionsSelect => Self::entries_for_layer(
-                        &self.sessions_select,
-                        &Self::default_sessions_select_bindings(),
-                    ),
-                    Layer::Modal => {
-                        Self::entries_for_layer(&self.modal, &Self::default_modal_bindings())
-                    }
-                }
-                .into_iter()
-                .filter(|e| effective.get(&e.key) == Some(&e.command))
-                .collect(),
-            })
-            .filter(|section| !section.entries.is_empty())
-            .collect()
-    }
-
-    /// Build sectioned and flattened keybinding data for a mode.
-    /// Sections are returned in descending precedence order (highest first)
-    /// so the most relevant bindings appear at the top of the help overlay.
-    pub fn catalog_for_mode(&self, mode: &Mode) -> ModeKeybindingCatalog {
-        let mut sections = self.sections_for_mode(mode);
-        sections.reverse();
-        let flattened = sections
-            .iter()
-            .enumerate()
-            .flat_map(|(section_index, section)| {
-                section
-                    .entries
-                    .iter()
-                    .map(move |entry| FlattenedKeybindingRow {
-                        section_index,
-                        section_name: section.name,
-                        key_display: entry.key.to_string(),
-                        command: entry.command.clone(),
-                        description: entry.description,
-                    })
-            })
-            .collect();
-
-        ModeKeybindingCatalog {
-            mode: mode.clone(),
-            sections,
-            flattened,
-        }
-    }
-
-    /// Return key-layer section names ordered from lowest to highest precedence.
-    pub fn docs_section_order_asc() -> Vec<&'static str> {
-        Layer::ORDER_ASC
-            .into_iter()
-            .map(Layer::section_name)
-            .collect()
-    }
-
-    pub fn default_keybinding_sections_for_docs() -> Vec<KeybindingSection> {
-        vec![
-            KeybindingSection {
-                name: Layer::General.section_name(),
-                entries: Self::default_general_bindings()
-                    .into_iter()
-                    .map(|binding| keybinding_entry(binding.key, binding.command))
-                    .collect(),
-            },
-            KeybindingSection {
-                name: Layer::TextEdit.section_name(),
-                entries: Self::default_text_edit_bindings()
-                    .into_iter()
-                    .map(|binding| keybinding_entry(binding.key, binding.command))
-                    .collect(),
-            },
-            KeybindingSection {
-                name: Layer::ListNavigation.section_name(),
-                entries: Self::default_list_navigation_bindings()
-                    .into_iter()
-                    .map(|binding| keybinding_entry(binding.key, binding.command))
-                    .collect(),
-            },
-            KeybindingSection {
-                name: Layer::RepoSelect.section_name(),
-                entries: Self::default_repo_select_bindings()
-                    .into_iter()
-                    .map(|binding| keybinding_entry(binding.key, binding.command))
-                    .collect(),
-            },
-            KeybindingSection {
-                name: Layer::BranchSelect.section_name(),
-                entries: Self::default_branch_select_bindings()
-                    .into_iter()
-                    .map(|binding| keybinding_entry(binding.key, binding.command))
-                    .collect(),
-            },
-            KeybindingSection {
-                name: Layer::SessionsSelect.section_name(),
-                entries: Self::default_sessions_select_bindings()
-                    .into_iter()
-                    .map(|binding| keybinding_entry(binding.key, binding.command))
-                    .collect(),
-            },
-            KeybindingSection {
-                name: Layer::Modal.section_name(),
-                entries: Self::default_modal_bindings()
-                    .into_iter()
-                    .map(|binding| keybinding_entry(binding.key, binding.command))
-                    .collect(),
-            },
-        ]
-    }
-
-    #[cfg(test)]
-    fn layer_order_names_for_mode(mode: &Mode) -> Vec<&'static str> {
-        Layer::ORDER_ASC
-            .into_iter()
-            .filter(|layer| Self::mode_uses_layer(mode, *layer))
-            .map(Layer::section_name)
-            .collect()
-    }
-
-    /// Find the first key bound to a given command in a keymap.
-    pub fn find_key(keymap: &KeyMap, command: &Command) -> Option<KeyEvent> {
-        // Prefer shorter/simpler key representations
-        let mut found: Vec<_> = keymap
-            .iter()
-            .filter(|(_, cmd)| *cmd == command)
-            .map(|(key, _)| *key)
-            .collect();
-        found.sort();
-        found.into_iter().next()
-    }
-
-    /// Find the first key bound to a given command in a typed layer keymap.
-    pub fn find_layer_key<C>(keymap: &LayerKeyMap<C>, command: &C) -> Option<KeyEvent>
-    where
-        C: PartialEq,
-    {
-        let mut found: Vec<_> = keymap
-            .iter()
-            .filter(|(_, cmd)| *cmd == command)
-            .map(|(key, _)| *key)
-            .collect();
-        found.sort();
-        found.into_iter().next()
-    }
-
-    fn apply_layer<C>(base: &mut KeyMap, layer: &LayerKeyMap<C>)
-    where
-        C: Clone + Into<Command>,
-    {
-        for (key, command) in layer.iter() {
-            let command: Command = command.clone().into();
-            if command == Command::Noop {
-                base.remove(key);
-            } else {
-                base.insert(*key, command);
-            }
-        }
-    }
-
-    fn entries_for_layer<C>(
-        layer: &LayerKeyMap<C>,
-        defaults: &[DefaultBinding<C>],
-    ) -> Vec<KeybindingEntry>
-    where
-        C: Clone + Into<Command> + PartialEq,
-    {
-        let mut entries = Vec::new();
-        let mut default_keys = HashSet::new();
-
-        for binding in defaults {
-            default_keys.insert(binding.key);
-            let Some(command) = layer.get(&binding.key) else {
-                continue;
-            };
-            let command: Command = command.clone().into();
-            if command != Command::Noop {
-                entries.push(KeybindingEntry {
-                    key: binding.key,
-                    command: command.clone(),
-                    description: command.labels().description,
-                });
-            }
-        }
-
-        let mut extra_entries: Vec<KeybindingEntry> = layer
-            .iter()
-            .filter_map(|(key, command)| {
-                if default_keys.contains(key) {
-                    return None;
-                }
-                let command: Command = command.clone().into();
-                if command == Command::Noop {
-                    None
-                } else {
-                    Some(KeybindingEntry {
-                        key: *key,
-                        command: command.clone(),
-                        description: command.labels().description,
-                    })
-                }
-            })
-            .collect();
-
-        extra_entries.sort_by_key(|entry| (entry.command.clone(), entry.key.to_string()));
-        entries.extend(extra_entries);
-        entries
-    }
-
-    fn mode_uses_layer(mode: &Mode, layer: Layer) -> bool {
-        match layer {
-            Layer::General => true,
-            Layer::TextEdit => mode.supports_text_edit(),
-            Layer::ListNavigation => mode.supports_list_navigation(),
-            Layer::RepoSelect => mode.supports_repo_select_actions(),
-            Layer::BranchSelect => mode.supports_branch_select_actions(),
-            Layer::SessionsSelect => mode.supports_sessions_select_actions(),
-            Layer::Modal => mode.supports_modal_actions(),
-        }
-    }
-
-    fn build_default_layer<C>(defaults: &[DefaultBinding<C>]) -> LayerKeyMap<C>
-    where
-        C: Clone,
-    {
-        let mut map = LayerKeyMap::new();
-        for binding in defaults {
-            map.insert(binding.key, binding.command.clone());
-        }
-        map
-    }
-
-    fn default_general_bindings() -> Vec<DefaultBinding<GeneralCommand>> {
-        vec![
-            DefaultBinding::new(
-                KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
-                GeneralCommand::Quit,
-            ),
-            DefaultBinding::new(
-                KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-                GeneralCommand::Quit,
-            ),
-            DefaultBinding::new(
-                KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL),
-                GeneralCommand::ShowHelp,
-            ),
-            DefaultBinding::new(
-                KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
-                GeneralCommand::ToggleSessions,
-            ),
-        ]
-    }
-
-    fn default_text_edit_bindings() -> Vec<DefaultBinding<TextEditCommand>> {
-        vec![
-            DefaultBinding::new(
-                KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
-                TextEditCommand::DeleteBackwardChar,
-            ),
-            DefaultBinding::new(
-                KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE),
-                TextEditCommand::DeleteForwardChar,
-            ),
-            DefaultBinding::new(
-                KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
-                TextEditCommand::DeleteForwardChar,
-            ),
-            DefaultBinding::new(
-                KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
-                TextEditCommand::DeleteBackwardWord,
-            ),
-            DefaultBinding::new(
-                KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT),
-                TextEditCommand::DeleteBackwardWord,
-            ),
-            DefaultBinding::new(
-                KeyEvent::new(KeyCode::Char('d'), KeyModifiers::ALT),
-                TextEditCommand::DeleteForwardWord,
-            ),
-            DefaultBinding::new(
-                KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
-                TextEditCommand::DeleteToStart,
-            ),
-            DefaultBinding::new(
-                KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL),
-                TextEditCommand::DeleteToEnd,
-            ),
-            DefaultBinding::new(
-                KeyEvent::new(KeyCode::Left, KeyModifiers::NONE),
-                TextEditCommand::MoveCursorLeft,
-            ),
-            DefaultBinding::new(
-                KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
-                TextEditCommand::MoveCursorRight,
-            ),
-            DefaultBinding::new(
-                KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT),
-                TextEditCommand::MoveCursorWordLeft,
-            ),
-            DefaultBinding::new(
-                KeyEvent::new(KeyCode::Left, KeyModifiers::ALT),
-                TextEditCommand::MoveCursorWordLeft,
-            ),
-            DefaultBinding::new(
-                KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT),
-                TextEditCommand::MoveCursorWordRight,
-            ),
-            DefaultBinding::new(
-                KeyEvent::new(KeyCode::Right, KeyModifiers::ALT),
-                TextEditCommand::MoveCursorWordRight,
-            ),
-            DefaultBinding::new(
-                KeyEvent::new(KeyCode::Home, KeyModifiers::NONE),
-                TextEditCommand::MoveCursorStart,
-            ),
-            DefaultBinding::new(
-                KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
-                TextEditCommand::MoveCursorStart,
-            ),
-            DefaultBinding::new(
-                KeyEvent::new(KeyCode::End, KeyModifiers::NONE),
-                TextEditCommand::MoveCursorEnd,
-            ),
-            DefaultBinding::new(
-                KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL),
-                TextEditCommand::MoveCursorEnd,
-            ),
-        ]
-    }
-
-    fn default_list_navigation_bindings() -> Vec<DefaultBinding<ListNavigationCommand>> {
-        vec![
-            DefaultBinding::new(
-                KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
-                ListNavigationCommand::MoveUp,
-            ),
-            DefaultBinding::new(
-                KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
-                ListNavigationCommand::MoveDown,
-            ),
-            DefaultBinding::new(
-                KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
-                ListNavigationCommand::MoveUp,
-            ),
-            DefaultBinding::new(
-                KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
-                ListNavigationCommand::MoveDown,
-            ),
-            DefaultBinding::new(
-                KeyEvent::new(KeyCode::Char('j'), KeyModifiers::ALT),
-                ListNavigationCommand::HalfPageDown,
-            ),
-            DefaultBinding::new(
-                KeyEvent::new(KeyCode::Char('k'), KeyModifiers::ALT),
-                ListNavigationCommand::HalfPageUp,
-            ),
-            DefaultBinding::new(
-                KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE),
-                ListNavigationCommand::PageUp,
-            ),
-            DefaultBinding::new(
-                KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
-                ListNavigationCommand::PageDown,
-            ),
-            DefaultBinding::new(
-                KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
-                ListNavigationCommand::PageDown,
-            ),
-            DefaultBinding::new(
-                KeyEvent::new(KeyCode::Char('v'), KeyModifiers::ALT),
-                ListNavigationCommand::PageUp,
-            ),
-            DefaultBinding::new(
-                KeyEvent::new(KeyCode::Char('g'), KeyModifiers::ALT),
-                ListNavigationCommand::MoveTop,
-            ),
-            DefaultBinding::new(
-                KeyEvent::new(KeyCode::Char('G'), KeyModifiers::ALT),
-                ListNavigationCommand::MoveBottom,
-            ),
-        ]
-    }
-
-    fn default_modal_bindings() -> Vec<DefaultBinding<ModalCommand>> {
-        vec![
-            DefaultBinding::new(
-                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-                ModalCommand::Confirm,
-            ),
-            DefaultBinding::new(
-                KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-                ModalCommand::Cancel,
-            ),
-            DefaultBinding::new(
-                KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
-                ModalCommand::TabComplete,
-            ),
-        ]
-    }
-
-    fn default_repo_select_bindings() -> Vec<DefaultBinding<RepoSelectCommand>> {
-        vec![
-            DefaultBinding::new(
-                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-                RepoSelectCommand::OpenRepo,
-            ),
-            DefaultBinding::new(
-                KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
-                RepoSelectCommand::EnterRepo,
-            ),
-        ]
-    }
-
-    fn default_branch_select_bindings() -> Vec<DefaultBinding<BranchSelectCommand>> {
-        vec![
-            DefaultBinding::new(
-                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-                BranchSelectCommand::OpenBranch,
-            ),
-            DefaultBinding::new(
-                KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-                BranchSelectCommand::GoBack,
-            ),
-            DefaultBinding::new(
-                KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
-                BranchSelectCommand::NewBranch,
-            ),
-            DefaultBinding::new(
-                KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
-                BranchSelectCommand::DeleteWorktree,
-            ),
-        ]
-    }
-
-    fn default_sessions_select_bindings() -> Vec<DefaultBinding<SessionsSelectCommand>> {
-        vec![
-            DefaultBinding::new(
-                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-                SessionsSelectCommand::SwitchToSession,
-            ),
-            DefaultBinding::new(
-                KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
-                SessionsSelectCommand::JumpToNextAgentSession,
-            ),
-            DefaultBinding::new(
-                KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT),
-                SessionsSelectCommand::JumpToPreviousAgentSession,
-            ),
-        ]
-    }
-
-    fn default_general() -> LayerKeyMap<GeneralCommand> {
-        Self::build_default_layer(&Self::default_general_bindings())
-    }
-
-    fn default_text_edit() -> LayerKeyMap<TextEditCommand> {
-        Self::build_default_layer(&Self::default_text_edit_bindings())
-    }
-
-    fn default_list_navigation() -> LayerKeyMap<ListNavigationCommand> {
-        Self::build_default_layer(&Self::default_list_navigation_bindings())
-    }
-
-    fn default_modal() -> LayerKeyMap<ModalCommand> {
-        Self::build_default_layer(&Self::default_modal_bindings())
-    }
-
-    fn default_repo_select() -> LayerKeyMap<RepoSelectCommand> {
-        Self::build_default_layer(&Self::default_repo_select_bindings())
-    }
-
-    fn default_branch_select() -> LayerKeyMap<BranchSelectCommand> {
-        Self::build_default_layer(&Self::default_branch_select_bindings())
-    }
-
-    fn default_sessions_select() -> LayerKeyMap<SessionsSelectCommand> {
-        Self::build_default_layer(&Self::default_sessions_select_bindings())
-    }
-
-    /// Parse a string representation of keybindings into a `KeyMap`
-    fn parse_keymap(raw_map: &HashMap<String, String>) -> Result<KeyMap, String> {
-        let mut keymap = KeyMap::new();
-        for (key_str, command_str) in raw_map {
-            let key_event =
-                KeyEvent::from_str(key_str).map_err(|e| format!("Invalid key '{key_str}': {e}"))?;
-            let command = Command::from_str(command_str)
-                .map_err(|e| format!("Invalid command '{command_str}': {e}"))?;
-            keymap.insert(key_event, command);
-        }
-        Ok(keymap)
-    }
-
-    fn extend_typed_layer<C>(
-        base: &mut LayerKeyMap<C>,
-        raw_map: &HashMap<String, String>,
-    ) -> Result<(), String>
-    where
-        C: TryFrom<Command, Error = String>,
-    {
-        let parsed = Self::parse_keymap(raw_map)?;
-        for (key, command) in parsed {
-            let typed = C::try_from(command)?;
-            base.insert(key, typed);
-        }
-        Ok(())
-    }
-
-    /// Merge user configuration with defaults.
-    ///
-    /// Keep `Noop` values so higher-precedence layers can explicitly unbind inherited mappings.
-    fn from_raw(raw: &KeysConfigRaw) -> Result<Self, String> {
-        let mut config = Self::default();
-        Self::extend_typed_layer(&mut config.general, &raw.general)?;
-        Self::extend_typed_layer(&mut config.text_edit, &raw.text_edit)?;
-        Self::extend_typed_layer(&mut config.list_navigation, &raw.list_navigation)?;
-        Self::extend_typed_layer(&mut config.modal, &raw.modal)?;
-        Self::extend_typed_layer(&mut config.repo_select, &raw.repo_select)?;
-        Self::extend_typed_layer(&mut config.branch_select, &raw.branch_select)?;
-        Self::extend_typed_layer(&mut config.sessions_select, &raw.sessions_select)?;
-
-        Ok(config)
+        sections
     }
 }
 
-// Custom deserializer for KeysConfig
+const GENERAL: &[Command] = &[
+    Command::Noop,
+    Command::Quit,
+    Command::Help,
+    Command::DismissToast,
+];
+const TEXT_EDIT: &[Command] = &[
+    Command::Noop,
+    Command::Clear,
+    Command::Backspace,
+    Command::DeleteWord,
+    Command::CursorLeft,
+    Command::CursorRight,
+];
+const LIST_NAVIGATION: &[Command] = &[Command::Noop, Command::MoveUp, Command::MoveDown];
+const MODAL: &[Command] = &[Command::Noop, Command::Open, Command::Back];
+const REPO_SELECT: &[Command] = &[
+    Command::Noop,
+    Command::Open,
+    Command::BranchesView,
+    Command::Quit,
+];
+const BRANCH_SELECT: &[Command] = &[
+    Command::Noop,
+    Command::Open,
+    Command::Back,
+    Command::NewBranch,
+    Command::Delete,
+];
+
+fn extend_layer(
+    layer: &mut HashMap<KeyChord, Command>,
+    raw: HashMap<String, String>,
+    allowed: &[Command],
+) -> Result<(), String> {
+    for (key, action) in raw {
+        let chord = key
+            .parse::<KeyChord>()
+            .map_err(|error| format!("invalid key chord '{key}': {error}"))?;
+        let command = action.parse::<Command>()?;
+        if !allowed.contains(&command) {
+            return Err(format!(
+                "key action '{action}' is not allowed in this keys section"
+            ));
+        }
+        layer.insert(chord, command);
+    }
+    Ok(())
+}
+
+const fn command_rank(command: Command) -> u8 {
+    match command {
+        Command::Open => 0,
+        Command::BranchesView => 1,
+        Command::NewBranch => 2,
+        Command::Delete => 3,
+        Command::Back => 4,
+        Command::MoveUp => 5,
+        Command::MoveDown => 6,
+        Command::Clear => 7,
+        Command::Backspace => 8,
+        Command::DeleteWord => 9,
+        Command::CursorLeft => 10,
+        Command::CursorRight => 11,
+        Command::Help => 12,
+        Command::DismissToast => 13,
+        Command::Quit => 14,
+        Command::Noop => 15,
+    }
+}
+
 impl<'de> Deserialize<'de> for KeysConfig {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
-        D: serde::Deserializer<'de>,
+        D: Deserializer<'de>,
     {
-        let raw = KeysConfigRaw::deserialize(deserializer)?;
-        KeysConfig::from_raw(&raw).map_err(serde::de::Error::custom)
+        let raw = RawKeysConfig::deserialize(deserializer)?;
+        Self::from_raw(raw).map_err(serde::de::Error::custom)
     }
 }
 
@@ -1112,792 +634,132 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_command_from_str() {
-        assert_eq!(Command::from_str("quit").unwrap(), Command::Quit);
-        assert_eq!(
-            Command::from_str("delete_backward_char").unwrap(),
-            Command::DeleteBackwardChar
-        );
-        assert!(Command::from_str("invalid_command").is_err());
-    }
-
-    #[test]
-    fn test_command_display() {
-        assert_eq!(Command::Quit.to_string(), "quit");
-        assert_eq!(
-            Command::DeleteBackwardWord.to_string(),
-            "delete_backward_word"
-        );
-    }
-
-    #[test]
-    fn test_default_keys_config() {
-        let config = KeysConfig::default();
-        assert!(!config.general.is_empty());
-        assert!(!config.text_edit.is_empty());
-        assert!(!config.list_navigation.is_empty());
-        assert!(!config.modal.is_empty());
-        assert!(!config.repo_select.is_empty());
-        assert!(!config.branch_select.is_empty());
-    }
-
-    #[test]
-    fn test_parse_keymap() {
-        let mut raw_map = HashMap::new();
-        raw_map.insert("C-c".to_string(), "quit".to_string());
-        raw_map.insert("enter".to_string(), "confirm".to_string());
-
-        let keymap = KeysConfig::parse_keymap(&raw_map).unwrap();
-        assert_eq!(keymap.len(), 2);
-
-        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
-        assert_eq!(keymap.get(&ctrl_c), Some(&Command::Quit));
-
-        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-        assert_eq!(keymap.get(&enter), Some(&Command::Confirm));
-    }
-
-    #[test]
-    fn test_parse_invalid_key() {
-        let mut raw_map = HashMap::new();
-        raw_map.insert("invalid-key".to_string(), "quit".to_string());
-
-        let result = KeysConfig::parse_keymap(&raw_map);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_parse_invalid_command() {
-        let mut raw_map = HashMap::new();
-        raw_map.insert("C-c".to_string(), "invalid_command".to_string());
-
-        let result = KeysConfig::parse_keymap(&raw_map);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_mode_precedence_more_specific_wins() {
-        let raw = KeysConfigRaw {
-            general: HashMap::new(),
-            text_edit: HashMap::new(),
-            list_navigation: HashMap::new(),
-            modal: HashMap::new(),
-            repo_select: {
-                let mut map = HashMap::new();
-                map.insert("C-c".to_string(), "open_repo".to_string());
-                map
-            },
-            branch_select: HashMap::new(),
-            sessions_select: HashMap::new(),
-        };
-
-        let config = KeysConfig::from_raw(&raw).unwrap();
-        let map = config.keymap_for_mode(&Mode::RepoSelect);
-        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
-        assert_eq!(map.get(&ctrl_c), Some(&Command::OpenRepo));
-    }
-
-    #[test]
-    fn test_rejects_command_not_allowed_in_layer() {
-        let raw = KeysConfigRaw {
-            general: HashMap::new(),
-            text_edit: {
-                let mut map = HashMap::new();
-                map.insert("C-x".to_string(), "delete_worktree".to_string());
-                map
-            },
-            list_navigation: HashMap::new(),
-            modal: HashMap::new(),
-            repo_select: HashMap::new(),
-            branch_select: HashMap::new(),
-            sessions_select: HashMap::new(),
-        };
-
-        let result = KeysConfig::from_raw(&raw);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_typed_layer_command_serializes_as_config_string() {
-        let value = toml::Value::try_from(GeneralCommand::Quit).expect("serialize command");
-        assert_eq!(value.as_str(), Some("quit"));
-    }
-
-    #[test]
-    fn test_keys_config_default_serializes_layer_values_as_config_strings() {
-        let value = toml::Value::try_from(KeysConfig::default()).expect("serialize keys");
-        let keys = value
-            .as_table()
-            .and_then(|root| root.get("general"))
-            .and_then(toml::Value::as_table)
-            .expect("general layer");
-        assert_eq!(
-            keys.get("C-c").and_then(toml::Value::as_str),
-            Some("quit"),
-            "expected lowercase config command string"
-        );
-    }
-
-    #[test]
-    fn test_keys_config_ref_serialization_matches_value_serialization() {
+    fn preferred_key_favours_unmodified_bindings_but_follows_remaps() {
         let keys = KeysConfig::default();
-        let value = toml::Value::try_from(&keys).expect("serialize keys by ref");
-        let general = value
-            .as_table()
-            .and_then(|root| root.get("general"))
-            .and_then(toml::Value::as_table)
-            .expect("general layer");
         assert_eq!(
-            general.get("C-c").and_then(toml::Value::as_str),
-            Some("quit")
+            keys.preferred_key(BindingMode::Choice, Command::MoveUp),
+            Some(KeyChord::new(KeyCode::Up, KeyModifiers::NONE))
+        );
+        let keys =
+            toml::from_str::<KeysConfig>("[list_navigation]\nup = \"noop\"\ndown = \"noop\"")
+                .unwrap();
+        assert_eq!(
+            keys.preferred_key(BindingMode::Choice, Command::MoveUp),
+            Some(KeyChord::new(KeyCode::Char('p'), KeyModifiers::CONTROL))
         );
     }
 
     #[test]
-    fn test_noop_can_unbind_inherited_mapping() {
-        let raw = KeysConfigRaw {
-            general: HashMap::new(),
-            text_edit: HashMap::new(),
-            list_navigation: HashMap::new(),
-            modal: HashMap::new(),
-            repo_select: HashMap::new(),
-            branch_select: {
-                let mut map = HashMap::new();
-                map.insert("C-n".to_string(), "noop".to_string());
-                map
-            },
-            sessions_select: HashMap::new(),
-        };
-
-        let config = KeysConfig::from_raw(&raw).unwrap();
-        let map = config.keymap_for_mode(&Mode::BranchSelect);
-        let ctrl_n = KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL);
-        assert_eq!(map.get(&ctrl_n), None, "C-n should be unbound");
+    fn parses_and_displays_valid_chords() {
+        assert_eq!("C-b".parse::<KeyChord>().unwrap().to_string(), "ctrl+b");
+        assert_eq!(
+            "Alt-backspace".parse::<KeyChord>().unwrap().to_string(),
+            "alt+backspace"
+        );
+        assert_eq!(
+            "shift-tab".parse::<KeyChord>().unwrap().to_string(),
+            "shift+tab"
+        );
+        assert_eq!("space".parse::<KeyChord>().unwrap().to_string(), "space");
+        let shifted = "S-a".parse::<KeyChord>().unwrap();
+        assert_eq!(shifted.to_string(), "shift+a");
+        assert_eq!(
+            shifted,
+            KeyChord::from_event(KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT))
+        );
+        assert_eq!(shifted.to_string().parse::<KeyChord>().unwrap(), shifted);
+        assert_eq!("A".parse::<KeyChord>().unwrap(), "a".parse().unwrap());
     }
 
     #[test]
-    fn test_find_key_reverse_lookup() {
-        let config = KeysConfig::default();
-        let keymap = config.keymap_for_mode(&Mode::RepoSelect);
-        let key = KeysConfig::find_key(&keymap, &Command::Quit);
+    fn rejects_invalid_chords_and_unknown_actions() {
+        let bad_chord =
+            toml::from_str::<KeysConfig>("[branch_select]\n\"Hyper-Nope\" = \"new_branch\"")
+                .unwrap_err()
+                .to_string();
+        assert!(bad_chord.contains("invalid key chord"));
+        let bad_action =
+            toml::from_str::<KeysConfig>("[branch_select]\n\"C-b\" = \"launch_missiles\"")
+                .unwrap_err()
+                .to_string();
+        assert!(bad_action.contains("unknown key action"));
+        let shifted_number =
+            toml::from_str::<KeysConfig>("[repo_select]\n\"S-1\" = \"branches_view\"")
+                .unwrap_err()
+                .to_string();
+        assert!(shifted_number.contains("bind the resulting character directly"));
+    }
+
+    #[test]
+    fn user_keys_merge_with_defaults_and_override_matching_chords() {
+        let keys = toml::from_str::<KeysConfig>(
+            "[branch_select]\n\"C-b\" = \"new_branch\"\n\"C-o\" = \"noop\"",
+        )
+        .unwrap();
         assert_eq!(
-            key,
-            Some(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL))
+            keys.command_for(BindingMode::Branch, "C-b".parse().unwrap()),
+            Some(Command::NewBranch)
+        );
+        assert_eq!(
+            keys.command_for(BindingMode::Branch, "enter".parse().unwrap()),
+            Some(Command::Open)
+        );
+        assert_eq!(
+            keys.command_for(BindingMode::Branch, "C-o".parse().unwrap()),
+            Some(Command::Noop)
         );
     }
 
     #[test]
-    fn test_default_text_edit_bindings() {
-        let config = KeysConfig::default();
-        let keymap = config.keymap_for_mode(&Mode::RepoSelect);
-
-        let left = KeyEvent::new(KeyCode::Left, KeyModifiers::NONE);
-        let right = KeyEvent::new(KeyCode::Right, KeyModifiers::NONE);
-        let home = KeyEvent::new(KeyCode::Home, KeyModifiers::NONE);
-        let end = KeyEvent::new(KeyCode::End, KeyModifiers::NONE);
-
-        assert_eq!(keymap.get(&left), Some(&Command::MoveCursorLeft));
-        assert_eq!(keymap.get(&right), Some(&Command::MoveCursorRight));
-        assert_eq!(keymap.get(&home), Some(&Command::MoveCursorStart));
-        assert_eq!(keymap.get(&end), Some(&Command::MoveCursorEnd));
-    }
-
-    #[test]
-    fn test_modal_precedence_over_general_in_confirm_delete() {
-        let raw = KeysConfigRaw {
-            general: {
-                let mut map = HashMap::new();
-                map.insert("enter".to_string(), "quit".to_string());
-                map
-            },
-            text_edit: HashMap::new(),
-            list_navigation: HashMap::new(),
-            modal: HashMap::new(),
-            repo_select: HashMap::new(),
-            branch_select: HashMap::new(),
-            sessions_select: HashMap::new(),
-        };
-
-        let config = KeysConfig::from_raw(&raw).unwrap();
-        let map = config.keymap_for_mode(&Mode::ConfirmWorktreeDelete {
-            branch_name: "x".to_string(),
-            has_session: false,
-        });
-        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-        assert_eq!(map.get(&enter), Some(&Command::Confirm));
-    }
-
-    #[test]
-    fn test_modal_noop_can_unbind_general_in_confirm_delete() {
-        let raw = KeysConfigRaw {
-            general: {
-                let mut map = HashMap::new();
-                map.insert("esc".to_string(), "quit".to_string());
-                map
-            },
-            text_edit: HashMap::new(),
-            list_navigation: HashMap::new(),
-            modal: {
-                let mut map = HashMap::new();
-                map.insert("esc".to_string(), "noop".to_string());
-                map
-            },
-            repo_select: HashMap::new(),
-            branch_select: HashMap::new(),
-            sessions_select: HashMap::new(),
-        };
-
-        let config = KeysConfig::from_raw(&raw).unwrap();
-        let map = config.keymap_for_mode(&Mode::ConfirmWorktreeDelete {
-            branch_name: "x".to_string(),
-            has_session: false,
-        });
-        let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
-        assert_eq!(map.get(&esc), None, "Esc should be unbound in modal");
-    }
-
-    #[test]
-    fn test_layer_order_is_exported_for_docs() {
-        assert_eq!(
-            KeysConfig::layer_order_names_for_mode(&Mode::RepoSelect),
-            vec!["general", "text_edit", "list_navigation", "repo_select"]
-        );
-        assert_eq!(
-            KeysConfig::layer_order_names_for_mode(&Mode::SelectBaseBranch),
-            vec!["general", "text_edit", "list_navigation", "modal"]
-        );
-        assert_eq!(
-            KeysConfig::layer_order_names_for_mode(&Mode::ConfirmWorktreeDelete {
-                branch_name: "x".to_string(),
-                has_session: false,
-            }),
-            vec!["general", "modal"]
-        );
-    }
-
-    #[test]
-    fn test_docs_section_order_asc_is_derived_from_layer_precedence() {
-        assert_eq!(
-            KeysConfig::docs_section_order_asc(),
-            vec![
-                "general",
-                "text_edit",
-                "list_navigation",
-                "repo_select",
-                "branch_select",
-                "sessions_select",
-                "modal",
-            ]
-        );
-    }
-
-    #[test]
-    fn test_default_keybinding_sections_for_docs_preserve_source_order() {
-        let sections = KeysConfig::default_keybinding_sections_for_docs();
-        let sessions = sections
-            .iter()
-            .find(|section| section.name == "sessions_select")
-            .expect("sessions_select section should exist");
-
-        let keys: Vec<String> = sessions
-            .entries
-            .iter()
-            .map(|entry| entry.key.to_string())
-            .collect();
-        let commands: Vec<Command> = sessions
-            .entries
-            .iter()
-            .map(|entry| entry.command.clone())
-            .collect();
-
-        assert_eq!(keys, vec!["enter", "tab", "S-tab"]);
-        assert_eq!(
-            commands,
-            vec![
-                Command::SwitchToSession,
-                Command::JumpToNextAgentSession,
-                Command::JumpToPreviousAgentSession,
-            ]
-        );
-    }
-
-    #[test]
-    fn test_sections_for_mode_uses_layer_precedence_order() {
-        let config = KeysConfig::default();
-        let section_names: Vec<&str> = config
-            .sections_for_mode(&Mode::BranchSelect)
-            .iter()
-            .map(|section| section.name)
-            .collect();
-
-        assert_eq!(
-            section_names,
-            vec!["general", "text_edit", "list_navigation", "branch_select"]
-        );
-    }
-
-    #[test]
-    fn test_sections_for_mode_excludes_noop_entries() {
-        let raw = KeysConfigRaw {
-            general: {
-                let mut map = HashMap::new();
-                map.insert("C-c".to_string(), "noop".to_string());
-                map.insert("C-h".to_string(), "show_help".to_string());
-                map.insert("C-s".to_string(), "noop".to_string());
-                map.insert("esc".to_string(), "noop".to_string());
-                map
-            },
-            text_edit: HashMap::new(),
-            list_navigation: HashMap::new(),
-            modal: HashMap::new(),
-            repo_select: HashMap::new(),
-            branch_select: HashMap::new(),
-            sessions_select: HashMap::new(),
-        };
-
-        let config = KeysConfig::from_raw(&raw).unwrap();
-        let general = config
-            .sections_for_mode(&Mode::RepoSelect)
+    fn help_rows_are_derived_from_overridden_bindings() {
+        let keys = toml::from_str::<KeysConfig>(
+            "[branch_select]\n\"C-b\" = \"new_branch\"\n\"C-o\" = \"noop\"",
+        )
+        .unwrap();
+        let rendered = keys
+            .sections(BindingMode::Branch)
             .into_iter()
-            .find(|section| section.name == "general")
-            .unwrap();
-
-        assert_eq!(general.entries.len(), 1);
-        assert_eq!(general.entries[0].command, Command::ShowHelp);
+            .flat_map(|section| section.bindings)
+            .map(|(key, command)| format!("{key} {command:?}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("ctrl+b NewBranch"));
+        assert!(!rendered.contains("ctrl+o NewBranch"));
     }
 
     #[test]
-    fn test_sections_for_mode_hides_entries_overridden_by_higher_layer_noop() {
-        let raw = KeysConfigRaw {
-            general: HashMap::new(),
-            text_edit: HashMap::new(),
-            list_navigation: HashMap::new(),
-            modal: HashMap::new(),
-            repo_select: HashMap::new(),
-            branch_select: {
-                let mut map = HashMap::new();
-                // Override the inherited list_navigation C-n binding with noop
-                map.insert("C-n".to_string(), "noop".to_string());
-                map
-            },
-            sessions_select: HashMap::new(),
-        };
-
-        let config = KeysConfig::from_raw(&raw).unwrap();
-        let sections = config.sections_for_mode(&Mode::BranchSelect);
-
-        let list_nav = sections
-            .iter()
-            .find(|s| s.name == "list_navigation")
-            .expect("list_navigation section should exist");
-
-        assert!(
-            !list_nav
-                .entries
-                .iter()
-                .any(|e| e.command == Command::MoveDown
-                    && e.key == KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL)),
-            "C-n -> MoveDown should be hidden when overridden by higher-layer noop"
-        );
-
-        // The 'down' key binding for MoveDown should still be present
-        assert!(
-            list_nav
-                .entries
-                .iter()
-                .any(|e| e.command == Command::MoveDown
-                    && e.key == KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
-            "down -> MoveDown should still be shown (not overridden)"
-        );
-    }
-
-    #[test]
-    fn test_sections_for_mode_omits_fully_unbound_layers() {
-        let raw = KeysConfigRaw {
-            general: {
-                let mut map = HashMap::new();
-                map.insert("C-c".to_string(), "noop".to_string());
-                map.insert("C-h".to_string(), "noop".to_string());
-                map.insert("C-s".to_string(), "noop".to_string());
-                map.insert("esc".to_string(), "noop".to_string());
-                map
-            },
-            text_edit: HashMap::new(),
-            list_navigation: HashMap::new(),
-            modal: HashMap::new(),
-            repo_select: {
-                let mut map = HashMap::new();
-                map.insert("enter".to_string(), "open_repo".to_string());
-                map
-            },
-            branch_select: HashMap::new(),
-            sessions_select: HashMap::new(),
-        };
-
-        let config = KeysConfig::from_raw(&raw).unwrap();
-        let section_names: Vec<&str> = config
-            .sections_for_mode(&Mode::RepoSelect)
-            .iter()
-            .map(|s| s.name)
-            .collect();
-
-        assert!(
-            !section_names.contains(&"general"),
-            "Fully-unbound general layer should be omitted"
-        );
-        assert!(
-            section_names.contains(&"repo_select"),
-            "Layer with bindings should be present"
-        );
-    }
-
-    #[test]
-    fn test_catalog_for_mode_flattened_order_is_deterministic() {
-        let config = KeysConfig::default();
-        let catalog = config.catalog_for_mode(&Mode::RepoSelect);
-
-        let section_names: Vec<&str> = catalog
-            .sections
-            .iter()
-            .map(|section| section.name)
-            .collect();
-        assert_eq!(
-            section_names,
-            vec!["repo_select", "list_navigation", "text_edit", "general"]
-        );
-        let flattened_repo_select: Vec<(usize, String, Command)> = catalog
-            .flattened
-            .iter()
-            .filter(|row| row.section_name == "repo_select")
-            .map(|row| {
-                (
-                    row.section_index,
-                    row.key_display.clone(),
-                    row.command.clone(),
-                )
-            })
-            .collect();
-
-        assert_eq!(
-            flattened_repo_select,
-            vec![
-                (0, "enter".to_string(), Command::OpenRepo),
-                (0, "tab".to_string(), Command::EnterRepo),
-            ]
-        );
-    }
-
-    #[test]
-    fn test_modal_overrides_lower_layers_in_select_base_branch() {
-        let raw = KeysConfigRaw {
-            general: HashMap::new(),
-            text_edit: HashMap::new(),
-            list_navigation: {
-                let mut map = HashMap::new();
-                map.insert("enter".to_string(), "move_down".to_string());
-                map
-            },
-            modal: HashMap::new(),
-            repo_select: HashMap::new(),
-            branch_select: HashMap::new(),
-            sessions_select: HashMap::new(),
-        };
-
-        let config = KeysConfig::from_raw(&raw).unwrap();
-        let map = config.keymap_for_mode(&Mode::SelectBaseBranch);
-        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-        assert_eq!(
-            map.get(&enter),
-            Some(&Command::Confirm),
-            "modal should have highest precedence in select-base flow"
-        );
-    }
-
-    #[test]
-    fn test_default_text_edit_and_navigation_bindings() {
-        let config = KeysConfig::default();
-        let ctrl_u = KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL);
-        let ctrl_d = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL);
-        let alt_j = KeyEvent::new(KeyCode::Char('j'), KeyModifiers::ALT);
-        let alt_k = KeyEvent::new(KeyCode::Char('k'), KeyModifiers::ALT);
-        let ctrl_v = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
-        let alt_v = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::ALT);
-
-        assert_eq!(
-            config
-                .keymap_for_mode(&Mode::RepoSelect)
-                .get(&ctrl_u)
-                .cloned(),
-            Some(Command::DeleteToStart)
-        );
-        assert_eq!(
-            config
-                .keymap_for_mode(&Mode::RepoSelect)
-                .get(&ctrl_d)
-                .cloned(),
-            Some(Command::DeleteForwardChar)
-        );
-        assert_eq!(
-            config
-                .keymap_for_mode(&Mode::RepoSelect)
-                .get(&alt_j)
-                .cloned(),
-            Some(Command::HalfPageDown)
-        );
-        assert_eq!(
-            config
-                .keymap_for_mode(&Mode::RepoSelect)
-                .get(&alt_k)
-                .cloned(),
-            Some(Command::HalfPageUp)
-        );
-        assert_eq!(
-            config
-                .keymap_for_mode(&Mode::RepoSelect)
-                .get(&ctrl_v)
-                .cloned(),
-            Some(Command::PageDown)
-        );
-        assert_eq!(
-            config
-                .keymap_for_mode(&Mode::RepoSelect)
-                .get(&alt_v)
-                .cloned(),
-            Some(Command::PageUp)
-        );
-    }
-
-    #[test]
-    fn test_default_sessions_bindings() {
-        let config = KeysConfig::default();
-        let keymap = config.keymap_for_mode(&Mode::Sessions);
-
-        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-        let tab = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
-        let shift_tab = KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT);
-        let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
-        let ctrl_s = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL);
-
-        assert_eq!(keymap.get(&enter), Some(&Command::SwitchToSession));
-        assert_eq!(keymap.get(&tab), Some(&Command::JumpToNextAgentSession));
-        assert_eq!(
-            keymap.get(&shift_tab),
-            Some(&Command::JumpToPreviousAgentSession)
-        );
-        assert_eq!(keymap.get(&esc), Some(&Command::Quit));
-        assert_eq!(keymap.get(&ctrl_s), Some(&Command::ToggleSessions));
-    }
-
-    #[test]
-    fn test_noop_aliases() {
-        assert_eq!(Command::from_str("noop").unwrap(), Command::Noop);
-        assert_eq!(Command::from_str("none").unwrap(), Command::Noop);
-        assert_eq!(Command::from_str("unbound").unwrap(), Command::Noop);
-    }
-
-    #[test]
-    fn test_every_command_roundtrips_through_display_and_from_str() {
-        let all_commands = [
-            Command::Noop,
-            Command::Quit,
-            Command::ShowHelp,
-            Command::OpenRepo,
-            Command::EnterRepo,
-            Command::OpenBranch,
-            Command::GoBack,
-            Command::NewBranch,
-            Command::DeleteWorktree,
-            Command::MoveUp,
-            Command::MoveDown,
-            Command::HalfPageUp,
-            Command::HalfPageDown,
-            Command::PageUp,
-            Command::PageDown,
-            Command::MoveTop,
-            Command::MoveBottom,
-            Command::DeleteBackwardChar,
-            Command::DeleteForwardChar,
-            Command::DeleteBackwardWord,
-            Command::DeleteForwardWord,
-            Command::DeleteToStart,
-            Command::DeleteToEnd,
-            Command::MoveCursorLeft,
-            Command::MoveCursorRight,
-            Command::MoveCursorWordLeft,
-            Command::MoveCursorWordRight,
-            Command::MoveCursorStart,
-            Command::MoveCursorEnd,
-            Command::Confirm,
-            Command::Cancel,
-            Command::TabComplete,
-            Command::ToggleSessions,
-            Command::SwitchToSession,
-            Command::JumpToNextAgentSession,
-            Command::JumpToPreviousAgentSession,
-        ];
-
-        for cmd in &all_commands {
-            let s = cmd.to_string();
-            let parsed = Command::from_str(&s).unwrap_or_else(|e| {
-                panic!("Command::{cmd:?} serializes as \"{s}\" but fails to parse back: {e}")
-            });
-            assert_eq!(
-                &parsed, cmd,
-                "Roundtrip failed for Command::{cmd:?} (serialized as \"{s}\")"
-            );
-        }
-    }
-
-    #[test]
-    fn test_every_command_has_non_empty_description() {
-        let all_commands = [
-            Command::Noop,
-            Command::Quit,
-            Command::ShowHelp,
-            Command::OpenRepo,
-            Command::EnterRepo,
-            Command::OpenBranch,
-            Command::GoBack,
-            Command::NewBranch,
-            Command::DeleteWorktree,
-            Command::MoveUp,
-            Command::MoveDown,
-            Command::HalfPageUp,
-            Command::HalfPageDown,
-            Command::PageUp,
-            Command::PageDown,
-            Command::MoveTop,
-            Command::MoveBottom,
-            Command::DeleteBackwardChar,
-            Command::DeleteForwardChar,
-            Command::DeleteBackwardWord,
-            Command::DeleteForwardWord,
-            Command::DeleteToStart,
-            Command::DeleteToEnd,
-            Command::MoveCursorLeft,
-            Command::MoveCursorRight,
-            Command::MoveCursorWordLeft,
-            Command::MoveCursorWordRight,
-            Command::MoveCursorStart,
-            Command::MoveCursorEnd,
-            Command::Confirm,
-            Command::Cancel,
-            Command::TabComplete,
-            Command::ToggleSessions,
-            Command::SwitchToSession,
-            Command::JumpToNextAgentSession,
-            Command::JumpToPreviousAgentSession,
-        ];
-
-        for cmd in &all_commands {
-            let labels = cmd.labels();
-            assert!(
-                !labels.description.is_empty(),
-                "Command::{cmd:?} has an empty description"
-            );
-        }
-    }
-
-    #[test]
-    fn test_catalog_for_mode_excludes_noop_from_flattened_rows() {
-        let raw = KeysConfigRaw {
-            general: {
-                let mut map = HashMap::new();
-                map.insert("C-c".to_string(), "noop".to_string());
-                map.insert("C-h".to_string(), "show_help".to_string());
-                map
-            },
-            text_edit: HashMap::new(),
-            list_navigation: HashMap::new(),
-            modal: HashMap::new(),
-            repo_select: HashMap::new(),
-            branch_select: HashMap::new(),
-            sessions_select: HashMap::new(),
-        };
-
-        let config = KeysConfig::from_raw(&raw).unwrap();
-        let catalog = config.catalog_for_mode(&Mode::RepoSelect);
-
-        for row in &catalog.flattened {
-            assert_ne!(
-                row.command,
-                Command::Noop,
-                "Flattened rows should not contain Noop entries, found: {}",
-                row.key_display
-            );
-        }
-
-        // Verify C-h (show_help) IS present
-        assert!(
-            catalog
-                .flattened
-                .iter()
-                .any(|r| r.command == Command::ShowHelp),
-            "Non-noop commands should still be in flattened rows"
-        );
-    }
-
-    #[test]
-    fn test_footer_commands_all_have_hints() {
-        let modes: Vec<Mode> = vec![
-            Mode::RepoSelect,
-            Mode::BranchSelect,
-            Mode::Sessions,
-            Mode::SelectBaseBranch,
-            Mode::ConfirmWorktreeDelete {
-                branch_name: "x".into(),
-                has_session: false,
-            },
-        ];
-
-        for mode in &modes {
-            for cmd in mode.footer_commands() {
-                assert!(
-                    !cmd.labels().hint.is_empty(),
-                    "Command::{cmd:?} is in footer_commands for {mode:?} but has an empty hint"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn test_footer_commands_have_key_bindings() {
+    fn base_branch_mode_layers_search_navigation_and_dialog_bindings() {
         let keys = KeysConfig::default();
-        let modes: Vec<Mode> = vec![
-            Mode::RepoSelect,
-            Mode::BranchSelect,
-            Mode::Sessions,
-            Mode::SelectBaseBranch,
-            Mode::ConfirmWorktreeDelete {
-                branch_name: "x".into(),
-                has_session: false,
-            },
-        ];
-
-        for mode in &modes {
-            let keymap = keys.keymap_for_mode(mode);
-            for cmd in mode.footer_commands() {
-                assert!(
-                    KeysConfig::find_key(&keymap, cmd).is_some(),
-                    "Command::{cmd:?} is in footer_commands for {mode:?} but has no default key binding"
-                );
-            }
+        for (chord, command) in [
+            ("up", Command::MoveUp),
+            ("down", Command::MoveDown),
+            ("C-p", Command::MoveUp),
+            ("C-n", Command::MoveDown),
+            ("backspace", Command::Backspace),
+            ("C-w", Command::DeleteWord),
+            ("left", Command::CursorLeft),
+            ("right", Command::CursorRight),
+            ("enter", Command::Open),
+            ("esc", Command::Back),
+        ] {
+            assert_eq!(
+                keys.command_for(BindingMode::BaseBranch, chord.parse().unwrap()),
+                Some(command),
+                "unexpected base-branch command for {chord}"
+            );
         }
     }
 
     #[test]
-    fn test_loading_and_help_have_no_footer_commands() {
-        assert!(
-            Mode::Loading("test".into()).footer_commands().is_empty(),
-            "Loading mode should have no footer commands"
+    fn delete_dialog_remains_modal() {
+        let keys = KeysConfig::default();
+        assert_eq!(
+            keys.command_for(BindingMode::Modal, "backspace".parse().unwrap()),
+            None
         );
-        assert!(
-            Mode::Help {
-                previous: Box::new(Mode::RepoSelect)
-            }
-            .footer_commands()
-            .is_empty(),
-            "Help mode should have no footer commands"
+        assert_eq!(
+            keys.command_for(BindingMode::Modal, "down".parse().unwrap()),
+            None
         );
     }
 }

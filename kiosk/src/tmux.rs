@@ -302,6 +302,16 @@ fn escaped(variable: &str) -> String {
     format!("#{{s/\\\\/\\\\\\\\/;s/\t/\\\\t/;s/\n/\\\\n/;s/\r/\\\\r/:{variable}}}")
 }
 
+/// What tmux writes for `value` through [`escaped`], for fake listings.
+#[cfg(test)]
+pub(crate) fn escape(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('\t', "\\t")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+}
+
 /// Reverses [`escaped`]. Any other backslash sequence is kept as it is, as tmux may write
 /// its own escapes for other control characters.
 fn unescape(field: &str) -> Cow<'_, str> {
@@ -446,6 +456,13 @@ mod tests {
 
     fn line(fields: &[&str]) -> String {
         fields.join(&FIELD_SEPARATOR.to_string())
+    }
+
+    #[test]
+    fn unescape_reverses_escape() {
+        for value in ["C:\\Users\\runneradmin\\new", "a\tb\nc\rd\\", "\\t", ""] {
+            assert_eq!(unescape(&escape(value)), value);
+        }
     }
 
     #[test]

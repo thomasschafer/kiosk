@@ -315,6 +315,8 @@ pub(crate) fn open_selected<B: Backend>(
     let repo_path = entry.repo.path.clone();
     let repo_name = entry.repo.name.clone();
     let is_git = entry.repo.is_git;
+    // The user chose this repo, so a late preselection must not move off it.
+    state.repo_view.selection_touched = true;
     let Some(backend) = backend else {
         state.push_toast(ToastKind::Error, state.product.no_backend_message);
         return;

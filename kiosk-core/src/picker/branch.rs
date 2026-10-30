@@ -573,6 +573,8 @@ pub(crate) fn enter<B: Backend>(
         repo_name: entry.repo.name.clone(),
     };
     let repo = entry.repo.clone();
+    // The user chose this repo, so a late preselection must not move off it.
+    state.repo_view.selection_touched = true;
     let repo_path = context.repo_path.clone();
     state.mode = Mode::BranchSelect(context);
     state.branch_view.entries.clear();

@@ -225,6 +225,28 @@ fn current_repo_resolution_only_considers_filtered_entries() {
 }
 
 #[test]
+fn a_late_current_repo_resolution_leaves_the_repo_the_user_went_into() {
+    let git: Arc<dyn crate::git::GitProvider> =
+        Arc::new(crate::git::mock::MockGitProvider::default());
+    let (sender, _rx) = sender();
+    let mut state = state_in("/trees/repo/feature", &["/code/other", "/code/repo"]);
+    crate::picker::branch::enter::<MockBackend>(&mut state, &git, None, &sender);
+    resolve_current_repo(&mut state, "/code/repo");
+    assert_eq!(
+        state.selected_repo().unwrap().repo.path,
+        Path::new("/code/other")
+    );
+
+    let mut state = state_in("/trees/repo/feature", &["/code/other", "/code/repo"]);
+    open_selected(&mut state, Some(&Arc::new(MockBackend::native())), &sender);
+    resolve_current_repo(&mut state, "/code/repo");
+    assert_eq!(
+        state.selected_repo().unwrap().repo.path,
+        Path::new("/code/other")
+    );
+}
+
+#[test]
 fn a_failed_current_repo_resolution_is_a_warning() {
     let mut state = state_in("/somewhere", &["/code/repo"]);
     process_app_event(

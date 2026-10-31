@@ -110,7 +110,10 @@ fn detect_agent_kind_from_content_impl(
         return Some(AgentKind::Codex);
     }
 
-    if include_claude_markers && lower.contains("claude code v") {
+    // The banner (`Claude Code v2.1.63`), or the folder-trust prompt shown before it.
+    if include_claude_markers
+        && (lower.contains("claude code v") || lower.contains("claude code'll be able to"))
+    {
         return Some(AgentKind::ClaudeCode);
     }
 
@@ -638,7 +641,7 @@ fn detect_claude_state(content: &str, tail: &str, prompt_tail: &str) -> AgentSta
 }
 
 fn detect_claude_waiting(content: &str) -> bool {
-    if matches_any(content, CLAUDE_PATTERNS.waiting) {
+    if matches_any(content, CLAUDE_PATTERNS.waiting) || looks_like_claude_trust_prompt(content) {
         return true;
     }
     if content.contains("do you want to proceed?") {
@@ -651,6 +654,22 @@ fn detect_claude_waiting(content: &str) -> bool {
             || content.contains("allow always");
     }
     false
+}
+
+/// Whether lowercased content shows Claude Code's folder-trust menu.
+///
+/// The menu has no numbers and defaults to `❯ No, exit`, so neither `❯ 1.` nor the
+/// shared `esc to cancel` footer (an idle marker for Claude's overlays) identifies it.
+/// Both options must be whole lines, so neither a response quoting them nor one typed at
+/// the input prompt reads as Waiting.
+fn looks_like_claude_trust_prompt(content: &str) -> bool {
+    let has_option = |label: &str| {
+        content.lines().any(|line| {
+            let line = line.trim();
+            line.strip_prefix('❯').unwrap_or(line).trim() == label
+        })
+    };
+    has_option("no, exit") && has_option("yes, i trust this folder")
 }
 
 /// Codex-specific state detection.
@@ -699,7 +718,7 @@ fn detect_codex_state(_content: &str, tail: &str) -> AgentState {
     // IMPORTANT: Only check waiting patterns in the **tail** to avoid stale
     // scrollback false positives (e.g. old trust prompts, update dialogs
     // that remain in the buffer after being dismissed).
-    if matches_any(tail, CODEX_PATTERNS.waiting) {
+    if matches_any(tail, CODEX_PATTERNS.waiting) || looks_like_codex_trust_prompt(tail) {
         return AgentState::Waiting;
     }
     // Fallback for newer Codex prompt/footer renders where `? for shortcuts`
@@ -946,7 +965,7 @@ fn is_non_menu_codex_prompt_line(line: &str) -> bool {
     let Some(after_prompt) = codex_prompt_payload(line) else {
         return false;
     };
-    !is_menu_codex_prompt_payload(after_prompt)
+    codex_menu_item_label(after_prompt).is_none()
 }
 
 fn is_bare_non_menu_codex_prompt_line(line: &str) -> bool {
@@ -962,11 +981,27 @@ fn codex_prompt_payload(line: &str) -> Option<&str> {
     Some(after_prompt.trim())
 }
 
-fn is_menu_codex_prompt_payload(after_prompt: &str) -> bool {
-    let Some((prefix, suffix)) = after_prompt.split_once('.') else {
-        return false;
-    };
-    !prefix.is_empty() && prefix.chars().all(|c| c.is_ascii_digit()) && suffix.starts_with(' ')
+/// The label of a numbered Codex menu item such as `2. No, quit`, without its number.
+fn codex_menu_item_label(item: &str) -> Option<&str> {
+    let (prefix, suffix) = item.split_once('.')?;
+    let label = suffix.strip_prefix(' ')?;
+    (!prefix.is_empty() && prefix.chars().all(|c| c.is_ascii_digit())).then(|| label.trim())
+}
+
+/// Whether a lowercased tail shows Codex's folder-trust menu, whichever item is selected.
+///
+/// Only the selected item carries `› `, so `› 1.` alone misses the menu once the cursor
+/// moves. Requiring the item to be one of at least two keeps text typed at the input
+/// prompt from reading as Waiting.
+fn looks_like_codex_trust_prompt(tail: &str) -> bool {
+    let labels: Vec<&str> = tail
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            codex_menu_item_label(line.strip_prefix('›').unwrap_or(line).trim())
+        })
+        .collect();
+    labels.len() >= 2 && labels.contains(&"trust and continue")
 }
 
 /// Step 3 of the Codex idle fallback chain.
@@ -1350,6 +1385,17 @@ mod tests {
         assert_eq!(detect_agent_kind_from_content(content), None);
     }
 
+    #[test]
+    fn detect_kind_from_wrapper_content_claude_trust_prompt() {
+        let content = " Claude Code'll be able to read, edit, and execute files here.\n\
+                       \n ❯ No, exit\n   Yes, I trust this folder";
+        assert_eq!(
+            detect_agent_kind_from_wrapper_content(content),
+            Some(AgentKind::ClaudeCode)
+        );
+        assert_eq!(detect_agent_kind_from_content(content), None);
+    }
+
     // -- Claude Code ---------------------------------------------------------
 
     #[test]
@@ -1427,6 +1473,43 @@ mod tests {
                 AgentKind::ClaudeCode
             ),
             AgentState::Waiting
+        );
+    }
+
+    #[test]
+    fn claude_trust_folder_prompt_is_waiting_whichever_option_is_selected() {
+        for options in [
+            "❯ No, exit\n   Yes, I trust this folder",
+            "  No, exit\n ❯ Yes, I trust this folder",
+        ] {
+            let content = format!(
+                "Quick safety check: Is this a project you created or one you trust?\n\n\
+                 {options}\n\n Enter to confirm · Esc to cancel"
+            );
+            assert_eq!(
+                detect_state(&content, AgentKind::ClaudeCode),
+                AgentState::Waiting,
+                "{options}"
+            );
+        }
+    }
+
+    #[test]
+    fn claude_trust_option_quoted_in_prose_is_not_waiting() {
+        let content = "The prompt offers \"Yes, I trust this folder\" and \"No, exit\".\n\
+                       ❯ \n⏵⏵ auto mode on (shift+tab to cycle)";
+        assert_eq!(
+            detect_state(content, AgentKind::ClaudeCode),
+            AgentState::Idle
+        );
+    }
+
+    #[test]
+    fn claude_trust_option_typed_at_the_prompt_is_not_waiting() {
+        let content = "❯ Yes, I trust this folder\n⏵⏵ auto mode on (shift+tab to cycle)";
+        assert_eq!(
+            detect_state(content, AgentKind::ClaudeCode),
+            AgentState::Idle
         );
     }
 
@@ -1636,6 +1719,40 @@ mod tests {
         let content =
             "> You are in /tmp\n\n› 1. Yes, continue\n  2. No, quit\n\n  Press enter to continue";
         assert_eq!(detect_state(content, AgentKind::Codex), AgentState::Waiting);
+    }
+
+    #[test]
+    fn codex_trust_folder_prompt_is_waiting_whichever_option_is_selected() {
+        for options in [
+            "› 1. Trust and continue\n  2. Back to Agent Command Center",
+            "  1. Trust and continue\n› 2. Back to Agent Command Center",
+        ] {
+            let content = format!(
+                "  Trust this folder? Codex can read, edit, and run files here.\n\n\
+                 {options}\n\n  enter continue · esc back"
+            );
+            assert_eq!(
+                detect_state(&content, AgentKind::Codex),
+                AgentState::Waiting,
+                "{options}"
+            );
+        }
+    }
+
+    #[test]
+    fn codex_trust_option_typed_at_the_prompt_is_not_waiting() {
+        // A typed numbered line looks like a menu item, so it isn't Idle either.
+        for (typed, expected) in [
+            ("› Explain \"Trust and continue\"", AgentState::Idle),
+            ("› 2. Trust and continue", AgentState::Unknown),
+        ] {
+            let content = format!("{typed}\n\n  gpt-5.4 high · ~/project");
+            assert_eq!(
+                detect_state(&content, AgentKind::Codex),
+                expected,
+                "{typed}"
+            );
+        }
     }
 
     #[test]
@@ -2562,6 +2679,8 @@ mod fixture_tests {
         (CLAUDE_WAITING_BASH,             "claude-code/waiting-bash-permission.txt",                AgentKind::ClaudeCode,  AgentState::Waiting),
         (CLAUDE_WAITING_EDIT,             "claude-code/waiting-edit-permission.txt",                AgentKind::ClaudeCode,  AgentState::Waiting),
         (CLAUDE_WAITING_WRITE,            "claude-code/waiting-write-permission.txt",               AgentKind::ClaudeCode,  AgentState::Waiting),
+        (CLAUDE_WAITING_TRUST,            "claude-code/waiting-trust-folder.txt",                   AgentKind::ClaudeCode,  AgentState::Waiting),
+        (CLAUDE_WAITING_TRUST_YES,        "claude-code/waiting-trust-folder-yes-selected.txt",      AgentKind::ClaudeCode,  AgentState::Waiting),
         (CLAUDE_CANCELLED,                "claude-code/cancelled.txt",                              AgentKind::ClaudeCode,  AgentState::Idle),
         (CLAUDE_CANCELLED_MID,            "claude-code/cancelled-mid-response.txt",                 AgentKind::ClaudeCode,  AgentState::Idle),
 
@@ -2584,6 +2703,8 @@ mod fixture_tests {
         (CODEX_RUNNING_QUEUED,            "codex/running-with-queued-message.txt",                  AgentKind::Codex,       AgentState::Running),
         (CODEX_WAITING_COMMAND,           "codex/waiting-command-permission.txt",                   AgentKind::Codex,       AgentState::Waiting),
         (CODEX_WAITING_TRUST,             "codex/waiting-trust-dialog.txt",                         AgentKind::Codex,       AgentState::Waiting),
+        (CODEX_WAITING_TRUST_FOLDER,      "codex/waiting-trust-folder.txt",                         AgentKind::Codex,       AgentState::Waiting),
+        (CODEX_WAITING_TRUST_BACK,        "codex/waiting-trust-folder-back-selected.txt",           AgentKind::Codex,       AgentState::Waiting),
         (CODEX_CANCELLED,                 "codex/cancelled.txt",                                    AgentKind::Codex,       AgentState::Idle),
         (CODEX_CANCELLED_MID,             "codex/cancelled-mid-streaming.txt",                      AgentKind::Codex,       AgentState::Idle),
 

@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::mpsc};
 
 use crate::{
     backend::annotation::AnnotationIndex,
@@ -37,6 +37,37 @@ pub enum WorktreeRemovalOutcome {
     Removed { warning: Option<String> },
     DirtyRequiresForce,
     Failed(String),
+}
+
+/// Holds back the closing of a removed checkout's session until the picker has forgotten
+/// the removal's pending record. Closing can end the picker (Rex closes the session the
+/// picker floats in), and a record left behind would resume the removal on a later
+/// checkout of the same branch at that path.
+#[derive(Debug, Clone)]
+pub struct CloseGate(mpsc::SyncSender<Result<(), String>>);
+
+impl CloseGate {
+    /// A gate, and the receiver the removal waits on until the picker decides.
+    pub(crate) fn new() -> (Self, mpsc::Receiver<Result<(), String>>) {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        (Self(sender), receiver)
+    }
+
+    /// Lets the removal close the session. Call only once the record is forgotten.
+    pub(crate) fn open(self) {
+        self.decide(Ok(()));
+    }
+
+    /// Keeps the session open, as the record could not be forgotten, saying why.
+    pub(crate) fn hold(self, reason: String) {
+        self.decide(Err(reason));
+    }
+
+    fn decide(self, decision: Result<(), String>) {
+        // The removal has stopped waiting only if its thread is gone, and then there is
+        // nothing left to close.
+        let _ = self.0.send(decision);
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -95,6 +126,12 @@ pub enum AppEvent {
         branch_name: String,
         valid: bool,
         error: Option<String>,
+    },
+    /// Git has removed a checkout that a session still shows. The removal closes the session
+    /// once `gate` is opened, and then finishes with [`AppEvent::WorktreeRemovalFinished`].
+    CheckoutRemoved {
+        worktree_path: PathBuf,
+        gate: CloseGate,
     },
     WorktreeRemovalFinished {
         repo_path: PathBuf,

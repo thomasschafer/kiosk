@@ -14,7 +14,7 @@ use rayon::ThreadPoolBuilder;
 use crate::{
     backend::{Backend, KnownCheckout, Opened, annotation::AnnotationIndex, worktree},
     config::ResolvedSearchDir,
-    event::{AppEvent, BranchOperationFailure},
+    event::{AppEvent, BranchOperationFailure, CloseGate},
     git::{GitProvider, Repo, ScanWarning, is_local_branch_already_exists},
     state::BranchEntry,
 };
@@ -684,6 +684,18 @@ pub fn spawn_worktree_removal<B: Backend>(
     let backend = Arc::clone(backend);
     let sender = sender.clone();
     thread::spawn(move || {
+        let wait_for_record_forgotten = || {
+            let (gate, decision) = CloseGate::new();
+            if !sender.send(AppEvent::CheckoutRemoved {
+                worktree_path: worktree_path.clone(),
+                gate,
+            }) {
+                return Ok(());
+            }
+            // An error means the picker dropped the gate undecided as it stopped, so no one
+            // is left to forget the record and the session closes regardless.
+            decision.recv().unwrap_or(Ok(()))
+        };
         let outcome = worktree::remove_checkout(
             git.as_ref(),
             backend.as_ref(),
@@ -691,6 +703,7 @@ pub fn spawn_worktree_removal<B: Backend>(
             &repo_path,
             &worktree_path,
             force,
+            wait_for_record_forgotten,
         );
         sender.send(AppEvent::WorktreeRemovalFinished {
             repo_path,

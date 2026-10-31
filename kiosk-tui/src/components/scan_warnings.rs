@@ -106,11 +106,13 @@ pub fn draw(
     let lines = content_lines(warnings, usize::from(inner.width), theme);
     let max_offset = lines.len().saturating_sub(usize::from(inner.height));
     overlay.scroll_offset = overlay.scroll_offset.min(max_offset);
-    let scroll = u16::try_from(overlay.scroll_offset).unwrap_or(u16::MAX);
-    frame.render_widget(
-        Paragraph::new(lines).block(block).scroll((scroll, 0)),
-        popup,
-    );
+    // Sliced rather than `Paragraph::scroll`ed, which stops at `u16::MAX` rows.
+    let visible = lines
+        .into_iter()
+        .skip(overlay.scroll_offset)
+        .take(usize::from(inner.height))
+        .collect::<Vec<_>>();
+    frame.render_widget(Paragraph::new(visible).block(block), popup);
 }
 
 #[cfg(test)]
@@ -198,5 +200,18 @@ mod tests {
         let rendered = rows.join("\n");
         assert!(rendered.contains("/src/repo-19"), "{rendered}");
         assert!(!rendered.contains("/src/repo-00"), "{rendered}");
+    }
+
+    #[test]
+    fn scrolling_reaches_lines_beyond_the_u16_range() {
+        let warnings = (0..30_000)
+            .map(|index| warning(&format!("/src/repo-{index:05}"), "denied"))
+            .collect::<Vec<_>>();
+        let mut overlay = ScanWarningsOverlayState {
+            scroll_offset: usize::MAX,
+        };
+        let rendered = render(&mut overlay, &warnings, (60, 12)).join("\n");
+        assert!(overlay.scroll_offset > usize::from(u16::MAX));
+        assert!(rendered.contains("/src/repo-29999"), "{rendered}");
     }
 }

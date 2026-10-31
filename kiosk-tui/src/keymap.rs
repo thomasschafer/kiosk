@@ -6,8 +6,8 @@ use kiosk_core::{
     state::{AppState, Mode, Overlay},
 };
 
-/// The scan warnings view is a scrollable dialog whatever mode it opened over, so it
-/// takes its keys from the dialog, navigation and general layers.
+/// The scan warnings view scrolls whatever mode it opened over, so it takes its scroll
+/// keys from the dialog, navigation and general layers.
 pub(crate) const SCAN_WARNINGS_BINDING_MODE: BindingMode = BindingMode::Choice;
 
 const ESC: KeyChord = KeyChord::new(KeyCode::Esc, KeyModifiers::NONE);
@@ -20,8 +20,9 @@ pub fn resolve_action(key: KeyEvent, state: &AppState, keys: &KeysConfig) -> Opt
             return help_overlay_action(chord, command);
         }
         Some(Overlay::ScanWarnings(_)) => {
-            let command = keys.command_for(SCAN_WARNINGS_BINDING_MODE, chord);
-            return scan_warnings_overlay_action(chord, command);
+            let opening = keys.command_for(KeysConfig::mode_for(&state.mode), chord);
+            let scrolling = keys.command_for(SCAN_WARNINGS_BINDING_MODE, chord);
+            return scan_warnings_overlay_action(chord, opening, scrolling);
         }
         None => {}
     }
@@ -85,12 +86,17 @@ fn help_overlay_action(chord: KeyChord, command: Option<Command>) -> Option<Acti
 }
 
 /// The scan warnings view only scrolls, and closes with `esc` or the key that opened it.
-fn scan_warnings_overlay_action(chord: KeyChord, command: Option<Command>) -> Option<Action> {
-    if chord == ESC {
+/// `opening` is what the chord does in the mode underneath, so that key always closes the
+/// view, and `scrolling` what it does in the view.
+fn scan_warnings_overlay_action(
+    chord: KeyChord,
+    opening: Option<Command>,
+    scrolling: Option<Command>,
+) -> Option<Action> {
+    if chord == ESC || opening == Some(Command::ScanWarnings) {
         return Some(Action::CloseOverlay);
     }
-    match command? {
-        Command::ScanWarnings => Some(Action::CloseOverlay),
+    match scrolling? {
         Command::MoveUp => Some(Action::MoveSelection(-1)),
         Command::MoveDown => Some(Action::MoveSelection(1)),
         _ => None,
@@ -563,5 +569,25 @@ mod tests {
                 "{code:?} {modifiers:?}"
             );
         }
+    }
+
+    #[test]
+    fn the_key_that_opened_scan_warnings_closes_them_despite_a_dialog_binding() {
+        let mut state = AppState::new(&TEST_PRODUCT, None);
+        state.push_scan_warning(kiosk_core::git::ScanWarning {
+            path: "/locked".into(),
+            message: "denied".into(),
+        });
+        let keys = toml::from_str::<KeysConfig>("[modal]\n\"C-e\" = \"back\"").unwrap();
+        let ctrl_e = key(KeyCode::Char('e'), KeyModifiers::CONTROL);
+        assert_eq!(
+            resolve_action(ctrl_e, &state, &keys),
+            Some(Action::ShowScanWarnings)
+        );
+        state.overlay = Some(Overlay::ScanWarnings(ScanWarningsOverlayState::default()));
+        assert_eq!(
+            resolve_action(ctrl_e, &state, &keys),
+            Some(Action::CloseOverlay)
+        );
     }
 }

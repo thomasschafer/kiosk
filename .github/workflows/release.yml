@@ -168,7 +168,7 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
           # Publish in dependency order, waiting for crates.io index to update
-          for crate in kiosk-core kiosk-tui kiosk; do
+          for crate in kiosk-core kiosk-docgen kiosk-tui kiosk; do
             echo "Publishing ${crate}..."
             cd "${crate}"
             cargo publish

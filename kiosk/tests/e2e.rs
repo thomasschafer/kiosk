@@ -21,6 +21,50 @@ fn repos_are_listed_and_filtered() {
     });
 }
 
+/// Restores a directory's permissions so the test's temporary directory can be removed.
+struct RestorePermissions(std::path::PathBuf);
+
+impl Drop for RestorePermissions {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+}
+
+#[test]
+fn scan_warning_details_list_each_unreadable_directory() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let env = TestEnv::new("");
+    env.repo("alpha");
+    let locked = env.path("projects/locked");
+    std::fs::create_dir(&locked).unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o0)).unwrap();
+    let _restore = RestorePermissions(locked.clone());
+    assert!(
+        std::fs::read_dir(&locked).is_err(),
+        "this test needs a user that unreadable directories block, not root"
+    );
+
+    env.start_picker(&env.path("projects"));
+    env.wait_for_screen("the scan warning", |screen| {
+        screen.contains("1 directory could not be scanned")
+            && screen.contains("ctrl+e details / ctrl+x dismiss")
+    });
+    env.keys(&["C-e"]);
+    let screen = env.wait_for_screen("the details view", |screen| {
+        screen.contains("failed to inspect .git entry")
+    });
+    assert!(
+        screen.contains(&locked.join(".git").display().to_string()),
+        "{screen}"
+    );
+    env.keys(&["Escape"]);
+    env.wait_for_screen("the picker again", |screen| {
+        screen.contains("alpha") && !screen.contains("failed to inspect .git entry")
+    });
+}
+
 #[test]
 fn opening_a_repo_makes_a_tagged_session_and_switches_to_it_once() {
     let env = TestEnv::new("");

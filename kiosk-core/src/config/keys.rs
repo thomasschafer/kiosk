@@ -165,6 +165,7 @@ pub enum Command {
     Quit,
     Help,
     DismissToast,
+    ScanWarnings,
     MoveUp,
     MoveDown,
     Open,
@@ -186,6 +187,7 @@ impl Command {
             Self::Quit => "quit",
             Self::Help => "help",
             Self::DismissToast => "dismiss_toast",
+            Self::ScanWarnings => "scan_warnings",
             Self::MoveUp => "move_up",
             Self::MoveDown => "move_down",
             Self::Open => "open",
@@ -207,6 +209,7 @@ impl Command {
             Self::Quit => "Quit the picker",
             Self::Help => "Show active key bindings",
             Self::DismissToast => "Dismiss the visible notification",
+            Self::ScanWarnings => "Show directories that could not be scanned",
             Self::MoveUp => "Move selection up",
             Self::MoveDown => "Move selection down",
             Self::Open => "Open or confirm the selection",
@@ -232,6 +235,7 @@ impl FromStr for Command {
             "quit" => Ok(Self::Quit),
             "help" | "show_help" => Ok(Self::Help),
             "dismiss_toast" => Ok(Self::DismissToast),
+            "scan_warnings" => Ok(Self::ScanWarnings),
             "move_up" => Ok(Self::MoveUp),
             "move_down" => Ok(Self::MoveDown),
             "open" => Ok(Self::Open),
@@ -257,7 +261,7 @@ impl FromStr for Command {
 /// `"noop"` to unbind an inherited key.
 pub struct KeysConfig {
     /// Bindings active everywhere. Accepted actions are `quit`, `help`,
-    /// `dismiss_toast`, and `noop`.
+    /// `dismiss_toast`, `scan_warnings`, and `noop`.
     general: HashMap<KeyChord, Command>,
     /// Bindings active while editing search or name text. Accepted actions are
     /// `clear`, `backspace`, `delete_word`, `cursor_left`, `cursor_right`, and `noop`.
@@ -309,6 +313,7 @@ impl Default for KeysConfig {
                 ("C-c", Command::Quit),
                 ("C-h", Command::Help),
                 ("C-x", Command::DismissToast),
+                ("C-e", Command::ScanWarnings),
             ]),
             text_edit: map(&[
                 ("esc", Command::Clear),
@@ -458,9 +463,17 @@ impl KeysConfig {
     }
 
     pub fn dismiss_toast_key(&self) -> Option<KeyChord> {
+        self.general_key(Command::DismissToast)
+    }
+
+    pub fn scan_warnings_key(&self) -> Option<KeyChord> {
+        self.general_key(Command::ScanWarnings)
+    }
+
+    fn general_key(&self, wanted: Command) -> Option<KeyChord> {
         self.general
             .iter()
-            .filter_map(|(key, command)| (*command == Command::DismissToast).then_some(*key))
+            .filter_map(|(key, command)| (*command == wanted).then_some(*key))
             .min_by_key(ToString::to_string)
     }
 
@@ -553,6 +566,7 @@ const GENERAL: &[Command] = &[
     Command::Quit,
     Command::Help,
     Command::DismissToast,
+    Command::ScanWarnings,
 ];
 const TEXT_EDIT: &[Command] = &[
     Command::Noop,
@@ -614,8 +628,9 @@ const fn command_rank(command: Command) -> u8 {
         Command::CursorRight => 11,
         Command::Help => 12,
         Command::DismissToast => 13,
-        Command::Quit => 14,
-        Command::Noop => 15,
+        Command::ScanWarnings => 14,
+        Command::Quit => 15,
+        Command::Noop => 16,
     }
 }
 

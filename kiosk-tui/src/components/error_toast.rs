@@ -9,15 +9,25 @@ use ratatui::{
 use crate::theme::Theme;
 use kiosk_core::{
     config::keys::KeysConfig,
-    state::{AppState, ToastKind},
+    state::{AppState, Toast, ToastKind},
 };
 
 fn queue_counter(length: usize) -> Option<String> {
     (length > 1).then(|| format!("1/{length}"))
 }
 
-fn dismiss_hint(keys: &KeysConfig) -> Option<String> {
-    keys.dismiss_toast_key().map(|key| key.to_string())
+fn hints(keys: &KeysConfig, toast: &Toast) -> Vec<(String, &'static str)> {
+    toast
+        .is_scan_summary()
+        .then(|| keys.scan_warnings_key())
+        .flatten()
+        .map(|key| (key.to_string(), "details"))
+        .into_iter()
+        .chain(
+            keys.dismiss_toast_key()
+                .map(|key| (key.to_string(), "dismiss")),
+        )
+        .collect()
 }
 
 pub fn draw(frame: &mut Frame, area: Rect, state: &AppState, theme: &Theme, keys: &KeysConfig) {
@@ -37,12 +47,9 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState, theme: &Theme, keys
             Style::default().fg(theme.muted),
         ),
     ])];
-    if let Some(hint) = dismiss_hint(keys) {
+    if let Some(hints) = super::dialog::hint_line(&hints(keys, toast), theme) {
         body.push(Line::raw(""));
-        body.push(Line::from(vec![
-            Span::styled(hint, Style::default().fg(theme.hint)),
-            Span::raw(" dismiss"),
-        ]));
+        body.push(hints);
     }
     let text_width = width.saturating_sub(4).max(1);
     let height = super::wrapped_content_height(&body, text_width)
@@ -79,10 +86,11 @@ mod tests {
         text::{Line, Span},
     };
 
-    use super::{dismiss_hint, draw, queue_counter};
+    use super::{draw, hints, queue_counter};
     use crate::theme::Theme;
     use kiosk_core::{
         config::{ThemeConfig, keys::KeysConfig},
+        git::ScanWarning,
         state::{AppState, ToastKind},
     };
 
@@ -93,13 +101,43 @@ mod tests {
         assert_eq!(queue_counter(3).as_deref(), Some("1/3"));
     }
 
+    fn front_toast_hints(state: &AppState, keys: &KeysConfig) -> Vec<(String, &'static str)> {
+        hints(keys, state.toasts.front().unwrap())
+    }
+
     #[test]
     fn dismiss_hint_uses_the_effective_remapped_binding() {
         let keys = toml::from_str::<KeysConfig>(
             "[general]\n\"C-x\" = \"noop\"\n\"C-d\" = \"dismiss_toast\"",
         )
         .unwrap();
-        assert_eq!(dismiss_hint(&keys).as_deref(), Some("ctrl+d"));
+        let mut state = AppState::new(&TEST_PRODUCT, None);
+        state.push_toast(ToastKind::Error, "failed");
+        assert_eq!(
+            front_toast_hints(&state, &keys),
+            [("ctrl+d".to_string(), "dismiss")]
+        );
+    }
+
+    #[test]
+    fn scan_summary_names_the_details_key_unless_it_is_unbound() {
+        let mut state = AppState::new(&TEST_PRODUCT, None);
+        state.push_scan_warning(ScanWarning {
+            path: "/locked".into(),
+            message: "denied".into(),
+        });
+        assert_eq!(
+            front_toast_hints(&state, &KeysConfig::default()),
+            [
+                ("ctrl+e".to_string(), "details"),
+                ("ctrl+x".to_string(), "dismiss")
+            ]
+        );
+        let keys = toml::from_str::<KeysConfig>("[general]\n\"C-e\" = \"noop\"").unwrap();
+        assert_eq!(
+            front_toast_hints(&state, &keys),
+            [("ctrl+x".to_string(), "dismiss")]
+        );
     }
 
     #[test]

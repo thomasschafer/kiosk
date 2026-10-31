@@ -1,32 +1,29 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use kiosk_core::{
-    config::keys::{Command, KeyChord, KeysConfig},
+    config::keys::{BindingMode, Command, KeyChord, KeysConfig},
     keyboard::Action,
-    state::{AppState, Mode},
+    state::{AppState, Mode, Overlay},
 };
+
+/// The scan warnings view is a scrollable dialog whatever mode it opened over, so it
+/// takes its keys from the dialog, navigation and general layers.
+pub(crate) const SCAN_WARNINGS_BINDING_MODE: BindingMode = BindingMode::Choice;
+
+const ESC: KeyChord = KeyChord::new(KeyCode::Esc, KeyModifiers::NONE);
 
 pub fn resolve_action(key: KeyEvent, state: &AppState, keys: &KeysConfig) -> Option<Action> {
     let chord = KeyChord::from_event(key);
-    if state.help_overlay.is_some() {
-        if chord == KeyChord::new(KeyCode::Esc, KeyModifiers::NONE) {
-            return Some(Action::CloseHelp);
+    match &state.overlay {
+        Some(Overlay::Help(_)) => {
+            let command = keys.command_for(KeysConfig::mode_for(&state.mode), chord);
+            return help_overlay_action(chord, command);
         }
-        if let Some(action) = keys
-            .command_for(KeysConfig::mode_for(&state.mode), chord)
-            .and_then(help_command_to_action)
-        {
-            return Some(action);
+        Some(Overlay::ScanWarnings(_)) => {
+            let command = keys.command_for(SCAN_WARNINGS_BINDING_MODE, chord);
+            return scan_warnings_overlay_action(chord, command);
         }
-        if let KeyCode::Char(character) = chord.code
-            && !chord
-                .modifiers
-                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-            && !character.is_control()
-        {
-            return Some(Action::Insert(character));
-        }
-        return None;
+        None => {}
     }
 
     if !state.toasts.is_empty() && keys.is_dismiss_toast(chord) {
@@ -68,6 +65,38 @@ pub fn resolve_action(key: KeyEvent, state: &AppState, keys: &KeysConfig) -> Opt
     None
 }
 
+/// Help owns its own query, so typing filters it and `esc` always closes it.
+fn help_overlay_action(chord: KeyChord, command: Option<Command>) -> Option<Action> {
+    if chord == ESC {
+        return Some(Action::CloseOverlay);
+    }
+    if let Some(action) = command.and_then(help_command_to_action) {
+        return Some(action);
+    }
+    if let KeyCode::Char(character) = chord.code
+        && !chord
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        && !character.is_control()
+    {
+        return Some(Action::Insert(character));
+    }
+    None
+}
+
+/// The scan warnings view only scrolls, and closes with `esc` or the key that opened it.
+fn scan_warnings_overlay_action(chord: KeyChord, command: Option<Command>) -> Option<Action> {
+    if chord == ESC {
+        return Some(Action::CloseOverlay);
+    }
+    match command? {
+        Command::ScanWarnings => Some(Action::CloseOverlay),
+        Command::MoveUp => Some(Action::MoveSelection(-1)),
+        Command::MoveDown => Some(Action::MoveSelection(1)),
+        _ => None,
+    }
+}
+
 fn help_command_to_action(command: Command) -> Option<Action> {
     match command {
         Command::MoveUp => Some(Action::MoveSelection(-1)),
@@ -81,6 +110,7 @@ fn help_command_to_action(command: Command) -> Option<Action> {
         | Command::Quit
         | Command::Help
         | Command::DismissToast
+        | Command::ScanWarnings
         | Command::Open
         | Command::BranchesView
         | Command::Back
@@ -95,6 +125,9 @@ fn command_to_action(command: Command, state: &AppState) -> Option<Action> {
         Command::Quit => Some(Action::Quit),
         Command::Help => Some(Action::ShowHelp),
         Command::DismissToast => (!state.toasts.is_empty()).then_some(Action::DismissToast),
+        Command::ScanWarnings => {
+            (!state.scan_warnings().is_empty()).then_some(Action::ShowScanWarnings)
+        }
         Command::MoveUp => Some(Action::MoveSelection(-1)),
         Command::MoveDown => Some(Action::MoveSelection(1)),
         Command::Open => match &state.mode {
@@ -173,7 +206,7 @@ mod tests {
     use kiosk_core::product::TEST_PRODUCT;
     use kiosk_core::state::{
         BaseBranchSelection, BranchContext, DeleteFlowState, DeleteWorktreeTarget, HelpBindingRow,
-        HelpOverlayState, SearchableList,
+        HelpOverlayState, ScanWarningsOverlayState, SearchableList,
     };
 
     fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
@@ -432,7 +465,7 @@ mod tests {
     #[test]
     fn help_overlay_searches_without_triggering_underlying_mode_commands() {
         let mut state = AppState::new(&TEST_PRODUCT, None);
-        state.help_overlay = Some(HelpOverlayState {
+        state.overlay = Some(Overlay::Help(HelpOverlayState {
             rows: vec![HelpBindingRow {
                 section_name: "general",
                 key_display: "ctrl+h".into(),
@@ -440,7 +473,7 @@ mod tests {
                 description: "Show active key bindings",
             }],
             list: SearchableList::new(1),
-        });
+        }));
         let keys = KeysConfig::default();
         assert_eq!(
             resolve_action(key(KeyCode::Char('q'), KeyModifiers::NONE), &state, &keys),
@@ -456,7 +489,79 @@ mod tests {
         );
         assert_eq!(
             resolve_action(key(KeyCode::Esc, KeyModifiers::NONE), &state, &keys),
-            Some(Action::CloseHelp)
+            Some(Action::CloseOverlay)
         );
+    }
+
+    #[test]
+    fn scan_warnings_key_only_opens_the_view_when_there_are_warnings() {
+        let mut state = AppState::new(&TEST_PRODUCT, None);
+        let keys = KeysConfig::default();
+        let ctrl_e = key(KeyCode::Char('e'), KeyModifiers::CONTROL);
+        assert_eq!(resolve_action(ctrl_e, &state, &keys), None);
+
+        state.push_scan_warning(kiosk_core::git::ScanWarning {
+            path: "/locked".into(),
+            message: "permission denied".into(),
+        });
+        assert_eq!(
+            resolve_action(ctrl_e, &state, &keys),
+            Some(Action::ShowScanWarnings)
+        );
+        state.dismiss_toast();
+        assert_eq!(
+            resolve_action(ctrl_e, &state, &keys),
+            Some(Action::ShowScanWarnings)
+        );
+
+        let keys = toml::from_str::<KeysConfig>(
+            "[general]\n\"C-e\" = \"noop\"\n\"C-g\" = \"scan_warnings\"",
+        )
+        .unwrap();
+        assert_eq!(resolve_action(ctrl_e, &state, &keys), None);
+        assert_eq!(
+            resolve_action(
+                key(KeyCode::Char('g'), KeyModifiers::CONTROL),
+                &state,
+                &keys
+            ),
+            Some(Action::ShowScanWarnings)
+        );
+    }
+
+    #[test]
+    fn scan_warnings_view_scrolls_and_closes_without_reaching_the_picker() {
+        let mut state = AppState::new(&TEST_PRODUCT, None);
+        state.overlay = Some(Overlay::ScanWarnings(ScanWarningsOverlayState::default()));
+        let keys = KeysConfig::default();
+        for (code, modifiers, expected) in [
+            (KeyCode::Esc, KeyModifiers::NONE, Some(Action::CloseOverlay)),
+            (
+                KeyCode::Char('e'),
+                KeyModifiers::CONTROL,
+                Some(Action::CloseOverlay),
+            ),
+            (
+                KeyCode::Up,
+                KeyModifiers::NONE,
+                Some(Action::MoveSelection(-1)),
+            ),
+            (
+                KeyCode::Char('n'),
+                KeyModifiers::CONTROL,
+                Some(Action::MoveSelection(1)),
+            ),
+            (KeyCode::Enter, KeyModifiers::NONE, None),
+            (KeyCode::Tab, KeyModifiers::NONE, None),
+            (KeyCode::Char('q'), KeyModifiers::NONE, None),
+            (KeyCode::Char('x'), KeyModifiers::CONTROL, None),
+            (KeyCode::Backspace, KeyModifiers::NONE, None),
+        ] {
+            assert_eq!(
+                resolve_action(key(code, modifiers), &state, &keys),
+                expected,
+                "{code:?} {modifiers:?}"
+            );
+        }
     }
 }

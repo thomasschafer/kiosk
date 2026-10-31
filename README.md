@@ -252,6 +252,7 @@ Defaults:
 ```toml
 [keys.general]
 "ctrl+c" = "quit"
+"ctrl+e" = "scan_warnings"
 "ctrl+h" = "help"
 "ctrl+x" = "dismiss_toast"
 

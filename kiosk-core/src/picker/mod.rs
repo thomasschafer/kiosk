@@ -25,7 +25,10 @@ use crate::{
         spawn_git_fetch, spawn_open_folders, spawn_open_repos, spawn_remote_branch_loading,
         spawn_repo_discovery,
     },
-    state::{AppState, BranchId, HelpOverlayState, Mode, SearchableList, ToastKind},
+    state::{
+        AppState, BranchId, HelpOverlayState, Mode, Overlay, ScanWarningsOverlayState,
+        SearchableList, ToastKind,
+    },
 };
 
 pub mod branch;
@@ -369,8 +372,21 @@ pub(crate) fn process_action<B: Backend>(
     match action {
         Action::Quit => return Some(RunOutcome::Quit),
         Action::MoveSelection(delta) => {
-            if let Some(overlay) = &mut state.help_overlay {
-                overlay.list.move_selection(delta);
+            if let Some(overlay) = &mut state.overlay {
+                match overlay {
+                    Overlay::Help(help) => help.list.move_selection(delta),
+                    Overlay::ScanWarnings(warnings) => {
+                        warnings.scroll_offset = if delta.is_negative() {
+                            warnings
+                                .scroll_offset
+                                .saturating_sub(delta.unsigned_abs() as usize)
+                        } else {
+                            warnings
+                                .scroll_offset
+                                .saturating_add(delta.unsigned_abs() as usize)
+                        };
+                    }
+                }
             } else if matches!(state.mode, Mode::RepoSelect) {
                 repo::move_selection(state, delta);
             } else if matches!(state.mode, Mode::BranchSelect(_)) {
@@ -393,8 +409,16 @@ pub(crate) fn process_action<B: Backend>(
         Action::DeleteWord => {
             edit_active_list(state, filter_worker, |list| list.input.delete_word());
         }
-        Action::CursorLeft => active_list_mut(state).input.cursor_left(),
-        Action::CursorRight => active_list_mut(state).input.cursor_right(),
+        Action::CursorLeft => {
+            if let Some(list) = active_list_mut(state) {
+                list.input.cursor_left();
+            }
+        }
+        Action::CursorRight => {
+            if let Some(list) = active_list_mut(state) {
+                list.input.cursor_right();
+            }
+        }
         Action::ClearQuery => {
             edit_active_list(state, filter_worker, |list| list.input.clear());
         }
@@ -420,20 +444,33 @@ pub(crate) fn process_action<B: Backend>(
         }
         Action::ShowHelp => {
             let binding_mode = KeysConfig::mode_for(&state.mode);
-            state.help_overlay = Some(HelpOverlayState::for_mode(keys, binding_mode));
+            state.overlay = Some(Overlay::Help(HelpOverlayState::for_mode(
+                keys,
+                binding_mode,
+            )));
             state.help_filter_generation = state.help_filter_generation.wrapping_add(1);
         }
-        Action::CloseHelp => state.help_overlay = None,
+        Action::ShowScanWarnings => {
+            if !state.scan_warnings().is_empty() {
+                state.dismiss_scan_summary();
+                state.overlay = Some(Overlay::ScanWarnings(ScanWarningsOverlayState::default()));
+            }
+        }
+        Action::CloseOverlay => state.overlay = None,
         Action::Noop => {}
     }
     None
 }
 
-fn active_list_mut(state: &mut AppState) -> &mut SearchableList {
-    if let Some(overlay) = &mut state.help_overlay {
-        return &mut overlay.list;
+/// The list whose query text input edits apply to, or `None` while an overlay without
+/// a query is open.
+fn active_list_mut(state: &mut AppState) -> Option<&mut SearchableList> {
+    match &mut state.overlay {
+        Some(Overlay::Help(overlay)) => return Some(&mut overlay.list),
+        Some(Overlay::ScanWarnings(_)) => return None,
+        None => {}
     }
-    match &mut state.mode {
+    Some(match &mut state.mode {
         Mode::BranchSelect(_) => &mut state.branch_view.list,
         Mode::SelectBaseBranch { flow, .. } => &mut flow.list,
         Mode::RepoSelect
@@ -441,7 +478,7 @@ fn active_list_mut(state: &mut AppState) -> &mut SearchableList {
         | Mode::ValidatingNewBranch { .. }
         | Mode::ConfirmRemoteBranch { .. }
         | Mode::ConfirmWorktreeDelete(_) => &mut state.repo_view.list,
-    }
+    })
 }
 
 fn edit_active_list(
@@ -449,10 +486,14 @@ fn edit_active_list(
     worker: &FilterWorker,
     edit: impl FnOnce(&mut SearchableList),
 ) {
-    if let Some(overlay) = &mut state.help_overlay {
-        edit(&mut overlay.list);
-        queue_help_filter(state, worker, None);
-        return;
+    match &mut state.overlay {
+        Some(Overlay::Help(overlay)) => {
+            edit(&mut overlay.list);
+            queue_help_filter(state, worker, None);
+            return;
+        }
+        Some(Overlay::ScanWarnings(_)) => return,
+        None => {}
     }
     match state.mode {
         Mode::RepoSelect => {
@@ -473,7 +514,7 @@ fn edit_active_list(
 
 fn queue_help_filter(state: &mut AppState, worker: &FilterWorker, selected_index: Option<usize>) {
     state.help_filter_generation = state.help_filter_generation.wrapping_add(1);
-    let Some(overlay) = &mut state.help_overlay else {
+    let Some(overlay) = state.overlay.as_mut().and_then(Overlay::as_help_mut) else {
         return;
     };
     if overlay.list.input.text.is_empty() {
@@ -504,7 +545,7 @@ fn apply_help_filter_result(
     matches: &[(FilterKey, i64)],
     selected: Option<&FilterKey>,
 ) {
-    let Some(overlay) = &mut state.help_overlay else {
+    let Some(overlay) = state.overlay.as_mut().and_then(Overlay::as_help_mut) else {
         return;
     };
     let current = overlay

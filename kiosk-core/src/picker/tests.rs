@@ -299,3 +299,58 @@ fn annotation_events_replace_labels_and_failures_warn() {
         Some("could not refresh status labels: down")
     );
 }
+
+#[test]
+fn scan_warnings_view_opens_only_with_warnings_and_leaves_the_picker_untouched() {
+    let git = Arc::new(MockGitProvider::default()) as Arc<dyn GitProvider>;
+    let (sender, _rx) = sender();
+    let worker = FilterWorker::spawn(sender.clone());
+    let keys = KeysConfig::default();
+    let mut state = state_with_repo();
+    let act = |state: &mut AppState, action| {
+        process_action::<MockBackend>(action, state, &git, None, &sender, &worker, &keys);
+    };
+
+    act(&mut state, Action::ShowScanWarnings);
+    assert_eq!(state.overlay, None);
+
+    state.push_toast(ToastKind::Error, "unrelated");
+    state.push_scan_warning(crate::git::ScanWarning {
+        path: "/locked".into(),
+        message: "denied".into(),
+    });
+    act(&mut state, Action::ShowScanWarnings);
+    assert_eq!(
+        state.overlay,
+        Some(Overlay::ScanWarnings(ScanWarningsOverlayState::default()))
+    );
+    assert_eq!(
+        state
+            .toasts
+            .iter()
+            .map(|toast| toast.message.as_str())
+            .collect::<Vec<_>>(),
+        ["unrelated"],
+        "the details view replaces the scan summary"
+    );
+
+    act(&mut state, Action::MoveSelection(-1));
+    act(&mut state, Action::MoveSelection(3));
+    act(&mut state, Action::CursorLeft);
+    act(&mut state, Action::Insert('x'));
+    assert_eq!(
+        state.overlay,
+        Some(Overlay::ScanWarnings(ScanWarningsOverlayState {
+            scroll_offset: 3
+        }))
+    );
+    assert_eq!(state.repo_view.list.selected, Some(0));
+    assert_eq!(
+        state.repo_view.list.input,
+        crate::state::TextInput::default()
+    );
+
+    act(&mut state, Action::CloseOverlay);
+    assert_eq!(state.overlay, None);
+    assert_eq!(state.scan_warnings().len(), 1);
+}

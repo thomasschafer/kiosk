@@ -61,6 +61,7 @@ done
 [[ $cols =~ ^[1-9][0-9]*$ && $rows =~ ^[1-9][0-9]*$ ]] || fail "--cols and --rows must be positive integers"$'\n'"$USAGE"
 [[ $output == *.png ]] || fail "--output must name a .png file"$'\n'"$USAGE"
 [ -d "$cwd" ] || fail "--cwd is not a directory: $cwd"
+cwd=$(cd "$cwd" && pwd -P)
 [ -d "$(dirname "$output")" ] || fail "the directory for --output does not exist: $output"
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/kiosk-preview-render.XXXXXX")

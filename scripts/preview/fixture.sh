@@ -20,11 +20,13 @@ set -euo pipefail
     printf 'usage: preview-fixture ROOT\n' >&2
     exit 1
 }
-readonly ROOT=$1
-[ ! -e "$ROOT" ] || {
-    printf 'preview-fixture: %s already exists\n' "$ROOT" >&2
+[ ! -e "$1" ] || {
+    printf 'preview-fixture: %s already exists\n' "$1" >&2
     exit 1
 }
+mkdir -p "$1"
+ROOT=$(cd "$1" && pwd -P)
+readonly ROOT
 
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 export GIT_AUTHOR_NAME=Demo GIT_AUTHOR_EMAIL=demo@example.invalid
@@ -43,7 +45,7 @@ new_repo() {
     commit "$1" "Initial commit"
 }
 
-mkdir -p "$ROOT/repos" "$ROOT/worktrees/tidepool"
+mkdir "$ROOT/repos" "$ROOT/worktrees" "$ROOT/worktrees/tidepool"
 for repo in aurora-api compass-cli ledger lighthouse night-market orbit-ui paper-planes; do
     new_repo "$ROOT/repos/$repo"
 done

@@ -97,14 +97,23 @@ pub(crate) fn handle_event(
     state: &mut AppState,
     changes: &mut TickChanges,
 ) -> Option<AppEvent> {
-    let AppEvent::WorktreeRemovalFinished {
-        repo_path,
-        branch_name,
-        worktree_path,
-        outcome,
-    } = event
-    else {
-        return Some(event);
+    let (repo_path, branch_name, worktree_path, outcome) = match event {
+        AppEvent::CheckoutRemoved {
+            worktree_path,
+            gate,
+        } => {
+            clear_pending(state, &worktree_path);
+            persist(state);
+            gate.open();
+            return None;
+        }
+        AppEvent::WorktreeRemovalFinished {
+            repo_path,
+            branch_name,
+            worktree_path,
+            outcome,
+        } => (repo_path, branch_name, worktree_path, outcome),
+        event => return Some(event),
     };
     if !event_matches(state, &repo_path, &branch_name, &worktree_path)
         && !state.delete.in_flight.contains(&worktree_path)

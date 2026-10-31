@@ -254,8 +254,12 @@ fn native_delete_requires_a_second_force_confirmation_then_refreshes() {
 
     confirm(&mut state, &git, Some(&backend), &sender);
     let second = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    // herdr removes and closes in one call, so the record stays until that call returns.
+    assert!(matches!(second, AppEvent::WorktreeRemovalFinished { .. }));
+    assert_eq!(state.delete.pending.len(), 1);
     let mut changes = TickChanges::default();
     process_app_event(second, &mut state, &mut changes);
+    assert_eq!(state.delete.pending, vec![]);
     assert!(matches!(state.mode, Mode::BranchSelect(_)));
     assert!(changes.refresh_branch.is_some());
     assert_eq!(
@@ -301,8 +305,12 @@ fn closed_git_checkout_requires_force_confirmation_and_prunes_after_success() {
 
     confirm(&mut state, &git, Some(&backend), &sender);
     let second = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    // herdr removes and closes in one call, so the record stays until that call returns.
+    assert!(matches!(second, AppEvent::WorktreeRemovalFinished { .. }));
+    assert_eq!(state.delete.pending.len(), 1);
     let mut changes = TickChanges::default();
     process_app_event(second, &mut state, &mut changes);
+    assert_eq!(state.delete.pending, vec![]);
     assert!(matches!(state.mode, Mode::BranchSelect(_)));
     assert!(changes.refresh_branch.is_some());
     assert_eq!(
@@ -345,8 +353,26 @@ fn managed_delete_of_an_open_checkout_removes_it_with_git_then_closes_its_sessio
 
     begin(&mut state);
     confirm(&mut state, &git, Some(&backend), &sender);
-    let event = rx.recv_timeout(Duration::from_secs(1)).unwrap();
-    process_app_event(event, &mut state, &mut TickChanges::default());
+    let removed = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    assert!(
+        matches!(&removed, AppEvent::CheckoutRemoved { worktree_path, .. } if worktree_path == Path::new("/repo-feature")),
+        "{removed:?}"
+    );
+    assert_eq!(git_mock.remove_calls.lock().unwrap().len(), 1);
+    assert_eq!(state.delete.pending.len(), 1);
+    // The session stays open until the picker has forgotten the record, as closing it can
+    // end the picker.
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(
+        !backend
+            .calls()
+            .iter()
+            .any(|call| matches!(call, BackendCall::Close { .. }))
+    );
+    process_app_event(removed, &mut state, &mut TickChanges::default());
+    assert_eq!(state.delete.pending, vec![]);
+    let finished = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    process_app_event(finished, &mut state, &mut TickChanges::default());
 
     assert!(matches!(state.mode, Mode::BranchSelect(_)));
     assert_eq!(
@@ -367,6 +393,36 @@ fn managed_delete_of_an_open_checkout_removes_it_with_git_then_closes_its_sessio
                 session: "s_1".into(),
             },
         ]
+    );
+}
+
+#[test]
+fn a_managed_removal_still_closes_the_session_when_the_picker_stops_first() {
+    let git = git_provider();
+    let backend = Arc::new(MockBackend::managed(std::env::temp_dir()));
+    queue_checkouts(&backend, Some("s_1"), 1);
+    backend.close_results.lock().unwrap().push_back(Ok(()));
+    let (sender, rx) = sender();
+    let mut state = state_with_branch(true);
+
+    begin(&mut state);
+    confirm(&mut state, &git, Some(&backend), &sender);
+    let removed = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    drop(removed);
+
+    let finished = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    assert!(matches!(
+        finished,
+        AppEvent::WorktreeRemovalFinished {
+            outcome: WorktreeRemovalOutcome::Removed { warning: None },
+            ..
+        }
+    ));
+    assert_eq!(
+        backend.calls().last(),
+        Some(&BackendCall::Close {
+            session: "s_1".into()
+        })
     );
 }
 

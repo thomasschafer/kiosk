@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::*;
 use crate::{
@@ -29,6 +29,38 @@ fn opened(backend: &MockBackend) {
         .lock()
         .unwrap()
         .push_back(Ok(Opened::default()));
+}
+
+/// Removes `checkout`, failing the test if a session would be closed after a git removal.
+fn remove(
+    git: &MockGitProvider,
+    backend: &MockBackend,
+    checkout: &Path,
+    force: bool,
+) -> WorktreeRemovalOutcome {
+    remove_checkout(git, backend, BACKEND, &repo(), checkout, force, || {
+        panic!("nothing should close a session after a git removal here");
+    })
+}
+
+/// Removes `checkout` and returns what git and the backend had been asked to do by the
+/// time the hook before the session close ran.
+fn remove_then_close(
+    git: &MockGitProvider,
+    backend: &MockBackend,
+    checkout: &Path,
+    force: bool,
+) -> (
+    WorktreeRemovalOutcome,
+    Vec<(PathBuf, PathBuf, bool)>,
+    Vec<BackendCall>,
+) {
+    let mut seen = None;
+    let outcome = remove_checkout(git, backend, BACKEND, &repo(), checkout, force, || {
+        seen = Some((git.remove_calls.lock().unwrap().clone(), backend.calls()));
+    });
+    let (removed, calls) = seen.expect("the hook runs before the session closes");
+    (outcome, removed, calls)
 }
 
 fn checkouts(backend: &MockBackend, states: Vec<CheckoutState<String>>) {
@@ -181,7 +213,7 @@ fn a_checkout_nothing_shows_is_removed_and_pruned_with_git_for_every_backend() {
             }],
         );
 
-        let outcome = remove_checkout(&git, &backend, BACKEND, &repo(), &checkout, false);
+        let outcome = remove(&git, &backend, &checkout, false);
 
         assert_eq!(outcome, WorktreeRemovalOutcome::Removed { warning: None });
         assert_eq!(
@@ -207,9 +239,15 @@ fn managed_removal_of_an_open_checkout_removes_it_then_closes_its_session() {
     );
     backend.close_results.lock().unwrap().push_back(Ok(()));
 
-    let outcome = remove_checkout(&git, &backend, BACKEND, &repo(), &checkout, true);
+    let (outcome, removed_before_close, calls_before_close) =
+        remove_then_close(&git, &backend, &checkout, true);
 
     assert_eq!(outcome, WorktreeRemovalOutcome::Removed { warning: None });
+    assert_eq!(removed_before_close, [(repo(), checkout.clone(), true)]);
+    assert_eq!(
+        calls_before_close,
+        [BackendCall::Checkouts { repo: repo() }]
+    );
     assert_eq!(
         *git.remove_calls.lock().unwrap(),
         [(repo(), checkout, true)]
@@ -238,7 +276,7 @@ fn managed_removal_leaves_the_session_open_when_git_refuses_a_dirty_checkout() {
         }],
     );
 
-    let outcome = remove_checkout(&git, &backend, BACKEND, &repo(), &checkout, false);
+    let outcome = remove(&git, &backend, &checkout, false);
 
     assert_eq!(outcome, WorktreeRemovalOutcome::DirtyRequiresForce);
     assert_eq!(backend.calls(), [BackendCall::Checkouts { repo: repo() }]);
@@ -262,7 +300,7 @@ fn managed_removal_warns_when_the_session_does_not_close() {
         .unwrap()
         .push_back(Err(MockError("gone".into())));
 
-    let outcome = remove_checkout(&git, &backend, BACKEND, &repo(), &checkout, false);
+    let (outcome, _, _) = remove_then_close(&git, &backend, &checkout, false);
 
     assert_eq!(
         outcome,
@@ -299,15 +337,15 @@ fn native_removal_goes_through_the_backend_and_asks_for_force_once() {
     ]);
 
     assert_eq!(
-        remove_checkout(&git, &backend, BACKEND, &repo(), &checkout, false),
+        remove(&git, &backend, &checkout, false),
         WorktreeRemovalOutcome::DirtyRequiresForce
     );
     assert_eq!(
-        remove_checkout(&git, &backend, BACKEND, &repo(), &checkout, true),
+        remove(&git, &backend, &checkout, true),
         WorktreeRemovalOutcome::Failed("still dirty".into())
     );
     assert_eq!(
-        remove_checkout(&git, &backend, BACKEND, &repo(), &checkout, true),
+        remove(&git, &backend, &checkout, true),
         WorktreeRemovalOutcome::Removed {
             warning: Some("note".into())
         }
@@ -327,8 +365,8 @@ fn removal_stops_when_the_open_state_cannot_be_confirmed() {
         .push_back(Err(MockError("offline".into())));
     checkouts(&backend, Vec::new());
 
-    let unreachable = remove_checkout(&git, &backend, BACKEND, &repo(), &checkout, false);
-    let unlisted = remove_checkout(&git, &backend, BACKEND, &repo(), &checkout, false);
+    let unreachable = remove(&git, &backend, &checkout, false);
+    let unlisted = remove(&git, &backend, &checkout, false);
 
     assert!(
         matches!(&unreachable, WorktreeRemovalOutcome::Failed(message) if message.contains("offline")),

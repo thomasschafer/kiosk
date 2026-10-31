@@ -48,6 +48,29 @@
             ];
             doCheck = false;
           };
+
+          preview-fixture = pkgs.writeShellApplication {
+            name = "preview-fixture";
+            runtimeInputs = with pkgs; [
+              coreutils
+              gitMinimal
+            ];
+            text = builtins.readFile ./scripts/preview/fixture.sh;
+          };
+
+          preview-render = pkgs.writeShellApplication {
+            name = "preview-render";
+            runtimeInputs = with pkgs; [
+              asciinema-agg
+              coreutils
+              ffmpeg-headless
+              gnugrep
+              jq
+              tmux
+            ];
+            runtimeEnv.KIOSK_PREVIEW_FONT_DIR = "${pkgs.nerd-fonts.jetbrains-mono}/share/fonts/truetype/NerdFonts";
+            text = builtins.readFile ./scripts/preview/render.sh;
+          };
         }
       );
     };

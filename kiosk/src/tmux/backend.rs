@@ -24,7 +24,7 @@ use kiosk_core::{
 
 use super::{
     SESSION_PATH_OPTION, Server, Session, SessionId, SessionPlace, Tmux, TmuxError, chain,
-    path_arg, sessions,
+    format_literal, path_arg, sessions,
 };
 use crate::{
     agent::{self, Detector},
@@ -191,9 +191,9 @@ impl TmuxBackend {
             "-F",
             "#{session_id} #{pane_id}",
             "-s",
-            name,
+            format_literal(&name),
             "-c",
-            folder.clone()
+            format_literal(&folder)
         ])?;
         let (session, pane) = created.trim().split_once(' ').ok_or_else(|| {
             TmuxError::InvalidResponse(format!("new-session printed {created:?}"))
@@ -228,7 +228,7 @@ impl TmuxBackend {
                     OnOpenPaneDirection::Down => "-v",
                 },
                 "-c",
-                folder.clone()
+                format_literal(&folder)
             ];
             if let Some(ratio) = config.ratio {
                 split.extend(args!["-l", format!("{}%", percent(ratio))]);
@@ -417,12 +417,11 @@ impl Backend for TmuxBackend {
         let message = format!("{title}: {body}");
         match &self.client {
             Client::Inside => {
-                // The message is a format, in which `#` starts an expansion.
                 self.tmux.run(args![
                     "display-message",
                     "-d",
                     "5000",
-                    message.replace('#', "##")
+                    format_literal(&message)
                 ])?;
             }
             Client::Outside { notices, .. } => notices.lock().unwrap().push(message),

@@ -11,8 +11,8 @@ use std::{
 use anyhow::{Context, Result, bail};
 
 use super::{
-    DirtyWorktreeRequiresForce, GitProvider, Listed, LocalBranchAlreadyExists, Repo, ScanWarning,
-    Worktree, parse_worktree_porcelain, path_from_bytes,
+    DirtyWorktreeRequiresForce, GitProvider, LOCAL_BRANCH_PREFIX, Listed, LocalBranchAlreadyExists,
+    Repo, ScanWarning, Worktree, parse_worktree_porcelain, path_from_bytes,
 };
 
 const GIT_DIR_ENTRY: &str = ".git";
@@ -50,8 +50,13 @@ impl GitProvider for CliGitProvider {
     }
 
     fn list_branches(&self, repo_path: &Path) -> Result<Listed<String>> {
-        let output = run_git(repo_path, ["branch", "--format=%(refname:short)"])?;
-        Ok(utf8_lines(&output.stdout))
+        // Full refnames, as `%(refname:short)` prints `heads/<name>` when a tag shares the
+        // name, and `git branch` also lists a detached HEAD.
+        let output = run_git(
+            repo_path,
+            ["for-each-ref", "--format=%(refname)", LOCAL_BRANCH_PREFIX],
+        )?;
+        parse_local_branches(&output.stdout)
     }
 
     fn list_remote_branches_for_remote(
@@ -623,6 +628,19 @@ fn utf8_lines(bytes: &[u8]) -> Listed<String> {
     Listed::new(items, skipped_unsupported_refs)
 }
 
+fn parse_local_branches(bytes: &[u8]) -> Result<Listed<String>> {
+    let lines = utf8_lines(bytes);
+    let items = lines
+        .items
+        .into_iter()
+        .map(|refname| match refname.strip_prefix(LOCAL_BRANCH_PREFIX) {
+            Some(branch) => Ok(branch.to_string()),
+            None => bail!("git listed {refname:?} as a local branch"),
+        })
+        .collect::<Result<_>>()?;
+    Ok(Listed::new(items, lines.skipped_unsupported_refs))
+}
+
 fn parse_remote_branches_for_remote(bytes: &[u8], remote: &str) -> Listed<String> {
     let prefix = format!("{remote}/");
     let lines = utf8_lines(bytes);
@@ -654,7 +672,10 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::git::test_fixtures::{init_test_repo, repo_fixture, run_test_git};
+    use crate::git::{
+        local_branch_ref,
+        test_fixtures::{init_test_repo, repo_fixture, run_test_git},
+    };
 
     fn scan_streaming(
         provider: &CliGitProvider,
@@ -884,6 +905,54 @@ mod tests {
         assert!(branches.iter().any(|branch| branch == "feat/test"));
         assert_eq!(provider.list_worktrees(&repo).unwrap().len(), 1);
         assert!(provider.default_branch(&repo, &branches).unwrap().is_some());
+    }
+
+    #[test]
+    fn lists_local_branches_by_full_name_when_a_tag_shares_it() {
+        let temp = TempDir::new().unwrap();
+        let repo = repo_fixture(temp.path(), "repo");
+        run_test_git(&repo, &["branch", "release"]);
+        run_test_git(&repo, &["update-ref", "refs/tags/release", "HEAD"]);
+        run_test_git(&repo, &["checkout", "--detach"]);
+        let provider = CliGitProvider;
+
+        let branches = provider.list_branches(&repo).unwrap().items;
+        assert!(branches.iter().any(|branch| branch == "release"));
+        assert!(
+            branches
+                .iter()
+                .all(|branch| !branch.starts_with("heads/") && !branch.starts_with('(')),
+            "{branches:?}"
+        );
+        assert_eq!(branches.len(), 2, "{branches:?}");
+    }
+
+    #[test]
+    fn a_new_branch_starts_from_the_local_branch_a_tag_shares_a_name_with() {
+        let temp = TempDir::new().unwrap();
+        let repo = repo_fixture(temp.path(), "repo");
+        run_test_git(&repo, &["branch", "release"]);
+        run_test_git(
+            &repo,
+            &["commit", "--allow-empty", "--no-gpg-sign", "-m", "later"],
+        );
+        run_test_git(&repo, &["update-ref", "refs/tags/release", "HEAD"]);
+        let child = temp.path().join("child");
+
+        CliGitProvider
+            .add_worktree(&repo, &child, "child", Some(&local_branch_ref("release")))
+            .unwrap();
+
+        let rev = |dir: &Path, rev: &str| {
+            let output = Command::new("git")
+                .args(["rev-parse", rev])
+                .current_dir(dir)
+                .output()
+                .unwrap();
+            String::from_utf8(output.stdout).unwrap()
+        };
+        assert_eq!(rev(&child, "HEAD"), rev(&repo, "refs/heads/release"));
+        assert_ne!(rev(&child, "HEAD"), rev(&repo, "refs/tags/release"));
     }
 
     #[test]

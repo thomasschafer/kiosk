@@ -338,7 +338,7 @@ fn selected_base_is_passed_to_focused_new_branch_creation() {
         [BackendCall::CreateBranch {
             repo: "/repo".into(),
             branch: "feat/new".into(),
-            base: "feature".into(),
+            base: "refs/heads/feature".into(),
         }]
     );
 }

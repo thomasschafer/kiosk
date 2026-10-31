@@ -89,14 +89,49 @@ pub fn load_pending_worktree_deletes(product: &Product) -> PendingDeleteLoad {
     loaded
 }
 
-pub fn save_pending_worktree_deletes(
+/// Applies `change` to the saved deletions while holding a lock every picker of `product`
+/// shares, and returns them as saved. Each picker changes only the entries it means to,
+/// rather than saving its own copy over what another picker has saved since, which could
+/// bring back a forced deletion that already finished.
+pub fn update_pending_worktree_deletes(
     product: &Product,
-    entries: &[PendingWorktreeDelete],
-) -> Result<()> {
+    change: impl FnOnce(&mut Vec<PendingWorktreeDelete>),
+) -> Result<PendingDeleteLoad> {
     let path = resolve_state_path(product, |name| std::env::var(name).ok())
         .path
         .ok_or_else(|| anyhow::anyhow!("no trusted pending-delete state path is available"))?;
-    save_to(&path, entries)
+    update_at(&path, change)
+}
+
+fn update_at(
+    path: &Path,
+    change: impl FnOnce(&mut Vec<PendingWorktreeDelete>),
+) -> Result<PendingDeleteLoad> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("{} has no parent directory", path.display()))?;
+    fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
+    let lock_path = path.with_file_name(format!(
+        "{}.lock",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(FILE_NAME)
+    ));
+    let lock = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)
+        .with_context(|| format!("failed to open {}", lock_path.display()))?;
+    lock.lock()
+        .with_context(|| format!("failed to lock {}", lock_path.display()))?;
+    let mut loaded = load_from(path);
+    let before = loaded.entries.clone();
+    change(&mut loaded.entries);
+    if loaded.entries != before {
+        save_to(path, &loaded.entries)?;
+    }
+    Ok(loaded)
 }
 
 fn load_from(path: &Path) -> PendingDeleteLoad {
@@ -322,6 +357,56 @@ mod tests {
         save_to(&path, std::slice::from_ref(&entry)).unwrap();
         assert_eq!(load_from(&path).entries, [entry]);
         save_to(&path, &[]).unwrap();
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn updates_keep_entries_another_picker_saved_or_removed() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("state/pending.toml");
+        let first = PendingWorktreeDelete::new("/repo".into(), "one".into(), "/repo-one".into());
+        let second = PendingWorktreeDelete::new("/repo".into(), "two".into(), "/repo-two".into());
+
+        // One picker finishes the first deletion, then another, which loaded it earlier,
+        // records a second one.
+        update_at(&path, |entries| entries.push(first.clone())).unwrap();
+        update_at(&path, |entries| {
+            entries.retain(|entry| entry.worktree_path != first.worktree_path);
+        })
+        .unwrap();
+        let saved = update_at(&path, |entries| entries.push(second.clone())).unwrap();
+
+        assert_eq!(saved.entries, std::slice::from_ref(&second));
+        assert_eq!(load_from(&path).entries, [second]);
+    }
+
+    #[test]
+    fn concurrent_updates_are_not_lost() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("pending.toml");
+        std::thread::scope(|scope| {
+            for index in 0..16 {
+                let path = &path;
+                scope.spawn(move || {
+                    update_at(path, |entries| {
+                        entries.push(PendingWorktreeDelete::new(
+                            "/repo".into(),
+                            format!("branch-{index}"),
+                            format!("/repo-{index}").into(),
+                        ));
+                    })
+                    .unwrap();
+                });
+            }
+        });
+        assert_eq!(load_from(&path).entries.len(), 16);
+    }
+
+    #[test]
+    fn an_update_that_changes_nothing_writes_nothing() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("pending.toml");
+        assert_eq!(update_at(&path, |_| {}).unwrap().entries, vec![]);
         assert!(!path.exists());
     }
 

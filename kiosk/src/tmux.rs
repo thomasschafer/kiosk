@@ -427,6 +427,12 @@ fn flag(value: &str, what: &str) -> Result<bool, TmuxError> {
     }
 }
 
+/// `value` as a tmux format that expands to itself, for arguments tmux expands as formats
+/// (such as `-c`, `-s` and `display-message`), in which `#` starts an expansion.
+pub fn format_literal(value: &str) -> String {
+    value.replace('#', "##")
+}
+
 /// A path as one tmux argument. Control characters are refused: tmux would show or store
 /// them escaped, and kiosk could no longer match the session to its folder.
 pub fn path_arg(name: &str, path: &Path) -> Result<String, TmuxError> {

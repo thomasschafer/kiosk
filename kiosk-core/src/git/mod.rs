@@ -21,6 +21,14 @@ use anyhow::Result;
 use std::os::unix::ffi::OsStringExt;
 use std::{ffi::OsString, path::PathBuf};
 
+pub(crate) const LOCAL_BRANCH_PREFIX: &str = "refs/heads/";
+
+/// The full ref of local branch `name`, which a tag of the same name cannot shadow as the
+/// short name can.
+pub fn local_branch_ref(name: &str) -> String {
+    format!("{LOCAL_BRANCH_PREFIX}{name}")
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Listed<T> {
     pub items: Vec<T>,

@@ -7,7 +7,6 @@ license = "MIT"
 description = "Generates the configuration reference in a kiosk product's README from its config types"
 homepage = "https://github.com/thomasschafer/kiosk"
 repository = "https://github.com/thomasschafer/kiosk"
-publish = false
 
 [dependencies]
 anyhow.workspace = true

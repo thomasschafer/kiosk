@@ -349,6 +349,14 @@ mod tests {
             Some(("claude".into(), AgentState::Waiting))
         );
         assert_eq!(
+            state(
+                "2.1.316",
+                "Claude Code'll be able to read, edit, and execute files here.\n\
+                 ❯ No, exit\n  Yes, I trust this folder\nEnter to confirm · Esc to cancel"
+            ),
+            Some(("claude".into(), AgentState::Waiting))
+        );
+        assert_eq!(
             detect(
                 "2.1.63",
                 "✳ Claude Code",

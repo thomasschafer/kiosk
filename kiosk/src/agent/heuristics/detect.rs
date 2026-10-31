@@ -110,7 +110,10 @@ fn detect_agent_kind_from_content_impl(
         return Some(AgentKind::Codex);
     }
 
-    if include_claude_markers && lower.contains("claude code v") {
+    // The banner (`Claude Code v2.1.63`), or the folder-trust prompt shown before it.
+    if include_claude_markers
+        && (lower.contains("claude code v") || lower.contains("claude code'll be able to"))
+    {
         return Some(AgentKind::ClaudeCode);
     }
 
@@ -322,6 +325,9 @@ const CODEX_PATTERNS: AgentPatterns = AgentPatterns {
         "› 1.",
         "enter to select",
         "esc to cancel",
+        // Folder-trust prompt; its menu has no `› 1.` once the cursor moves off the
+        // first option.
+        "trust and continue",
     ],
     // When Codex is idle, `? for shortcuts` appears at the bottom of the prompt.
     idle_tail: &["? for shortcuts"],
@@ -638,7 +644,8 @@ fn detect_claude_state(content: &str, tail: &str, prompt_tail: &str) -> AgentSta
 }
 
 fn detect_claude_waiting(content: &str) -> bool {
-    if matches_any(content, CLAUDE_PATTERNS.waiting) {
+    if matches_any(content, CLAUDE_PATTERNS.waiting) || content.lines().any(is_claude_trust_option)
+    {
         return true;
     }
     if content.contains("do you want to proceed?") {
@@ -651,6 +658,16 @@ fn detect_claude_waiting(content: &str) -> bool {
             || content.contains("allow always");
     }
     false
+}
+
+/// Whether a lowercased line is the accept option of Claude Code's folder-trust prompt.
+///
+/// The prompt's menu has no numbers and defaults to `❯ No, exit`, so neither `❯ 1.` nor
+/// the shared `esc to cancel` footer (an idle marker for Claude's overlays) identifies it.
+/// The option must be the whole line, so a response quoting it in prose isn't Waiting.
+fn is_claude_trust_option(line: &str) -> bool {
+    let option = line.trim();
+    option.strip_prefix('❯').unwrap_or(option).trim() == "yes, i trust this folder"
 }
 
 /// Codex-specific state detection.
@@ -1350,6 +1367,17 @@ mod tests {
         assert_eq!(detect_agent_kind_from_content(content), None);
     }
 
+    #[test]
+    fn detect_kind_from_wrapper_content_claude_trust_prompt() {
+        let content = " Claude Code'll be able to read, edit, and execute files here.\n\
+                       \n ❯ No, exit\n   Yes, I trust this folder";
+        assert_eq!(
+            detect_agent_kind_from_wrapper_content(content),
+            Some(AgentKind::ClaudeCode)
+        );
+        assert_eq!(detect_agent_kind_from_content(content), None);
+    }
+
     // -- Claude Code ---------------------------------------------------------
 
     #[test]
@@ -1427,6 +1455,34 @@ mod tests {
                 AgentKind::ClaudeCode
             ),
             AgentState::Waiting
+        );
+    }
+
+    #[test]
+    fn claude_trust_folder_prompt_is_waiting_whichever_option_is_selected() {
+        for options in [
+            "❯ No, exit\n   Yes, I trust this folder",
+            "  No, exit\n ❯ Yes, I trust this folder",
+        ] {
+            let content = format!(
+                "Quick safety check: Is this a project you created or one you trust?\n\n\
+                 {options}\n\n Enter to confirm · Esc to cancel"
+            );
+            assert_eq!(
+                detect_state(&content, AgentKind::ClaudeCode),
+                AgentState::Waiting,
+                "{options}"
+            );
+        }
+    }
+
+    #[test]
+    fn claude_trust_option_quoted_in_prose_is_not_waiting() {
+        let content = "The prompt offers \"Yes, I trust this folder\" and \"No, exit\".\n\
+                       ❯ \n⏵⏵ auto mode on (shift+tab to cycle)";
+        assert_eq!(
+            detect_state(content, AgentKind::ClaudeCode),
+            AgentState::Idle
         );
     }
 
@@ -1636,6 +1692,24 @@ mod tests {
         let content =
             "> You are in /tmp\n\n› 1. Yes, continue\n  2. No, quit\n\n  Press enter to continue";
         assert_eq!(detect_state(content, AgentKind::Codex), AgentState::Waiting);
+    }
+
+    #[test]
+    fn codex_trust_folder_prompt_is_waiting_whichever_option_is_selected() {
+        for options in [
+            "› 1. Trust and continue\n  2. Back to Agent Command Center",
+            "  1. Trust and continue\n› 2. Back to Agent Command Center",
+        ] {
+            let content = format!(
+                "  Trust this folder? Codex can read, edit, and run files here.\n\n\
+                 {options}\n\n  enter continue · esc back"
+            );
+            assert_eq!(
+                detect_state(&content, AgentKind::Codex),
+                AgentState::Waiting,
+                "{options}"
+            );
+        }
     }
 
     #[test]
@@ -2562,6 +2636,8 @@ mod fixture_tests {
         (CLAUDE_WAITING_BASH,             "claude-code/waiting-bash-permission.txt",                AgentKind::ClaudeCode,  AgentState::Waiting),
         (CLAUDE_WAITING_EDIT,             "claude-code/waiting-edit-permission.txt",                AgentKind::ClaudeCode,  AgentState::Waiting),
         (CLAUDE_WAITING_WRITE,            "claude-code/waiting-write-permission.txt",               AgentKind::ClaudeCode,  AgentState::Waiting),
+        (CLAUDE_WAITING_TRUST,            "claude-code/waiting-trust-folder.txt",                   AgentKind::ClaudeCode,  AgentState::Waiting),
+        (CLAUDE_WAITING_TRUST_YES,        "claude-code/waiting-trust-folder-yes-selected.txt",      AgentKind::ClaudeCode,  AgentState::Waiting),
         (CLAUDE_CANCELLED,                "claude-code/cancelled.txt",                              AgentKind::ClaudeCode,  AgentState::Idle),
         (CLAUDE_CANCELLED_MID,            "claude-code/cancelled-mid-response.txt",                 AgentKind::ClaudeCode,  AgentState::Idle),
 
@@ -2584,6 +2660,8 @@ mod fixture_tests {
         (CODEX_RUNNING_QUEUED,            "codex/running-with-queued-message.txt",                  AgentKind::Codex,       AgentState::Running),
         (CODEX_WAITING_COMMAND,           "codex/waiting-command-permission.txt",                   AgentKind::Codex,       AgentState::Waiting),
         (CODEX_WAITING_TRUST,             "codex/waiting-trust-dialog.txt",                         AgentKind::Codex,       AgentState::Waiting),
+        (CODEX_WAITING_TRUST_FOLDER,      "codex/waiting-trust-folder.txt",                         AgentKind::Codex,       AgentState::Waiting),
+        (CODEX_WAITING_TRUST_BACK,        "codex/waiting-trust-folder-back-selected.txt",           AgentKind::Codex,       AgentState::Waiting),
         (CODEX_CANCELLED,                 "codex/cancelled.txt",                                    AgentKind::Codex,       AgentState::Idle),
         (CODEX_CANCELLED_MID,             "codex/cancelled-mid-streaming.txt",                      AgentKind::Codex,       AgentState::Idle),
 

@@ -6,7 +6,7 @@ use std::{fmt, path::Path};
 use super::{Backend, KnownCheckout, Opened, RemoveError, Worktrees};
 use crate::{
     event::WorktreeRemovalOutcome,
-    git::{GitProvider, is_dirty_worktree_requires_force},
+    git::{GitProvider, is_dirty_worktree_requires_force, local_branch_ref},
 };
 
 #[derive(Debug)]
@@ -63,7 +63,7 @@ pub(crate) fn open_branch<B: Backend>(
     }
 }
 
-/// Creates `branch` from `base` in a new checkout and opens it.
+/// Creates `branch` from local branch `base` in a new checkout and opens it.
 pub(crate) fn create_branch<B: Backend>(
     git: &dyn GitProvider,
     backend: &B,
@@ -71,6 +71,7 @@ pub(crate) fn create_branch<B: Backend>(
     branch: &str,
     base: &str,
 ) -> Result<Opened, OperationError<B::Error>> {
+    let base = &local_branch_ref(base);
     match backend.worktrees() {
         Worktrees::Native(native) => native
             .create_branch(repo, branch, base)

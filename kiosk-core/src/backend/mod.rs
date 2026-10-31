@@ -65,7 +65,8 @@ pub trait NativeWorktrees<B: Backend + ?Sized>: Send + Sync {
         branch: &str,
         known: KnownCheckout,
     ) -> Result<Opened, B::Error>;
-    /// Creates `branch` from `base` in a new checkout and opens it.
+    /// Creates `branch` from `base`, a full ref such as `refs/heads/main`, in a new checkout
+    /// and opens it.
     fn create_branch(&self, repo: &Path, branch: &str, base: &str) -> Result<Opened, B::Error>;
     /// Removes the checkout `session` shows and closes the session.
     fn remove(&self, session: &B::SessionId, force: bool)

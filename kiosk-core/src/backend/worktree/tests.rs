@@ -140,7 +140,12 @@ fn managed_create_branches_from_the_base_then_opens_the_checkout() {
     let checkout = root().join("repo").join("new");
     assert_eq!(
         *git.add_worktree_calls.lock().unwrap(),
-        [(repo(), checkout.clone(), "new".into(), Some("main".into()))]
+        [(
+            repo(),
+            checkout.clone(),
+            "new".into(),
+            Some("refs/heads/main".into())
+        )]
     );
     assert_eq!(
         backend.calls(),
@@ -195,7 +200,7 @@ fn native_backends_get_branch_operations_without_kiosk_touching_git() {
             BackendCall::CreateBranch {
                 repo: repo(),
                 branch: "new".into(),
-                base: "main".into(),
+                base: "refs/heads/main".into(),
             },
         ]
     );

@@ -102,8 +102,7 @@ pub(crate) fn handle_event(
             worktree_path,
             gate,
         } => {
-            clear_pending(state, &worktree_path);
-            match save_pending(state.product, &state.delete.pending) {
+            match clear_pending(state, &worktree_path) {
                 Ok(()) => gate.open(),
                 Err(error) => gate.hold(format!(
                     "kiosk could not save that the removal finished: {error:#}"
@@ -203,8 +202,7 @@ fn handle_removed(
     worktree_path: &Path,
     warning: Option<String>,
 ) {
-    clear_pending(state, worktree_path);
-    persist(state);
+    forget_pending(state, worktree_path);
     if let Some(entry) = state
         .repo_view
         .entries
@@ -263,8 +261,7 @@ fn handle_failed(
     worktree_path: &Path,
     error: &str,
 ) {
-    clear_pending(state, worktree_path);
-    persist(state);
+    forget_pending(state, worktree_path);
     if !ui_matches {
         state.push_toast(
             ToastKind::Error,
@@ -354,9 +351,8 @@ pub(crate) fn confirm<B: Backend>(
         target_snapshot.worktree_path.clone(),
     );
     pending.force = target_snapshot.force;
-    mark_pending(state, pending);
-    if let Err(error) = save_pending(state.product, &state.delete.pending) {
-        clear_pending(state, &target_snapshot.worktree_path);
+    if let Err(error) = mark_pending(state, &pending) {
+        without_worktree(&target_snapshot.worktree_path)(&mut state.delete.pending);
         state.push_toast(
             ToastKind::Error,
             format!("Could not persist pending deletion: {error:#}"),
@@ -388,8 +384,7 @@ pub(crate) fn cancel(state: &mut AppState) -> bool {
     };
     if !flow.target.in_progress {
         if flow.target.force {
-            clear_pending(state, &flow.target.worktree_path);
-            persist(state);
+            forget_pending(state, &flow.target.worktree_path);
         }
         state.mode = Mode::BranchSelect(flow.context);
     }
@@ -419,6 +414,14 @@ pub(crate) fn resume<B: Backend>(
         return;
     }
     let backend = backend.expect("open checkout state was loaded from a backend");
+    // Another picker may have finished or dropped a deletion since this one last looked.
+    if let Err(error) = update_pending(state, |_| {}) {
+        state.push_toast(
+            ToastKind::Error,
+            format!("Could not read pending deletions, so none were resumed: {error:#}"),
+        );
+        return;
+    }
     let pending = state
         .delete
         .pending
@@ -456,20 +459,20 @@ pub(crate) fn reconcile_pending(state: &mut AppState, repo_path: &Path) {
             repo.repo
                 .worktrees
                 .iter()
-                .map(|worktree| (worktree.path.as_path(), worktree.branch.as_deref()))
+                .map(|worktree| (worktree.path.clone(), worktree.branch.clone()))
                 .collect::<HashMap<_, _>>()
         })
         .unwrap_or_default();
-    let before = state.delete.pending.len();
-    state.delete.pending.retain(|pending| {
-        pending.repo_path != repo_path
-            || !pending.is_expired()
-                && active.get(pending.worktree_path.as_path())
-                    == Some(&Some(pending.branch_name.as_str()))
+    let result = update_pending(state, |entries| {
+        entries.retain(|pending| {
+            pending.repo_path != repo_path
+                || !pending.is_expired()
+                    && active.get(&pending.worktree_path).is_some_and(|branch| {
+                        branch.as_deref() == Some(pending.branch_name.as_str())
+                    })
+        });
     });
-    if before != state.delete.pending.len() {
-        persist(state);
-    }
+    report_save_error(state, result);
 }
 
 pub(crate) fn refresh_open_state(state: &mut AppState) {
@@ -554,22 +557,31 @@ fn event_matches(
     )
 }
 
-fn mark_pending(state: &mut AppState, pending: PendingWorktreeDelete) {
-    state.delete.pending.retain(|entry| {
-        !(entry.repo_path == pending.repo_path && entry.branch_name == pending.branch_name)
-    });
-    state.delete.pending.push(pending);
+fn mark_pending(state: &mut AppState, pending: &PendingWorktreeDelete) -> anyhow::Result<()> {
+    update_pending(state, |entries| {
+        entries.retain(|entry| {
+            !(entry.repo_path == pending.repo_path && entry.branch_name == pending.branch_name)
+        });
+        entries.push(pending.clone());
+    })
 }
 
-fn clear_pending(state: &mut AppState, worktree_path: &Path) {
-    state
-        .delete
-        .pending
-        .retain(|pending| pending.worktree_path != worktree_path);
+fn clear_pending(state: &mut AppState, worktree_path: &Path) -> anyhow::Result<()> {
+    update_pending(state, without_worktree(worktree_path))
 }
 
-pub(crate) fn persist(state: &mut AppState) {
-    if let Err(error) = save_pending(state.product, &state.delete.pending) {
+/// Clears `worktree_path`'s saved deletion, reporting a failure to save as a toast.
+fn forget_pending(state: &mut AppState, worktree_path: &Path) {
+    let result = clear_pending(state, worktree_path);
+    report_save_error(state, result);
+}
+
+fn without_worktree(worktree_path: &Path) -> impl Fn(&mut Vec<PendingWorktreeDelete>) + '_ {
+    move |entries| entries.retain(|pending| pending.worktree_path != worktree_path)
+}
+
+fn report_save_error(state: &mut AppState, result: anyhow::Result<()>) {
+    if let Err(error) = result {
         state.push_toast(
             ToastKind::Error,
             format!("Could not persist pending deletions: {error:#}"),
@@ -577,23 +589,59 @@ pub(crate) fn persist(state: &mut AppState) {
     }
 }
 
+/// Applies `change` to the saved deletions, then replaces this picker's copy with them, so
+/// it also sees what other pickers have saved. If saving fails, only the copy is changed.
+fn update_pending(
+    state: &mut AppState,
+    change: impl Fn(&mut Vec<PendingWorktreeDelete>),
+) -> anyhow::Result<()> {
+    match update_saved(state.product, &change) {
+        Ok(saved) => {
+            state.delete.pending = saved.entries;
+            for warning in saved.warnings {
+                state.push_toast(ToastKind::Warning, warning.message);
+            }
+            Ok(())
+        }
+        Err(error) => {
+            change(&mut state.delete.pending);
+            Err(error)
+        }
+    }
+}
+
 #[cfg(not(test))]
-fn save_pending(product: &Product, entries: &[PendingWorktreeDelete]) -> anyhow::Result<()> {
-    crate::pending_delete::save_pending_worktree_deletes(product, entries)
+fn update_saved(
+    product: &Product,
+    change: &dyn Fn(&mut Vec<PendingWorktreeDelete>),
+) -> anyhow::Result<crate::pending_delete::PendingDeleteLoad> {
+    crate::pending_delete::update_pending_worktree_deletes(product, change)
 }
 
 #[cfg(test)]
 thread_local! {
     /// Makes this thread's saves fail, for testing what a failed save does.
     static FAIL_SAVES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// This thread's saved deletions, which tests change directly to act as another picker.
+    static SAVED: std::cell::RefCell<Vec<PendingWorktreeDelete>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 #[cfg(test)]
-fn save_pending(_product: &Product, _entries: &[PendingWorktreeDelete]) -> anyhow::Result<()> {
+fn update_saved(
+    _product: &Product,
+    change: &dyn Fn(&mut Vec<PendingWorktreeDelete>),
+) -> anyhow::Result<crate::pending_delete::PendingDeleteLoad> {
     if FAIL_SAVES.get() {
         anyhow::bail!("the disk is full");
     }
-    Ok(())
+    Ok(SAVED.with_borrow_mut(|saved| {
+        change(saved);
+        crate::pending_delete::PendingDeleteLoad {
+            entries: saved.clone(),
+            warnings: Vec::new(),
+        }
+    }))
 }
 
 #[cfg(test)]

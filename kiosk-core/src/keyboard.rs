@@ -20,6 +20,7 @@ pub enum Action {
     BackToRepos,
     DismissToast,
     ShowHelp,
-    CloseHelp,
+    ShowScanWarnings,
+    CloseOverlay,
     Noop,
 }

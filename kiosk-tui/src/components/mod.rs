@@ -8,6 +8,7 @@ pub mod help;
 pub mod list_row;
 pub mod new_branch;
 pub mod repo_list;
+pub mod scan_warnings;
 pub mod search_bar;
 pub mod setup;
 

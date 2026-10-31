@@ -10,7 +10,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use crate::{
     backend::annotation::AnnotationIndex,
     config::keys::{BindingMode, KeysConfig},
-    git::Repo,
+    git::{Repo, ScanWarning},
     picker::{
         branch::BranchViewState, delete::DeleteState, new_branch::NewBranchState,
         repo::RepoViewState,
@@ -219,6 +219,38 @@ impl HelpOverlayState {
     }
 }
 
+/// The scroll position of the scan warnings overlay. The warnings themselves live in
+/// `AppState`, as scanning can add more while the overlay is open.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ScanWarningsOverlayState {
+    /// The first rendered line shown. Rendering clamps it to the content.
+    pub scroll_offset: usize,
+}
+
+/// A view drawn over the current mode, which keeps its own state underneath.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Overlay {
+    Help(HelpOverlayState),
+    ScanWarnings(ScanWarningsOverlayState),
+}
+
+impl Overlay {
+    pub fn as_help_mut(&mut self) -> Option<&mut HelpOverlayState> {
+        match self {
+            Self::Help(help) => Some(help),
+            Self::ScanWarnings(_) => None,
+        }
+    }
+}
+
+/// How many directories could not be scanned, as the scan toast and details view say it.
+pub fn scan_summary(count: usize) -> String {
+    format!(
+        "{count} director{} could not be scanned",
+        if count == 1 { "y" } else { "ies" }
+    )
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Mode {
     RepoSelect,
@@ -261,6 +293,13 @@ enum ToastCategory {
     Scan,
 }
 
+impl Toast {
+    /// Whether this toast summarises the scan warnings, which have a details view.
+    pub fn is_scan_summary(&self) -> bool {
+        self.category == ToastCategory::Scan
+    }
+}
+
 #[derive(Debug)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct AppState {
@@ -270,8 +309,8 @@ pub struct AppState {
     pub toasts: VecDeque<Toast>,
     toast_messages: HashSet<String>,
     front_toast_since: Option<Instant>,
-    scan_warning_count: usize,
-    pub help_overlay: Option<HelpOverlayState>,
+    scan_warnings: Vec<ScanWarning>,
+    pub overlay: Option<Overlay>,
     pub active_list_rows: usize,
     pub help_filter_generation: u64,
     pub(crate) delete: DeleteState,
@@ -290,8 +329,8 @@ impl AppState {
             toasts: VecDeque::new(),
             toast_messages: HashSet::new(),
             front_toast_since: None,
-            scan_warning_count: 0,
-            help_overlay: None,
+            scan_warnings: Vec::new(),
+            overlay: None,
             active_list_rows: 1,
             help_filter_generation: 0,
             delete: DeleteState::default(),
@@ -328,17 +367,23 @@ impl AppState {
         self.push_toast_with_category(kind, &message.into(), ToastCategory::General);
     }
 
-    pub fn push_scan_warning(&mut self) {
-        self.scan_warning_count = self.scan_warning_count.saturating_add(1);
-        let message = format!(
-            "{} director{} could not be scanned",
-            self.scan_warning_count,
-            if self.scan_warning_count == 1 {
-                "y"
-            } else {
-                "ies"
-            }
-        );
+    pub fn scan_warnings(&self) -> &[ScanWarning] {
+        &self.scan_warnings
+    }
+
+    /// The open scan warnings overlay with the warnings it lists.
+    pub fn scan_warnings_overlay_mut(
+        &mut self,
+    ) -> Option<(&mut ScanWarningsOverlayState, &[ScanWarning])> {
+        match &mut self.overlay {
+            Some(Overlay::ScanWarnings(overlay)) => Some((overlay, &self.scan_warnings)),
+            Some(Overlay::Help(_)) | None => None,
+        }
+    }
+
+    pub fn push_scan_warning(&mut self, warning: ScanWarning) {
+        self.scan_warnings.push(warning);
+        let message = scan_summary(self.scan_warnings.len());
         if let Some(toast) = self
             .toasts
             .iter_mut()
@@ -349,6 +394,18 @@ impl AppState {
             self.toast_messages.insert(message);
         } else {
             self.push_toast_with_category(ToastKind::Warning, &message, ToastCategory::Scan);
+        }
+    }
+
+    /// Drops the scan warnings summary, for when the details view is showing them.
+    pub fn dismiss_scan_summary(&mut self) {
+        let Some(index) = self.toasts.iter().position(Toast::is_scan_summary) else {
+            return;
+        };
+        if index == 0 {
+            self.dismiss_toast();
+        } else if let Some(toast) = self.toasts.remove(index) {
+            self.toast_messages.remove(&toast.message);
         }
     }
 
@@ -622,8 +679,11 @@ mod tests {
     fn scan_warnings_are_aggregated_into_one_toast() {
         let mut state = AppState::new(&TEST_PRODUCT, None);
 
-        for _ in 0..1_000 {
-            state.push_scan_warning();
+        for index in 0..1_000 {
+            state.push_scan_warning(ScanWarning {
+                path: PathBuf::from(format!("/scan/{index}")),
+                message: format!("reason {index}"),
+            });
         }
 
         assert_eq!(state.toasts.len(), 1);
@@ -632,6 +692,9 @@ mod tests {
             "1000 directories could not be scanned"
         );
         assert_eq!(state.toast_messages.len(), 1);
+        assert!(state.toasts[0].is_scan_summary());
+        assert_eq!(state.scan_warnings().len(), 1_000);
+        assert_eq!(state.scan_warnings()[999].message, "reason 999");
     }
 
     #[test]

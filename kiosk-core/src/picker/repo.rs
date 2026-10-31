@@ -190,8 +190,8 @@ pub(crate) fn handle_event(
             state.repo_view.loading = false;
             changes.collision_pass = true;
         }
-        AppEvent::ScanWarning(_warning) => {
-            state.push_scan_warning();
+        AppEvent::ScanWarning(warning) => {
+            state.push_scan_warning(warning);
         }
         AppEvent::CurrentRepoResolved { main_checkout } => {
             state.repo_view.current_main_checkout =

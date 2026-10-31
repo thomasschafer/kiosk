@@ -15,7 +15,7 @@ use kiosk_core::{
     },
     git::GitProvider,
     picker::{Picker, RunOutcome},
-    state::{AppState, Mode},
+    state::{AppState, Mode, Overlay},
 };
 use ratatui::{
     DefaultTerminal, Frame,
@@ -180,8 +180,10 @@ pub(crate) fn draw(
     );
     components::error_toast::draw(frame, frame.area(), state, theme, keys);
     let toast_visible = !state.toasts.is_empty();
-    if let Some(overlay) = &mut state.help_overlay {
+    if let Some(Overlay::Help(overlay)) = &mut state.overlay {
         components::help::draw(frame, frame.area(), overlay, toast_visible, theme);
+    } else if let Some((overlay, warnings)) = state.scan_warnings_overlay_mut() {
+        components::scan_warnings::draw(frame, frame.area(), overlay, warnings, theme, keys);
     }
 }
 

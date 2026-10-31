@@ -57,6 +57,11 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           version="${{ needs.prepare-release.outputs.version }}"
+          # A re-run after a failed publish finds the tag and draft already made.
+          if gh release view "v${version}" >/dev/null 2>&1; then
+            echo "Release v${version} already exists"
+            exit 0
+          fi
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           git tag -a "v${version}" -m "Release v${version}"
@@ -168,7 +173,14 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
           # Publish in dependency order, waiting for crates.io index to update
+          version="${{ needs.prepare-release.outputs.version }}"
           for crate in kiosk-core kiosk-docgen kiosk-tui kiosk; do
+            # Lets a re-run carry on after a partial publish.
+            if curl -sf -A "kiosk-release (github.com/thomasschafer/kiosk)" \
+              "https://crates.io/api/v1/crates/${crate}/${version}" >/dev/null; then
+              echo "${crate} ${version} is already published"
+              continue
+            fi
             echo "Publishing ${crate}..."
             cd "${crate}"
             cargo publish

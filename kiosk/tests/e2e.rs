@@ -240,3 +240,27 @@ fn a_session_started_in_a_folder_with_a_tab_or_newline_does_not_break_reads() {
     let agents = env.kiosk_ok(&["agents", "--json"]);
     assert!(agents.trim_start().starts_with('['), "{agents}");
 }
+
+#[test]
+fn a_repo_whose_name_holds_a_tmux_format_opens_in_its_own_folder() {
+    let env = TestEnv::new("[on_open]\npanes = [{ command = \"true\", direction = \"down\" }]\n");
+    let repo = env.repo("odd#{pid}");
+    env.start_picker(&env.path("projects"));
+    env.wait_for_screen("the repo", |screen| screen.contains("odd#{pid}"));
+    env.keys(&["Enter"]);
+    wait_for("the client to switch", || {
+        env.client_session() == "odd#{pid}"
+    });
+    let (session, _, tagged) = env
+        .sessions()
+        .into_iter()
+        .find(|(_, name, _)| name == "odd#{pid}")
+        .unwrap();
+    assert_eq!(tagged, repo.display().to_string());
+    let starts = env.tmux_ok(&["list-panes", "-t", &session, "-F", "#{pane_start_path}"]);
+    let starts: Vec<&str> = starts.lines().collect();
+    assert_eq!(starts.len(), 2, "{starts:?}");
+    for start in starts {
+        assert_eq!(start, repo.display().to_string());
+    }
+}

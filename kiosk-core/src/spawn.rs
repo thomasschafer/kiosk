@@ -649,6 +649,8 @@ pub fn spawn_validate_branch_name(
     );
 }
 
+/// Creates `branch_name` from `base`, the name of a local branch, in a new checkout and
+/// opens it.
 pub fn spawn_create_new_branch<B: Backend>(
     git: &Arc<dyn GitProvider>,
     backend: &Arc<B>,

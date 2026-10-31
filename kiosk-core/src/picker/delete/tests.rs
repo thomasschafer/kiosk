@@ -520,8 +520,9 @@ fn late_recovered_delete_completion_does_not_change_a_newer_mode() {
     state.delete.in_flight.insert("/repo-feature".into());
     mark_pending(
         &mut state,
-        PendingWorktreeDelete::new("/repo".into(), "feature".into(), "/repo-feature".into()),
-    );
+        &PendingWorktreeDelete::new("/repo".into(), "feature".into(), "/repo-feature".into()),
+    )
+    .unwrap();
     let mut changes = TickChanges::default();
 
     process_app_event(
@@ -566,11 +567,12 @@ fn branches_loaded_with_checkout_of(state: &mut AppState, branch: &str) {
 fn forced_pending_delete_of_feature(state: &mut AppState) {
     mark_pending(
         state,
-        PendingWorktreeDelete {
+        &PendingWorktreeDelete {
             force: true,
             ..PendingWorktreeDelete::new("/repo".into(), "feature".into(), "/repo-feature".into())
         },
-    );
+    )
+    .unwrap();
 }
 
 #[test]
@@ -595,4 +597,45 @@ fn a_saved_force_deletion_is_dropped_when_another_branch_now_uses_its_path() {
     assert_eq!(state.delete.pending, vec![]);
     assert!(state.delete.in_flight.is_empty());
     assert_eq!(backend.calls(), []);
+}
+
+#[test]
+fn a_saved_force_deletion_another_picker_finished_is_not_resumed_or_saved_again() {
+    let git = git_provider();
+    let backend = Arc::new(MockBackend::native());
+    let (sender, _rx) = sender();
+    let mut state = state_with_branch(true);
+    forced_pending_delete_of_feature(&mut state);
+    // Another picker finishes the deletion, and the branch is then checked out again at the
+    // same path.
+    SAVED.with_borrow_mut(Vec::clear);
+
+    branches_loaded_with_checkout_of(&mut state, "feature");
+    resume(&mut state, &git, Some(&backend), &sender);
+    forget_pending(&mut state, Path::new("/repo-other"));
+
+    assert_eq!(state.delete.pending, vec![]);
+    assert!(SAVED.with_borrow(Vec::is_empty));
+    assert!(state.delete.in_flight.is_empty());
+    assert_eq!(backend.calls(), []);
+}
+
+#[test]
+fn resuming_picks_up_a_deletion_another_picker_saved() {
+    let git = git_provider();
+    let backend = Arc::new(MockBackend::native());
+    let (sender, _rx) = sender();
+    let mut state = state_with_branch(true);
+    SAVED.with_borrow_mut(|saved| {
+        saved.push(PendingWorktreeDelete::new(
+            "/repo".into(),
+            "feature".into(),
+            "/repo-feature".into(),
+        ));
+    });
+
+    resume(&mut state, &git, Some(&backend), &sender);
+
+    assert_eq!(state.delete.pending.len(), 1);
+    assert!(state.delete.in_flight.contains(Path::new("/repo-feature")));
 }

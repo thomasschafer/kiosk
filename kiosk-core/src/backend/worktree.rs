@@ -95,8 +95,9 @@ pub(crate) fn create_branch<B: Backend>(
 /// When kiosk removes the checkout with git and then has a managed backend close its
 /// session, `before_close` runs between the two. Nothing is left to resume once git has
 /// removed the checkout, and closing may end the picker, so this is where the picker
-/// forgets the pending record. A native backend removes and closes in one call, so the
-/// record stays until that call has returned.
+/// forgets the pending record. If it cannot, `before_close` says why and the session
+/// stays open. A native backend removes and closes in one call, so the record stays
+/// until that call has returned.
 pub(crate) fn remove_checkout<B: Backend>(
     git: &dyn GitProvider,
     backend: &B,
@@ -104,7 +105,7 @@ pub(crate) fn remove_checkout<B: Backend>(
     repo: &Path,
     checkout: &Path,
     force: bool,
-    before_close: impl FnOnce(),
+    before_close: impl FnOnce() -> Result<(), String>,
 ) -> WorktreeRemovalOutcome {
     let canonical_checkout = crate::path::canonical_or_original(checkout);
     let session = match backend.checkouts(repo) {
@@ -154,16 +155,18 @@ pub(crate) fn remove_checkout<B: Backend>(
         // The checkout goes first, so a refusal (uncommitted changes) leaves the session
         // as it was.
         Worktrees::Managed(managed) => match git.remove_worktree(repo, checkout, force) {
-            Ok(()) => {
-                before_close();
-                WorktreeRemovalOutcome::Removed {
-                    warning: managed.close(&session).err().map(|error| {
+            Ok(()) => WorktreeRemovalOutcome::Removed {
+                warning: match before_close() {
+                    Ok(()) => managed.close(&session).err().map(|error| {
                         format!(
                             "checkout was removed, but it could not be closed in {backend_name}: {error}"
                         )
                     }),
-                }
-            }
+                    Err(reason) => Some(format!(
+                        "checkout was removed, but it was left open in {backend_name} because {reason}"
+                    )),
+                },
+            },
             Err(error) => git_removal_failure(&error, force),
         },
     }

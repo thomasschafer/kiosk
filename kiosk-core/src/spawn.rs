@@ -685,15 +685,16 @@ pub fn spawn_worktree_removal<B: Backend>(
     let sender = sender.clone();
     thread::spawn(move || {
         let wait_for_record_forgotten = || {
-            let (gate, opened) = CloseGate::new();
-            if sender.send(AppEvent::CheckoutRemoved {
+            let (gate, decision) = CloseGate::new();
+            if !sender.send(AppEvent::CheckoutRemoved {
                 worktree_path: worktree_path.clone(),
                 gate,
             }) {
-                // An error means the picker dropped the gate unopened as it stopped, so no
-                // one is left to forget the record and the session closes regardless.
-                let _ = opened.recv();
+                return Ok(());
             }
+            // An error means the picker dropped the gate undecided as it stopped, so no one
+            // is left to forget the record and the session closes regardless.
+            decision.recv().unwrap_or(Ok(()))
         };
         let outcome = worktree::remove_checkout(
             git.as_ref(),

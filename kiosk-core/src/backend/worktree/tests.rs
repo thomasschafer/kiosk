@@ -58,6 +58,7 @@ fn remove_then_close(
     let mut seen = None;
     let outcome = remove_checkout(git, backend, BACKEND, &repo(), checkout, force, || {
         seen = Some((git.remove_calls.lock().unwrap().clone(), backend.calls()));
+        Ok(())
     });
     let (removed, calls) = seen.expect("the hook runs before the session closes");
     (outcome, removed, calls)
@@ -310,6 +311,38 @@ fn managed_removal_warns_when_the_session_does_not_close() {
             )
         }
     );
+}
+
+#[test]
+fn a_managed_session_stays_open_when_the_record_cannot_be_forgotten() {
+    let checkout = root().join("repo/feature");
+    let git = MockGitProvider::default();
+    let backend = managed();
+    checkouts(
+        &backend,
+        vec![CheckoutState {
+            path: checkout.clone(),
+            session: Some("s1".into()),
+        }],
+    );
+
+    let outcome = remove_checkout(&git, &backend, BACKEND, &repo(), &checkout, false, || {
+        Err("the record could not be saved".into())
+    });
+
+    assert_eq!(
+        outcome,
+        WorktreeRemovalOutcome::Removed {
+            warning: Some(
+                "checkout was removed, but it was left open in the test backend because the record could not be saved".into()
+            )
+        }
+    );
+    assert_eq!(
+        *git.remove_calls.lock().unwrap(),
+        [(repo(), checkout, false)]
+    );
+    assert_eq!(backend.calls(), [BackendCall::Checkouts { repo: repo() }]);
 }
 
 #[test]

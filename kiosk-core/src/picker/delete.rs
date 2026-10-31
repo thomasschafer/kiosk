@@ -103,8 +103,12 @@ pub(crate) fn handle_event(
             gate,
         } => {
             clear_pending(state, &worktree_path);
-            persist(state);
-            gate.open();
+            match save_pending(state.product, &state.delete.pending) {
+                Ok(()) => gate.open(),
+                Err(error) => gate.hold(format!(
+                    "kiosk could not save that the removal finished: {error:#}"
+                )),
+            }
             return None;
         }
         AppEvent::WorktreeRemovalFinished {
@@ -579,8 +583,16 @@ fn save_pending(product: &Product, entries: &[PendingWorktreeDelete]) -> anyhow:
 }
 
 #[cfg(test)]
-#[allow(clippy::unnecessary_wraps)]
+thread_local! {
+    /// Makes this thread's saves fail, for testing what a failed save does.
+    static FAIL_SAVES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
 fn save_pending(_product: &Product, _entries: &[PendingWorktreeDelete]) -> anyhow::Result<()> {
+    if FAIL_SAVES.get() {
+        anyhow::bail!("the disk is full");
+    }
     Ok(())
 }
 

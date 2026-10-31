@@ -427,6 +427,43 @@ fn a_managed_removal_still_closes_the_session_when_the_picker_stops_first() {
 }
 
 #[test]
+fn a_managed_session_stays_open_when_the_cleared_record_cannot_be_saved() {
+    let git = git_provider();
+    let backend = Arc::new(MockBackend::managed(std::env::temp_dir()));
+    queue_checkouts(&backend, Some("s_1"), 1);
+    let (sender, rx) = sender();
+    let mut state = state_with_branch(true);
+
+    begin(&mut state);
+    confirm(&mut state, &git, Some(&backend), &sender);
+    let removed = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    FAIL_SAVES.set(true);
+    process_app_event(removed, &mut state, &mut TickChanges::default());
+    FAIL_SAVES.set(false);
+
+    let finished = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    let AppEvent::WorktreeRemovalFinished {
+        outcome: WorktreeRemovalOutcome::Removed {
+            warning: Some(warning),
+        },
+        ..
+    } = &finished
+    else {
+        panic!("expected a removal with a warning, got {finished:?}");
+    };
+    assert!(
+        warning.contains("left open in") && warning.contains("the disk is full"),
+        "{warning}"
+    );
+    assert!(
+        !backend
+            .calls()
+            .iter()
+            .any(|call| matches!(call, BackendCall::Close { .. }))
+    );
+}
+
+#[test]
 fn post_deletion_refresh_rejects_old_final_fetch_without_clearing_spinner() {
     let git = git_provider();
     let (sender, _rx) = sender();

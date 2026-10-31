@@ -44,20 +44,29 @@ pub enum WorktreeRemovalOutcome {
 /// picker floats in), and a record left behind would resume the removal on a later
 /// checkout of the same branch at that path.
 #[derive(Debug, Clone)]
-pub struct CloseGate(mpsc::SyncSender<()>);
+pub struct CloseGate(mpsc::SyncSender<Result<(), String>>);
 
 impl CloseGate {
-    /// A gate, and the receiver the removal waits on until it opens.
-    pub(crate) fn new() -> (Self, mpsc::Receiver<()>) {
+    /// A gate, and the receiver the removal waits on until the picker decides.
+    pub(crate) fn new() -> (Self, mpsc::Receiver<Result<(), String>>) {
         let (sender, receiver) = mpsc::sync_channel(1);
         (Self(sender), receiver)
     }
 
     /// Lets the removal close the session. Call only once the record is forgotten.
     pub(crate) fn open(self) {
+        self.decide(Ok(()));
+    }
+
+    /// Keeps the session open, as the record could not be forgotten, saying why.
+    pub(crate) fn hold(self, reason: String) {
+        self.decide(Err(reason));
+    }
+
+    fn decide(self, decision: Result<(), String>) {
         // The removal has stopped waiting only if its thread is gone, and then there is
         // nothing left to close.
-        let _ = self.0.send(());
+        let _ = self.0.send(decision);
     }
 }
 

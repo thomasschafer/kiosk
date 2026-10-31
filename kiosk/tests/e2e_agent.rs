@@ -3,38 +3,11 @@
 
 mod support;
 
-use serde_json::Value;
-use support::{KIOSK, TestEnv, wait_for};
+use support::{KIOSK, TestEnv, agent_in, agents, hooks, tracked_server, wait_for};
 
 /// A shell command printing an OSC 7501 report with `body`.
 fn report(body: &str) -> String {
     format!("printf '\\033]7501;{body}\\033\\\\'")
-}
-
-fn agents(env: &TestEnv) -> Vec<Value> {
-    serde_json::from_str::<Value>(&env.kiosk_ok(&["agents", "--json"]))
-        .unwrap()
-        .as_array()
-        .unwrap()
-        .clone()
-}
-
-fn agent_in<'a>(agents: &'a [Value], session: &str) -> Option<&'a Value> {
-    agents.iter().find(|agent| agent["session_name"] == session)
-}
-
-fn hooks(env: &TestEnv) -> usize {
-    env.tmux_ok(&["show-hooks", "-g"])
-        .lines()
-        .filter(|line| line.contains("[7501]"))
-        .count()
-}
-
-/// Starts the server and lets kiosk set its hooks, so new panes get collectors.
-fn tracked_server(env: &TestEnv) {
-    env.start(&env.path("projects"), "sleep 600");
-    env.kiosk_ok(&["agents"]);
-    assert_eq!(hooks(env), 3);
 }
 
 #[test]

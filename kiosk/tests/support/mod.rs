@@ -14,6 +14,7 @@ use std::{
 };
 
 use kiosk_core::git::test_fixtures::repo_fixture;
+use serde_json::Value;
 
 pub const KIOSK: &str = env!("CARGO_BIN_EXE_kiosk");
 const WAIT: Duration = Duration::from_secs(10);
@@ -194,14 +195,23 @@ impl TestEnv {
 
     /// Sends keys to the harness, one tmux key name or literal text each.
     pub fn keys(&self, keys: &[&str]) {
+        self.keys_to(HARNESS, keys);
+    }
+
+    /// Sends keys to `target` one at a time, as agents' TUIs drop keys sent together.
+    pub fn keys_to(&self, target: &str, keys: &[&str]) {
         for key in keys {
-            self.tmux_ok(&["send-keys", "-t", HARNESS, key]);
-            thread::sleep(Duration::from_millis(200));
+            self.tmux_ok(&["send-keys", "-t", target, key]);
+            thread::sleep(Duration::from_millis(300));
         }
     }
 
     pub fn type_text(&self, text: &str) {
-        self.tmux_ok(&["send-keys", "-t", HARNESS, "-l", text]);
+        self.type_text_to(HARNESS, text);
+    }
+
+    pub fn type_text_to(&self, target: &str, text: &str) {
+        self.tmux_ok(&["send-keys", "-t", target, "-l", text]);
         thread::sleep(Duration::from_millis(300));
     }
 
@@ -273,6 +283,34 @@ impl TestEnv {
         fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
         fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     }
+}
+
+/// What `kiosk agents --json` reports for every pane with an agent.
+pub fn agents(env: &TestEnv) -> Vec<Value> {
+    serde_json::from_str::<Value>(&env.kiosk_ok(&["agents", "--json"]))
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .clone()
+}
+
+pub fn agent_in<'a>(agents: &'a [Value], session: &str) -> Option<&'a Value> {
+    agents.iter().find(|agent| agent["session_name"] == session)
+}
+
+/// How many of kiosk's OSC 7501 collector hooks the server has.
+pub fn hooks(env: &TestEnv) -> usize {
+    env.tmux_ok(&["show-hooks", "-g"])
+        .lines()
+        .filter(|line| line.contains("[7501]"))
+        .count()
+}
+
+/// Starts the server and lets kiosk set its hooks, so new panes get collectors.
+pub fn tracked_server(env: &TestEnv) {
+    env.start(&env.path("projects"), "sleep 600");
+    env.kiosk_ok(&["agents"]);
+    assert_eq!(hooks(env), 3);
 }
 
 pub fn wait_for(what: &str, mut done: impl FnMut() -> bool) {

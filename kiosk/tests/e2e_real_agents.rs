@@ -193,14 +193,29 @@ fn follow(agent: &Agent) {
     eprintln!("{}: kiosk reported {}", agent.name, watch.seen.join(" -> "));
 }
 
-/// The agent's command line, without the variables of any agent session running the tests,
-/// which would otherwise make the agent think it is nested in that one.
+/// Variables an agent sets in the shells it runs, which would make the agent the tests start
+/// think it is nested in the session running the tests.
+const NESTED_SESSION_MARKERS: &[&str] = &[
+    "CLAUDECODE",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_BRIDGE_SESSION_ID",
+    "CLAUDE_CODE_SESSION_ATTENDED",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_CODE_EXECPATH",
+    "CLAUDE_PID",
+    "CLAUDE_EFFORT",
+    "CODEX_THREAD_ID",
+    "CODEX_SANDBOX",
+    "CODEX_SANDBOX_NETWORK_DISABLED",
+];
+
 fn launch_command(agent: &Agent) -> String {
     let mut command = String::from("env");
-    for (name, _) in std::env::vars() {
-        if name.starts_with("CLAUDE") || name.starts_with("CODEX") {
-            write!(command, " -u {name}").unwrap();
-        }
+    for name in NESTED_SESSION_MARKERS {
+        write!(command, " -u {name}").unwrap();
     }
     write!(command, " {}", agent.name).unwrap();
     for arg in agent.args {
@@ -217,9 +232,12 @@ fn pane_format(env: &TestEnv, format: &str) -> String {
 
 /// A repo for one agent, in the same place every run so the folder trust the agent saves
 /// for it is one entry rather than one per run. It lives in the user's cache rather than
-/// the temporary directory, which the Nix dev shell moves on every run.
+/// the temporary directory, which the Nix dev shell moves on every run. A lock beside it
+/// stops overlapping runs, from any checkout, from deleting each other's repo.
 struct Repo {
     path: PathBuf,
+    /// Held until the repo is removed; the OS releases it if the run is killed.
+    _lock: fs::File,
 }
 
 impl Repo {
@@ -229,15 +247,24 @@ impl Repo {
             .map(PathBuf::from)
             .or_else(|| kiosk_core::path::home_dir().map(|home| home.join(".cache")))
             .expect("no home directory for the agents' repos");
-        fs::create_dir_all(&cache).unwrap();
-        let parent = kiosk_core::path::canonical_or_original(&cache).join("kiosk-e2e-real-agents");
+        let parent = cache.join("kiosk-e2e-real-agents");
+        fs::create_dir_all(&parent).unwrap();
+        let parent = kiosk_core::path::canonical_or_original(&parent);
+        let lock = fs::File::create(parent.join(format!("{agent}.lock"))).unwrap();
+        match lock.try_lock() {
+            Ok(()) => {}
+            Err(fs::TryLockError::WouldBlock) => {
+                panic!("another run is using {}", parent.join(agent).display())
+            }
+            Err(fs::TryLockError::Error(error)) => panic!("could not lock {agent}'s repo: {error}"),
+        }
         let path = parent.join(agent);
         if path.exists() {
             fs::remove_dir_all(&path).unwrap();
         }
-        fs::create_dir_all(&parent).unwrap();
         Self {
             path: repo_fixture(&parent, agent),
+            _lock: lock,
         }
     }
 }
@@ -297,8 +324,15 @@ impl Watch<'_> {
     /// What kiosk reports for the agent, after checking the report names the agent and
     /// comes from OSC 7501 exactly when the pane has sent a report.
     fn poll(&mut self) -> Option<Report> {
-        let found = agent_in(&agents(self.env), SESSION).cloned();
-        let reported = !pane_format(self.env, "#{@kiosk_status}").is_empty();
+        // The pane's OSC 7501 status is read on both sides of kiosk's, so a report arriving
+        // in between is not taken for kiosk ignoring it.
+        let (found, reported) = loop {
+            let before = pane_format(self.env, "#{@kiosk_status}");
+            let found = agent_in(&agents(self.env), SESSION).cloned();
+            if pane_format(self.env, "#{@kiosk_status}") == before {
+                break (found, !before.is_empty());
+            }
+        };
         let found = found?;
         let source = match found["source"].as_str() {
             Some("osc7501") => Source::Osc7501,

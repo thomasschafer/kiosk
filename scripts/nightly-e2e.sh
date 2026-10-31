@@ -29,8 +29,6 @@ REPO_DIR="$(dirname "$SCRIPT_DIR")"
 LOG_DIR="${REPO_DIR}/logs/nightly-e2e"
 TIMESTAMP="$(date +%Y-%m-%d_%H%M%S)"
 LOG_FILE="${LOG_DIR}/${TIMESTAMP}.log"
-# The tests reuse one repo per agent, so runs must not overlap.
-LOCK_DIR="${LOG_DIR}/.lock"
 
 # Ensure ~/.local/bin is on PATH for agents installed by their own installers
 export PATH="${HOME}/.local/bin:${HOME}/.cargo/bin:${PATH}"
@@ -70,11 +68,6 @@ log_agent_versions() {
     "$agent" --version 2>&1 | tee -a "$LOG_FILE" || true
   done
 }
-
-if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-  die "Another run holds ${LOCK_DIR}; remove it if no run is in progress"
-fi
-trap 'rmdir "$LOCK_DIR"' EXIT
 
 log "=== Nightly E2E run started ==="
 log "Repo: ${REPO_DIR}"

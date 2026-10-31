@@ -31,7 +31,8 @@ Run from the repository root:
 ```
 
 Notes:
-- The script refuses to start while another run holds its lock (`logs/nightly-e2e/.lock`), as runs share the agents' repos.
+- Runs share the agents' repos, so each test locks its agent's repo and fails at once if another run, from any checkout, holds it.
+- The Codex test passes `--no-daemon`, which older Codex releases reject.
 - `--update-agents` updates both agents with their own `update` commands before testing.
 - `--branch main` ensures a stable target branch for scheduled runs.
 

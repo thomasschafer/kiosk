@@ -325,9 +325,6 @@ const CODEX_PATTERNS: AgentPatterns = AgentPatterns {
         "› 1.",
         "enter to select",
         "esc to cancel",
-        // Folder-trust prompt; its menu has no `› 1.` once the cursor moves off the
-        // first option.
-        "trust and continue",
     ],
     // When Codex is idle, `? for shortcuts` appears at the bottom of the prompt.
     idle_tail: &["? for shortcuts"],
@@ -644,8 +641,7 @@ fn detect_claude_state(content: &str, tail: &str, prompt_tail: &str) -> AgentSta
 }
 
 fn detect_claude_waiting(content: &str) -> bool {
-    if matches_any(content, CLAUDE_PATTERNS.waiting) || content.lines().any(is_claude_trust_option)
-    {
+    if matches_any(content, CLAUDE_PATTERNS.waiting) || looks_like_claude_trust_prompt(content) {
         return true;
     }
     if content.contains("do you want to proceed?") {
@@ -660,14 +656,20 @@ fn detect_claude_waiting(content: &str) -> bool {
     false
 }
 
-/// Whether a lowercased line is the accept option of Claude Code's folder-trust prompt.
+/// Whether lowercased content shows Claude Code's folder-trust menu.
 ///
-/// The prompt's menu has no numbers and defaults to `❯ No, exit`, so neither `❯ 1.` nor
-/// the shared `esc to cancel` footer (an idle marker for Claude's overlays) identifies it.
-/// The option must be the whole line, so a response quoting it in prose isn't Waiting.
-fn is_claude_trust_option(line: &str) -> bool {
-    let option = line.trim();
-    option.strip_prefix('❯').unwrap_or(option).trim() == "yes, i trust this folder"
+/// The menu has no numbers and defaults to `❯ No, exit`, so neither `❯ 1.` nor the
+/// shared `esc to cancel` footer (an idle marker for Claude's overlays) identifies it.
+/// Both options must be whole lines, so neither a response quoting them nor one typed at
+/// the input prompt reads as Waiting.
+fn looks_like_claude_trust_prompt(content: &str) -> bool {
+    let has_option = |label: &str| {
+        content.lines().any(|line| {
+            let line = line.trim();
+            line.strip_prefix('❯').unwrap_or(line).trim() == label
+        })
+    };
+    has_option("no, exit") && has_option("yes, i trust this folder")
 }
 
 /// Codex-specific state detection.
@@ -716,7 +718,7 @@ fn detect_codex_state(_content: &str, tail: &str) -> AgentState {
     // IMPORTANT: Only check waiting patterns in the **tail** to avoid stale
     // scrollback false positives (e.g. old trust prompts, update dialogs
     // that remain in the buffer after being dismissed).
-    if matches_any(tail, CODEX_PATTERNS.waiting) {
+    if matches_any(tail, CODEX_PATTERNS.waiting) || looks_like_codex_trust_prompt(tail) {
         return AgentState::Waiting;
     }
     // Fallback for newer Codex prompt/footer renders where `? for shortcuts`
@@ -963,7 +965,7 @@ fn is_non_menu_codex_prompt_line(line: &str) -> bool {
     let Some(after_prompt) = codex_prompt_payload(line) else {
         return false;
     };
-    !is_menu_codex_prompt_payload(after_prompt)
+    codex_menu_item_label(after_prompt).is_none()
 }
 
 fn is_bare_non_menu_codex_prompt_line(line: &str) -> bool {
@@ -979,11 +981,27 @@ fn codex_prompt_payload(line: &str) -> Option<&str> {
     Some(after_prompt.trim())
 }
 
-fn is_menu_codex_prompt_payload(after_prompt: &str) -> bool {
-    let Some((prefix, suffix)) = after_prompt.split_once('.') else {
-        return false;
-    };
-    !prefix.is_empty() && prefix.chars().all(|c| c.is_ascii_digit()) && suffix.starts_with(' ')
+/// The label of a numbered Codex menu item such as `2. No, quit`, without its number.
+fn codex_menu_item_label(item: &str) -> Option<&str> {
+    let (prefix, suffix) = item.split_once('.')?;
+    let label = suffix.strip_prefix(' ')?;
+    (!prefix.is_empty() && prefix.chars().all(|c| c.is_ascii_digit())).then(|| label.trim())
+}
+
+/// Whether a lowercased tail shows Codex's folder-trust menu, whichever item is selected.
+///
+/// Only the selected item carries `› `, so `› 1.` alone misses the menu once the cursor
+/// moves. Requiring the item to be one of at least two keeps text typed at the input
+/// prompt from reading as Waiting.
+fn looks_like_codex_trust_prompt(tail: &str) -> bool {
+    let labels: Vec<&str> = tail
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            codex_menu_item_label(line.strip_prefix('›').unwrap_or(line).trim())
+        })
+        .collect();
+    labels.len() >= 2 && labels.contains(&"trust and continue")
 }
 
 /// Step 3 of the Codex idle fallback chain.
@@ -1487,6 +1505,15 @@ mod tests {
     }
 
     #[test]
+    fn claude_trust_option_typed_at_the_prompt_is_not_waiting() {
+        let content = "❯ Yes, I trust this folder\n⏵⏵ auto mode on (shift+tab to cycle)";
+        assert_eq!(
+            detect_state(content, AgentKind::ClaudeCode),
+            AgentState::Idle
+        );
+    }
+
+    #[test]
     fn claude_proceed_phrase_without_dialog_context_is_not_waiting() {
         let content = "I ask users: do you want to proceed? in docs\n? for shortcuts";
         assert_eq!(
@@ -1708,6 +1735,22 @@ mod tests {
                 detect_state(&content, AgentKind::Codex),
                 AgentState::Waiting,
                 "{options}"
+            );
+        }
+    }
+
+    #[test]
+    fn codex_trust_option_typed_at_the_prompt_is_not_waiting() {
+        // A typed numbered line looks like a menu item, so it isn't Idle either.
+        for (typed, expected) in [
+            ("› Explain \"Trust and continue\"", AgentState::Idle),
+            ("› 2. Trust and continue", AgentState::Unknown),
+        ] {
+            let content = format!("{typed}\n\n  gpt-5.4 high · ~/project");
+            assert_eq!(
+                detect_state(&content, AgentKind::Codex),
+                expected,
+                "{typed}"
             );
         }
     }

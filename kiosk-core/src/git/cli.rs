@@ -4,6 +4,7 @@ use std::{
     io,
     path::{Path, PathBuf},
     process::{Command, ExitStatus, Output, Stdio},
+    sync::{Condvar, Mutex, MutexGuard, PoisonError},
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -20,6 +21,86 @@ const GITDIR_FILE_PREFIX: &str = "gitdir:";
 // Long enough for normal network latency, but bounded so a credential prompt cannot hang the UI.
 const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 const CHILD_POLL_INTERVAL: Duration = Duration::from_millis(25);
+// How long a stopped fetch gets after SIGTERM, which lets Git remove its lock files, before it
+// is killed.
+const FETCH_STOP_GRACE: Duration = Duration::from_millis(500);
+
+/// The fetches running in this process. Stopping them is for good: it is for when kiosk exits,
+/// so that no fetch outlives it.
+struct Fetches {
+    state: Mutex<FetchesState>,
+    ended: Condvar,
+}
+
+struct FetchesState {
+    running: usize,
+    stopping: bool,
+}
+
+static FETCHES: Fetches = Fetches::new();
+
+impl Fetches {
+    const fn new() -> Self {
+        Self {
+            state: Mutex::new(FetchesState {
+                running: 0,
+                stopping: false,
+            }),
+            ended: Condvar::new(),
+        }
+    }
+
+    /// Counts a fetch as running until the returned guard is dropped, unless fetches are
+    /// stopping.
+    fn start(&self) -> Result<RunningFetch<'_>> {
+        let mut state = self.lock();
+        if state.stopping {
+            bail!("git fetch not started, as kiosk is exiting");
+        }
+        state.running += 1;
+        Ok(RunningFetch(self))
+    }
+
+    fn stopping(&self) -> bool {
+        self.lock().stopping
+    }
+
+    /// Stops every running fetch, and any started later, waiting up to `timeout` for them to
+    /// end.
+    fn stop(&self, timeout: Duration) {
+        let mut state = self.lock();
+        state.stopping = true;
+        let _ = self
+            .ended
+            .wait_timeout_while(state, timeout, |state| state.running > 0);
+    }
+
+    fn lock(&self) -> MutexGuard<'_, FetchesState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+struct RunningFetch<'a>(&'a Fetches);
+
+impl Drop for RunningFetch<'_> {
+    fn drop(&mut self) {
+        self.0.lock().running -= 1;
+        self.0.ended.notify_all();
+    }
+}
+
+/// Stops this process's fetches when dropped, waiting briefly for them to end, so hold one for
+/// as long as a picker runs. A fetch still running when kiosk exits keeps the terminal kiosk ran
+/// in, such as a herdr popup or a Herdr app dialog, from ending until the fetch finishes or is
+/// killed.
+#[must_use]
+pub struct StopFetchesOnDrop;
+
+impl Drop for StopFetchesOnDrop {
+    fn drop(&mut self) {
+        FETCHES.stop(FETCH_STOP_GRACE + CHILD_POLL_INTERVAL * 2);
+    }
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct CliGitProvider;
@@ -94,8 +175,9 @@ impl GitProvider for CliGitProvider {
     }
 
     fn fetch_remote(&self, repo_path: &Path, remote: &str) -> Result<()> {
-        let output = run_fetch_with_timeout(fetch_command(repo_path, remote), FETCH_TIMEOUT)
-            .with_context(|| format!("failed to run git in {}", repo_path.display()))?;
+        let output =
+            run_fetch_with_timeout(fetch_command(repo_path, remote), FETCH_TIMEOUT, &FETCHES)
+                .with_context(|| format!("failed to run git in {}", repo_path.display()))?;
         if !output.status.success() {
             bail!(
                 "git fetch {remote} failed in {}: {}",
@@ -504,7 +586,12 @@ struct FetchOutput {
     stderr: Vec<u8>,
 }
 
-fn run_fetch_with_timeout(mut command: Command, timeout: Duration) -> Result<FetchOutput> {
+fn run_fetch_with_timeout(
+    mut command: Command,
+    timeout: Duration,
+    fetches: &Fetches,
+) -> Result<FetchOutput> {
+    let _running = fetches.start()?;
     let (stderr_path, stderr_file) = temporary_stderr_file()?;
     command
         .stdout(Stdio::null())
@@ -528,6 +615,11 @@ fn run_fetch_with_timeout(mut command: Command, timeout: Duration) -> Result<Fet
                 let _ = fs::remove_file(&stderr_path);
                 return Err(error.into());
             }
+        }
+        if fetches.stopping() {
+            stop_fetch_child(&mut child);
+            let _ = fs::remove_file(&stderr_path);
+            bail!("git fetch stopped, as kiosk is exiting");
         }
         if started.elapsed() >= timeout {
             terminate_fetch_child(&mut child);
@@ -590,6 +682,30 @@ fn terminate_fetch_child(child: &mut std::process::Child) {
 #[cfg(not(unix))]
 fn terminate_fetch_child(child: &mut std::process::Child) {
     let _ = child.kill();
+}
+
+/// Ends a fetch, giving Git the chance to remove its lock files first where it can.
+#[cfg(unix)]
+fn stop_fetch_child(child: &mut std::process::Child) {
+    if let Ok(process_group) = i32::try_from(child.id()) {
+        // SAFETY: the negative PID targets only the process group created for this fetch child.
+        unsafe { libc::kill(-process_group, libc::SIGTERM) };
+        let asked = Instant::now();
+        while asked.elapsed() < FETCH_STOP_GRACE {
+            if matches!(child.try_wait(), Ok(Some(_)) | Err(_)) {
+                return;
+            }
+            thread::sleep(CHILD_POLL_INTERVAL);
+        }
+    }
+    terminate_fetch_child(child);
+    let _ = child.wait();
+}
+
+#[cfg(not(unix))]
+fn stop_fetch_child(child: &mut std::process::Child) {
+    terminate_fetch_child(child);
+    let _ = child.wait();
 }
 
 fn tracking_branch_already_exists(stderr: &str, branch: &str) -> bool {
@@ -664,6 +780,7 @@ mod tests {
     use std::{
         cell::{Cell, RefCell},
         fs,
+        sync::Arc,
     };
 
     #[cfg(unix)]
@@ -1071,23 +1188,113 @@ mod tests {
         assert_eq!(prompt, Some(std::ffi::OsStr::new("0")));
     }
 
+    /// A `git` that runs `script` with the path of a marker file as `$1`.
     #[cfg(unix)]
-    #[test]
-    fn fetch_timeout_kills_a_sleeping_git_process() {
-        let temp = TempDir::new().unwrap();
+    fn fake_git(temp: &TempDir, script: &str) -> (Command, PathBuf) {
         let fake_git = temp.path().join("git");
-        let completion_marker = temp.path().join("completed");
-        fs::write(&fake_git, "#!/bin/sh\nsleep 5\nprintf completed > \"$1\"\n").unwrap();
+        let marker = temp.path().join("marker");
+        fs::write(&fake_git, format!("#!/bin/sh\n{script}\n")).unwrap();
         let mut permissions = fs::metadata(&fake_git).unwrap().permissions();
         permissions.set_mode(0o700);
         fs::set_permissions(&fake_git, permissions).unwrap();
         let mut command = Command::new(&fake_git);
-        command.arg(&completion_marker);
+        command.arg(&marker);
+        (command, marker)
+    }
 
-        let error = run_fetch_with_timeout(command, Duration::from_millis(75)).unwrap_err();
+    #[cfg(unix)]
+    #[test]
+    fn fetch_timeout_kills_a_sleeping_git_process() {
+        let temp = TempDir::new().unwrap();
+        let (command, completion_marker) = fake_git(&temp, "sleep 5\nprintf completed > \"$1\"");
+
+        let error = run_fetch_with_timeout(command, Duration::from_millis(75), &Fetches::new())
+            .unwrap_err();
 
         assert!(error.to_string().contains("git fetch timed out"));
         assert!(!completion_marker.exists());
+    }
+
+    /// Runs a fetch of `command` in the background, waits until its script has created
+    /// `ready` (once its traps are set: a new script can be slow to start), stops fetches and
+    /// returns the fetch's error and how long stopping took.
+    #[cfg(unix)]
+    fn stop_running_fetch(command: Command, ready: &Path) -> (anyhow::Error, Duration) {
+        let fetches = Arc::new(Fetches::new());
+        let fetch = {
+            let fetches = Arc::clone(&fetches);
+            thread::spawn(move || run_fetch_with_timeout(command, FETCH_TIMEOUT, &fetches))
+        };
+        let started = Instant::now();
+        while !ready.exists() {
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "the fake git never got ready"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+        let stopping = Instant::now();
+        fetches.stop(FETCH_STOP_GRACE * 2);
+        let took = stopping.elapsed();
+        (fetch.join().unwrap().unwrap_err(), took)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stopping_fetches_asks_git_to_end_so_it_can_remove_its_lock_files() {
+        let temp = TempDir::new().unwrap();
+        let ready = temp.path().join("ready");
+        let (command, marker) = fake_git(
+            &temp,
+            &format!(
+                "trap 'printf terminated > \"$1\"; exit 143' TERM\n: > {}\nsleep 5 &\nwait",
+                ready.display()
+            ),
+        );
+
+        let (error, took) = stop_running_fetch(command, &ready);
+
+        assert!(error.to_string().contains("kiosk is exiting"), "{error}");
+        assert_eq!(fs::read_to_string(marker).unwrap(), "terminated");
+        assert!(took < FETCH_STOP_GRACE, "stopping took {took:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_fetch_that_ignores_being_asked_to_end_is_killed() {
+        let temp = TempDir::new().unwrap();
+        let ready = temp.path().join("ready");
+        let (command, marker) = fake_git(
+            &temp,
+            &format!(
+                "trap '' TERM\n: > {}\nsleep 5\nprintf completed > \"$1\"",
+                ready.display()
+            ),
+        );
+
+        let (error, took) = stop_running_fetch(command, &ready);
+
+        assert!(error.to_string().contains("kiosk is exiting"), "{error}");
+        assert!(!marker.exists());
+        assert!(
+            took >= FETCH_STOP_GRACE && took < FETCH_STOP_GRACE * 2,
+            "stopping took {took:?}"
+        );
+    }
+
+    #[test]
+    fn no_fetch_starts_once_fetches_are_stopping() {
+        let fetches = Fetches::new();
+        fetches.stop(Duration::ZERO);
+        let temp = TempDir::new().unwrap();
+        let marker = temp.path().join("started");
+        let mut command = Command::new("touch");
+        command.arg(&marker);
+
+        let error = run_fetch_with_timeout(command, FETCH_TIMEOUT, &fetches).unwrap_err();
+
+        assert!(error.to_string().contains("kiosk is exiting"), "{error}");
+        assert!(!marker.exists());
     }
 
     #[test]

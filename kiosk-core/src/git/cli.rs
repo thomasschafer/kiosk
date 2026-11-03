@@ -56,15 +56,16 @@ impl Fetches {
         }
     }
 
-    /// Counts a fetch as running until the returned guard is dropped, unless fetches are
-    /// stopping.
-    fn start(&self) -> Result<RunningFetch<'_>> {
+    /// Spawns a fetch and counts it as running until the returned guard is dropped. It spawns
+    /// under the lock that `stop` takes, so that no fetch starts once stopping has begun.
+    fn spawn(&self, command: &mut Command) -> Result<(RunningFetch<'_>, std::process::Child)> {
         let mut state = self.lock();
         if state.phase == FetchesPhase::Stopping {
             bail!("git fetch not started, as kiosk is exiting");
         }
+        let child = command.spawn()?;
         state.running += 1;
-        Ok(RunningFetch(self))
+        Ok((RunningFetch(self), child))
     }
 
     fn stopping(&self) -> bool {
@@ -597,17 +598,16 @@ fn run_fetch_with_timeout(
     timeout: Duration,
     fetches: &Fetches,
 ) -> Result<FetchOutput> {
-    let _running = fetches.start()?;
     let (stderr_path, stderr_file) = temporary_stderr_file()?;
     command
         .stdout(Stdio::null())
         .stderr(Stdio::from(stderr_file));
     configure_fetch_process(&mut command);
-    let mut child = match command.spawn() {
-        Ok(child) => child,
+    let (_running, mut child) = match fetches.spawn(&mut command) {
+        Ok(spawned) => spawned,
         Err(error) => {
             let _ = fs::remove_file(&stderr_path);
-            return Err(error.into());
+            return Err(error);
         }
     };
     let started = Instant::now();
@@ -1231,11 +1231,13 @@ mod tests {
         assert!(!completion_marker.exists());
     }
 
-    /// Runs a fetch of `command` in the background, waits until its script has created
-    /// `ready` (once its traps are set: a new script can be slow to start), stops fetches and
+    /// Runs a fetch of `command` in the background, waits until its script has created the file
+    /// `$READY` (once its traps are set: a new script can be slow to start), stops fetches and
     /// returns the fetch's error and how long stopping took.
     #[cfg(unix)]
-    fn stop_running_fetch(command: Command, ready: &Path) -> (anyhow::Error, Duration) {
+    fn stop_running_fetch(mut command: Command, temp: &TempDir) -> (anyhow::Error, Duration) {
+        let ready = temp.path().join("ready");
+        command.env("READY", &ready);
         let fetches = Arc::new(Fetches::new());
         let fetch = {
             let fetches = Arc::clone(&fetches);
@@ -1259,16 +1261,12 @@ mod tests {
     #[test]
     fn stopping_fetches_asks_git_to_end_so_it_can_remove_its_lock_files() {
         let temp = TempDir::new().unwrap();
-        let ready = temp.path().join("ready");
         let (command, marker) = fake_git(
             &temp,
-            &format!(
-                "trap 'printf terminated > \"$1\"; exit 143' TERM\n: > {}\nsleep 5 &\nwait",
-                ready.display()
-            ),
+            "trap 'printf terminated > \"$1\"; exit 143' TERM\n: > \"$READY\"\nsleep 5 &\nwait",
         );
 
-        let (error, took) = stop_running_fetch(command, &ready);
+        let (error, took) = stop_running_fetch(command, &temp);
 
         assert!(error.to_string().contains("kiosk is exiting"), "{error}");
         assert_eq!(fs::read_to_string(marker).unwrap(), "terminated");
@@ -1279,16 +1277,12 @@ mod tests {
     #[test]
     fn a_fetch_that_ignores_being_asked_to_end_is_killed() {
         let temp = TempDir::new().unwrap();
-        let ready = temp.path().join("ready");
         let (command, marker) = fake_git(
             &temp,
-            &format!(
-                "trap '' TERM\n: > {}\nsleep 5\nprintf completed > \"$1\"",
-                ready.display()
-            ),
+            "trap '' TERM\n: > \"$READY\"\nsleep 5\nprintf completed > \"$1\"",
         );
 
-        let (error, took) = stop_running_fetch(command, &ready);
+        let (error, took) = stop_running_fetch(command, &temp);
 
         assert!(error.to_string().contains("kiosk is exiting"), "{error}");
         assert!(!marker.exists());
@@ -1302,18 +1296,14 @@ mod tests {
     #[test]
     fn a_helper_left_behind_that_ignores_being_asked_to_end_is_killed() {
         let temp = TempDir::new().unwrap();
-        let ready = temp.path().join("ready");
         let helper_pid = temp.path().join("helper");
-        let (command, _) = fake_git(
+        let (mut command, _) = fake_git(
             &temp,
-            &format!(
-                "sh -c 'trap \"\" TERM; echo $$ > {}; : > {}; sleep 5' &\nwait",
-                helper_pid.display(),
-                ready.display()
-            ),
+            "sh -c 'trap \"\" TERM; echo $$ > \"$HELPER_PID\"; : > \"$READY\"; sleep 5' &\nwait",
         );
+        command.env("HELPER_PID", &helper_pid);
 
-        let (error, took) = stop_running_fetch(command, &ready);
+        let (error, took) = stop_running_fetch(command, &temp);
 
         assert!(error.to_string().contains("kiosk is exiting"), "{error}");
         assert!(took >= FETCH_STOP_GRACE, "stopping took {took:?}");

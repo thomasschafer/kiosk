@@ -34,7 +34,13 @@ struct Fetches {
 
 struct FetchesState {
     running: usize,
-    stopping: bool,
+    phase: FetchesPhase,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FetchesPhase {
+    Accepting,
+    Stopping,
 }
 
 static FETCHES: Fetches = Fetches::new();
@@ -44,7 +50,7 @@ impl Fetches {
         Self {
             state: Mutex::new(FetchesState {
                 running: 0,
-                stopping: false,
+                phase: FetchesPhase::Accepting,
             }),
             ended: Condvar::new(),
         }
@@ -54,7 +60,7 @@ impl Fetches {
     /// stopping.
     fn start(&self) -> Result<RunningFetch<'_>> {
         let mut state = self.lock();
-        if state.stopping {
+        if state.phase == FetchesPhase::Stopping {
             bail!("git fetch not started, as kiosk is exiting");
         }
         state.running += 1;
@@ -62,14 +68,14 @@ impl Fetches {
     }
 
     fn stopping(&self) -> bool {
-        self.lock().stopping
+        self.lock().phase == FetchesPhase::Stopping
     }
 
     /// Stops every running fetch, and any started later, waiting up to `timeout` for them to
     /// end.
     fn stop(&self, timeout: Duration) {
         let mut state = self.lock();
-        state.stopping = true;
+        state.phase = FetchesPhase::Stopping;
         let _ = self
             .ended
             .wait_timeout_while(state, timeout, |state| state.running > 0);
@@ -684,7 +690,8 @@ fn terminate_fetch_child(child: &mut std::process::Child) {
     let _ = child.kill();
 }
 
-/// Ends a fetch, giving Git the chance to remove its lock files first where it can.
+/// Ends a fetch and everything it started, such as credential and transport helpers, giving
+/// them the chance to remove their lock files first.
 #[cfg(unix)]
 fn stop_fetch_child(child: &mut std::process::Child) {
     if let Ok(process_group) = i32::try_from(child.id()) {
@@ -692,7 +699,10 @@ fn stop_fetch_child(child: &mut std::process::Child) {
         unsafe { libc::kill(-process_group, libc::SIGTERM) };
         let asked = Instant::now();
         while asked.elapsed() < FETCH_STOP_GRACE {
-            if matches!(child.try_wait(), Ok(Some(_)) | Err(_)) {
+            // Reaping Git as soon as it exits leaves only what it started in the group.
+            let _ = child.try_wait();
+            if !process_group_exists(process_group) {
+                let _ = child.wait();
                 return;
             }
             thread::sleep(CHILD_POLL_INTERVAL);
@@ -700,6 +710,13 @@ fn stop_fetch_child(child: &mut std::process::Child) {
     }
     terminate_fetch_child(child);
     let _ = child.wait();
+}
+
+#[cfg(unix)]
+fn process_group_exists(process_group: i32) -> bool {
+    // SAFETY: signal 0 only checks whether any process in the group exists.
+    let signalled = unsafe { libc::kill(-process_group, 0) } == 0;
+    signalled || io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
 }
 
 #[cfg(not(unix))]
@@ -1279,6 +1296,42 @@ mod tests {
             took >= FETCH_STOP_GRACE && took < FETCH_STOP_GRACE * 2,
             "stopping took {took:?}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_helper_left_behind_that_ignores_being_asked_to_end_is_killed() {
+        let temp = TempDir::new().unwrap();
+        let ready = temp.path().join("ready");
+        let helper_pid = temp.path().join("helper");
+        let (command, _) = fake_git(
+            &temp,
+            &format!(
+                "sh -c 'trap \"\" TERM; echo $$ > {}; : > {}; sleep 5' &\nwait",
+                helper_pid.display(),
+                ready.display()
+            ),
+        );
+
+        let (error, took) = stop_running_fetch(command, &ready);
+
+        assert!(error.to_string().contains("kiosk is exiting"), "{error}");
+        assert!(took >= FETCH_STOP_GRACE, "stopping took {took:?}");
+        let helper: i32 = fs::read_to_string(helper_pid)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let ended = Instant::now();
+        // SAFETY: signal 0 only checks whether the helper still exists (or is a zombie, briefly,
+        // until whatever adopted it reaps it).
+        while unsafe { libc::kill(helper, 0) } == 0 {
+            assert!(
+                ended.elapsed() < Duration::from_secs(2),
+                "the helper outlived the fetch"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
     }
 
     #[test]

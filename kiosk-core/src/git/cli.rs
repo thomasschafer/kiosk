@@ -780,11 +780,10 @@ mod tests {
     use std::{
         cell::{Cell, RefCell},
         fs,
-        sync::Arc,
     };
 
     #[cfg(unix)]
-    use std::os::unix::fs::PermissionsExt;
+    use std::{os::unix::fs::PermissionsExt, sync::Arc};
 
     use tempfile::TempDir;
 

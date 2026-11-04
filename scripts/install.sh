@@ -157,7 +157,9 @@ else
     verify "$tmp/$binary"
     verify "$tmp/$mod"
     tar -xzf "$tmp/$mod" -C "$tmp"
-    [ -f "$staged/main.js" ] && [ -f "$staged/mod.json" ] || fail "$mod does not hold the $MOD_NAME mod"
+    if [ ! -f "$staged/main.js" ] || [ ! -f "$staged/mod.json" ]; then
+        fail "$mod does not hold the $MOD_NAME mod"
+    fi
     mkdir -p "$staged/bin"
     install -m 755 "$tmp/$binary" "$staged/bin/herdr-app-kiosk"
 fi

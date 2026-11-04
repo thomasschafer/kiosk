@@ -15,7 +15,9 @@ esac
 
 server=
 cleanup() {
-    [[ -n $server ]] && kill "$server" 2>/dev/null || true
+    if [[ -n $server ]]; then
+        kill "$server" 2>/dev/null || true
+    fi
     rm -rf -- "$TEST_ROOT"
 }
 trap cleanup EXIT

@@ -34,7 +34,7 @@ mod tests {
 
     #[test]
     fn arguments_are_checked_with_their_name_in_the_message() {
-        assert!(absolute("folder", Path::new("/repo")).is_ok());
+        assert!(absolute("folder", &std::env::temp_dir()).is_ok());
         assert_eq!(
             absolute("folder", Path::new("repo")).unwrap_err(),
             "folder must be absolute: repo"

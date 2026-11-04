@@ -160,7 +160,7 @@ fn depth_is_asked_for_the_entered_path_without_completions() {
             after: String::new(),
         }
     );
-    assert!(completions.is_empty());
+    assert_eq!(completions, Vec::<String>::new());
     assert_eq!(
         hints,
         [

@@ -153,7 +153,7 @@ fn repo_rows_mark_folders_labels_open_state_and_which_have_branches() {
         texts(&rows[1]),
         expected(&[("folder", Tone::Normal), (FOLDER_SUFFIX, Tone::Muted)])
     );
-    assert!(rows[1].labels.is_empty());
+    assert_eq!(rows[1].labels, Vec::<Segment>::new());
     assert!(!rows[1].open);
     assert!(!rows[1].actions.branches);
     assert!(!rows[0].actions.delete && !rows[1].actions.delete);
@@ -730,7 +730,7 @@ fn help_says_when_nothing_matches() {
     let view = picker(&mut state, &KeysConfig::default(), VIEWPORTS);
     let help = help(&view);
     assert_eq!(help.empty, Some(NO_MATCHING_BINDINGS));
-    assert!(help.entries.is_empty());
+    assert_eq!(help.entries, Vec::<HelpEntry>::new());
     assert_eq!(help.selected, None);
     assert_eq!(help.summary, "0 bindings (esc: close)");
 }

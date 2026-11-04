@@ -274,8 +274,6 @@ pub fn log_path(product_name: &str) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Write as _;
-
     use super::*;
 
     fn hello(token: &str) -> String {

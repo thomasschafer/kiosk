@@ -149,7 +149,8 @@ function viewportFor(height, toast) {
   return {
     list: fit(list, ROW, 1, Infinity),
     bases: fit(card - BASES_CHROME, ROW, 3, 10),
-    help: fit(card - HELP_CHROME, HELP_ROW, 4, 20),
+    // Help hangs below the title row rather than in the middle.
+    help: fit(card - HEADER - GAP - HELP_CHROME, HELP_ROW, 4, 20),
     scan_warnings: fit(card - WARNINGS_CHROME, WARNING_ROW, 2, 8),
   };
 }
@@ -267,9 +268,12 @@ function card(t, width) {
     .shadow_lg().text_size(13);
 }
 
-// What covers the picker behind a dialog: `dismiss` runs on a click beside the dialog.
-function backdrop(t, child, dismiss) {
-  return div().id("kiosk-backdrop").absolute().inset(0).bg(`${t.canvas}d9`).flex().items_center().justify_center()
+// What covers the picker behind a dialog: `dismiss` runs on a click beside the dialog, and
+// `top` hangs it from the top rather than centring it.
+function backdrop(t, child, dismiss, top = false) {
+  return div().id("kiosk-backdrop").absolute().inset(0).bg(`${t.canvas}d9`).flex().justify_center()
+    .when(top, (el) => el.items_start().pt(EDGE + HEADER + GAP))
+    .when(!top, (el) => el.items_center())
     .on_click((_e, cx) => { cx.stop_propagation(); dismiss(); })
     .child(child);
 }
@@ -294,6 +298,8 @@ function helpRows(h) {
       rows.push({ ...entry, keys: [entry.key], positions: [entry.position], ids: [entry.id], selected: i === h.selected });
     }
   });
+  // A blank line only separates sections; at the end, the next section is out of view.
+  while (rows.length && rows[rows.length - 1].kind === "blank") rows.pop();
   return rows;
 }
 
@@ -561,7 +567,7 @@ export default class Kiosk extends View {
     let screen = div().size_full().relative().child(content);
     const dismiss = () => this.send({ t: "dismiss" });
     if (v.dialog) screen = screen.child(backdrop(t, this.dialog(t, v.dialog, v.hints), dismiss));
-    if (v.overlay?.kind === "help") screen = screen.child(backdrop(t, this.help(t, v.overlay), dismiss));
+    if (v.overlay?.kind === "help") screen = screen.child(backdrop(t, this.help(t, v.overlay), dismiss, true));
     if (v.overlay?.kind === "scan_warnings") screen = screen.child(backdrop(t, this.scanWarnings(t, v.overlay), dismiss));
     return screen;
   }
@@ -684,15 +690,18 @@ export default class Kiosk extends View {
   }
 
   help(t, h) {
+    // As tall as its rows, which are fewer than the picker's entries where keys group; it
+    // hangs from the top, so a search that filters them only moves its bottom edge.
+    const rows = helpRows(h);
     return card(t, 600)
       .child(h_flex().items_center().child(div().flex_1().child(heading(t, "Keyboard shortcuts"))).child(div().text_size(11.5).text_color(t.dim).child(h.summary.replace(" (esc: close)", ""))))
       .child(field(t, h.query, h.placeholder))
       .when(!!h.notice, (el) => el.child(div().text_size(11.5).text_color(t.muted).child(h.notice)))
       .child(
-        v_flex().id("kiosk-help").h(this.rows("help") * HELP_ROW).flex_none().overflow_hidden()
+        v_flex().id("kiosk-help").h(Math.max(rows.length, 1) * HELP_ROW).flex_none().overflow_hidden()
           .on_scroll_wheel((e, cx) => this.scroll(e, cx))
           .when(!!h.empty, (el) => el.child(div().p(12).text_color(t.dim).child(h.empty)))
-          .children(helpRows(h).map((entry) => {
+          .children(rows.map((entry) => {
             const line = h_flex().h(HELP_ROW).flex_none().items_center().px(ROW_INSET);
             if (entry.kind === "section") return line.text_size(10.5).font_semibold().text_color(t.dim).child(entry.name.toUpperCase());
             if (entry.kind === "blank") return line;
@@ -710,7 +719,7 @@ export default class Kiosk extends View {
     return card(t, 600)
       .child(h_flex().gap(8).items_center().child(div().size(7).rounded(4).bg(t.blocked)).child(heading(t, s.title)))
       .child(
-        v_flex().id("kiosk-warnings").h(this.rows("scan_warnings") * WARNING_ROW).flex_none().overflow_hidden()
+        v_flex().id("kiosk-warnings").h(Math.min(this.rows("scan_warnings"), Math.max(s.warnings.length, 1)) * WARNING_ROW).flex_none().overflow_hidden()
           .on_scroll_wheel((e, cx) => this.scroll(e, cx))
           .children(s.warnings.map((w) =>
             v_flex().h(WARNING_ROW).flex_none().justify_center().gap(2)

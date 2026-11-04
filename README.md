@@ -63,7 +63,7 @@ ln -s "$PWD/mods/kiosk" ~/.config/herdr-app/mods/kiosk
 Bind a key to open kiosk in `~/.config/herdr-app/keys.json`, for example:
 
 ```json
-{ "global": { "cmd+k": "mod.open:kiosk" } }
+{ "global": { "cmd-k": "mod.open:kiosk" } }
 ```
 
 ## Usage
@@ -71,7 +71,7 @@ Bind a key to open kiosk in `~/.config/herdr-app/keys.json`, for example:
 Type to search, and press `enter` or click to open. `tab` lists its branches; typing a name no branch has and pressing `enter`
 starts a new branch, from a base you pick. `ctrl+x`, or a worktree's Remove button, removes
 its checkout after asking (the branch stays). `esc` goes back and closes
-from the repository list. `ctrl+h` lists every key: they can be modified via the
+from the repository list, and `ctrl+u` clears the search. `ctrl+h` lists every key: they can be modified via the
 [`[keys]`](#keys) config.
 
 The first time kiosk opens, a setup wizard asks which folders to search and writes the
@@ -79,7 +79,7 @@ config.
 
 If you used kiosk in the app through herdr-kiosk before, its config moves here on its own:
 kiosk copies `~/.config/herdr-kiosk/config.toml` to `~/.config/herdr-app-kiosk/config.toml`
-the first time it opens, and says so.
+the first time it opens, and says so, leaving out `[theme]` as kiosk follows the app's theme.
 
 ## Configuration
 
@@ -126,29 +126,6 @@ entries can override this value with their own `include_non_git` setting.
 
 Default: `false`
 
-### `[theme]`
-
-Customize terminal-palette colors used by the picker. Light-terminal users
-can set `muted`, `border`, and other colors explicitly.
-
-Colors use the terminal's ANSI palette and can be `black`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `white`, `gray`, `dark_gray`, `reset`.
-
-Defaults:
-
-```toml
-[theme]
-accent = "magenta"
-secondary = "cyan"
-tertiary = "green"
-error = "red"
-warning = "yellow"
-muted = "dark_gray"
-border = "dark_gray"
-hint = "blue"
-highlight_fg = "black"
-open = "green"
-```
-
 ### `[on_open]`
 
 Configure command panes created after opening a new workspace.
@@ -176,7 +153,7 @@ Each entry is an inline table with:
 
 - `command` — Shell command Herdr runs in the opened checkout. The command must not be empty.
 - `direction` — Split direction: `right` or `down`.
-- `ratio` — Fraction of the resulting split occupied by the new command pane. The value must be greater than 0 and less than 1, and defaults to 0.5 when omitted. The Herdr app always splits in half, so it refuses a pane with a ratio.
+- `ratio` — Fraction of the resulting split occupied by the new command pane. The value must be greater than 0 and less than 1, and defaults to 0.5 when omitted. The Herdr app always splits in half, so here it is ignored, which kiosk says when it opens.
 
 ### `[keys]`
 
@@ -191,15 +168,32 @@ Defaults:
 ```toml
 [keys.general]
 "ctrl+c" = "quit"
-"ctrl+e" = "scan_warnings"
 "ctrl+h" = "help"
-"ctrl+x" = "dismiss_toast"
+"ctrl+s" = "scan_warnings"
+"f1" = "help"
 
 [keys.text_edit]
+"alt+b" = "cursor_word_left"
 "alt+backspace" = "delete_word"
+"alt+d" = "delete_word_forward"
+"alt+delete" = "delete_word_forward"
+"alt+f" = "cursor_word_right"
+"alt+left" = "cursor_word_left"
+"alt+right" = "cursor_word_right"
 "backspace" = "backspace"
+"ctrl+a" = "cursor_start"
+"ctrl+b" = "cursor_left"
+"ctrl+d" = "delete_forward"
+"ctrl+e" = "cursor_end"
+"ctrl+f" = "cursor_right"
+"ctrl+k" = "delete_to_end"
+"ctrl+left" = "cursor_word_left"
+"ctrl+right" = "cursor_word_right"
+"ctrl+u" = "clear"
 "ctrl+w" = "delete_word"
-"esc" = "clear"
+"delete" = "delete_forward"
+"end" = "cursor_end"
+"home" = "cursor_start"
 "left" = "cursor_left"
 "right" = "cursor_right"
 
@@ -215,7 +209,7 @@ Defaults:
 
 [keys.repo_select]
 "enter" = "open"
-"q" = "quit"
+"esc" = "quit"
 "tab" = "branches_view"
 
 [keys.branch_select]

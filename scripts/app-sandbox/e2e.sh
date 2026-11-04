@@ -81,7 +81,7 @@ sb key Escape
 wait_view '.overlay == null'
 [[ " $(open_overlays) " == *" kiosk "* ]] || fail "Esc closed the popup"
 
-check "tab browses a repository's branches, the back button returns"
+check "tab browses a repository's branches, the back button returns, ctrl+u clears the search"
 sb type api
 wait_view "$rows == [\"api\"]"
 sb key Tab
@@ -91,7 +91,7 @@ wait_view '[.main.rows[] | select(.name.text == "main") | .actions.delete] == [f
 sb shot "$shots/branches.png" >/dev/null
 sb click 190 110
 wait_view '.main.kind == "repos" and .main.query.before == "api"'
-sb key Escape
+sb key ctrl+u
 wait_view '.main.query.before == ""'
 
 check "a new branch gets a checkout and a space"
@@ -133,10 +133,10 @@ wait_view '.dialog == null'
 for _ in $(seq 50); do [[ -d $HOME/.herdr/worktrees/api/feat-e2e ]] || break; sleep 0.1; done
 [[ ! -d $HOME/.herdr/worktrees/api/feat-e2e ]] || fail "the checkout is still there"
 
-check "a branch only the remote has opens as a tracking checkout"
-sb key Escape Escape
-wait_view '.main.kind == "repos" and .main.query.before == "api"'
+check "Esc goes straight back with a search typed, and a branch only the remote has opens as a tracking checkout"
 sb key Escape
+wait_view '.main.kind == "repos" and .main.query.before == "api"'
+sb key ctrl+u
 wait_view '.main.query.before == ""'
 sb type web
 wait_view "$rows == [\"web\"]"
@@ -167,9 +167,11 @@ terminals=$(sb ls | jq --arg folder "$HOME/code/cli" '[.spaces[] | select(.folde
 sb shot "$shots/on-open.png" >/dev/null
 printf 'search_dirs = ["~/code"]\n' >"$HOME/.config/herdr-app-kiosk/config.toml"
 
-check "Esc with an empty query quits, and the picker exits with the popup"
+check "Esc quits with a search typed, and the picker exits with the popup"
 open_kiosk
 wait_view '.main.state == "list"'
+sb type qu
+wait_view '.main.query.before == "qu"'
 sb key Escape
 wait_closed
 for _ in $(seq 50); do pgrep -x herdr-app-kiosk >/dev/null || break; sleep 0.1; done

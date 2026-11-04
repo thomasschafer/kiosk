@@ -12,7 +12,8 @@ const EARLIER: Product = Product {
 };
 
 /// Copies the earlier mod's config to where this product reads it, if this product has
-/// none yet. Returns a message for the person when it did; the earlier file is left as it
+/// none yet, leaving out its `[theme]`: the terminal UI's colours, which the app's own theme
+/// replaces. Returns a message for the person when it did; the earlier file is left as it
 /// was.
 pub fn carry_over_earlier_config(
     get_env: impl Fn(&str) -> Option<String>,
@@ -30,12 +31,26 @@ fn copy_if_missing(earlier: &Path, current: &Path) -> io::Result<Option<String>>
     if current.exists() || !earlier.is_file() {
         return Ok(None);
     }
+    let contents = fs::read_to_string(earlier)?;
+    // A config that doesn't parse is copied as it is, for loading it to report the error.
+    let (contents, dropped_theme) = match contents.parse::<toml_edit::DocumentMut>() {
+        Ok(mut document) if document.contains_key("theme") => {
+            document.remove("theme");
+            (document.to_string(), true)
+        }
+        _ => (contents, false),
+    };
     if let Some(parent) = current.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::copy(earlier, current)?;
+    fs::write(current, contents)?;
+    let theme = if dropped_theme {
+        " without its [theme], as kiosk follows the app's theme"
+    } else {
+        ""
+    };
     Ok(Some(format!(
-        "Kiosk now keeps its config in {}; it copied yours from {}.",
+        "Kiosk now keeps its config in {}; it copied yours from {}{theme}.",
         kiosk_core::path::display(current),
         kiosk_core::path::display(earlier)
     )))
@@ -73,6 +88,46 @@ mod tests {
             fs::read_to_string(&current).unwrap(),
             "search_dirs = [\"~/work\"]\n",
             "an existing config is never replaced"
+        );
+    }
+
+    #[test]
+    fn the_terminal_theme_is_left_out_and_the_rest_kept_as_written() {
+        let config = tempfile::tempdir().unwrap();
+        let earlier = config.path().join("herdr-kiosk/config.toml");
+        fs::create_dir_all(earlier.parent().unwrap()).unwrap();
+        fs::write(
+            &earlier,
+            "# Where my code is\nsearch_dirs = [\"~/code\"]\n\n[theme]\naccent = \"cyan\"\n\n[on_open]\npanes = []\n",
+        )
+        .unwrap();
+
+        let message = carry_over_earlier_config(env(config.path()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(config.path().join("herdr-app-kiosk/config.toml")).unwrap(),
+            "# Where my code is\nsearch_dirs = [\"~/code\"]\n\n[on_open]\npanes = []\n"
+        );
+        assert!(message.contains("without its [theme]"), "{message}");
+        assert!(
+            fs::read_to_string(&earlier).unwrap().contains("[theme]"),
+            "the earlier file is left as it was"
+        );
+    }
+
+    #[test]
+    fn an_earlier_config_that_does_not_parse_is_copied_as_it_is() {
+        let config = tempfile::tempdir().unwrap();
+        let earlier = config.path().join("herdr-kiosk/config.toml");
+        fs::create_dir_all(earlier.parent().unwrap()).unwrap();
+        fs::write(&earlier, "search_dirs = [\n").unwrap();
+        carry_over_earlier_config(env(config.path()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(config.path().join("herdr-app-kiosk/config.toml")).unwrap(),
+            "search_dirs = [\n"
         );
     }
 

@@ -7,7 +7,7 @@ use kiosk_docgen::ProductDocs;
 const DOCS: ProductDocs<'static> = ProductDocs {
     sources: &[SOURCE],
     extension: "Config",
-    order: &["search_dirs", "include_non_git", "theme", "on_open", "keys"],
+    order: &["search_dirs", "include_non_git", "on_open", "keys"],
     examples: &[(
         "on_open",
         "[on_open]\npanes = [\n  { command = \"hx\", direction = \"right\" },\n]",
@@ -31,7 +31,7 @@ const DOCS: ProductDocs<'static> = ProductDocs {
             "OnOpenPaneConfig::ratio",
             "Fraction of the resulting split occupied by the new command pane. The value must be \
              greater than 0 and less than 1, and defaults to 0.5 when omitted. The Herdr app \
-             always splits in half, so it refuses a pane with a ratio.",
+             always splits in half, so here it is ignored, which kiosk says when it opens.",
         ),
     ],
 };

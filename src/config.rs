@@ -105,9 +105,9 @@ panes = [{ command = "  ", direction = "right" }]"#,
     }
 
     #[test]
-    fn unknown_keys_in_core_and_on_open_sections_are_both_reported() {
+    fn unknown_keys_and_the_terminal_theme_are_reported_as_ignored() {
         let (_, _, warnings) = parse_config::<Config>(
-            "future = 1\n[theme]\nfuture_theme = 1\n[on_open]\nfuture_on_open = 1\n",
+            "future = 1\n[theme]\naccent = \"cyan\"\n[on_open]\nfuture_on_open = 1\n",
         )
         .unwrap();
         let messages: Vec<_> = warnings
@@ -118,7 +118,7 @@ panes = [{ command = "  ", direction = "right" }]"#,
             messages,
             [
                 "unknown config key ignored: future",
-                "unknown config key ignored: theme.future_theme",
+                "unknown config key ignored: theme",
                 "unknown config key ignored: on_open.future_on_open",
             ]
         );

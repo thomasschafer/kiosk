@@ -728,16 +728,10 @@ fn a_pane_starts_in_the_checkout_wherever_the_split_pane_has_gone() {
 fn a_pane_that_cannot_open_as_asked_is_refused_before_the_app_is_called() {
     let fixture = Fixture::new();
     let space = fixture.app.add_space(&fixture.repo);
-    let mut ratio = split_request(&space.panes[0].pane, &fixture.repo);
-    ratio.ratio = Some(0.6);
     let relative = split_request(&space.panes[0].pane, Path::new("repo"));
     let request = split_request(&space.panes[0].pane, &fixture.repo);
 
-    for (request, command, why) in [
-        (&ratio, "hx", "ratio"),
-        (&relative, "hx", "absolute"),
-        (&request, "", "command"),
-    ] {
+    for (request, command, why) in [(&relative, "hx", "absolute"), (&request, "", "command")] {
         let Err(PaneOpenError::Split(error)) = fixture.backend.pane_open(request, command) else {
             panic!("{why}: expected a refused split");
         };
@@ -881,9 +875,12 @@ fn opening_a_repo_runs_on_open_panes_in_the_new_space() {
 }
 
 #[test]
-fn an_on_open_pane_with_a_ratio_is_refused_with_a_warning() {
+fn an_on_open_pane_with_a_ratio_opens_in_half_with_one_warning_at_start() {
     let mut on_open = editor_on_open();
+    assert_eq!(ignored_ratio_warning(&on_open), None);
     on_open.panes[0].ratio = Some(0.3);
+    let warning = ignored_ratio_warning(&on_open).unwrap();
+    assert!(warning.contains("always splits panes in half"), "{warning}");
     let fixture = Fixture::with_on_open(on_open);
 
     let opened = fixture
@@ -891,9 +888,8 @@ fn an_on_open_pane_with_a_ratio_is_refused_with_a_warning() {
         .open_checkout(&fixture.repo, &fixture.repo)
         .unwrap();
 
-    let warning = opened.warning.unwrap();
-    assert!(warning.contains("always splits panes in half"), "{warning}");
-    assert_eq!(fixture.app.spaces()[0].panes.len(), 1);
+    assert_eq!(opened.warning, None);
+    assert_eq!(fixture.app.spaces()[0].panes.len(), 2);
 }
 
 #[cfg(unix)]

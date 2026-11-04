@@ -53,7 +53,7 @@ it, on the `popover` colour with the app's frame:
 
 - A title row: "Repositories", or a back chevron, "Repositories", "/" and the repository's
   name in its branch list. On the right, the match count (`3 of 40 repos`), with a spinner and
-  "scanning…", "loading…" or "fetching…" while work is under way, then an `Esc` button.
+  "scanning…", "loading…" or "fetching…" while work is under way, then a `Close` button.
 - A 38 px search field with the `accent` border, a search icon and a blinking caret; the
   text and the caret are drawn by the mod.
 - As many 32 px rows as fill the popup above the footer, at the app's zoom. Each has a 15 px
@@ -75,8 +75,10 @@ it, on the `popover` colour with the app's frame:
 
 - Everything typed, pressed or clicked goes to the picker, which answers with what to show;
   the mod draws only that. Keys are kiosk's own (the person's `[keys]` config included), so
-  Esc goes back, clears the search or closes, as it does in kiosk in a terminal, rather than
-  closing the popup outright.
+  Esc goes back from a branch list or dialog rather than closing the popup outright, and
+  quits from the repository list, as it does in kiosk in a terminal. Ctrl+U clears the
+  search, which edits like a shell prompt (Alt+B and Alt+F by word, Ctrl+A and Ctrl+E to
+  either end).
 - Enter or a click opens the row. Tab, or a repository row's Branches button on hover, shows
   its branches. Typing a name no branch has, then Enter, starts a new branch. Ctrl+X, or a
   worktree row's Remove button, removes its worktree after asking. Ctrl+H lists the keys.

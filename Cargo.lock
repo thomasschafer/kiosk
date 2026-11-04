@@ -188,6 +188,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "toml_edit",
 ]
 
 [[package]]
@@ -209,7 +210,7 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 [[package]]
 name = "kiosk-core"
 version = "0.4.0"
-source = "git+https://github.com/thomasschafer/kiosk?rev=151f275f04f9fabf445c3d6459800c9a321f9c07#151f275f04f9fabf445c3d6459800c9a321f9c07"
+source = "git+https://github.com/thomasschafer/kiosk?rev=a317d44052f5eca02b6b4585923b54a4f3c9e0f2#a317d44052f5eca02b6b4585923b54a4f3c9e0f2"
 dependencies = [
  "anyhow",
  "crossterm",
@@ -226,7 +227,7 @@ dependencies = [
 [[package]]
 name = "kiosk-docgen"
 version = "0.4.0"
-source = "git+https://github.com/thomasschafer/kiosk?rev=151f275f04f9fabf445c3d6459800c9a321f9c07#151f275f04f9fabf445c3d6459800c9a321f9c07"
+source = "git+https://github.com/thomasschafer/kiosk?rev=a317d44052f5eca02b6b4585923b54a4f3c9e0f2#a317d44052f5eca02b6b4585923b54a4f3c9e0f2"
 dependencies = [
  "anyhow",
  "kiosk-core",
@@ -237,7 +238,7 @@ dependencies = [
 [[package]]
 name = "kiosk-serve"
 version = "0.4.0"
-source = "git+https://github.com/thomasschafer/kiosk?rev=151f275f04f9fabf445c3d6459800c9a321f9c07#151f275f04f9fabf445c3d6459800c9a321f9c07"
+source = "git+https://github.com/thomasschafer/kiosk?rev=a317d44052f5eca02b6b4585923b54a4f3c9e0f2#a317d44052f5eca02b6b4585923b54a4f3c9e0f2"
 dependencies = [
  "anyhow",
  "crossterm",
@@ -589,6 +590,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "toml_edit"
+version = "0.25.18+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1ec6e78bd70db9420d8d212fa9dc97f116448a1ceff5d00eabb991d407e21396"
+dependencies = [
+ "indexmap",
+ "toml_datetime",
+ "toml_parser",
+ "toml_writer",
+ "winnow",
+]
+
+[[package]]
 name = "toml_parser"
 version = "1.1.5+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -672,6 +686,9 @@ name = "winnow"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81"
+dependencies = [
+ "memchr",
+]
 
 [[package]]
 name = "wit-bindgen"

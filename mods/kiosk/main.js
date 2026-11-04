@@ -194,8 +194,8 @@ function spinner(t, color) {
 function keyLabel(key) {
   const mac = window().platform === "macos";
   const names = mac
-    ? { "ctrl+": "⌃", "alt+": "⌥", "shift+": "⇧", enter: "↩", tab: "⇥", backspace: "⌫", esc: "esc" }
-    : { "ctrl+": "Ctrl+", "alt+": "Alt+", "shift+": "Shift+", enter: "Enter", tab: "Tab", backspace: "Backspace", esc: "Esc" };
+    ? { "ctrl+": "⌃", "alt+": "⌥", "shift+": "⇧", enter: "↩", tab: "⇥", backspace: "⌫", delete: "⌦", esc: "esc" }
+    : { "ctrl+": "Ctrl+", "alt+": "Alt+", "shift+": "Shift+", enter: "Enter", tab: "Tab", backspace: "Backspace", delete: "Delete", esc: "Esc" };
   return key.split("/").map((part) => {
     let rest = part;
     let out = "";
@@ -206,7 +206,9 @@ function keyLabel(key) {
       }
     }
     const arrows = { up: "↑", down: "↓", left: "←", right: "→" };
-    const base = names[rest] ?? arrows[rest.toLowerCase()] ?? (rest.length === 1 ? rest.toUpperCase() : rest);
+    // Other named keys are capitalised as keyboards print them: F1, Home, PageUp.
+    const capitalised = { pageup: "PageUp", pagedown: "PageDown" }[rest] ?? rest.charAt(0).toUpperCase() + rest.slice(1);
+    const base = names[rest] ?? arrows[rest.toLowerCase()] ?? (rest.length === 1 ? rest.toUpperCase() : capitalised);
     return out + base;
   }).join("/");
 }
@@ -216,9 +218,10 @@ function keycap(t, label) {
     .text_size(10.5).text_color(t.muted).child(keyLabel(label));
 }
 
-// The picker's key hints. Leaving is always Esc in the header, so its hints are left out.
+// The picker's key hints. Leaving is always the Close button in the header, so its hints
+// are left out.
 function hints(t, list) {
-  const shown = list.filter((h) => h.label !== "quit" && h.label !== "clear/quit");
+  const shown = list.filter((h) => h.label !== "quit");
   return h_flex().flex_wrap().gap_x(14).gap(4).items_center().text_size(11.5).text_color(t.dim)
     .children(shown.map((h) => h_flex().gap(6).items_center().child(keycap(t, h.key)).child(h.label)));
 }
@@ -540,7 +543,7 @@ export default class Kiosk extends View {
         div().id("kiosk-close").flex_none().ml(4).px(6).h(20).flex().items_center().rounded(5).text_size(11).text_color(t.dim).cursor_pointer()
           .hover((s) => s.bg(t.hover).text_color(t.foreground))
           .on_click((_e, cx) => { cx.stop_propagation(); this.finish(); })
-          .child("Esc"),
+          .child("Close"),
       );
   }
 

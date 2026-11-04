@@ -70,23 +70,9 @@ impl CliAppHost {
 const APP_HOME_VAR: &str = "HERDR_APP_HOME";
 
 fn run_program(mut command: Command, binary: &Path) -> Result<std::process::Output, AppError> {
-    hide_console(&mut command);
     command.output().map_err(|error| {
         AppError::Invocation(format!("could not execute {}: {error}", binary.display()))
     })
-}
-
-/// The app starts kiosk without a console, so on Windows each console program kiosk runs
-/// would otherwise open a window of its own.
-fn hide_console(command: &mut Command) {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
-    #[cfg(not(windows))]
-    let _ = command;
 }
 
 fn exit_failure(binary: &Path, output: &std::process::Output) -> AppError {
@@ -433,13 +419,8 @@ impl HerdrApp {
         checked(args::nonempty("pane id", &request.pane_id))?;
         checked(args::nonempty("command", command))?;
         checked(args::absolute("cwd", &request.cwd))?;
+        // The app always splits in half; `ignored_ratio_warning` says so once, at start.
         let folder = checked(args::utf8_path("cwd", &request.cwd))?;
-        if request.ratio.is_some() {
-            return Err(AppError::InvalidArgument(
-                "the Herdr app always splits panes in half; remove `ratio` from this [on_open] pane"
-                    .into(),
-            ));
-        }
         self.command("pane.focus", &json!({ "pane": request.pane_id }))?;
         self.command_json(
             "terminal.open",
@@ -459,6 +440,19 @@ impl HerdrApp {
             })
             .map_err(|error| git_error(&error))
     }
+}
+
+/// What to tell the person when `[on_open]` panes set a `ratio`, which the app can't
+/// follow: it always splits in half. The same config then still works in a terminal.
+pub fn ignored_ratio_warning(on_open: &OnOpenConfig) -> Option<String> {
+    on_open
+        .panes
+        .iter()
+        .any(|pane| pane.ratio.is_some())
+        .then(|| {
+            "[on_open] pane ratios are ignored here: the Herdr app always splits panes in half"
+                .to_owned()
+        })
 }
 
 impl Backend for HerdrApp {

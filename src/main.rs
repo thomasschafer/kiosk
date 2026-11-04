@@ -9,7 +9,7 @@ use kiosk_core::{
 
 use herdr_app_kiosk::{
     PRODUCT,
-    app::{CliAppHost, HerdrApp, WORKTREE_ROOT},
+    app::{self, CliAppHost, HerdrApp, WORKTREE_ROOT},
     config::Config,
     launch::{self, Invocation, ServeArgs},
     migrate,
@@ -39,9 +39,12 @@ fn prepare(
     let carried_over = migrate::carry_over_earlier_config(|name| std::env::var(name).ok())
         .context("copying the earlier app mod's config")?;
     let mut loaded = config::load_config::<Config>(&PRODUCT)?;
-    loaded
-        .warnings
-        .extend(carried_over.map(|message| ConfigWarning { message }));
+    loaded.warnings.extend(
+        carried_over
+            .into_iter()
+            .chain(app::ignored_ratio_warning(&loaded.extension.on_open))
+            .map(|message| ConfigWarning { message }),
+    );
     let home = kiosk_core::path::home_dir().context("HOME must be set to place new worktrees")?;
     let placement = WorktreePlacement::new(home.join(WORKTREE_ROOT)).map_err(anyhow::Error::msg)?;
     let host = CliAppHost::new(

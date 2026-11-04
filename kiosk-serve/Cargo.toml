@@ -28,3 +28,7 @@ tempfile.workspace = true
 
 [lints]
 workspace = true
+
+[[test]]
+name = "detach"
+harness = false

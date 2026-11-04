@@ -1,20 +1,13 @@
 //! Running a product's picker from start to finish: the terminal, first-run setup, and the
 //! picker itself.
 
-use std::{
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::{path::Path, sync::Arc};
 
 use anyhow::Result;
 use crossterm::event::{self as ct_event, Event, KeyCode, KeyEventKind, KeyModifiers};
 use kiosk_core::{
-    backend::Backend,
-    config::{self, LoadedConfig},
-    git::GitProvider,
-    picker::RunOutcome,
-    product::Product,
-    state::{AppState, ToastKind},
+    backend::Backend, config::LoadedConfig, git::GitProvider, picker::RunOutcome, product::Product,
+    view::setup::NoSearchDirsView,
 };
 use ratatui::{
     DefaultTerminal, Frame,
@@ -44,7 +37,6 @@ pub fn run<B: Backend, E>(
     backend: Option<Arc<B>>,
     current_cwd: Option<&Path>,
 ) -> Result<RunOutcome> {
-    let home = kiosk_core::path::home_dir();
     let theme = Theme::from_config(&loaded.core.theme);
     let _restore_guard = TerminalRestoreGuard;
     let mut terminal = ratatui::try_init()?;
@@ -62,42 +54,26 @@ pub fn run<B: Backend, E>(
         return Ok(RunOutcome::Quit);
     }
 
-    let resolved = loaded
-        .core
-        .resolved_search_dirs_with(home.as_deref(), config::probe_search_dir)?;
-    let mut warnings = loaded.warnings;
-    warnings.extend(resolved.warnings);
-    let current_cwd =
-        current_cwd.map(|path| std::fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path)));
-    let mut state = AppState::new(product, current_cwd);
-    state.repo_view.missing_optional_dirs = resolved.missing_optional.len();
-    warnings.extend(kiosk_core::picker::delete::load_pending(&mut state));
-    for warning in warnings {
-        state.push_toast(ToastKind::Warning, warning.message);
-    }
+    let kiosk_core::start::PickerStart {
+        mut state,
+        search_dirs,
+        keys,
+    } = kiosk_core::start::prepare(product, loaded, current_cwd)?;
     crate::app::run(
         &mut terminal,
         &mut state,
         git,
         backend,
-        resolved.dirs,
+        search_dirs,
         &theme,
-        loaded.core.keys,
+        keys,
     )
 }
 
 fn run_no_search_dirs(terminal: &mut DefaultTerminal, path: Option<&Path>) -> Result<()> {
-    let location = path.map_or_else(
-        || "No trusted config path could be resolved.".to_string(),
-        |path| {
-            format!(
-                "Config path: {}",
-                kiosk_core::display::sanitize(&kiosk_core::path::display(path))
-            )
-        },
-    );
+    let view = kiosk_core::view::setup::no_search_dirs(path);
     loop {
-        terminal.draw(|frame| draw_no_search_dirs(frame, &location))?;
+        terminal.draw(|frame| draw_no_search_dirs(frame, &view))?;
         let Event::Key(key) = ct_event::read()? else {
             continue;
         };
@@ -110,7 +86,7 @@ fn run_no_search_dirs(terminal: &mut DefaultTerminal, path: Option<&Path>) -> Re
     }
 }
 
-fn draw_no_search_dirs(frame: &mut Frame, location: &str) {
+fn draw_no_search_dirs(frame: &mut Frame, view: &NoSearchDirsView) {
     let [_, area, _] = Layout::vertical([
         Constraint::Fill(1),
         Constraint::Length(5),
@@ -120,13 +96,13 @@ fn draw_no_search_dirs(frame: &mut Frame, location: &str) {
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(Span::styled(
-                "No search directories configured",
+                view.title,
                 Style::default().add_modifier(Modifier::BOLD),
             )),
             Line::raw(""),
-            Line::raw(location),
+            Line::raw(view.location.as_str()),
             Line::raw(""),
-            Line::raw("q / esc / ctrl+c to quit"),
+            Line::raw(view.hint),
         ])
         .alignment(Alignment::Center),
         area,

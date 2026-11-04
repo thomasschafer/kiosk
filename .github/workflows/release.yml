@@ -174,7 +174,7 @@ jobs:
         run: |
           # Publish in dependency order, waiting for crates.io index to update
           version="${{ needs.prepare-release.outputs.version }}"
-          for crate in kiosk-core kiosk-docgen kiosk-tui kiosk; do
+          for crate in kiosk-core kiosk-docgen kiosk-tui kiosk-serve kiosk; do
             # Lets a re-run carry on after a partial publish.
             if curl -sf -A "kiosk-release (github.com/thomasschafer/kiosk)" \
               "https://crates.io/api/v1/crates/${crate}/${version}" >/dev/null; then

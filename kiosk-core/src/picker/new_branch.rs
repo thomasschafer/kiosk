@@ -97,6 +97,12 @@ impl RemoteBranchPrompt {
         self.remotes_pending
     }
 
+    pub(crate) fn select(&mut self, position: usize) {
+        if position < self.choices.len() {
+            self.selected = position;
+        }
+    }
+
     fn move_selection(&mut self, delta: i32) {
         let last = self.choices.len() - 1;
         self.selected = if delta.is_positive() {

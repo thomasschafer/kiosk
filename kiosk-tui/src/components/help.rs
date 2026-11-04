@@ -1,101 +1,47 @@
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Flex, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, HighlightSpacing, List, ListItem, ListState, Paragraph},
 };
 
 use crate::theme::Theme;
-use kiosk_core::state::HelpOverlayState;
+use kiosk_core::{
+    state::HelpOverlayState,
+    view::{self, HelpEntry, Tone},
+};
 
-enum HelpLayoutEntry {
-    Section(&'static str),
-    Blank,
-    Binding(usize),
-}
-
-fn layout_entries(overlay: &HelpOverlayState) -> Vec<HelpLayoutEntry> {
-    let mut entries = Vec::new();
-    let mut current_section = None;
-    for (row_index, _) in &overlay.list.filtered {
-        let Some(row) = overlay.rows.get(*row_index) else {
-            continue;
-        };
-        if current_section != Some(row.section_name) {
-            if current_section.is_some() {
-                entries.push(HelpLayoutEntry::Blank);
-            }
-            current_section = Some(row.section_name);
-            entries.push(HelpLayoutEntry::Section(row.section_name));
-        }
-        entries.push(HelpLayoutEntry::Binding(*row_index));
+fn items(entries: &[HelpEntry], theme: &Theme) -> Vec<ListItem<'static>> {
+    if entries.is_empty() {
+        return vec![ListItem::new(Span::styled(
+            view::NO_MATCHING_BINDINGS,
+            theme.style(Tone::Muted).add_modifier(Modifier::ITALIC),
+        ))];
     }
     entries
-}
-
-fn visible_items(overlay: &HelpOverlayState, muted: Color) -> (Vec<ListItem<'static>>, Vec<usize>) {
-    if overlay.list.filtered.is_empty() {
-        return (
-            vec![ListItem::new(Span::styled(
-                "No matching bindings",
-                Style::default().fg(muted).add_modifier(Modifier::ITALIC),
-            ))],
-            Vec::new(),
-        );
-    }
-    let entries = layout_entries(overlay);
-    let mut items = Vec::with_capacity(entries.len());
-    let mut binding_item_indices = Vec::with_capacity(overlay.list.filtered.len());
-    for entry in entries {
-        match entry {
-            HelpLayoutEntry::Section(name) => items.push(ListItem::new(Span::styled(
+        .iter()
+        .map(|entry| match entry {
+            HelpEntry::Section { name } => ListItem::new(Span::styled(
                 format!("{name}:"),
                 Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-            ))),
-            HelpLayoutEntry::Blank => items.push(ListItem::new("")),
-            HelpLayoutEntry::Binding(index) => {
-                let row = &overlay.rows[index];
-                binding_item_indices.push(items.len());
-                items.push(ListItem::new(Line::from(vec![
-                    Span::styled(
-                        format!("  {:<14}", row.key_display),
-                        Style::default().add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw(row.description),
-                    Span::styled(
-                        format!("  ({})", row.command_name),
-                        Style::default().fg(muted),
-                    ),
-                ])));
-            }
-        }
-    }
-    (items, binding_item_indices)
-}
-
-fn update_scroll(overlay: &mut HelpOverlayState, binding_items: &[usize], viewport_rows: usize) {
-    if overlay.list.filtered.is_empty() {
-        overlay.list.scroll_offset = 0;
-        return;
-    }
-    let selected = overlay
-        .list
-        .selected
-        .unwrap_or_default()
-        .min(overlay.list.filtered.len() - 1);
-    let selected_visual = binding_items.get(selected).copied().unwrap_or_default();
-    let viewport_rows = viewport_rows.max(1);
-    if selected_visual < overlay.list.scroll_offset {
-        overlay.list.scroll_offset = selected_visual;
-    } else if selected_visual >= overlay.list.scroll_offset.saturating_add(viewport_rows) {
-        overlay.list.scroll_offset = selected_visual + 1 - viewport_rows;
-    }
-    let total_rows = layout_entries(overlay).len();
-    overlay.list.scroll_offset = overlay
-        .list
-        .scroll_offset
-        .min(total_rows.saturating_sub(viewport_rows));
+            )),
+            HelpEntry::Blank => ListItem::new(""),
+            HelpEntry::Binding {
+                key,
+                description,
+                command,
+                ..
+            } => ListItem::new(Line::from(vec![
+                Span::styled(
+                    format!("  {key:<14}"),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(*description),
+                Span::styled(format!("  ({command})"), theme.style(Tone::Muted)),
+            ])),
+        })
+        .collect()
 }
 
 pub fn draw(
@@ -132,8 +78,8 @@ pub fn draw(
         frame,
         search_area,
         &super::search_bar::SearchBarStyle {
-            title: "Help — active key bindings",
-            placeholder: "Filter by key, command, or description…",
+            title: view::HELP_TITLE,
+            placeholder: view::HELP_PLACEHOLDER,
             border_color: theme.tertiary,
             muted_color: theme.muted,
         },
@@ -142,30 +88,23 @@ pub fn draw(
     );
     if let Some(notice_area) = notice_area {
         frame.render_widget(
-            Paragraph::new(
-                "After help closes, notification dismissal takes precedence over mode actions.",
-            )
-            .style(Style::default().fg(theme.muted))
-            .alignment(Alignment::Center),
+            Paragraph::new(view::HELP_TOAST_NOTICE)
+                .style(theme.style(Tone::Muted))
+                .alignment(Alignment::Center),
             notice_area,
         );
     }
 
-    let (items, binding_items) = visible_items(overlay, theme.muted);
+    let entries = view::help_entries(overlay);
     let viewport_rows = usize::from(list_area.height.saturating_sub(2)).max(1);
-    update_scroll(overlay, &binding_items, viewport_rows);
-    let selected_item = overlay
-        .list
-        .selected
-        .and_then(|selected| binding_items.get(selected))
-        .copied();
-    let list = List::new(items)
+    let selected = view::scroll_help(overlay, &entries, viewport_rows);
+    let list = List::new(items(&entries, theme))
         .block(
             Block::default()
                 .borders(Borders::ALL)
                 .title(format!(
-                    " {} bindings (esc: close) ",
-                    overlay.list.filtered.len()
+                    " {} ",
+                    view::help_summary(overlay.list.filtered.len())
                 ))
                 .border_style(Style::default().fg(theme.tertiary)),
         )
@@ -178,7 +117,7 @@ pub fn draw(
         .highlight_symbol("▸ ")
         .highlight_spacing(HighlightSpacing::Always);
     let mut list_state = ListState::default();
-    list_state.select(selected_item);
+    list_state.select(selected);
     *list_state.offset_mut() = overlay.list.scroll_offset;
     frame.render_stateful_widget(list, list_area, &mut list_state);
 }
@@ -220,9 +159,12 @@ mod tests {
             .position(|row| row.section_name == "general")
             .unwrap();
         overlay.list.filtered = vec![(branch, 1), (general, 1)];
-        let entries = layout_entries(&overlay);
-        assert!(matches!(entries[0], HelpLayoutEntry::Section("branches")));
-        assert!(matches!(entries[2], HelpLayoutEntry::Blank));
-        assert!(matches!(entries[3], HelpLayoutEntry::Section("general")));
+        let entries = view::help_entries(&overlay);
+        assert!(matches!(
+            entries[0],
+            HelpEntry::Section { name: "branches" }
+        ));
+        assert!(matches!(entries[2], HelpEntry::Blank));
+        assert!(matches!(entries[3], HelpEntry::Section { name: "general" }));
     }
 }

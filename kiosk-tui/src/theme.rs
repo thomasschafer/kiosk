@@ -1,8 +1,8 @@
-use ratatui::style::Color;
+use ratatui::style::{Color, Modifier, Style};
 
 use kiosk_core::{
-    backend::Tone,
     config::{ThemeColor, ThemeConfig},
+    view::Tone,
 };
 
 pub struct Theme {
@@ -34,15 +34,30 @@ impl Theme {
         }
     }
 
-    /// The colour for a backend label of `tone`.
-    pub fn tone(&self, tone: Tone) -> Color {
-        match tone {
-            Tone::Neutral => self.secondary,
-            Tone::Progress => self.tertiary,
-            Tone::Attention => self.warning,
-            Tone::Success => self.accent,
-            Tone::Failure => self.error,
-            Tone::Muted => self.muted,
+    /// The colour of `tone`, or `None` for the terminal's own foreground.
+    pub fn color(&self, tone: Tone) -> Option<Color> {
+        Some(match tone {
+            Tone::Normal => return None,
+            Tone::Muted | Tone::Faint => self.muted,
+            Tone::Accent | Tone::Success => self.accent,
+            Tone::Secondary | Tone::Neutral => self.secondary,
+            Tone::Tertiary | Tone::Progress => self.tertiary,
+            Tone::Warning | Tone::Attention => self.warning,
+            Tone::Error | Tone::Failure => self.error,
+            Tone::Open => self.open,
+            Tone::Hint => self.hint,
+        })
+    }
+
+    /// How text of `tone` is drawn.
+    pub fn style(&self, tone: Tone) -> Style {
+        let style = self
+            .color(tone)
+            .map_or_else(Style::default, |color| Style::default().fg(color));
+        if tone == Tone::Faint {
+            style.add_modifier(Modifier::DIM)
+        } else {
+            style
         }
     }
 }

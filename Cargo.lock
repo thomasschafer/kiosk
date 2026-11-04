@@ -736,6 +736,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "kiosk-serve"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "crossterm",
+ "getrandom 0.3.4",
+ "kiosk-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "kiosk-tui"
 version = "0.3.0"
 dependencies = [

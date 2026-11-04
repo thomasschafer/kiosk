@@ -1,6 +1,10 @@
 use std::time::Instant;
 
-use kiosk_core::{config::keys::KeysConfig, state::DeleteFlowState};
+use kiosk_core::{
+    config::keys::KeysConfig,
+    state::DeleteFlowState,
+    view::{self, Dialog},
+};
 use ratatui::{
     Frame,
     layout::Rect,
@@ -21,41 +25,39 @@ pub(crate) fn draw_dialog(
     keys: &KeysConfig,
     spinner_start: Instant,
 ) {
-    let target = flow.target();
-    let path = kiosk_core::display::sanitize(&kiosk_core::path::display(target.worktree_path()))
-        .into_owned();
-    let mut lines = if target.force() {
-        vec![
+    let Dialog::ConfirmDelete {
+        title,
+        warning,
+        lines: message,
+        busy,
+        hints,
+        ..
+    } = view::delete_dialog(flow, backend_name, keys)
+    else {
+        unreachable!("the delete flow is a delete dialog");
+    };
+    let mut lines = warning
+        .map(|warning| {
             Line::from(Span::styled(
-                "This checkout has uncommitted changes.",
+                warning,
                 Style::default()
                     .fg(theme.warning)
                     .add_modifier(Modifier::BOLD),
-            )),
-            Line::raw(format!("Force-remove {path}?")),
-        ]
-    } else {
-        vec![Line::raw(format!("Remove checkout {path}?"))]
-    };
-    if target.is_open() {
-        lines.push(Line::raw(format!(
-            "It will also be closed in {backend_name}."
-        )));
-    }
+            ))
+        })
+        .into_iter()
+        .chain(message.into_iter().map(Line::raw))
+        .collect::<Vec<_>>();
     lines.push(Line::raw(""));
-    if target.in_progress() {
-        let spinner =
-            components::repo_list::SPINNER_FOR_LOADING[(spinner_start.elapsed().as_millis() / 80)
-                as usize
-                % components::repo_list::SPINNER_FOR_LOADING.len()];
+    if let Some(busy) = busy {
+        let spinner = components::repo_list::spinner(spinner_start);
         lines.push(Line::from(Span::styled(
-            format!("{spinner} Removing checkout…"),
+            format!("{spinner} {busy}"),
             Style::default().fg(theme.secondary),
         )));
-    } else if let Some(hints) =
-        components::dialog::hint_line(&components::dialog::confirm_cancel_hints(keys), theme)
-    {
+    } else if let Some(hints) = components::dialog::dialog_hint_line(&hints, theme) {
         lines.push(hints);
     }
-    components::dialog::Dialog::new(" Confirm delete ", lines, theme.secondary).render(frame, area);
+    let title = format!(" {title} ");
+    components::dialog::Dialog::new(&title, lines, theme.secondary).render(frame, area);
 }

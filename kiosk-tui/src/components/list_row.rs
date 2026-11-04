@@ -1,5 +1,5 @@
-use kiosk_core::backend::Label;
-use ratatui::{style::Style, text::Span};
+use kiosk_core::view::{self, Segment, Tone};
+use ratatui::text::Span;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
@@ -53,30 +53,35 @@ pub fn right_align_suffix<'a>(
     result
 }
 
+/// `segments` as spans in the theme's colours.
+pub fn spans(segments: &[Segment], theme: &Theme) -> Vec<Span<'static>> {
+    segments
+        .iter()
+        .map(|segment| Span::styled(segment.text.clone(), theme.style(segment.tone)))
+        .collect()
+}
+
 /// A row's left content followed by the backend's labels and, for an open row, the open
 /// marker, right-aligned.
 pub fn with_status<'a>(
     left: &[Span<'a>],
-    labels: &[Label],
+    labels: &[Segment],
     is_open: bool,
     theme: &Theme,
     row_width: usize,
 ) -> Vec<Span<'a>> {
     let mut right = Vec::new();
-    for label in labels {
+    for label in spans(labels, theme) {
         if !right.is_empty() {
             right.push(Span::raw(" "));
         }
-        right.push(Span::styled(
-            kiosk_core::display::sanitize(&label.text).into_owned(),
-            Style::default().fg(theme.tone(label.tone)),
-        ));
+        right.push(label);
     }
     if is_open {
         if !right.is_empty() {
             right.push(Span::raw("  "));
         }
-        right.push(Span::styled("● open", Style::default().fg(theme.open)));
+        right.push(Span::styled(view::OPEN_MARKER, theme.style(Tone::Open)));
     }
     if right.is_empty() {
         truncate_spans(left, row_width)
@@ -85,9 +90,20 @@ pub fn with_status<'a>(
     }
 }
 
+/// A list row as drawn: its text, then its labels and open marker at the end.
+pub fn row(row: &view::Row, theme: &Theme, row_width: usize) -> Vec<Span<'static>> {
+    with_status(
+        &spans(&row.segments(), theme),
+        &row.labels,
+        row.open,
+        theme,
+        row_width,
+    )
+}
+
 #[cfg(test)]
 mod tests {
-    use kiosk_core::{backend::Tone, config::ThemeConfig};
+    use kiosk_core::config::ThemeConfig;
 
     use super::*;
 
@@ -111,14 +127,8 @@ mod tests {
     fn labels_come_before_the_open_marker_and_rows_without_either_are_unchanged() {
         let theme = Theme::from_config(&ThemeConfig::default());
         let labels = [
-            Label {
-                text: "claude waiting".into(),
-                tone: Tone::Attention,
-            },
-            Label {
-                text: "codex working".into(),
-                tone: Tone::Progress,
-            },
+            Segment::new("claude waiting", Tone::Attention),
+            Segment::new("codex working", Tone::Progress),
         ];
         let spans = with_status(&[Span::raw("main")], &labels, true, &theme, 50);
         assert!(text(&spans).ends_with("claude waiting codex working  ● open"));

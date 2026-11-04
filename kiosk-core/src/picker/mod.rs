@@ -16,7 +16,10 @@ use fuzzy_matcher::{FuzzyMatcher, skim::SkimMatcherV2};
 
 use crate::{
     backend::Backend,
-    config::{ResolvedSearchDir, keys::KeysConfig},
+    config::{
+        ResolvedSearchDir,
+        keys::{Command, KeysConfig},
+    },
     event::{AppEvent, FilterKey, FilterTarget},
     git::{GitProvider, Repo},
     keyboard::Action,
@@ -167,6 +170,36 @@ impl<B: Backend> Picker<B> {
             &self.filter_worker,
             &self.keys,
         )
+    }
+}
+
+impl<B: Backend> Picker<B> {
+    /// Selects the item at `position` of the list in front, then does what `command` does
+    /// to the selection: what clicking a row (`Command::Open`) or one of its buttons does.
+    ///
+    /// `id` is the item the frontend showed there ([`crate::view::item_id`]). The list can
+    /// change between drawing and clicking, as results arrive and are sorted, as filtering
+    /// finishes or as another list replaces it, so a click on an item that is no longer at
+    /// `position` does nothing rather than act on whatever is there now.
+    pub fn activate(
+        &self,
+        state: &mut AppState,
+        position: usize,
+        id: &str,
+        command: Command,
+    ) -> Option<RunOutcome> {
+        if crate::view::item_id(state, position).as_deref() != Some(id) {
+            return None;
+        }
+        let select = crate::keymap::select(position, state)?;
+        if let Some(outcome) = self.handle_action(state, select) {
+            return Some(outcome);
+        }
+        if state.overlay.is_some() {
+            return None;
+        }
+        let action = crate::keymap::command_to_action(command, state)?;
+        self.handle_action(state, action)
     }
 }
 
@@ -375,17 +408,7 @@ pub(crate) fn process_action<B: Backend>(
             if let Some(overlay) = &mut state.overlay {
                 match overlay {
                     Overlay::Help(help) => help.list.move_selection(delta),
-                    Overlay::ScanWarnings(warnings) => {
-                        warnings.scroll_offset = if delta.is_negative() {
-                            warnings
-                                .scroll_offset
-                                .saturating_sub(delta.unsigned_abs() as usize)
-                        } else {
-                            warnings
-                                .scroll_offset
-                                .saturating_add(delta.unsigned_abs() as usize)
-                        };
-                    }
+                    Overlay::ScanWarnings(warnings) => warnings.scroll(delta),
                 }
             } else if matches!(state.mode, Mode::RepoSelect) {
                 repo::move_selection(state, delta);
@@ -398,6 +421,11 @@ pub(crate) fn process_action<B: Backend>(
                 new_branch::move_selection(state, delta);
             }
         }
+        Action::Select(position) => select(state, position),
+        Action::Scroll {
+            delta,
+            viewport_rows,
+        } => scroll(state, delta, viewport_rows),
         Action::Insert(character) => {
             edit_active_list(state, filter_worker, |list| {
                 list.input.insert_char(character);
@@ -460,6 +488,47 @@ pub(crate) fn process_action<B: Backend>(
         Action::Noop => {}
     }
     None
+}
+
+fn select(state: &mut AppState, position: usize) {
+    match &mut state.overlay {
+        Some(Overlay::Help(help)) => return help.list.select(position),
+        Some(Overlay::ScanWarnings(_)) => return,
+        None => {}
+    }
+    match &mut state.mode {
+        Mode::RepoSelect => {
+            state.repo_view.selection_touched = true;
+            state.repo_view.list.select(position);
+        }
+        Mode::BranchSelect(_) => state.branch_view.list.select(position),
+        Mode::SelectBaseBranch { flow, .. } => flow.list.select(position),
+        Mode::ConfirmRemoteBranch { prompt, .. } => prompt.select(position),
+        Mode::ValidatingNewBranch { .. }
+        | Mode::ConfirmWorktreeDelete(_)
+        | Mode::Loading { .. } => {}
+    }
+}
+
+/// Help is short and laid out in sections, so scrolling it moves its selection instead.
+fn scroll(state: &mut AppState, delta: i32, viewport_rows: usize) {
+    match &mut state.overlay {
+        Some(Overlay::Help(help)) => return help.list.move_selection(delta),
+        Some(Overlay::ScanWarnings(warnings)) => return warnings.scroll(delta),
+        None => {}
+    }
+    match &mut state.mode {
+        Mode::RepoSelect => {
+            state.repo_view.selection_touched = true;
+            state.repo_view.list.scroll_by(delta, viewport_rows);
+        }
+        Mode::BranchSelect(_) => state.branch_view.list.scroll_by(delta, viewport_rows),
+        Mode::SelectBaseBranch { flow, .. } => flow.list.scroll_by(delta, viewport_rows),
+        Mode::ConfirmRemoteBranch { .. }
+        | Mode::ValidatingNewBranch { .. }
+        | Mode::ConfirmWorktreeDelete(_)
+        | Mode::Loading { .. } => {}
+    }
 }
 
 /// The list whose query text input edits apply to, or `None` while an overlay without

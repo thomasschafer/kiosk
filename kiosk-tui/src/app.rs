@@ -9,10 +9,7 @@ use anyhow::Result;
 use crossterm::event::{self, Event, KeyEventKind};
 use kiosk_core::{
     backend::Backend,
-    config::{
-        ResolvedSearchDir,
-        keys::{BindingMode, Command, KeysConfig},
-    },
+    config::{ResolvedSearchDir, keys::KeysConfig},
     git::GitProvider,
     picker::{Picker, RunOutcome},
     state::{AppState, Mode, Overlay},
@@ -112,10 +109,7 @@ pub(crate) fn draw(
         _ => None,
     };
     if let Some(message) = loading_message {
-        let spinner =
-            components::repo_list::SPINNER_FOR_LOADING[(spinner_start.elapsed().as_millis() / 80)
-                as usize
-                % components::repo_list::SPINNER_FOR_LOADING.len()];
+        let spinner = components::repo_list::spinner(spinner_start);
         let [_, area, _] = Layout::vertical([
             Constraint::Fill(1),
             Constraint::Length(2),
@@ -128,7 +122,7 @@ pub(crate) fn draw(
                 .fg(theme.accent)
                 .add_modifier(Modifier::BOLD),
         ))];
-        if let Some(hint) = loading_hint(keys) {
+        if let Some(hint) = kiosk_core::view::loading_hint(keys) {
             lines.push(Line::from(Span::styled(
                 hint,
                 Style::default().fg(theme.muted),
@@ -146,18 +140,25 @@ pub(crate) fn draw(
             components::repo_list::draw(frame, main_area, state, theme, spinner_start);
         }
         Mode::BranchSelect(_) => {
-            components::branch_picker::draw(frame, main_area, state, theme, spinner_start);
+            components::branch_picker::draw(frame, main_area, state, keys, theme, spinner_start);
         }
         Mode::SelectBaseBranch { .. } | Mode::ValidatingNewBranch { .. } => {
-            components::branch_picker::draw(frame, main_area, state, theme, spinner_start);
+            components::branch_picker::draw(frame, main_area, state, keys, theme, spinner_start);
             components::new_branch::draw(frame, main_area, state, theme, spinner_start);
         }
-        Mode::ConfirmRemoteBranch { prompt, .. } => {
-            components::branch_picker::draw(frame, main_area, state, theme, spinner_start);
-            components::new_branch::draw_remote_prompt(frame, main_area, prompt, theme, keys);
+        Mode::ConfirmRemoteBranch { context, prompt } => {
+            components::branch_picker::draw(frame, main_area, state, keys, theme, spinner_start);
+            components::new_branch::draw_remote_prompt(
+                frame,
+                main_area,
+                &context.repo_path,
+                prompt,
+                theme,
+                keys,
+            );
         }
         Mode::ConfirmWorktreeDelete(flow) => {
-            components::branch_picker::draw(frame, main_area, state, theme, spinner_start);
+            components::branch_picker::draw(frame, main_area, state, keys, theme, spinner_start);
             components::delete::draw_dialog(
                 frame,
                 main_area,
@@ -172,12 +173,16 @@ pub(crate) fn draw(
             unreachable!("loading mode returned above")
         }
     }
-    let binding_mode = KeysConfig::mode_for(&state.mode);
-    let footer = footer_spans(keys, binding_mode, &state.mode, theme);
-    frame.render_widget(
-        Paragraph::new(Line::from(footer)).alignment(Alignment::Center),
-        footer_area,
-    );
+    if let Some(footer) = components::dialog::hint_line(
+        &kiosk_core::view::footer_hints(keys, &state.mode),
+        "  ",
+        theme,
+    ) {
+        frame.render_widget(
+            Paragraph::new(footer).alignment(Alignment::Center),
+            footer_area,
+        );
+    }
     components::error_toast::draw(frame, frame.area(), state, theme, keys);
     let toast_visible = !state.toasts.is_empty();
     if let Some(Overlay::Help(overlay)) = &mut state.overlay {
@@ -198,73 +203,6 @@ fn animation_active(state: &AppState) -> bool {
         Mode::ValidatingNewBranch { .. } | Mode::Loading { .. } => true,
         Mode::ConfirmWorktreeDelete(flow) => branch_spinner || flow.in_progress(),
     }
-}
-
-fn loading_hint(keys: &KeysConfig) -> Option<String> {
-    keys.first_key(BindingMode::Modal, Command::Quit)
-        .map(|key| format!("{key} to close (operation continues)"))
-}
-
-fn footer_spans<'a>(
-    keys: &KeysConfig,
-    binding_mode: BindingMode,
-    mode: &Mode,
-    theme: &Theme,
-) -> Vec<Span<'a>> {
-    let mut hints = Vec::new();
-    let mut add = |command, label: &'static str| {
-        if let Some(key) = keys.first_key(binding_mode, command) {
-            if !hints.is_empty() {
-                hints.push(Span::raw("  "));
-            }
-            hints.push(Span::styled(
-                key.to_string(),
-                Style::default().fg(theme.hint),
-            ));
-            hints.push(Span::raw(format!(" {label}")));
-        }
-    };
-    if matches!(
-        mode,
-        Mode::ValidatingNewBranch { .. } | Mode::Loading { .. }
-    ) {
-        add(Command::Quit, "quit");
-        return hints;
-    }
-    add(
-        Command::Open,
-        if matches!(
-            mode,
-            Mode::SelectBaseBranch { .. }
-                | Mode::ConfirmRemoteBranch { .. }
-                | Mode::ConfirmWorktreeDelete(_)
-        ) {
-            "confirm"
-        } else {
-            "open"
-        },
-    );
-    if matches!(mode, Mode::RepoSelect) {
-        add(Command::BranchesView, "branches");
-    }
-    if matches!(mode, Mode::BranchSelect(_)) {
-        add(Command::NewBranch, "new");
-        add(Command::Delete, "delete");
-    }
-    if matches!(
-        mode,
-        Mode::BranchSelect(_)
-            | Mode::SelectBaseBranch { .. }
-            | Mode::ConfirmRemoteBranch { .. }
-            | Mode::ConfirmWorktreeDelete(_)
-    ) {
-        add(Command::Back, "back");
-    } else {
-        add(Command::Clear, "clear/quit");
-    }
-    add(Command::Help, "help");
-    add(Command::Quit, "quit");
-    hints
 }
 
 #[cfg(test)]
@@ -306,11 +244,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            loading_hint(&keys).as_deref(),
+            kiosk_core::view::loading_hint(&keys).as_deref(),
             Some("ctrl+q to close (operation continues)")
         );
+        let (confirm, cancel) = kiosk_core::view::confirm_cancel_keys(&keys);
         assert_eq!(
-            components::dialog::confirm_cancel_keys(&keys),
+            (
+                confirm.map(|key| key.to_string()),
+                cancel.map(|key| key.to_string())
+            ),
             (Some("ctrl+y".into()), Some("ctrl+g".into()))
         );
     }

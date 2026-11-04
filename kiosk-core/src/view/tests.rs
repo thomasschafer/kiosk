@@ -603,7 +603,7 @@ fn toast_shows_the_front_notification_with_its_queue_and_hints() {
             label: "Error",
             message: "failed badly".into(),
             counter: Some("1/2".into()),
-            hints: vec![Hint::new("ctrl+x", "dismiss")],
+            hints: Vec::new(),
         })
     );
     assert_eq!(ToastLevel::Error.tone(), Tone::Error);
@@ -620,12 +620,12 @@ fn toast_counter_only_appears_for_pending_toasts() {
 
 #[test]
 fn dismiss_hint_uses_the_effective_remapped_binding() {
-    let keys = keys("[general]\n\"C-x\" = \"noop\"\n\"C-d\" = \"dismiss_toast\"");
+    let keys = keys("[general]\n\"C-g\" = \"dismiss_toast\"");
     let mut state = AppState::new(&TEST_PRODUCT, None);
     state.push_toast(ToastKind::Error, "failed");
     assert_eq!(
         hints(&toast_hints(&keys, state.toasts.front().unwrap())),
-        [("ctrl+d", "dismiss")]
+        [("ctrl+g", "dismiss")]
     );
 }
 
@@ -639,11 +639,11 @@ fn scan_summary_names_the_details_key_unless_it_is_unbound() {
     let toast = state.toasts.front().unwrap();
     assert_eq!(
         hints(&toast_hints(&KeysConfig::default(), toast)),
-        [("ctrl+e", "details"), ("ctrl+x", "dismiss")]
+        [("ctrl+s", "details")]
     );
     assert_eq!(
-        hints(&toast_hints(&keys("[general]\n\"C-e\" = \"noop\""), toast)),
-        [("ctrl+x", "dismiss")]
+        hints(&toast_hints(&keys("[general]\n\"C-s\" = \"noop\""), toast)),
+        []
     );
 }
 

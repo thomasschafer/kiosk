@@ -24,7 +24,7 @@ use crate::{
 };
 
 use super::*;
-use crate::state::RemoteBranchPrompt;
+use crate::state::{RemoteBranchPrompt, TextEdit};
 
 fn state_with_repo() -> AppState {
     let mut state = AppState::new(&TEST_PRODUCT, None);
@@ -158,10 +158,10 @@ fn base_picker_text_actions_edit_only_the_base_query() {
     let worker = FilterWorker::spawn(sender.clone());
     let keys = KeysConfig::default();
     for action in [
-        Action::CursorLeft,
-        Action::CursorRight,
-        Action::Backspace,
-        Action::DeleteWord,
+        Action::Edit(TextEdit::CursorLeft),
+        Action::Edit(TextEdit::CursorRight),
+        Action::Edit(TextEdit::Backspace),
+        Action::Edit(TextEdit::DeleteWordBackward),
         Action::Insert('x'),
     ] {
         process_action::<MockBackend>(action, &mut state, &git, None, &sender, &worker, &keys);

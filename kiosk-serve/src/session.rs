@@ -20,7 +20,7 @@ use kiosk_core::{
     keymap::{self, KeyInput},
     picker::{Picker, RunOutcome},
     product::Product,
-    setup::{self, SETUP_CHORDS, SetupOutcome, SetupState},
+    setup::{self, SetupOutcome, SetupState},
     state::{AppState, Mode, Overlay},
     view::{self, Viewports},
 };
@@ -94,7 +94,7 @@ fn claimed_chords(keys: &KeysConfig) -> Vec<String> {
     let mut chords = keys
         .all_chords()
         .into_iter()
-        .chain(SETUP_CHORDS)
+        .chain(setup::setup_chords())
         .filter_map(keystroke::unparse)
         .collect::<Vec<_>>();
     chords.sort();

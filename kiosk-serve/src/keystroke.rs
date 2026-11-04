@@ -1,7 +1,10 @@
 //! Key presses as GPUI spells them (`ctrl-shift-a`, `escape`), turned into kiosk's own.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use kiosk_core::{config::keys::KeyChord, keymap::KeyInput};
+use kiosk_core::{
+    config::keys::{KeyChord, function_key},
+    keymap::KeyInput,
+};
 
 /// The modifier prefixes GPUI writes, in its order, and what each means to kiosk. GPUI
 /// spells the platform key `cmd` on every platform; kiosk has no binding for it, so a chord
@@ -50,7 +53,7 @@ impl Platform {
 }
 
 /// A key press from GPUI: `keystroke` as `Keystroke::unparse` spells it and `key_char`,
-/// the text it would type. Returns `None` for keys kiosk has no name for, such as `f5`.
+/// the text it would type. Returns `None` for keys kiosk has no name for, such as `f13`.
 pub fn parse(keystroke: &str, key_char: Option<&str>, platform: Platform) -> Option<KeyInput> {
     let mut rest = keystroke;
     let mut modifiers = KeyModifiers::NONE;
@@ -69,6 +72,8 @@ pub fn parse(keystroke: &str, key_char: Option<&str>, platform: Platform) -> Opt
     let typed = single_char(key_char).filter(|character| !character.is_control());
     let code = if let Some((_, code)) = NAMED_KEYS.iter().find(|(name, _)| *name == rest) {
         *code
+    } else if let Some(number) = function_key(rest) {
+        KeyCode::F(number)
     } else {
         let key = single_char(Some(rest))?;
         match typed {
@@ -117,6 +122,11 @@ pub fn unparse(chord: KeyChord) -> Option<String> {
         }
         KeyCode::Char(' ') => spelled.push_str("space"),
         KeyCode::Char(character) => spelled.extend(character.to_lowercase()),
+        KeyCode::F(number) => {
+            let name = format!("f{number}");
+            function_key(&name)?;
+            spelled.push_str(&name);
+        }
         code => {
             let (name, _) = NAMED_KEYS.iter().find(|(_, named)| *named == code)?;
             spelled.push_str(name);
@@ -139,6 +149,10 @@ mod tests {
 
     #[test]
     fn named_keys_and_modifiers_become_chords() {
+        assert_eq!(
+            input("f1", None).chord,
+            chord(KeyCode::F(1), KeyModifiers::NONE)
+        );
         assert_eq!(
             input("escape", None).chord,
             chord(KeyCode::Esc, KeyModifiers::NONE)
@@ -217,7 +231,8 @@ mod tests {
 
     #[test]
     fn unknown_keys_are_refused() {
-        assert_eq!(parse("f5", None, Platform::Other), None);
+        assert_eq!(parse("f13", None, Platform::Other), None);
+        assert_eq!(parse("insert", None, Platform::Other), None);
         assert_eq!(parse("", None, Platform::Other), None);
     }
 
@@ -253,7 +268,11 @@ mod tests {
             unparse(chord(KeyCode::Char(' '), KeyModifiers::CONTROL)).as_deref(),
             Some("ctrl-space")
         );
-        assert_eq!(unparse(chord(KeyCode::F(5), KeyModifiers::NONE)), None);
+        assert_eq!(
+            unparse(chord(KeyCode::F(5), KeyModifiers::NONE)).as_deref(),
+            Some("f5")
+        );
+        assert_eq!(unparse(chord(KeyCode::F(13), KeyModifiers::NONE)), None);
     }
 
     #[test]

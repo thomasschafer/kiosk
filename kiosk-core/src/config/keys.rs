@@ -7,7 +7,7 @@ use std::{
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde::{Deserialize, Deserializer, Serialize};
 
-use crate::state::Mode;
+use crate::state::{Mode, TextEdit};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct KeyChord {
@@ -88,6 +88,9 @@ impl FromStr for KeyChord {
             "pageup" | "page_up" => KeyCode::PageUp,
             "pagedown" | "page_down" => KeyCode::PageDown,
             "space" => KeyCode::Char(' '),
+            _ if function_key(&lower).is_some() => {
+                KeyCode::F(function_key(&lower).expect("checked above"))
+            }
             _ if key.chars().count() == 1 => {
                 let mut character = key.chars().next().expect("one character");
                 if modifiers.contains(KeyModifiers::SHIFT) {
@@ -108,6 +111,14 @@ impl FromStr for KeyChord {
         };
         Ok(Self { code, modifiers })
     }
+}
+
+/// The number of a function key spelled `f1` to `f12`.
+pub fn function_key(name: &str) -> Option<u8> {
+    name.strip_prefix('f')
+        .filter(|digits| !digits.starts_with('0'))
+        .and_then(|digits| digits.parse().ok())
+        .filter(|number| (1..=12).contains(number))
 }
 
 fn is_modifier_token(token: &str) -> bool {
@@ -144,6 +155,7 @@ impl fmt::Display for KeyChord {
             KeyCode::End => formatter.write_str("end"),
             KeyCode::PageUp => formatter.write_str("pageup"),
             KeyCode::PageDown => formatter.write_str("pagedown"),
+            KeyCode::F(number) => write!(formatter, "f{number}"),
             _ => formatter.write_str("unknown"),
         }
     }
@@ -175,9 +187,16 @@ pub enum Command {
     Delete,
     Clear,
     Backspace,
+    DeleteForward,
     DeleteWord,
+    DeleteWordForward,
+    DeleteToEnd,
     CursorLeft,
     CursorRight,
+    CursorWordLeft,
+    CursorWordRight,
+    CursorStart,
+    CursorEnd,
 }
 
 impl Command {
@@ -197,9 +216,16 @@ impl Command {
             Self::Delete => "delete",
             Self::Clear => "clear",
             Self::Backspace => "backspace",
+            Self::DeleteForward => "delete_forward",
             Self::DeleteWord => "delete_word",
+            Self::DeleteWordForward => "delete_word_forward",
+            Self::DeleteToEnd => "delete_to_end",
             Self::CursorLeft => "cursor_left",
             Self::CursorRight => "cursor_right",
+            Self::CursorWordLeft => "cursor_word_left",
+            Self::CursorWordRight => "cursor_word_right",
+            Self::CursorStart => "cursor_start",
+            Self::CursorEnd => "cursor_end",
         }
     }
 
@@ -219,10 +245,47 @@ impl Command {
             Self::Delete => "Delete the selected checkout",
             Self::Clear => "Clear the search query",
             Self::Backspace => "Delete the previous character",
+            Self::DeleteForward => "Delete the next character",
             Self::DeleteWord => "Delete the previous word",
+            Self::DeleteWordForward => "Delete the next word",
+            Self::DeleteToEnd => "Delete to the end",
             Self::CursorLeft => "Move the cursor left",
             Self::CursorRight => "Move the cursor right",
+            Self::CursorWordLeft => "Move the cursor back a word",
+            Self::CursorWordRight => "Move the cursor forward a word",
+            Self::CursorStart => "Move the cursor to the start",
+            Self::CursorEnd => "Move the cursor to the end",
         }
+    }
+
+    /// The edit a text-editing command makes, or `None` for any other command.
+    pub const fn text_edit(self) -> Option<TextEdit> {
+        Some(match self {
+            Self::Clear => TextEdit::Clear,
+            Self::Backspace => TextEdit::Backspace,
+            Self::DeleteForward => TextEdit::DeleteForward,
+            Self::DeleteWord => TextEdit::DeleteWordBackward,
+            Self::DeleteWordForward => TextEdit::DeleteWordForward,
+            Self::DeleteToEnd => TextEdit::DeleteToEnd,
+            Self::CursorLeft => TextEdit::CursorLeft,
+            Self::CursorRight => TextEdit::CursorRight,
+            Self::CursorWordLeft => TextEdit::CursorWordLeft,
+            Self::CursorWordRight => TextEdit::CursorWordRight,
+            Self::CursorStart => TextEdit::CursorStart,
+            Self::CursorEnd => TextEdit::CursorEnd,
+            Self::Noop
+            | Self::Quit
+            | Self::Help
+            | Self::DismissToast
+            | Self::ScanWarnings
+            | Self::MoveUp
+            | Self::MoveDown
+            | Self::Open
+            | Self::BranchesView
+            | Self::Back
+            | Self::NewBranch
+            | Self::Delete => return None,
+        })
     }
 }
 
@@ -245,9 +308,16 @@ impl FromStr for Command {
             "delete" | "delete_worktree" => Ok(Self::Delete),
             "clear" | "clear_query" => Ok(Self::Clear),
             "backspace" => Ok(Self::Backspace),
+            "delete_forward" => Ok(Self::DeleteForward),
             "delete_word" => Ok(Self::DeleteWord),
+            "delete_word_forward" => Ok(Self::DeleteWordForward),
+            "delete_to_end" => Ok(Self::DeleteToEnd),
             "cursor_left" => Ok(Self::CursorLeft),
             "cursor_right" => Ok(Self::CursorRight),
+            "cursor_word_left" => Ok(Self::CursorWordLeft),
+            "cursor_word_right" => Ok(Self::CursorWordRight),
+            "cursor_start" => Ok(Self::CursorStart),
+            "cursor_end" => Ok(Self::CursorEnd),
             _ => Err(format!("unknown key action '{value}'")),
         }
     }
@@ -312,16 +382,33 @@ impl Default for KeysConfig {
             general: map(&[
                 ("C-c", Command::Quit),
                 ("C-h", Command::Help),
-                ("C-x", Command::DismissToast),
-                ("C-e", Command::ScanWarnings),
+                ("f1", Command::Help),
+                ("C-s", Command::ScanWarnings),
             ]),
             text_edit: map(&[
                 ("C-u", Command::Clear),
                 ("backspace", Command::Backspace),
+                ("delete", Command::DeleteForward),
+                ("C-d", Command::DeleteForward),
                 ("A-backspace", Command::DeleteWord),
                 ("C-w", Command::DeleteWord),
+                ("A-d", Command::DeleteWordForward),
+                ("A-delete", Command::DeleteWordForward),
+                ("C-k", Command::DeleteToEnd),
                 ("left", Command::CursorLeft),
+                ("C-b", Command::CursorLeft),
                 ("right", Command::CursorRight),
+                ("C-f", Command::CursorRight),
+                ("A-left", Command::CursorWordLeft),
+                ("C-left", Command::CursorWordLeft),
+                ("A-b", Command::CursorWordLeft),
+                ("A-right", Command::CursorWordRight),
+                ("C-right", Command::CursorWordRight),
+                ("A-f", Command::CursorWordRight),
+                ("home", Command::CursorStart),
+                ("C-a", Command::CursorStart),
+                ("end", Command::CursorEnd),
+                ("C-e", Command::CursorEnd),
             ]),
             list_navigation: map(&[
                 ("up", Command::MoveUp),
@@ -411,6 +498,7 @@ fn config_key_name(key: &KeyChord) -> String {
         KeyCode::End => "end",
         KeyCode::PageUp => "pageup",
         KeyCode::PageDown => "pagedown",
+        KeyCode::F(number) => return format!("{output}f{number}"),
         KeyCode::Char(character) => return format!("{output}{}", character.to_ascii_lowercase()),
         _ => "unknown",
     });
@@ -435,6 +523,22 @@ impl KeysConfig {
         extend_layer(&mut keys.repo_select, raw.repo_select, REPO_SELECT)?;
         extend_layer(&mut keys.branch_select, raw.branch_select, BRANCH_SELECT)?;
         Ok(keys)
+    }
+
+    /// The chords the text-editing bindings act on.
+    pub fn text_edit_chords(&self) -> impl Iterator<Item = KeyChord> + '_ {
+        self.text_edit
+            .iter()
+            .filter(|(_, command)| **command != Command::Noop)
+            .map(|(chord, _)| *chord)
+    }
+
+    /// The edit `chord` makes in a text field, by the text-editing bindings alone.
+    pub fn text_edit(&self, chord: KeyChord) -> Option<TextEdit> {
+        self.text_edit
+            .get(&chord)
+            .copied()
+            .and_then(Command::text_edit)
     }
 
     pub fn command_for(&self, mode: BindingMode, chord: KeyChord) -> Option<Command> {
@@ -519,11 +623,12 @@ impl KeysConfig {
 
     /// The key to show for `wanted`: like `first_key`, but favouring unmodified named keys
     /// such as arrows or `esc` over chords like `ctrl+p`, which sort first but are the less
-    /// obvious binding to show, and chords over plain characters, which a search types
-    /// instead while it has text.
+    /// obvious binding to show; then function keys, which laptops often hide behind `fn`;
+    /// then plain characters, which a search types instead while it has text.
     pub fn preferred_key(&self, mode: BindingMode, wanted: Command) -> Option<KeyChord> {
         let rank = |key: &KeyChord| match (key.modifiers == KeyModifiers::NONE, key.code) {
-            (true, KeyCode::Char(_)) => 2,
+            (true, KeyCode::Char(_)) => 3,
+            (_, KeyCode::F(_)) => 2,
             (true, _) => 0,
             (false, _) => 1,
         };
@@ -597,9 +702,16 @@ const TEXT_EDIT: &[Command] = &[
     Command::Noop,
     Command::Clear,
     Command::Backspace,
+    Command::DeleteForward,
     Command::DeleteWord,
+    Command::DeleteWordForward,
+    Command::DeleteToEnd,
     Command::CursorLeft,
     Command::CursorRight,
+    Command::CursorWordLeft,
+    Command::CursorWordRight,
+    Command::CursorStart,
+    Command::CursorEnd,
 ];
 const LIST_NAVIGATION: &[Command] = &[Command::Noop, Command::MoveUp, Command::MoveDown];
 const MODAL: &[Command] = &[Command::Noop, Command::Open, Command::Back];
@@ -648,14 +760,21 @@ const fn command_rank(command: Command) -> u8 {
         Command::MoveDown => 6,
         Command::Clear => 7,
         Command::Backspace => 8,
-        Command::DeleteWord => 9,
-        Command::CursorLeft => 10,
-        Command::CursorRight => 11,
-        Command::Help => 12,
-        Command::DismissToast => 13,
-        Command::ScanWarnings => 14,
-        Command::Quit => 15,
-        Command::Noop => 16,
+        Command::DeleteForward => 9,
+        Command::DeleteWord => 10,
+        Command::DeleteWordForward => 11,
+        Command::DeleteToEnd => 12,
+        Command::CursorLeft => 13,
+        Command::CursorRight => 14,
+        Command::CursorWordLeft => 15,
+        Command::CursorWordRight => 16,
+        Command::CursorStart => 17,
+        Command::CursorEnd => 18,
+        Command::Help => 19,
+        Command::DismissToast => 20,
+        Command::ScanWarnings => 21,
+        Command::Quit => 22,
+        Command::Noop => 23,
     }
 }
 

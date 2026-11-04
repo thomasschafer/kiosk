@@ -316,7 +316,7 @@ impl Default for KeysConfig {
                 ("C-e", Command::ScanWarnings),
             ]),
             text_edit: map(&[
-                ("esc", Command::Clear),
+                ("C-u", Command::Clear),
                 ("backspace", Command::Backspace),
                 ("A-backspace", Command::DeleteWord),
                 ("C-w", Command::DeleteWord),
@@ -333,7 +333,7 @@ impl Default for KeysConfig {
             repo_select: map(&[
                 ("enter", Command::Open),
                 ("tab", Command::BranchesView),
-                ("q", Command::Quit),
+                ("esc", Command::Quit),
             ]),
             branch_select: map(&[
                 ("enter", Command::Open),

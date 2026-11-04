@@ -237,34 +237,20 @@ pub fn command_to_action(command: Command, state: &AppState) -> Option<Action> {
         Command::BranchesView => {
             matches!(state.mode, Mode::RepoSelect).then_some(Action::OpenBranches)
         }
-        Command::Back => {
-            if active_query(state).is_empty() {
-                match state.mode {
-                    Mode::BranchSelect(_) => Some(Action::BackToRepos),
-                    Mode::SelectBaseBranch { .. }
-                    | Mode::ConfirmRemoteBranch { .. }
-                    | Mode::ConfirmWorktreeDelete(_) => Some(Action::CancelOverlay),
-                    _ => None,
-                }
-            } else {
-                Some(Action::ClearQuery)
-            }
-        }
+        Command::Back => match state.mode {
+            Mode::BranchSelect(_) => Some(Action::BackToRepos),
+            Mode::SelectBaseBranch { .. }
+            | Mode::ConfirmRemoteBranch { .. }
+            | Mode::ConfirmWorktreeDelete(_) => Some(Action::CancelOverlay),
+            _ => None,
+        },
         Command::NewBranch => (matches!(state.mode, Mode::BranchSelect(_))
             && !state.branch_view.loading)
             .then_some(Action::StartNewBranch),
         Command::Delete => {
             matches!(state.mode, Mode::BranchSelect(_)).then_some(Action::DeleteWorktree)
         }
-        Command::Clear => {
-            if !active_query(state).is_empty() {
-                Some(Action::ClearQuery)
-            } else if matches!(state.mode, Mode::RepoSelect) {
-                Some(Action::Quit)
-            } else {
-                None
-            }
-        }
+        Command::Clear => (!active_query(state).is_empty()).then_some(Action::ClearQuery),
         Command::Backspace => Some(Action::Backspace),
         Command::DeleteWord => Some(Action::DeleteWord),
         Command::CursorLeft => Some(Action::CursorLeft),
@@ -344,22 +330,72 @@ mod tests {
     }
 
     #[test]
-    fn q_default_is_contextual_and_can_be_unbound() {
+    fn ctrl_u_clears_the_search_and_esc_leaves_whatever_is_typed() {
+        let keys = KeysConfig::default();
+        let esc = key(KeyCode::Esc, KeyModifiers::NONE);
+        let ctrl_u = key(KeyCode::Char('u'), KeyModifiers::CONTROL);
+        let mut state = AppState::new(&TEST_PRODUCT, None);
+        assert_eq!(
+            resolve_action(ctrl_u, &state, &keys),
+            None,
+            "nothing to clear"
+        );
+        state.repo_view.list.input.text = "al".into();
+        assert_eq!(
+            resolve_action(ctrl_u, &state, &keys),
+            Some(Action::ClearQuery)
+        );
+        assert_eq!(resolve_action(esc, &state, &keys), Some(Action::Quit));
+
+        let context = BranchContext {
+            repo_path: "/repo".into(),
+            repo_name: "repo".into(),
+        };
+        state.mode = Mode::BranchSelect(context.clone());
+        state.branch_view.list.input.text = "fe".into();
+        assert_eq!(
+            resolve_action(ctrl_u, &state, &keys),
+            Some(Action::ClearQuery)
+        );
+        assert_eq!(
+            resolve_action(esc, &state, &keys),
+            Some(Action::BackToRepos)
+        );
+
+        let mut list = SearchableList::new(1);
+        list.input.text = "ma".into();
+        state.mode = Mode::SelectBaseBranch {
+            context,
+            flow: BaseBranchSelection {
+                new_name: "feat".into(),
+                bases: vec!["main".into()],
+                list,
+            },
+        };
+        assert_eq!(
+            resolve_action(ctrl_u, &state, &keys),
+            Some(Action::ClearQuery)
+        );
+        assert_eq!(
+            resolve_action(esc, &state, &keys),
+            Some(Action::CancelOverlay)
+        );
+    }
+
+    #[test]
+    fn q_is_typed_and_a_letter_bound_to_quit_only_quits_an_empty_search() {
         let mut state = AppState::new(&TEST_PRODUCT, None);
         let q = key(KeyCode::Char('q'), KeyModifiers::NONE);
         assert_eq!(
             resolve_action(q, &state, &KeysConfig::default()),
-            Some(Action::Quit)
-        );
-        state.repo_view.list.input.text = "a".into();
-        assert_eq!(
-            resolve_action(q, &state, &KeysConfig::default()),
-            Some(Action::Insert('q'))
+            Some(Action::Insert('q')),
+            "a search can start with q"
         );
 
-        state.repo_view.list.input.clear();
-        let keys = toml::from_str::<KeysConfig>("[repo_select]\nq = \"noop\"").unwrap();
-        assert_eq!(resolve_action(q, &state, &keys), None);
+        let keys = toml::from_str::<KeysConfig>("[repo_select]\nq = \"quit\"").unwrap();
+        assert_eq!(resolve_action(q, &state, &keys), Some(Action::Quit));
+        state.repo_view.list.input.text = "a".into();
+        assert_eq!(resolve_action(q, &state, &keys), Some(Action::Insert('q')));
     }
 
     #[test]
@@ -554,7 +590,7 @@ mod tests {
             }],
             list: SearchableList::new(1),
         }));
-        let keys = KeysConfig::default();
+        let keys = toml::from_str::<KeysConfig>("[repo_select]\nq = \"quit\"").unwrap();
         assert_eq!(
             resolve_action(key(KeyCode::Char('q'), KeyModifiers::NONE), &state, &keys),
             Some(Action::Insert('q'))

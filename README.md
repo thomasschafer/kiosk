@@ -259,8 +259,8 @@ Defaults:
 [keys.text_edit]
 "alt+backspace" = "delete_word"
 "backspace" = "backspace"
+"ctrl+u" = "clear"
 "ctrl+w" = "delete_word"
-"esc" = "clear"
 "left" = "cursor_left"
 "right" = "cursor_right"
 
@@ -276,7 +276,7 @@ Defaults:
 
 [keys.repo_select]
 "enter" = "open"
-"q" = "quit"
+"esc" = "quit"
 "tab" = "branches_view"
 
 [keys.branch_select]

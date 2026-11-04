@@ -797,9 +797,8 @@ fn footer_hints_follow_the_mode() {
         [
             ("enter", "open"),
             ("tab", "branches"),
-            ("esc", "clear/quit"),
             ("ctrl+h", "help"),
-            ("q", "quit"),
+            ("esc", "quit"),
         ]
     );
     assert_eq!(
@@ -866,12 +865,12 @@ fn every_bound_chord_is_listed_once_and_noop_bindings_are_left_out() {
         1,
         "ctrl+x is bound in two layers"
     );
-    let keys = keys("[repo_select]\nq = \"noop\"");
+    let keys = keys("[branch_select]\n\"C-o\" = \"noop\"");
     assert!(
         !keys
             .all_chords()
             .iter()
-            .any(|chord| chord.to_string() == "q")
+            .any(|chord| chord.to_string() == "ctrl+o")
     );
 }
 

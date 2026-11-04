@@ -517,19 +517,23 @@ impl KeysConfig {
             .find_map(|(key, command)| (command == wanted).then_some(key))
     }
 
-    /// Like `first_key`, but favours unmodified keys such as arrows over chords
-    /// like `ctrl+p`, which sort first but are the less obvious binding to show.
+    /// The key to show for `wanted`: like `first_key`, but favouring unmodified named keys
+    /// such as arrows or `esc` over chords like `ctrl+p`, which sort first but are the less
+    /// obvious binding to show, and chords over plain characters, which a search types
+    /// instead while it has text.
     pub fn preferred_key(&self, mode: BindingMode, wanted: Command) -> Option<KeyChord> {
-        let keys = self
-            .sections(mode)
+        let rank = |key: &KeyChord| match (key.modifiers == KeyModifiers::NONE, key.code) {
+            (true, KeyCode::Char(_)) => 2,
+            (true, _) => 0,
+            (false, _) => 1,
+        };
+        self.sections(mode)
             .into_iter()
             .flat_map(|section| section.bindings)
             .filter_map(|(key, command)| (command == wanted).then_some(key))
-            .collect::<Vec<_>>();
-        keys.iter()
-            .find(|key| key.modifiers == KeyModifiers::NONE)
-            .or_else(|| keys.first())
-            .copied()
+            .enumerate()
+            .min_by_key(|(order, key)| (rank(key), *order))
+            .map(|(_, key)| key)
     }
 
     pub fn sections(&self, mode: BindingMode) -> Vec<HelpSection> {
@@ -682,6 +686,26 @@ mod tests {
         assert_eq!(
             keys.preferred_key(BindingMode::Choice, Command::MoveUp),
             Some(KeyChord::new(KeyCode::Char('p'), KeyModifiers::CONTROL))
+        );
+    }
+
+    #[test]
+    fn preferred_key_shows_a_chord_before_a_letter_a_search_would_type() {
+        let keys = toml::from_str::<KeysConfig>("[general]\nq = \"quit\"").unwrap();
+        assert_eq!(
+            keys.preferred_key(BindingMode::Branch, Command::Quit),
+            Some(KeyChord::new(KeyCode::Char('c'), KeyModifiers::CONTROL))
+        );
+        assert_eq!(
+            keys.preferred_key(BindingMode::Repo, Command::Quit),
+            Some(KeyChord::new(KeyCode::Esc, KeyModifiers::NONE))
+        );
+        let keys =
+            toml::from_str::<KeysConfig>("[general]\nq = \"quit\"\n\"C-c\" = \"noop\"").unwrap();
+        assert_eq!(
+            keys.preferred_key(BindingMode::Branch, Command::Quit),
+            Some(KeyChord::new(KeyCode::Char('q'), KeyModifiers::NONE)),
+            "a letter is still shown when it is the only way"
         );
     }
 

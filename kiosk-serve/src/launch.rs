@@ -138,6 +138,32 @@ fn detach(command: &mut Command) {
         const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         command.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
+        keep_own_std_handles();
+    }
+}
+
+/// Stops this process's own standard handles from passing to the background copy.
+///
+/// Windows starts a child with every inheritable handle of its parent, not just the ones
+/// it is given. This process's standard handles came from whoever ran it, such as an app
+/// waiting for its output to end, and stay inheritable; held open by the background copy,
+/// they would keep that wait going for as long as the picker runs.
+#[cfg(windows)]
+fn keep_own_std_handles() {
+    use windows_sys::Win32::{
+        Foundation::{HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation},
+        System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE},
+    };
+    for which in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+        // SAFETY: GetStdHandle takes no pointers and may return null or
+        // INVALID_HANDLE_VALUE, both checked before SetHandleInformation, which changes
+        // only the inherit flag of a handle this process owns.
+        unsafe {
+            let handle = GetStdHandle(which);
+            if !handle.is_null() && handle != INVALID_HANDLE_VALUE {
+                SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0);
+            }
+        }
     }
 }
 

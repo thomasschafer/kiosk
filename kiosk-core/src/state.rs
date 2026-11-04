@@ -132,6 +132,36 @@ impl SearchableList {
         });
     }
 
+    /// Selects the item at `position`, if there is one.
+    pub fn select(&mut self, position: usize) {
+        if position < self.filtered.len() {
+            self.selected = Some(position);
+        }
+    }
+
+    /// Scrolls by `delta` rows, keeping the selection on screen by moving it the least it
+    /// has to.
+    pub fn scroll_by(&mut self, delta: i32, viewport_rows: usize) {
+        if self.filtered.is_empty() {
+            self.scroll_offset = 0;
+            return;
+        }
+        let viewport_rows = viewport_rows.max(1);
+        let max_offset = self.filtered.len().saturating_sub(viewport_rows);
+        let magnitude = delta.unsigned_abs() as usize;
+        self.scroll_offset = if delta.is_negative() {
+            self.scroll_offset.saturating_sub(magnitude)
+        } else {
+            self.scroll_offset.saturating_add(magnitude)
+        }
+        .min(max_offset);
+        let last_visible = self.scroll_offset + viewport_rows - 1;
+        self.selected = Some(self.selected.unwrap_or_default().clamp(
+            self.scroll_offset,
+            last_visible.min(self.filtered.len() - 1),
+        ));
+    }
+
     pub fn update_scroll_offset(&mut self, viewport_rows: usize) {
         if self.filtered.is_empty() {
             self.scroll_offset = 0;
@@ -225,6 +255,18 @@ impl HelpOverlayState {
 pub struct ScanWarningsOverlayState {
     /// The first rendered line shown. Rendering clamps it to the content.
     pub scroll_offset: usize,
+}
+
+impl ScanWarningsOverlayState {
+    /// Scrolls by `delta` rows. Frontends clamp the offset to what they draw.
+    pub fn scroll(&mut self, delta: i32) {
+        let magnitude = delta.unsigned_abs() as usize;
+        self.scroll_offset = if delta.is_negative() {
+            self.scroll_offset.saturating_sub(magnitude)
+        } else {
+            self.scroll_offset.saturating_add(magnitude)
+        };
+    }
 }
 
 /// A view drawn over the current mode, which keeps its own state underneath.

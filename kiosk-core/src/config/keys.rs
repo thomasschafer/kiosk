@@ -458,6 +458,27 @@ impl KeysConfig {
         command
     }
 
+    /// Every chord bound to a command in any layer, so a frontend can claim them before
+    /// its host's own shortcuts do.
+    pub fn all_chords(&self) -> Vec<KeyChord> {
+        let mut chords = [
+            &self.general,
+            &self.text_edit,
+            &self.list_navigation,
+            &self.modal,
+            &self.repo_select,
+            &self.branch_select,
+        ]
+        .into_iter()
+        .flatten()
+        .filter(|(_, command)| **command != Command::Noop)
+        .map(|(chord, _)| *chord)
+        .collect::<Vec<_>>();
+        chords.sort_by_key(ToString::to_string);
+        chords.dedup();
+        chords
+    }
+
     pub fn is_dismiss_toast(&self, chord: KeyChord) -> bool {
         self.general.get(&chord) == Some(&Command::DismissToast)
     }

@@ -1,6 +1,9 @@
+//! What a key press does in the picker. Frontends turn their own key events into a
+//! [`KeyInput`]; [`resolve_input`] turns that into the [`Action`] the picker performs.
+
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use kiosk_core::{
+use crate::{
     config::keys::{BindingMode, Command, KeyChord, KeysConfig},
     keyboard::Action,
     state::{AppState, Mode, Overlay},
@@ -8,16 +11,56 @@ use kiosk_core::{
 
 /// The scan warnings view scrolls whatever mode it opened over, so it takes its scroll
 /// keys from the dialog, navigation and general layers.
-pub(crate) const SCAN_WARNINGS_BINDING_MODE: BindingMode = BindingMode::Choice;
+pub const SCAN_WARNINGS_BINDING_MODE: BindingMode = BindingMode::Choice;
 
 const ESC: KeyChord = KeyChord::new(KeyCode::Esc, KeyModifiers::NONE);
 
+/// One key press: the chord bindings are looked up by, and the character it types, if any.
+///
+/// The two are separate because they can disagree. In a terminal a chord with ctrl or alt
+/// types nothing, but on macOS option composes characters (`option+2` is `@` on many
+/// layouts), so a GUI reports `alt+2` typing `@`. A bound chord always wins; an unbound one
+/// types its character.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyInput {
+    pub chord: KeyChord,
+    pub text: Option<char>,
+}
+
+impl KeyInput {
+    /// A terminal key event, where only a chord without ctrl or alt types its character.
+    pub fn from_event(event: KeyEvent) -> Self {
+        let chord = KeyChord::from_event(event);
+        let text = match chord.code {
+            KeyCode::Char(character)
+                if !chord
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                Some(character)
+            }
+            _ => None,
+        };
+        Self { chord, text }
+    }
+
+    /// The printable character this press types.
+    fn typed(self) -> Option<char> {
+        self.text.filter(|character| !character.is_control())
+    }
+}
+
+/// [`resolve_input`] for a terminal key event.
 pub fn resolve_action(key: KeyEvent, state: &AppState, keys: &KeysConfig) -> Option<Action> {
-    let chord = KeyChord::from_event(key);
+    resolve_input(KeyInput::from_event(key), state, keys)
+}
+
+pub fn resolve_input(input: KeyInput, state: &AppState, keys: &KeysConfig) -> Option<Action> {
+    let chord = input.chord;
     match &state.overlay {
         Some(Overlay::Help(_)) => {
             let command = keys.command_for(KeysConfig::mode_for(&state.mode), chord);
-            return help_overlay_action(chord, command);
+            return help_overlay_action(input, command);
         }
         Some(Overlay::ScanWarnings(_)) => {
             let opening = keys.command_for(KeysConfig::mode_for(&state.mode), chord);
@@ -51,11 +94,7 @@ pub fn resolve_action(key: KeyEvent, state: &AppState, keys: &KeysConfig) -> Opt
     {
         return command_to_action(command, state);
     }
-    if let KeyCode::Char(character) = chord.code
-        && !chord
-            .modifiers
-            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-        && !character.is_control()
+    if let Some(character) = input.typed()
         && matches!(
             state.mode,
             Mode::RepoSelect | Mode::BranchSelect(_) | Mode::SelectBaseBranch { .. }
@@ -66,23 +105,62 @@ pub fn resolve_action(key: KeyEvent, state: &AppState, keys: &KeysConfig) -> Opt
     None
 }
 
+/// Selecting the item at `position` of the list in front with the pointer, or `None`
+/// when nothing in front has items to select.
+pub fn select(position: usize, state: &AppState) -> Option<Action> {
+    pointer_list_in_front(state).then_some(Action::Select(position))
+}
+
+/// Closing whatever is in front of the list without acting on it, as a dialog's cancel
+/// button or a click beside it does: an overlay, or a dialog's flow. `None` when nothing
+/// can be closed, as while a new branch's name is checked.
+pub fn dismiss(state: &AppState) -> Option<Action> {
+    if state.overlay.is_some() {
+        return Some(Action::CloseOverlay);
+    }
+    match state.mode {
+        Mode::SelectBaseBranch { .. }
+        | Mode::ConfirmRemoteBranch { .. }
+        | Mode::ConfirmWorktreeDelete(_) => Some(Action::CancelOverlay),
+        Mode::RepoSelect
+        | Mode::BranchSelect(_)
+        | Mode::ValidatingNewBranch { .. }
+        | Mode::Loading { .. } => None,
+    }
+}
+
+/// Leaving a repository's branches for the repository list, whatever is typed, as a back
+/// button does.
+pub fn back_to_repos(state: &AppState) -> Option<Action> {
+    (state.overlay.is_none() && matches!(state.mode, Mode::BranchSelect(_)))
+        .then_some(Action::BackToRepos)
+}
+
+/// Whether the list in front takes pointer selection: an overlay's, the mode's list or the
+/// remote branch prompt's choices.
+fn pointer_list_in_front(state: &AppState) -> bool {
+    match &state.overlay {
+        Some(Overlay::Help(_)) => true,
+        Some(Overlay::ScanWarnings(_)) => false,
+        None => matches!(
+            state.mode,
+            Mode::RepoSelect
+                | Mode::BranchSelect(_)
+                | Mode::SelectBaseBranch { .. }
+                | Mode::ConfirmRemoteBranch { .. }
+        ),
+    }
+}
+
 /// Help owns its own query, so typing filters it and `esc` always closes it.
-fn help_overlay_action(chord: KeyChord, command: Option<Command>) -> Option<Action> {
-    if chord == ESC {
+fn help_overlay_action(input: KeyInput, command: Option<Command>) -> Option<Action> {
+    if input.chord == ESC {
         return Some(Action::CloseOverlay);
     }
     if let Some(action) = command.and_then(help_command_to_action) {
         return Some(action);
     }
-    if let KeyCode::Char(character) = chord.code
-        && !chord
-            .modifiers
-            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-        && !character.is_control()
-    {
-        return Some(Action::Insert(character));
-    }
-    None
+    input.typed().map(Action::Insert)
 }
 
 /// The scan warnings view only scrolls, and closes with `esc` or the key that opened it.
@@ -125,7 +203,7 @@ fn help_command_to_action(command: Command) -> Option<Action> {
     }
 }
 
-fn command_to_action(command: Command, state: &AppState) -> Option<Action> {
+pub fn command_to_action(command: Command, state: &AppState) -> Option<Action> {
     match command {
         Command::Noop => None,
         Command::Quit => Some(Action::Quit),
@@ -209,8 +287,8 @@ fn active_query(state: &AppState) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kiosk_core::product::TEST_PRODUCT;
-    use kiosk_core::state::{
+    use crate::product::TEST_PRODUCT;
+    use crate::state::{
         BaseBranchSelection, BranchContext, DeleteFlowState, DeleteWorktreeTarget, HelpBindingRow,
         HelpOverlayState, ScanWarningsOverlayState, SearchableList,
     };
@@ -296,7 +374,7 @@ mod tests {
             resolve_action(chord, &state, &KeysConfig::default()),
             Some(Action::DeleteWorktree)
         );
-        state.push_toast(kiosk_core::state::ToastKind::Warning, "notice");
+        state.push_toast(crate::state::ToastKind::Warning, "notice");
         assert_eq!(
             resolve_action(chord, &state, &KeysConfig::default()),
             Some(Action::DismissToast)
@@ -385,11 +463,7 @@ mod tests {
                 repo_path: "/repo".into(),
                 repo_name: "repo".into(),
             },
-            prompt: kiosk_core::picker::new_branch::test_remote_prompt(
-                "feature",
-                &["origin"],
-                false,
-            ),
+            prompt: crate::picker::new_branch::test_remote_prompt("feature", &["origin"], false),
         };
         let keys = KeysConfig::default();
         for (code, modifiers, expected) in [
@@ -506,7 +580,7 @@ mod tests {
         let ctrl_e = key(KeyCode::Char('e'), KeyModifiers::CONTROL);
         assert_eq!(resolve_action(ctrl_e, &state, &keys), None);
 
-        state.push_scan_warning(kiosk_core::git::ScanWarning {
+        state.push_scan_warning(crate::git::ScanWarning {
             path: "/locked".into(),
             message: "permission denied".into(),
         });
@@ -574,7 +648,7 @@ mod tests {
     #[test]
     fn the_key_that_opened_scan_warnings_closes_them_despite_a_dialog_binding() {
         let mut state = AppState::new(&TEST_PRODUCT, None);
-        state.push_scan_warning(kiosk_core::git::ScanWarning {
+        state.push_scan_warning(crate::git::ScanWarning {
             path: "/locked".into(),
             message: "denied".into(),
         });

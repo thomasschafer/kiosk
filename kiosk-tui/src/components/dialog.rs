@@ -7,50 +7,25 @@ use ratatui::{
 };
 
 use crate::theme::Theme;
-use kiosk_core::config::keys::{BindingMode, Command, KeysConfig};
+use kiosk_core::view::{Hint, Tone};
 
-pub(crate) fn confirm_cancel_keys(keys: &KeysConfig) -> (Option<String>, Option<String>) {
-    (
-        keys.first_key(BindingMode::Modal, Command::Open)
-            .map(|key| key.to_string()),
-        keys.first_key(BindingMode::Modal, Command::Back)
-            .map(|key| key.to_string()),
-    )
-}
-
-pub(crate) fn confirm_cancel_hints(keys: &KeysConfig) -> Vec<(String, &'static str)> {
-    let (confirm, cancel) = confirm_cancel_keys(keys);
-    confirm
-        .map(|key| (key, "confirm"))
-        .into_iter()
-        .chain(cancel.map(|key| (key, "cancel")))
-        .collect()
-}
-
-/// Combines the up and down keys into one hint when both are bound.
-pub(crate) fn move_hints(keys: &KeysConfig, mode: BindingMode) -> Vec<(String, &'static str)> {
-    match (
-        keys.preferred_key(mode, Command::MoveUp),
-        keys.preferred_key(mode, Command::MoveDown),
-    ) {
-        (Some(up), Some(down)) => vec![(format!("{up}/{down}"), "move")],
-        (Some(up), None) => vec![(up.to_string(), "move up")],
-        (None, Some(down)) => vec![(down.to_string(), "move down")],
-        (None, None) => Vec::new(),
-    }
-}
-
-/// Renders `(key, label)` pairs as one line. Returns `None` when there are no hints.
-pub(crate) fn hint_line<'a>(hints: &[(String, &'static str)], theme: &Theme) -> Option<Line<'a>> {
+/// Renders hints as one line, `key label` pairs split by `separator`. Returns `None` when
+/// there are no hints.
+pub(crate) fn hint_line<'a>(hints: &[Hint], separator: &'a str, theme: &Theme) -> Option<Line<'a>> {
     let mut spans = Vec::new();
-    for (key, label) in hints {
+    for hint in hints {
         if !spans.is_empty() {
-            spans.push(Span::raw(" / "));
+            spans.push(Span::raw(separator));
         }
-        spans.push(Span::styled(key.clone(), Style::default().fg(theme.hint)));
-        spans.push(Span::raw(format!(" {label}")));
+        spans.push(Span::styled(hint.key.clone(), theme.style(Tone::Hint)));
+        spans.push(Span::raw(format!(" {}", hint.label)));
     }
     (!spans.is_empty()).then(|| Line::from(spans))
+}
+
+/// [`hint_line`] with the separator dialogs use.
+pub(crate) fn dialog_hint_line<'a>(hints: &[Hint], theme: &Theme) -> Option<Line<'a>> {
+    hint_line(hints, " / ", theme)
 }
 
 pub struct Dialog<'a> {

@@ -80,19 +80,9 @@ pub fn draw(
         .areas(horizontal);
     frame.render_widget(Clear, popup);
 
-    let mut hints = super::dialog::move_hints(keys, crate::keymap::SCAN_WARNINGS_BINDING_MODE)
-        .into_iter()
-        .map(|(key, label)| {
-            let label = match label {
-                "move up" => "scroll up",
-                "move down" => "scroll down",
-                _ => "scroll",
-            };
-            (key, label)
-        })
-        .collect::<Vec<_>>();
-    hints.push(("esc".into(), "close"));
-    let mut hint_line = super::dialog::hint_line(&hints, theme).expect("esc always closes");
+    let mut hint_line =
+        super::dialog::dialog_hint_line(&kiosk_core::view::scan_warnings_hints(keys), theme)
+            .expect("esc always closes");
     hint_line.spans.insert(0, Span::raw(" "));
     hint_line.spans.push(Span::raw(" "));
     let block = Block::default()

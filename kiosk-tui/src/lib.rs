@@ -3,7 +3,7 @@
 
 mod app;
 pub mod components;
-pub mod keymap;
+pub use kiosk_core::keymap;
 pub mod launch;
 pub mod theme;
 mod wizard;

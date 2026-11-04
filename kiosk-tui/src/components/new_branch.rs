@@ -5,54 +5,39 @@ use ratatui::{
     layout::{Alignment, Constraint, Flex, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{
-        Block, Borders, Clear, HighlightSpacing, List, ListItem, ListState, Padding, Paragraph,
-    },
+    widgets::{Block, Borders, Clear, Padding, Paragraph},
 };
 
 use crate::theme::Theme;
 use kiosk_core::{
-    config::keys::{BindingMode, KeysConfig},
-    state::{AppState, Mode, RemoteBranchChoice, RemoteBranchPrompt},
+    config::keys::KeysConfig,
+    state::{AppState, Mode, RemoteBranchPrompt},
+    view::{self, Dialog},
 };
 
 pub fn draw_remote_prompt(
     frame: &mut Frame,
     area: Rect,
+    repo: &std::path::Path,
     prompt: &RemoteBranchPrompt,
     theme: &Theme,
     keys: &KeysConfig,
 ) {
-    let name = kiosk_core::display::sanitize(prompt.name()).into_owned();
-    let mut lines = match prompt.remote_count() {
-        0 if prompt.remotes_pending() => vec![Line::raw(format!(
-            "Remotes are still loading, so {name} may already exist on one."
-        ))],
-        0 => vec![Line::raw(format!("No remote has a branch named {name}."))],
-        count => {
-            let mut lines = vec![Line::raw(if count == 1 {
-                format!("{name} already exists on a remote.")
-            } else {
-                format!("{name} already exists on {count} remotes.")
-            })];
-            if prompt.remotes_pending() {
-                lines.push(Line::raw("Other remotes are still loading."));
-            }
-            lines
-        }
+    let Dialog::RemoteBranch {
+        title,
+        lines: message,
+        choices,
+        selected,
+        hints,
+    } = view::remote_branch_dialog(repo, prompt, keys)
+    else {
+        unreachable!("the remote branch prompt is a remote branch dialog");
     };
+    let mut lines = message.into_iter().map(Line::raw).collect::<Vec<_>>();
     lines.push(Line::raw(""));
-    for (index, choice) in prompt.choices().iter().enumerate() {
-        let label = match choice {
-            RemoteBranchChoice::Track(branch) => {
-                format!(
-                    "Track {}",
-                    kiosk_core::display::sanitize(&branch.display_name())
-                )
-            }
-            RemoteBranchChoice::CreateNew => format!("Create new branch {name}"),
-        };
-        lines.push(if index == prompt.selected() {
+    for (index, choice) in choices.into_iter().enumerate() {
+        let label = choice.label;
+        lines.push(if index == selected {
             Line::from(Span::styled(
                 format!("▸ {label}"),
                 Style::default()
@@ -64,21 +49,12 @@ pub fn draw_remote_prompt(
             Line::raw(format!("  {label}"))
         });
     }
-    let hints = [
-        super::dialog::move_hints(keys, BindingMode::Choice),
-        super::dialog::confirm_cancel_hints(keys),
-    ]
-    .concat();
-    if let Some(hints) = super::dialog::hint_line(&hints, theme) {
+    if let Some(hints) = super::dialog::dialog_hint_line(&hints, theme) {
         lines.push(Line::raw(""));
         lines.push(hints);
     }
-    let title = match (prompt.remote_count(), prompt.remotes_pending()) {
-        (0, true) => " Remotes still loading ",
-        (0, false) => " New branch ",
-        _ => " Branch exists on remote ",
-    };
-    super::dialog::Dialog::new(title, lines, theme.secondary).render(frame, area);
+    let title = format!(" {title} ");
+    super::dialog::Dialog::new(&title, lines, theme.secondary).render(frame, area);
 }
 
 pub fn draw(
@@ -96,21 +72,14 @@ pub fn draw(
         .areas(horizontal);
 
     let title = match &state.mode {
-        Mode::ValidatingNewBranch { name, .. } => {
-            format!(" New branch \"{}\" ", kiosk_core::display::sanitize(name))
-        }
-        Mode::SelectBaseBranch { flow, .. } => {
-            format!(
-                " New branch \"{}\" — pick base ",
-                kiosk_core::display::sanitize(&flow.new_name)
-            )
-        }
+        Mode::ValidatingNewBranch { name, .. } => view::new_branch_title(name),
+        Mode::SelectBaseBranch { flow, .. } => view::base_branch_title(&flow.new_name),
         _ => return,
     };
     frame.render_widget(Clear, popup);
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(title)
+        .title(format!(" {title} "))
         .border_style(Style::default().fg(theme.secondary))
         .padding(Padding::uniform(1));
     let inner = block.inner(popup);
@@ -118,15 +87,12 @@ pub fn draw(
 
     match &mut state.mode {
         Mode::ValidatingNewBranch { .. } => {
-            let spinner =
-                super::repo_list::SPINNER_FOR_LOADING[(spinner_start.elapsed().as_millis() / 80)
-                    as usize
-                    % super::repo_list::SPINNER_FOR_LOADING.len()];
+            let spinner = super::repo_list::spinner(spinner_start);
             frame.render_widget(
                 Paragraph::new(vec![
                     Line::raw(""),
                     Line::from(Span::styled(
-                        format!("{spinner} Validating branch name…"),
+                        format!("{spinner} {}", view::VALIDATING_BRANCH),
                         Style::default()
                             .fg(theme.secondary)
                             .add_modifier(Modifier::BOLD),
@@ -136,51 +102,22 @@ pub fn draw(
                 inner,
             );
         }
-        Mode::SelectBaseBranch { flow, .. } => {
+        Mode::SelectBaseBranch { context, flow } => {
             let [search_area, list_area] =
                 Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).areas(inner);
-            super::search_bar::draw(
-                frame,
-                search_area,
-                &super::search_bar::SearchBarStyle {
-                    title: "Base branch",
-                    placeholder: "Type to filter local branches…",
-                    border_color: theme.secondary,
-                    muted_color: theme.muted,
-                },
-                &flow.list.input.text,
-                flow.list.input.cursor,
+            let list = view::base_list(
+                &context.repo_path,
+                flow,
+                usize::from(list_area.height.saturating_sub(2)).max(1),
             );
-            let items = flow
-                .list
-                .filtered
-                .iter()
-                .filter_map(|(index, _)| flow.bases.get(*index))
-                .map(|base| {
-                    ListItem::new(Span::raw(kiosk_core::display::sanitize(base).into_owned()))
-                })
-                .collect::<Vec<_>>();
-            let list = List::new(items)
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title(format!(" {} bases ", flow.list.filtered.len()))
-                        .border_style(Style::default().fg(theme.secondary)),
-                )
-                .highlight_style(
-                    Style::default()
-                        .bg(theme.secondary)
-                        .fg(theme.highlight_fg)
-                        .add_modifier(Modifier::BOLD),
-                )
-                .highlight_symbol("▸ ")
-                .highlight_spacing(HighlightSpacing::Always);
-            let mut list_state = ListState::default();
-            list_state.select(flow.list.selected);
-            flow.list
-                .update_scroll_offset(usize::from(list_area.height.saturating_sub(2)).max(1));
-            *list_state.offset_mut() = flow.list.scroll_offset;
-            frame.render_stateful_widget(list, list_area, &mut list_state);
+            super::repo_list::draw_list_view(
+                frame,
+                [search_area, list_area],
+                &list,
+                theme.secondary,
+                theme,
+                spinner_start,
+            );
         }
         Mode::RepoSelect
         | Mode::BranchSelect(_)

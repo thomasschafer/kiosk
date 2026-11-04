@@ -7,7 +7,13 @@ use std::{
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
 
-use crate::{config::SearchDirEntry, state::TextInput};
+use crossterm::event::{KeyCode, KeyModifiers};
+
+use crate::{
+    config::{SearchDirEntry, keys::KeyChord},
+    keymap::KeyInput,
+    state::TextInput,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SetupDir {
@@ -224,6 +230,182 @@ impl SetupState {
                 optional: false,
             })
             .collect()
+    }
+}
+
+/// The chords [`SetupState::handle_key`] acts on besides typed characters, so a frontend
+/// can claim them before its host's own shortcuts do.
+pub const SETUP_CHORDS: [KeyChord; 12] = [
+    KeyChord::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+    KeyChord::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
+    KeyChord::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
+    KeyChord::new(KeyCode::Enter, KeyModifiers::NONE),
+    KeyChord::new(KeyCode::Esc, KeyModifiers::NONE),
+    KeyChord::new(KeyCode::Tab, KeyModifiers::NONE),
+    KeyChord::new(KeyCode::Backspace, KeyModifiers::NONE),
+    KeyChord::new(KeyCode::Backspace, KeyModifiers::ALT),
+    KeyChord::new(KeyCode::Up, KeyModifiers::NONE),
+    KeyChord::new(KeyCode::Down, KeyModifiers::NONE),
+    KeyChord::new(KeyCode::Left, KeyModifiers::NONE),
+    KeyChord::new(KeyCode::Right, KeyModifiers::NONE),
+];
+
+/// What a key press in the setup wizard asks of whoever runs it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetupOutcome {
+    Continue,
+    /// The user left without saving.
+    Quit,
+    /// The user confirmed: write [`SetupState::search_dirs`] to the config.
+    Save,
+}
+
+impl SetupState {
+    /// Applies a key press. `home` expands `~` for path completion.
+    pub fn handle_key(&mut self, input: KeyInput, home: Option<&Path>) -> SetupOutcome {
+        let chord = input.chord;
+        if chord.code == KeyCode::Char('c') && chord.modifiers.contains(KeyModifiers::CONTROL) {
+            return SetupOutcome::Quit;
+        }
+        match &self.step {
+            SetupStep::Welcome => match chord.code {
+                KeyCode::Enter => self.continue_from_welcome(),
+                KeyCode::Esc => return SetupOutcome::Quit,
+                _ => {}
+            },
+            SetupStep::Directories => {
+                if self.handle_directory_key(input, home) {
+                    return SetupOutcome::Quit;
+                }
+            }
+            SetupStep::Depth { .. } => self.handle_depth_key(input, home),
+            SetupStep::FolderMode { .. } => self.handle_folder_mode_key(chord),
+            SetupStep::Confirm => match chord.code {
+                KeyCode::Enter => return SetupOutcome::Save,
+                KeyCode::Esc => {
+                    self.step = SetupStep::Directories;
+                    self.input.clear();
+                }
+                _ => {}
+            },
+        }
+        SetupOutcome::Continue
+    }
+
+    /// Returns whether the user left the wizard.
+    fn handle_directory_key(&mut self, input: KeyInput, home: Option<&Path>) -> bool {
+        let chord = input.chord;
+        let control = chord.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = chord.modifiers.contains(KeyModifiers::ALT);
+        match chord.code {
+            KeyCode::Enter => {
+                if let Err(message) = self.begin_depth() {
+                    self.message = Some(message.into());
+                }
+            }
+            KeyCode::Tab => self.tab_complete(home),
+            KeyCode::Esc if self.input.text.is_empty() => return true,
+            KeyCode::Esc => {
+                self.input.clear();
+                self.update_completions(home);
+            }
+            KeyCode::Char('x') if control => {
+                if self.remove_last().is_none() {
+                    self.message = Some("No directory to remove".into());
+                }
+            }
+            KeyCode::Backspace if alt => {
+                self.input.delete_word();
+                self.update_completions(home);
+            }
+            KeyCode::Backspace => {
+                self.input.backspace();
+                self.update_completions(home);
+            }
+            KeyCode::Char('w') if control => {
+                self.input.delete_word();
+                self.update_completions(home);
+            }
+            KeyCode::Left if !control && !alt => self.input.cursor_left(),
+            KeyCode::Right if !control && !alt => self.input.cursor_right(),
+            _ => {
+                if let Some(character) = input.text.filter(|character| !character.is_control())
+                    && !control
+                {
+                    self.input.insert_char(character);
+                    self.message = None;
+                    self.update_completions(home);
+                }
+            }
+        }
+        false
+    }
+
+    fn handle_depth_key(&mut self, input: KeyInput, home: Option<&Path>) {
+        let chord = input.chord;
+        match chord.code {
+            KeyCode::Enter => {
+                if let Err(message) = self.commit_depth() {
+                    self.message = Some(message);
+                }
+            }
+            KeyCode::Esc => {
+                self.cancel_depth();
+                self.update_completions(home);
+            }
+            KeyCode::Backspace => {
+                self.depth_default_pristine = false;
+                self.input.backspace();
+            }
+            _ => {
+                if let Some(digit) = input.text.filter(char::is_ascii_digit)
+                    && !chord
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                {
+                    if self.depth_default_pristine {
+                        self.input.clear();
+                    }
+                    self.depth_default_pristine = false;
+                    self.input.insert_char(digit);
+                }
+            }
+        }
+    }
+
+    fn handle_folder_mode_key(&mut self, chord: KeyChord) {
+        match chord.code {
+            KeyCode::Up | KeyCode::Left => self.select_previous_folder_mode(),
+            KeyCode::Down | KeyCode::Right => self.select_next_folder_mode(),
+            KeyCode::Enter => {
+                if let Err(message) = self.commit_folder_mode() {
+                    self.message = Some(message.into());
+                }
+            }
+            KeyCode::Esc => self.cancel_folder_mode(),
+            _ => {}
+        }
+    }
+
+    /// Takes the completion at `index`, as clicking it does.
+    pub fn accept_completion(&mut self, index: usize, home: Option<&Path>) {
+        if self.step != SetupStep::Directories {
+            return;
+        }
+        let Some(completion) = self.completions.get(index).cloned() else {
+            return;
+        };
+        self.input.text = completion;
+        self.input.cursor = self.input.text.len();
+        self.message = None;
+        self.update_completions(home);
+    }
+
+    /// Selects one of the two folder modes, as a pointer does.
+    pub fn choose_folder_mode(&mut self, mode: FolderMode) {
+        if matches!(self.step, SetupStep::FolderMode { .. }) {
+            self.folder_mode = mode;
+        }
     }
 }
 
@@ -722,5 +904,122 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
         assert_eq!(fs::read_to_string(target).unwrap(), "existing");
         assert_eq!(fs::read_to_string(source).unwrap(), "new");
+    }
+}
+
+#[cfg(test)]
+mod key_tests {
+    use crossterm::event::KeyEvent;
+
+    use super::*;
+
+    fn press(state: &mut SetupState, event: KeyEvent) -> SetupOutcome {
+        state.handle_key(KeyInput::from_event(event), None)
+    }
+
+    #[test]
+    fn wizard_directory_input_accepts_shifted_uppercase_letters() {
+        let mut state = SetupState::default();
+        state.continue_from_welcome();
+
+        press(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT),
+        );
+
+        assert_eq!(state.input.text, "A");
+    }
+
+    #[test]
+    fn wizard_directory_input_accepts_unicode() {
+        let mut state = SetupState::default();
+        state.continue_from_welcome();
+        for character in ['é', '界'] {
+            press(
+                &mut state,
+                KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE),
+            );
+        }
+        assert_eq!(state.input.text, "é界");
+    }
+
+    #[test]
+    fn wizard_depth_input_accepts_shift_modifier_and_rejects_control() {
+        let mut state = SetupState::default();
+        state.continue_from_welcome();
+        state.input.text = "/Repo".into();
+        state.begin_depth().unwrap();
+
+        press(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('2'), KeyModifiers::SHIFT),
+        );
+        press(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('3'), KeyModifiers::CONTROL),
+        );
+
+        assert_eq!(state.input.text, "2");
+    }
+
+    #[test]
+    fn wizard_depth_replaces_the_default_only_on_the_first_edit() {
+        for (digits, expected) in [("10", "10"), ("12", "12"), ("2", "2")] {
+            let mut state = SetupState::default();
+            state.continue_from_welcome();
+            state.input.text = "/repo".into();
+            state.input.cursor = state.input.text.len();
+            state.begin_depth().unwrap();
+            for digit in digits.chars() {
+                press(
+                    &mut state,
+                    KeyEvent::new(KeyCode::Char(digit), KeyModifiers::NONE),
+                );
+            }
+            assert_eq!(state.input.text, expected);
+        }
+    }
+
+    #[test]
+    fn backspace_removes_the_pristine_depth_default_once() {
+        let mut state = SetupState::default();
+        state.continue_from_welcome();
+        state.input.text = "/repo".into();
+        state.input.cursor = state.input.text.len();
+        state.begin_depth().unwrap();
+        press(
+            &mut state,
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+        );
+        assert_eq!(state.input.text, "");
+        assert!(!state.depth_default_pristine);
+        press(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE),
+        );
+        assert_eq!(state.input.text, "2");
+    }
+
+    #[test]
+    fn folder_mode_escape_restores_the_depth_for_editing() {
+        let mut state = SetupState::default();
+        state.continue_from_welcome();
+        state.input.text = "/repo".into();
+        state.begin_depth().unwrap();
+        state.input.text = "12".into();
+        state.input.cursor = 2;
+        state.commit_depth().unwrap();
+
+        press(&mut state, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+        assert_eq!(
+            state.step,
+            SetupStep::Depth {
+                path: "/repo".into()
+            }
+        );
+        assert_eq!(state.input.text, "12");
+        assert_eq!(state.input.cursor, 2);
+        assert!(!state.depth_default_pristine);
     }
 }

@@ -7,47 +7,25 @@ use ratatui::{
 };
 
 use crate::theme::Theme;
-use kiosk_core::{
-    config::keys::KeysConfig,
-    state::{AppState, Toast, ToastKind},
-};
-
-fn queue_counter(length: usize) -> Option<String> {
-    (length > 1).then(|| format!("1/{length}"))
-}
-
-fn hints(keys: &KeysConfig, toast: &Toast) -> Vec<(String, &'static str)> {
-    toast
-        .is_scan_summary()
-        .then(|| keys.scan_warnings_key())
-        .flatten()
-        .map(|key| (key.to_string(), "details"))
-        .into_iter()
-        .chain(
-            keys.dismiss_toast_key()
-                .map(|key| (key.to_string(), "dismiss")),
-        )
-        .collect()
-}
+use kiosk_core::{config::keys::KeysConfig, state::AppState, view};
 
 pub fn draw(frame: &mut Frame, area: Rect, state: &AppState, theme: &Theme, keys: &KeysConfig) {
-    let Some(toast) = state.toasts.front() else {
+    let Some(toast) = view::toast(state, keys) else {
         return;
     };
     let width = area.width.saturating_sub(4).clamp(1, 100);
-    let (label, color) = match toast.kind {
-        ToastKind::Warning => ("Warning", theme.warning),
-        ToastKind::Error => ("Error", theme.error),
-    };
-    let counter = queue_counter(state.toasts.len()).map(|counter| format!("  {counter}"));
+    let color = theme
+        .color(toast.level.tone())
+        .expect("toast tones have colours");
+    let counter = toast.counter.map(|counter| format!("  {counter}"));
     let mut body = vec![Line::from(vec![
-        Span::raw(kiosk_core::display::sanitize(&toast.message).into_owned()),
+        Span::raw(toast.message),
         Span::styled(
             counter.unwrap_or_default(),
             Style::default().fg(theme.muted),
         ),
     ])];
-    if let Some(hints) = super::dialog::hint_line(&hints(keys, toast), theme) {
+    if let Some(hints) = super::dialog::dialog_hint_line(&toast.hints, theme) {
         body.push(Line::raw(""));
         body.push(hints);
     }
@@ -64,7 +42,7 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState, theme: &Theme, keys
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(color))
-        .title(format!(" {label} "))
+        .title(format!(" {} ", toast.label))
         .padding(Padding::horizontal(1));
     frame.render_widget(Clear, toast_area);
     frame.render_widget(
@@ -86,59 +64,12 @@ mod tests {
         text::{Line, Span},
     };
 
-    use super::{draw, hints, queue_counter};
+    use super::draw;
     use crate::theme::Theme;
     use kiosk_core::{
         config::{ThemeConfig, keys::KeysConfig},
-        git::ScanWarning,
         state::{AppState, ToastKind},
     };
-
-    #[test]
-    fn queue_counter_only_appears_for_pending_toasts() {
-        assert_eq!(queue_counter(0), None);
-        assert_eq!(queue_counter(1), None);
-        assert_eq!(queue_counter(3).as_deref(), Some("1/3"));
-    }
-
-    fn front_toast_hints(state: &AppState, keys: &KeysConfig) -> Vec<(String, &'static str)> {
-        hints(keys, state.toasts.front().unwrap())
-    }
-
-    #[test]
-    fn dismiss_hint_uses_the_effective_remapped_binding() {
-        let keys = toml::from_str::<KeysConfig>(
-            "[general]\n\"C-x\" = \"noop\"\n\"C-d\" = \"dismiss_toast\"",
-        )
-        .unwrap();
-        let mut state = AppState::new(&TEST_PRODUCT, None);
-        state.push_toast(ToastKind::Error, "failed");
-        assert_eq!(
-            front_toast_hints(&state, &keys),
-            [("ctrl+d".to_string(), "dismiss")]
-        );
-    }
-
-    #[test]
-    fn scan_summary_names_the_details_key_unless_it_is_unbound() {
-        let mut state = AppState::new(&TEST_PRODUCT, None);
-        state.push_scan_warning(ScanWarning {
-            path: "/locked".into(),
-            message: "denied".into(),
-        });
-        assert_eq!(
-            front_toast_hints(&state, &KeysConfig::default()),
-            [
-                ("ctrl+e".to_string(), "details"),
-                ("ctrl+x".to_string(), "dismiss")
-            ]
-        );
-        let keys = toml::from_str::<KeysConfig>("[general]\n\"C-e\" = \"noop\"").unwrap();
-        assert_eq!(
-            front_toast_hints(&state, &keys),
-            [("ctrl+x".to_string(), "dismiss")]
-        );
-    }
 
     #[test]
     fn toast_label_and_content_height_render_correctly_at_multiple_sizes() {

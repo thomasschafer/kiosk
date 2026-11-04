@@ -3,17 +3,26 @@ use std::time::Instant;
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, HighlightSpacing, List, ListItem, ListState},
 };
 
 use crate::theme::Theme;
-use kiosk_core::state::AppState;
+use kiosk_core::{
+    state::AppState,
+    view::{self, ListView, Tone},
+};
 
-use super::list_row::with_status;
+use super::list_row;
 
 pub const SPINNER_FOR_LOADING: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+/// The spinner frame to show `spinner_start.elapsed()` after the picker started.
+pub(crate) fn spinner(spinner_start: Instant) -> char {
+    SPINNER_FOR_LOADING
+        [(spinner_start.elapsed().as_millis() / 80) as usize % SPINNER_FOR_LOADING.len()]
+}
 
 pub fn draw(
     frame: &mut Frame,
@@ -22,108 +31,91 @@ pub fn draw(
     theme: &Theme,
     spinner_start: Instant,
 ) {
+    draw_list(frame, area, state, theme, spinner_start, |state, rows| {
+        view::repo_list(state, rows)
+    });
+}
+
+/// Draws a searchable list: its search bar over its rows, in the list's colour.
+pub(crate) fn draw_list(
+    frame: &mut Frame,
+    area: Rect,
+    state: &mut AppState,
+    theme: &Theme,
+    spinner_start: Instant,
+    list: impl FnOnce(&mut AppState, usize) -> ListView,
+) {
     let [search_area, list_area] =
         Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).areas(area);
-    let title = format!("{} — select repo", state.product.name);
+    state.active_list_rows = usize::from(list_area.height.saturating_sub(2)).max(1);
+    let list = list(state, state.active_list_rows);
+    draw_list_view(
+        frame,
+        [search_area, list_area],
+        &list,
+        theme.border,
+        theme,
+        spinner_start,
+    );
+}
+
+/// Draws `list`'s search bar and its rows, in a frame of `border`, in those two areas.
+pub(crate) fn draw_list_view(
+    frame: &mut Frame,
+    [search_area, list_area]: [Rect; 2],
+    list: &ListView,
+    border: Color,
+    theme: &Theme,
+    spinner_start: Instant,
+) {
+    let color = theme
+        .color(list.kind.tone())
+        .expect("list tones have colours");
     super::search_bar::draw(
         frame,
         search_area,
         &super::search_bar::SearchBarStyle {
-            title: &title,
-            placeholder: "Type to search repos…",
-            border_color: theme.accent,
+            title: &list.title,
+            placeholder: list.placeholder,
+            border_color: color,
             muted_color: theme.muted,
         },
-        &state.repo_view.list.input.text,
-        state.repo_view.list.input.cursor,
+        &format!("{}{}", list.query.before, list.query.after),
+        list.query.before.len(),
     );
-
-    state.active_list_rows = usize::from(list_area.height.saturating_sub(2)).max(1);
-    state
-        .repo_view
-        .list
-        .update_scroll_offset(state.active_list_rows);
-    let visible = state.repo_view.list.visible_items(state.active_list_rows);
-    let selected = state.repo_view.list.selected.and_then(|selected| {
-        visible
-            .iter()
-            .position(|(position, _)| *position == selected)
-    });
     let row_width = usize::from(list_area.width.saturating_sub(4));
-    let mut items: Vec<_> = visible
+    let mut items: Vec<_> = list
+        .rows
         .iter()
-        .filter_map(|(_, index)| state.repo_view.entries.get(*index))
-        .map(|entry| {
-            let name = kiosk_core::display::sanitize(&entry.display_name()).into_owned();
-            let left = if entry.repo.is_git {
-                vec![Span::raw(name)]
-            } else {
-                vec![
-                    Span::raw(name),
-                    Span::styled("  dir", Style::default().fg(theme.muted)),
-                ]
-            };
-            ListItem::new(Line::from(with_status(
-                &left,
-                state.annotations.repo(&entry.repo.path),
-                entry.is_open,
-                theme,
-                row_width,
-            )))
-        })
+        .map(|row| ListItem::new(Line::from(list_row::row(row, theme, row_width))))
         .collect();
-    let placeholder = if state.repo_view.loading {
-        items.is_empty().then(|| "Discovering repos…".to_string())
-    } else {
-        state
-            .repo_view
-            .entries
-            .is_empty()
-            .then(|| no_repos_message(state.repo_view.missing_optional_dirs))
-    };
-    if let Some(placeholder) = placeholder {
+    if let Some(empty) = &list.empty {
         items.push(ListItem::new(Span::styled(
-            placeholder,
-            Style::default().fg(theme.muted),
+            empty.clone(),
+            theme.style(Tone::Muted),
         )));
     }
-
-    let scan_suffix = if state.repo_view.loading {
-        let frame = (spinner_start.elapsed().as_millis() / 80) as usize % SPINNER_FOR_LOADING.len();
-        format!(" | scanning… {}", SPINNER_FOR_LOADING[frame])
-    } else {
-        String::new()
-    };
-    let list = List::new(items)
+    let activity = list.activity.map_or_else(String::new, |activity| {
+        format!(" | {activity}… {}", spinner(spinner_start))
+    });
+    let widget = List::new(items)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(format!(
-                    " {} of {} repos{scan_suffix} ",
-                    state.repo_view.list.filtered.len(),
-                    state.repo_view.entries.len()
-                ))
-                .border_style(Style::default().fg(theme.border)),
+                .title(format!(" {}{activity} ", list.summary))
+                .border_style(Style::default().fg(border)),
         )
         .highlight_style(
             Style::default()
-                .bg(theme.accent)
+                .bg(color)
                 .fg(theme.highlight_fg)
                 .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol("▸ ")
         .highlight_spacing(HighlightSpacing::Always);
     let mut list_state = ListState::default();
-    list_state.select(selected);
-    frame.render_stateful_widget(list, list_area, &mut list_state);
-}
-
-fn no_repos_message(missing_optional_dirs: usize) -> String {
-    match missing_optional_dirs {
-        0 => "No repos found in the configured search directories".into(),
-        1 => "No repos found (1 optional search directory not found)".into(),
-        count => format!("No repos found ({count} optional search directories not found)"),
-    }
+    list_state.select(list.selected);
+    frame.render_stateful_widget(widget, list_area, &mut list_state);
 }
 
 #[cfg(test)]

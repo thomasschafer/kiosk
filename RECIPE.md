@@ -1,7 +1,7 @@
 # Kiosk
 
-A fuzzy finder for your Git repositories and their branches, opened over the window like the
-app's own pickers. Type to filter, press Enter or click, and kiosk opens the repository as a
+A fuzzy finder for your Git repositories and their branches, opened in a large popup over the
+window. Type to filter, press Enter or click, and kiosk opens the repository as a
 space, or the branch in its own worktree and space, making the worktree and the branch if they
 don't exist yet. It can also remove a branch's worktree. The picker is a Rust program,
 `herdr-app-kiosk`, which the mod starts and draws.
@@ -48,19 +48,20 @@ Tell the person what kiosk does on their computer before adding it:
 
 ## What you see
 
-A popup at the top of the window (760 px wide, its height following what it holds, 40 px from
-the top), on the `popover` colour with the app's popup frame:
+A popup over the middle of the window, 80% of its width and height, the window dimmed behind
+it, on the `popover` colour with the app's frame:
 
 - A title row: "Repositories", or a back chevron, "Repositories", "/" and the repository's
   name in its branch list. On the right, the match count (`3 of 40 repos`), with a spinner and
   "scanning…", "loading…" or "fetching…" while work is under way, then an `Esc` button.
 - A 38 px search field with the `accent` border, a search icon and a blinking caret; the
   text and the caret are drawn by the mod.
-- Twelve 32 px rows. Each has a 15 px icon (a folder for a repository, a branch for a branch),
-  the name, small outlined badges (`worktree` in `accent`, `current` in `done`, `default`,
-  `folder`, or a remote branch's remote, all `muted`), and on the right the backend's labels
-  and a `done` dot with "open" for what a space already shows. The selected row is on
-  `selected`; rows line up with the search field's edges, icon under icon and text under text.
+- As many 32 px rows as fill the popup above the footer, at the app's zoom. Each has a 15 px
+  icon (a folder for a repository, a branch for a branch), the name, small outlined badges
+  (`worktree` in `accent`, `current` in `done`, `default`, `folder`, or a remote branch's
+  remote, all `muted`), and on the right the backend's labels and a `done` dot with "open" for
+  what a space already shows. The selected row is on `selected`; rows line up with the search
+  field's edges, icon under icon and text under text.
 - A footer of key hints, each a small key cap with its label, above a 1 px `border` line.
 - Over the list when they apply: a notification banner, the new-branch dialog (pick a base
   branch from a filtered list, then Cancel or Create branch), the remote-branch prompt (track a
@@ -85,7 +86,10 @@ the top), on the `popover` colour with the app's popup frame:
 
 ## Built from
 
-- `mods/kiosk/mod.json`: `place: "none"` and the popup overlay above; `mod.open:kiosk` opens it.
+- `mods/kiosk/mod.json`: `place: "none"` and a `dialog` overlay 0.8 of the window each way;
+  `mod.open:kiosk` opens it. The mod works out how many rows fit from the window's
+  `viewport_size()`, that share and the app's zoom, and tells the picker (`viewport`) when that
+  changes.
 - `mods/kiosk/main.js`: one `View`. `init` takes a focus handle and starts a task that runs
   `exec(<mod folder>/bin/herdr-app-kiosk, ["serve", "--app-home", appHome(), "--context",
   {focused_pane_cwd, workspace_cwd}])` (then a linked checkout's `target/release/`, then

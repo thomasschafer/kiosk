@@ -69,7 +69,7 @@ sb key alt+BackSpace
 wait_view '.main.query.before == "" and .main.total == 23'
 
 check "the wheel scrolls the list and the selection stays on screen"
-sb move 600 300
+sb move 600 400
 sb wheel down 6
 wait_view '.main.offset > 0 and .main.selected != null'
 
@@ -89,7 +89,7 @@ wait_view '.main.kind == "branches" and .main.title == "api — select branch"'
 wait_view '[.main.rows[] | select(.name.text == "feat/auth") | .actions.delete] == [true]'
 wait_view '[.main.rows[] | select(.name.text == "main") | .actions.delete] == [false]'
 sb shot "$shots/branches.png" >/dev/null
-sb click 291 71
+sb click 190 110
 wait_view '.main.kind == "repos" and .main.query.before == "api"'
 sb key Escape
 wait_view '.main.query.before == ""'
@@ -106,7 +106,7 @@ wait_view '.dialog.kind == "base_branch"'
 sb shot "$shots/new-branch.png" >/dev/null
 
 check "a click beside a dialog, on the dimmed list, only closes the dialog"
-sb click 300 160
+sb click 200 400
 wait_view '.dialog == null and .main.kind == "branches"'
 [[ ! -d $HOME/.herdr/worktrees/api/feat-e2e ]] || fail "the click behind the dialog created the branch"
 sb key Return
@@ -157,7 +157,7 @@ open_kiosk
 wait_view '.main.total == 23'
 sb type cli
 wait_view "$rows == [\"cli\"]"
-sb click 400 155
+sb click 400 196
 wait_closed
 space_folders | grep -qx "$HOME/code/cli" || fail "no space for cli"
 for _ in $(seq 100); do [[ -s $marker ]] && break; sleep 0.1; done

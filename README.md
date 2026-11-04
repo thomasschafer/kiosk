@@ -3,8 +3,8 @@
 Fuzzy-find your Git repositories (or any folder) and their branches in the
 [Herdr](https://herdr.dev) desktop app, then open them as spaces and worktrees. It's
 [kiosk](https://github.com/thomasschafer/kiosk)'s picker, drawn natively by the app: a
-popup like the app's own pickers, in its theme, with the mouse as well as the keyboard. It
-works on macOS, Linux and Windows.
+large popup over the window, in your theme, with the mouse as well as the keyboard. It works
+on macOS, Linux and Windows.
 
 ![Demo of filtering a repository's branches, then creating a new branch's worktree](media/preview.gif)
 

@@ -20,6 +20,6 @@ ensure() {
 
 case ${1:-} in
   rm) docker rm -f "$name" >/dev/null; echo "removed $name" ;;
-  e2e | record) ensure; exec docker exec -e SANDBOX_APPEARANCE -e E2E_SHOTS "$name" bash "/src/scripts/app-sandbox/$1.sh" "${@:2}" ;;
-  *) ensure; exec docker exec -e SANDBOX_APPEARANCE "$name" /src/scripts/app-sandbox/sandbox "$@" ;;
+  e2e | record) ensure; exec docker exec -e SANDBOX_APPEARANCE -e SANDBOX_THEME -e E2E_SHOTS "$name" bash "/src/scripts/app-sandbox/$1.sh" "${@:2}" ;;
+  *) ensure; exec docker exec -e SANDBOX_APPEARANCE -e SANDBOX_THEME "$name" /src/scripts/app-sandbox/sandbox "$@" ;;
 esac

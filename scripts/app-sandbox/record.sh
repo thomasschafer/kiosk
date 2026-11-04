@@ -14,7 +14,7 @@ export TYPE_DELAY=110
 
 sb down >/dev/null 2>&1 || true
 sb fixtures
-SANDBOX_APPEARANCE=dark sb up
+SANDBOX_THEME=${SANDBOX_THEME:-catppuccin-macchiato} sb up
 sb install >/dev/null
 sb "do" space.new "{\"folder\":\"$HOME/code/api\"}" >/dev/null
 sleep 2

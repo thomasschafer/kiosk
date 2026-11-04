@@ -1,6 +1,6 @@
 // Kiosk, the repository and branch picker, drawn natively.
 //
-// `mod.open:kiosk` opens this mod as a popup. It runs `herdr-app-kiosk serve`, which starts
+// `mod.open:kiosk` opens this mod as a popup over the window (a dialog overlay). It runs `herdr-app-kiosk serve`, which starts
 // the picker in the background and prints where to reach it: a loopback port and a secret.
 // The mod connects, and from then on the picker (Rust, the same state machine as kiosk's
 // terminal UI) sends what to show and the mod sends what the person does. The popup closes
@@ -12,7 +12,7 @@
 
 import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { appHome, closeOverlay, exec, focused, notify, panes, props, spaces, theme, window } from "herdr";
+import { appHome, closeOverlay, exec, focused, notify, panes, props, settings, spaces, theme, window } from "herdr";
 import { Buffer } from "buffer";
 import net from "net";
 
@@ -25,7 +25,9 @@ const REPOSITORY = "github.com/thomasschafer/herdr-app-kiosk";
 // The protocol this mod speaks; the picker refuses a different one.
 const PROTOCOL = 1;
 
-// The popup sizes to what it holds, so each list has a fixed number of rows the picker fills.
+// The dialog's share of the window, as mod.json opens it. Each list shows as many rows as fit
+// in it (see `viewportFor`), and the picker fills them.
+const SHARE = 0.8;
 // One set of measurements for the whole picker, so edges and text line up everywhere:
 // content sits EDGE from the popup's sides, a field's text INSET inside its border, and a
 // row's highlight spans exactly the field's width, with its icon and text where the
@@ -40,7 +42,15 @@ const ICON_GAP = 9;
 const ROW = 32;
 const HELP_ROW = 24;
 const WARNING_ROW = 44;
-const VIEWPORT = { list: 12, bases: 8, help: 14, scan_warnings: 7 };
+const GAP = 10;
+const HEADER = 24;
+const FIELD = 38;
+const FOOTER = 40;
+const TOAST = 40;
+// What a card holds besides its list, at most: title, field, buttons and the gaps between.
+const BASES_CHROME = 150;
+const HELP_CHROME = 120;
+const WARNINGS_CHROME = 70;
 const ICONS = "mods/workspace-chrome";
 const CONTEXT = "KioskPicker";
 // The most a paste sends, well inside the app's 1 MiB limit on one socket write.
@@ -127,6 +137,21 @@ class Lines {
     this.pending = joined.slice(start);
     return lines;
   }
+}
+
+// How many rows each list shows in a dialog `height` px tall: the picker's list fills what
+// its title, field and footer leave, and a card's list what fits in a card inside the dialog.
+function viewportFor(height, toast) {
+  const inner = height - 2 * BORDER;
+  const fit = (space, row, least, most) => Math.max(least, Math.min(most, Math.floor(space / row)));
+  const list = inner - EDGE - HEADER - FIELD - FOOTER - 3 * GAP - (toast ? TOAST + GAP : 0);
+  const card = inner - 2 * EDGE - 2 * CARD_EDGE - 2 * BORDER;
+  return {
+    list: fit(list, ROW, 1, Infinity),
+    bases: fit(card - BASES_CHROME, ROW, 3, 10),
+    help: fit(card - HELP_CHROME, HELP_ROW, 4, 20),
+    scan_warnings: fit(card - WARNINGS_CHROME, WARNING_ROW, 2, 8),
+  };
 }
 
 // What each of the picker's tones looks like in the app's theme.
@@ -291,6 +316,9 @@ export default class Kiosk extends View {
     cx.timer.after(600, () => this.handle.focus());
     this.view = null;
     this.chords = [];
+    // The rows last told to the picker, once it has said hello; render keeps them current.
+    this.ready = false;
+    this.viewport = null;
     this.writes = Promise.resolve();
     this.wheel = 0;
     this.status = "Starting…";
@@ -338,7 +366,7 @@ export default class Kiosk extends View {
       case "hello":
         this.chords = message.chords;
         cx.bind_keys(this.chords.map((keystroke) => ({ keystroke, action: `kiosk.key:${keystroke}`, context: CONTEXT })));
-        this.send({ t: "viewport", ...VIEWPORT });
+        this.ready = true;
         return false;
       case "view":
         this.view = message.view;
@@ -421,7 +449,22 @@ export default class Kiosk extends View {
     cx.stop_propagation();
   }
 
+  // Tells the picker how many rows fit, when that changes: the window was resized, or a
+  // notification took room.
+  fitViewport() {
+    if (!this.ready) return;
+    // The app draws a mod's sizes at its zoom; the dialog's share of the window is not.
+    const zoom = settings().zoom;
+    if (!(zoom > 0)) throw new Error(`the app's zoom is ${zoom}`);
+    const height = (globalThis.window.viewport_size().height * SHARE) / zoom;
+    const viewport = viewportFor(height, !!this.view?.toast);
+    if (JSON.stringify(viewport) === JSON.stringify(this.viewport)) return;
+    this.viewport = viewport;
+    this.send({ t: "viewport", ...viewport });
+  }
+
   render() {
+    this.fitViewport();
     const t = theme();
     let root = v_flex().id("kiosk").key_context(CONTEXT).track_focus(this.handle).size_full().min_h(0).relative()
       .bg(t.popover).text_size(13).text_color(t.foreground)
@@ -508,10 +551,10 @@ export default class Kiosk extends View {
             .when(!!main.hint, (el) => el.child(div().text_size(12).text_color(t.dim).child(main.hint))),
         );
     } else {
-      content = v_flex().size_full().gap(10).pt(EDGE)
+      content = v_flex().size_full().gap(GAP).pt(EDGE)
         .child(div().px(EDGE).child(this.header(t, listTitle(main), this.summary(t, main))))
         .child(div().px(EDGE).child(field(t, main.query, main.placeholder, !covered)))
-        .child(div().px(EDGE).child(this.list(t, main, "list", VIEWPORT.list, (row, selected) => this.row(t, row, selected, !covered))))
+        .child(div().px(EDGE).flex_1().min_h(0).child(this.list(t, main, "list", this.rows("list"), (row, selected) => this.row(t, row, selected, !covered))))
         .when(!!v.toast, (el) => el.child(div().px(EDGE).child(this.toast(t, v.toast))))
         .child(h_flex().flex_none().px(EDGE).h(40).items_center().border_t(1).border_color(t.border).child(hints(t, v.hints)));
     }
@@ -521,6 +564,12 @@ export default class Kiosk extends View {
     if (v.overlay?.kind === "help") screen = screen.child(backdrop(t, this.help(t, v.overlay), dismiss));
     if (v.overlay?.kind === "scan_warnings") screen = screen.child(backdrop(t, this.scanWarnings(t, v.overlay), dismiss));
     return screen;
+  }
+
+  // The rows `name` shows, as last told to the picker; views come only after that.
+  rows(name) {
+    if (!this.viewport) throw new Error(`a view came before the picker knew how many rows fit`);
+    return this.viewport[name];
   }
 
   summary(t, list) {
@@ -578,9 +627,9 @@ export default class Kiosk extends View {
 
   toast(t, toast) {
     const color = toneColor(t, toast.level);
-    return h_flex().flex_none().gap(ICON_GAP).px(INSET).py(8).rounded(9).items_center().bg(t.raised).border_1().border_color(t.border)
+    return h_flex().flex_none().h(TOAST).gap(ICON_GAP).px(INSET).rounded(9).items_center().bg(t.raised).border_1().border_color(t.border)
       .child(div().flex_none().size(7).rounded(4).bg(color))
-      .child(div().flex_1().min_w(0).text_size(12.5).text_color(t.foreground).child(toast.message))
+      .child(div().flex_1().min_w(0).truncate().text_size(12.5).text_color(t.foreground).child(toast.message))
       .when(!!toast.counter, (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child(toast.counter)))
       .child(hints(t, toast.hints));
   }
@@ -599,7 +648,7 @@ export default class Kiosk extends View {
               .when(!!d.list.subject, (el) => el.child(div().text_size(14).font_semibold().text_color(t.accent).child(d.list.subject))))
             .child(div().text_size(12).text_color(t.dim).child("Pick the branch to start it from")))
           .child(field(t, d.list.query, d.list.placeholder))
-          .child(this.list(t, d.list, "bases", VIEWPORT.bases, (row, selected) => this.row(t, row, selected, true)))
+          .child(this.list(t, d.list, "bases", this.rows("bases"), (row, selected) => this.row(t, row, selected, true)))
           .child(this.buttons(t, this.dismissButton(t), this.button(t, "create", "Create branch", "open", true)));
       case "remote_branch":
         return card(t, 500)
@@ -640,7 +689,7 @@ export default class Kiosk extends View {
       .child(field(t, h.query, h.placeholder))
       .when(!!h.notice, (el) => el.child(div().text_size(11.5).text_color(t.muted).child(h.notice)))
       .child(
-        v_flex().id("kiosk-help").h(VIEWPORT.help * HELP_ROW).flex_none().overflow_hidden()
+        v_flex().id("kiosk-help").h(this.rows("help") * HELP_ROW).flex_none().overflow_hidden()
           .on_scroll_wheel((e, cx) => this.scroll(e, cx))
           .when(!!h.empty, (el) => el.child(div().p(12).text_color(t.dim).child(h.empty)))
           .children(helpRows(h).map((entry) => {
@@ -661,7 +710,7 @@ export default class Kiosk extends View {
     return card(t, 600)
       .child(h_flex().gap(8).items_center().child(div().size(7).rounded(4).bg(t.blocked)).child(heading(t, s.title)))
       .child(
-        v_flex().id("kiosk-warnings").h(VIEWPORT.scan_warnings * WARNING_ROW).flex_none().overflow_hidden()
+        v_flex().id("kiosk-warnings").h(this.rows("scan_warnings") * WARNING_ROW).flex_none().overflow_hidden()
           .on_scroll_wheel((e, cx) => this.scroll(e, cx))
           .children(s.warnings.map((w) =>
             v_flex().h(WARNING_ROW).flex_none().justify_center().gap(2)

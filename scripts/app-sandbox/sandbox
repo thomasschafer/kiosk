@@ -12,6 +12,7 @@
 #   sandbox do|status|ls ...       herdr-app against the sandbox window
 set -euo pipefail
 
+here=$(cd "$(dirname "$0")" && pwd)
 src=${KIOSK_SRC:-/src}
 root=$HOME/sb
 export HERDR_APP_HOME=$root/home HC_SESSION=kiosk-sandbox XDG_STATE_HOME=$root/state \
@@ -37,9 +38,21 @@ up() {
   fi
   # A first run would open the app's welcome over everything.
   [[ -f $HERDR_APP_HOME/shared.json ]] || echo '{"frame.welcomed":true}' >"$HERDR_APP_HOME/shared.json"
-  # SANDBOX_APPEARANCE: light or dark rather than the app's default.
-  if [[ -n ${SANDBOX_APPEARANCE:-} && ! -f $HERDR_APP_HOME/settings.json ]]; then
-    echo "{\"appearance\":\"$SANDBOX_APPEARANCE\"}" >"$HERDR_APP_HOME/settings.json"
+  # SANDBOX_APPEARANCE: light or dark rather than the app's default. SANDBOX_THEME: one of
+  # themes/*.json beside this file, such as catppuccin-macchiato.
+  if [[ ! -f $HERDR_APP_HOME/settings.json ]]; then
+    local settings='{}'
+    if [[ -n ${SANDBOX_APPEARANCE:-} ]]; then
+      settings=$(jq -c --arg appearance "$SANDBOX_APPEARANCE" '.appearance = $appearance' <<<"$settings")
+    fi
+    if [[ -n ${SANDBOX_THEME:-} ]]; then
+      local theme=$here/themes/$SANDBOX_THEME.json
+      [[ -f $theme ]] || { echo "no theme $theme" >&2; exit 1; }
+      mkdir -p "$HERDR_APP_HOME/themes"
+      cp "$theme" "$HERDR_APP_HOME/themes/"
+      settings=$(jq -c --arg theme "$SANDBOX_THEME" '.theme = $theme' <<<"$settings")
+    fi
+    echo "$settings" >"$HERDR_APP_HOME/settings.json"
   fi
   setsid herdr-app >"$root/app.log" 2>&1 </dev/null &
   for _ in $(seq 150); do

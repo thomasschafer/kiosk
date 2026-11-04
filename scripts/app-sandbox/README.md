@@ -12,7 +12,9 @@ scripts/app-sandbox/run.sh up       # then any `sandbox` command; see the top of
 scripts/app-sandbox/run.sh rm       # delete the container
 ```
 
-`run.sh` builds the image on first use. `KIOSK_SANDBOX_MOUNTS` adds `docker run` volume
+`run.sh` builds the image on first use. `SANDBOX_THEME` picks one of `themes/*.json` for
+`up` and `e2e` (the recording uses `catppuccin-macchiato`), and `SANDBOX_APPEARANCE` light or
+dark. `KIOSK_SANDBOX_MOUNTS` adds `docker run` volume
 arguments, for example a local kiosk checkout that `Cargo.toml` patches in, mounted where
 its relative path points. Screenshots and the suite's pictures land in `target/` of this
 checkout.

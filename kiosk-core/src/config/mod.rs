@@ -101,6 +101,8 @@ pub enum ThemeColor {
     Reset,
 }
 
+// The terminal UI's colours. Not part of `CoreConfig`, as a frontend that draws with its
+// host's theme has no use for them: a terminal product adds them as its own `theme` section.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 /// Every field is optional and falls back to the default shown below.
@@ -160,9 +162,6 @@ pub struct CoreConfig {
     /// entries can override this value with their own `include_non_git` setting.
     #[serde(default)]
     pub include_non_git: bool,
-    /// Customize terminal-palette colors used by the picker. Light-terminal users
-    /// can set `muted`, `border`, and other colors explicitly.
-    pub theme: ThemeConfig,
     /// Customize key bindings grouped by where they are active.
     pub keys: KeysConfig,
 }
@@ -576,7 +575,7 @@ mod tests {
     #[test]
     fn unknown_keys_are_reported_once_whichever_part_they_sit_under() {
         let (_, _, warnings) = parse_config::<TestExtension>(
-            "future = 1\n[theme]\nfuture_theme = 1\n[extra]\nlevel = 1\nfuture_extra = 1\n",
+            "future = 1\n[keys.general]\n[extra]\nlevel = 1\nfuture_extra = 1\n[later]\nx = 1\n",
         )
         .unwrap();
         let messages: Vec<_> = warnings.iter().map(|w| w.message.as_str()).collect();
@@ -584,7 +583,7 @@ mod tests {
             messages,
             [
                 "unknown config key ignored: future",
-                "unknown config key ignored: theme.future_theme",
+                "unknown config key ignored: later",
                 "unknown config key ignored: extra.future_extra",
             ]
         );
@@ -969,45 +968,40 @@ search_dirs = []
 future_root_key = true
 
 [theme]
-future_theme_key = "blue"
+accent = "blue"
 "#,
         )
         .unwrap();
         assert_eq!(config.search_dirs, vec![]);
-        assert_eq!(warnings.len(), 2);
-        assert!(
-            warnings
-                .iter()
-                .any(|warning| warning.message.contains("future_root_key"))
-        );
-        assert!(
-            warnings
-                .iter()
-                .any(|warning| warning.message.contains("future_theme_key"))
+        let messages: Vec<_> = warnings.iter().map(|w| w.message.as_str()).collect();
+        assert_eq!(
+            messages,
+            [
+                "unknown config key ignored: future_root_key",
+                "unknown config key ignored: theme",
+            ],
+            "the terminal UI's theme belongs to the products that draw one"
         );
     }
 
     #[test]
     fn theme_accepts_named_terminal_colors_and_rejects_truecolor_values() {
-        let (config, warnings) = parse(
-            r#"
-[theme]
-accent = "cyan"
-secondary = "blue"
-tertiary = "yellow"
-highlight_fg = "reset"
-"#,
+        let theme = toml::from_str::<ThemeConfig>(
+            "accent = \"cyan\"\nsecondary = \"blue\"\ntertiary = \"yellow\"\nhighlight_fg = \"reset\"",
         )
         .unwrap();
-        assert_eq!(warnings, vec![]);
-        assert_eq!(config.theme.accent, ThemeColor::Cyan);
-        assert_eq!(config.theme.secondary, ThemeColor::Blue);
-        assert_eq!(config.theme.tertiary, ThemeColor::Yellow);
-        assert_eq!(config.theme.highlight_fg, ThemeColor::Reset);
-        assert!(parse("[theme]\naccent = \"#ff00ff\"").is_err());
-        assert!(parse("[theme]\nsecondary = \"#00ffff\"").is_err());
-        assert!(parse("[theme]\ntertiary = [0, 255, 0]").is_err());
-        assert!(parse("[theme]\naccent = [255, 0, 255]").is_err());
+        assert_eq!(theme.accent, ThemeColor::Cyan);
+        assert_eq!(theme.secondary, ThemeColor::Blue);
+        assert_eq!(theme.tertiary, ThemeColor::Yellow);
+        assert_eq!(theme.highlight_fg, ThemeColor::Reset);
+        for invalid in [
+            "accent = \"#ff00ff\"",
+            "secondary = \"#00ffff\"",
+            "tertiary = [0, 255, 0]",
+            "accent = [255, 0, 255]",
+        ] {
+            assert!(toml::from_str::<ThemeConfig>(invalid).is_err(), "{invalid}");
+        }
     }
 
     #[test]

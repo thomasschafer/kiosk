@@ -6,7 +6,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::{
     config::keys::{BindingMode, Command, KeyChord, KeysConfig},
     keyboard::Action,
-    state::{AppState, Mode, Overlay},
+    state::{AppState, Mode, Overlay, TextEdit},
 };
 
 /// The scan warnings view scrolls whatever mode it opened over, so it takes its scroll
@@ -60,7 +60,7 @@ pub fn resolve_input(input: KeyInput, state: &AppState, keys: &KeysConfig) -> Op
     match &state.overlay {
         Some(Overlay::Help(_)) => {
             let command = keys.command_for(KeysConfig::mode_for(&state.mode), chord);
-            return help_overlay_action(input, command);
+            return help_overlay_action(input, command, keys);
         }
         Some(Overlay::ScanWarnings(_)) => {
             let opening = keys.command_for(KeysConfig::mode_for(&state.mode), chord);
@@ -153,12 +153,23 @@ fn pointer_list_in_front(state: &AppState) -> bool {
 }
 
 /// Help owns its own query, so typing filters it and `esc` always closes it.
-fn help_overlay_action(input: KeyInput, command: Option<Command>) -> Option<Action> {
+/// Help's search edits with the text-editing keys even over a dialog that has none, unless
+/// the dialog binds the chord itself.
+fn help_overlay_action(
+    input: KeyInput,
+    command: Option<Command>,
+    keys: &KeysConfig,
+) -> Option<Action> {
     if input.chord == ESC {
         return Some(Action::CloseOverlay);
     }
     if let Some(action) = command.and_then(help_command_to_action) {
         return Some(action);
+    }
+    if command.is_none()
+        && let Some(edit) = keys.text_edit(input.chord)
+    {
+        return Some(Action::Edit(edit));
     }
     input.typed().map(Action::Insert)
 }
@@ -185,21 +196,7 @@ fn help_command_to_action(command: Command) -> Option<Action> {
     match command {
         Command::MoveUp => Some(Action::MoveSelection(-1)),
         Command::MoveDown => Some(Action::MoveSelection(1)),
-        Command::Clear => Some(Action::ClearQuery),
-        Command::Backspace => Some(Action::Backspace),
-        Command::DeleteWord => Some(Action::DeleteWord),
-        Command::CursorLeft => Some(Action::CursorLeft),
-        Command::CursorRight => Some(Action::CursorRight),
-        Command::Noop
-        | Command::Quit
-        | Command::Help
-        | Command::DismissToast
-        | Command::ScanWarnings
-        | Command::Open
-        | Command::BranchesView
-        | Command::Back
-        | Command::NewBranch
-        | Command::Delete => None,
+        _ => command.text_edit().map(Action::Edit),
     }
 }
 
@@ -237,19 +234,13 @@ pub fn command_to_action(command: Command, state: &AppState) -> Option<Action> {
         Command::BranchesView => {
             matches!(state.mode, Mode::RepoSelect).then_some(Action::OpenBranches)
         }
-        Command::Back => {
-            if active_query(state).is_empty() {
-                match state.mode {
-                    Mode::BranchSelect(_) => Some(Action::BackToRepos),
-                    Mode::SelectBaseBranch { .. }
-                    | Mode::ConfirmRemoteBranch { .. }
-                    | Mode::ConfirmWorktreeDelete(_) => Some(Action::CancelOverlay),
-                    _ => None,
-                }
-            } else {
-                Some(Action::ClearQuery)
-            }
-        }
+        Command::Back => match state.mode {
+            Mode::BranchSelect(_) => Some(Action::BackToRepos),
+            Mode::SelectBaseBranch { .. }
+            | Mode::ConfirmRemoteBranch { .. }
+            | Mode::ConfirmWorktreeDelete(_) => Some(Action::CancelOverlay),
+            _ => None,
+        },
         Command::NewBranch => (matches!(state.mode, Mode::BranchSelect(_))
             && !state.branch_view.loading)
             .then_some(Action::StartNewBranch),
@@ -257,18 +248,19 @@ pub fn command_to_action(command: Command, state: &AppState) -> Option<Action> {
             matches!(state.mode, Mode::BranchSelect(_)).then_some(Action::DeleteWorktree)
         }
         Command::Clear => {
-            if !active_query(state).is_empty() {
-                Some(Action::ClearQuery)
-            } else if matches!(state.mode, Mode::RepoSelect) {
-                Some(Action::Quit)
-            } else {
-                None
-            }
+            (!active_query(state).is_empty()).then_some(Action::Edit(TextEdit::Clear))
         }
-        Command::Backspace => Some(Action::Backspace),
-        Command::DeleteWord => Some(Action::DeleteWord),
-        Command::CursorLeft => Some(Action::CursorLeft),
-        Command::CursorRight => Some(Action::CursorRight),
+        Command::Backspace
+        | Command::DeleteForward
+        | Command::DeleteWord
+        | Command::DeleteWordForward
+        | Command::DeleteToEnd
+        | Command::CursorLeft
+        | Command::CursorRight
+        | Command::CursorWordLeft
+        | Command::CursorWordRight
+        | Command::CursorStart
+        | Command::CursorEnd => command.text_edit().map(Action::Edit),
     }
 }
 
@@ -344,39 +336,167 @@ mod tests {
     }
 
     #[test]
-    fn q_default_is_contextual_and_can_be_unbound() {
+    fn help_over_a_dialog_still_edits_its_search() {
+        let mut state = AppState::new(&TEST_PRODUCT, None);
+        state.mode = Mode::ConfirmWorktreeDelete(DeleteFlowState::new(
+            BranchContext {
+                repo_path: "/repo".into(),
+                repo_name: "repo".into(),
+            },
+            DeleteWorktreeTarget::new("feat".into(), "/wt".into(), false),
+        ));
+        state.overlay = Some(Overlay::Help(HelpOverlayState {
+            rows: Vec::new(),
+            list: SearchableList::new(0),
+        }));
+        let keys = KeysConfig::default();
+        assert_eq!(
+            resolve_action(key(KeyCode::Backspace, KeyModifiers::NONE), &state, &keys),
+            Some(Action::Edit(TextEdit::Backspace))
+        );
+        assert_eq!(
+            resolve_action(
+                key(KeyCode::Char('u'), KeyModifiers::CONTROL),
+                &state,
+                &keys
+            ),
+            Some(Action::Edit(TextEdit::Clear))
+        );
+        let keys = toml::from_str::<KeysConfig>("[modal]\nbackspace = \"noop\"").unwrap();
+        assert_eq!(
+            resolve_action(key(KeyCode::Backspace, KeyModifiers::NONE), &state, &keys),
+            None,
+            "the dialog's own binding wins"
+        );
+    }
+
+    #[test]
+    fn default_text_editing_keys_edit_the_search() {
+        let keys = KeysConfig::default();
+        let mut state = AppState::new(&TEST_PRODUCT, None);
+        state.repo_view.list.input.text = "feat/login".into();
+        let alt = KeyModifiers::ALT;
+        let ctrl = KeyModifiers::CONTROL;
+        let none = KeyModifiers::NONE;
+        for (code, modifiers, edit) in [
+            (KeyCode::Char('b'), alt, TextEdit::CursorWordLeft),
+            (KeyCode::Left, alt, TextEdit::CursorWordLeft),
+            (KeyCode::Left, ctrl, TextEdit::CursorWordLeft),
+            (KeyCode::Char('f'), alt, TextEdit::CursorWordRight),
+            (KeyCode::Right, alt, TextEdit::CursorWordRight),
+            (KeyCode::Right, ctrl, TextEdit::CursorWordRight),
+            (KeyCode::Char('b'), ctrl, TextEdit::CursorLeft),
+            (KeyCode::Char('f'), ctrl, TextEdit::CursorRight),
+            (KeyCode::Home, none, TextEdit::CursorStart),
+            (KeyCode::Char('a'), ctrl, TextEdit::CursorStart),
+            (KeyCode::End, none, TextEdit::CursorEnd),
+            (KeyCode::Char('e'), ctrl, TextEdit::CursorEnd),
+            (KeyCode::Delete, none, TextEdit::DeleteForward),
+            (KeyCode::Char('d'), ctrl, TextEdit::DeleteForward),
+            (KeyCode::Char('d'), alt, TextEdit::DeleteWordForward),
+            (KeyCode::Delete, alt, TextEdit::DeleteWordForward),
+            (KeyCode::Char('k'), ctrl, TextEdit::DeleteToEnd),
+            (KeyCode::Backspace, alt, TextEdit::DeleteWordBackward),
+            (KeyCode::Char('w'), ctrl, TextEdit::DeleteWordBackward),
+        ] {
+            assert_eq!(
+                resolve_action(key(code, modifiers), &state, &keys),
+                Some(Action::Edit(edit)),
+                "{code:?} {modifiers:?}"
+            );
+        }
+        assert_eq!(
+            resolve_action(key(KeyCode::F(1), none), &state, &keys),
+            Some(Action::ShowHelp)
+        );
+    }
+
+    #[test]
+    fn ctrl_u_clears_the_search_and_esc_leaves_whatever_is_typed() {
+        let keys = KeysConfig::default();
+        let esc = key(KeyCode::Esc, KeyModifiers::NONE);
+        let ctrl_u = key(KeyCode::Char('u'), KeyModifiers::CONTROL);
+        let mut state = AppState::new(&TEST_PRODUCT, None);
+        assert_eq!(
+            resolve_action(ctrl_u, &state, &keys),
+            None,
+            "nothing to clear"
+        );
+        state.repo_view.list.input.text = "al".into();
+        assert_eq!(
+            resolve_action(ctrl_u, &state, &keys),
+            Some(Action::Edit(TextEdit::Clear))
+        );
+        assert_eq!(resolve_action(esc, &state, &keys), Some(Action::Quit));
+
+        let context = BranchContext {
+            repo_path: "/repo".into(),
+            repo_name: "repo".into(),
+        };
+        state.mode = Mode::BranchSelect(context.clone());
+        state.branch_view.list.input.text = "fe".into();
+        assert_eq!(
+            resolve_action(ctrl_u, &state, &keys),
+            Some(Action::Edit(TextEdit::Clear))
+        );
+        assert_eq!(
+            resolve_action(esc, &state, &keys),
+            Some(Action::BackToRepos)
+        );
+
+        let mut list = SearchableList::new(1);
+        list.input.text = "ma".into();
+        state.mode = Mode::SelectBaseBranch {
+            context,
+            flow: BaseBranchSelection {
+                new_name: "feat".into(),
+                bases: vec!["main".into()],
+                list,
+            },
+        };
+        assert_eq!(
+            resolve_action(ctrl_u, &state, &keys),
+            Some(Action::Edit(TextEdit::Clear))
+        );
+        assert_eq!(
+            resolve_action(esc, &state, &keys),
+            Some(Action::CancelOverlay)
+        );
+    }
+
+    #[test]
+    fn q_is_typed_and_a_letter_bound_to_quit_only_quits_an_empty_search() {
         let mut state = AppState::new(&TEST_PRODUCT, None);
         let q = key(KeyCode::Char('q'), KeyModifiers::NONE);
         assert_eq!(
             resolve_action(q, &state, &KeysConfig::default()),
-            Some(Action::Quit)
-        );
-        state.repo_view.list.input.text = "a".into();
-        assert_eq!(
-            resolve_action(q, &state, &KeysConfig::default()),
-            Some(Action::Insert('q'))
+            Some(Action::Insert('q')),
+            "a search can start with q"
         );
 
-        state.repo_view.list.input.clear();
-        let keys = toml::from_str::<KeysConfig>("[repo_select]\nq = \"noop\"").unwrap();
-        assert_eq!(resolve_action(q, &state, &keys), None);
+        let keys = toml::from_str::<KeysConfig>("[repo_select]\nq = \"quit\"").unwrap();
+        assert_eq!(resolve_action(q, &state, &keys), Some(Action::Quit));
+        state.repo_view.list.input.text = "a".into();
+        assert_eq!(resolve_action(q, &state, &keys), Some(Action::Insert('q')));
     }
 
     #[test]
-    fn toast_dismiss_has_precedence_over_branch_delete() {
+    fn ctrl_x_only_deletes_and_a_bound_dismiss_key_wins_while_a_toast_shows() {
         let mut state = AppState::new(&TEST_PRODUCT, None);
         state.mode = Mode::BranchSelect(BranchContext {
             repo_path: "/repo".into(),
             repo_name: "repo".into(),
         });
+        state.push_toast(crate::state::ToastKind::Warning, "notice");
         let chord = key(KeyCode::Char('x'), KeyModifiers::CONTROL);
         assert_eq!(
             resolve_action(chord, &state, &KeysConfig::default()),
             Some(Action::DeleteWorktree)
         );
-        state.push_toast(crate::state::ToastKind::Warning, "notice");
+        let keys = toml::from_str::<KeysConfig>("[general]\n\"C-g\" = \"dismiss_toast\"").unwrap();
+        let ctrl_g = key(KeyCode::Char('g'), KeyModifiers::CONTROL);
         assert_eq!(
-            resolve_action(chord, &state, &KeysConfig::default()),
+            resolve_action(ctrl_g, &state, &keys),
             Some(Action::DismissToast)
         );
     }
@@ -526,14 +646,26 @@ mod tests {
                 KeyModifiers::CONTROL,
                 Action::MoveSelection(1),
             ),
-            (KeyCode::Backspace, KeyModifiers::NONE, Action::Backspace),
+            (
+                KeyCode::Backspace,
+                KeyModifiers::NONE,
+                Action::Edit(TextEdit::Backspace),
+            ),
             (
                 KeyCode::Char('w'),
                 KeyModifiers::CONTROL,
-                Action::DeleteWord,
+                Action::Edit(TextEdit::DeleteWordBackward),
             ),
-            (KeyCode::Left, KeyModifiers::NONE, Action::CursorLeft),
-            (KeyCode::Right, KeyModifiers::NONE, Action::CursorRight),
+            (
+                KeyCode::Left,
+                KeyModifiers::NONE,
+                Action::Edit(TextEdit::CursorLeft),
+            ),
+            (
+                KeyCode::Right,
+                KeyModifiers::NONE,
+                Action::Edit(TextEdit::CursorRight),
+            ),
         ] {
             assert_eq!(
                 resolve_action(key(code, modifiers), &state, &keys),
@@ -554,14 +686,14 @@ mod tests {
             }],
             list: SearchableList::new(1),
         }));
-        let keys = KeysConfig::default();
+        let keys = toml::from_str::<KeysConfig>("[repo_select]\nq = \"quit\"").unwrap();
         assert_eq!(
             resolve_action(key(KeyCode::Char('q'), KeyModifiers::NONE), &state, &keys),
             Some(Action::Insert('q'))
         );
         assert_eq!(
             resolve_action(key(KeyCode::Backspace, KeyModifiers::NONE), &state, &keys),
-            Some(Action::Backspace)
+            Some(Action::Edit(TextEdit::Backspace))
         );
         assert_eq!(
             resolve_action(key(KeyCode::Down, KeyModifiers::NONE), &state, &keys),
@@ -577,28 +709,28 @@ mod tests {
     fn scan_warnings_key_only_opens_the_view_when_there_are_warnings() {
         let mut state = AppState::new(&TEST_PRODUCT, None);
         let keys = KeysConfig::default();
-        let ctrl_e = key(KeyCode::Char('e'), KeyModifiers::CONTROL);
-        assert_eq!(resolve_action(ctrl_e, &state, &keys), None);
+        let ctrl_s = key(KeyCode::Char('s'), KeyModifiers::CONTROL);
+        assert_eq!(resolve_action(ctrl_s, &state, &keys), None);
 
         state.push_scan_warning(crate::git::ScanWarning {
             path: "/locked".into(),
             message: "permission denied".into(),
         });
         assert_eq!(
-            resolve_action(ctrl_e, &state, &keys),
+            resolve_action(ctrl_s, &state, &keys),
             Some(Action::ShowScanWarnings)
         );
         state.dismiss_toast();
         assert_eq!(
-            resolve_action(ctrl_e, &state, &keys),
+            resolve_action(ctrl_s, &state, &keys),
             Some(Action::ShowScanWarnings)
         );
 
         let keys = toml::from_str::<KeysConfig>(
-            "[general]\n\"C-e\" = \"noop\"\n\"C-g\" = \"scan_warnings\"",
+            "[general]\n\"C-s\" = \"noop\"\n\"C-g\" = \"scan_warnings\"",
         )
         .unwrap();
-        assert_eq!(resolve_action(ctrl_e, &state, &keys), None);
+        assert_eq!(resolve_action(ctrl_s, &state, &keys), None);
         assert_eq!(
             resolve_action(
                 key(KeyCode::Char('g'), KeyModifiers::CONTROL),
@@ -617,7 +749,7 @@ mod tests {
         for (code, modifiers, expected) in [
             (KeyCode::Esc, KeyModifiers::NONE, Some(Action::CloseOverlay)),
             (
-                KeyCode::Char('e'),
+                KeyCode::Char('s'),
                 KeyModifiers::CONTROL,
                 Some(Action::CloseOverlay),
             ),
@@ -652,15 +784,15 @@ mod tests {
             path: "/locked".into(),
             message: "denied".into(),
         });
-        let keys = toml::from_str::<KeysConfig>("[modal]\n\"C-e\" = \"back\"").unwrap();
-        let ctrl_e = key(KeyCode::Char('e'), KeyModifiers::CONTROL);
+        let keys = toml::from_str::<KeysConfig>("[modal]\n\"C-s\" = \"back\"").unwrap();
+        let ctrl_s = key(KeyCode::Char('s'), KeyModifiers::CONTROL);
         assert_eq!(
-            resolve_action(ctrl_e, &state, &keys),
+            resolve_action(ctrl_s, &state, &keys),
             Some(Action::ShowScanWarnings)
         );
         state.overlay = Some(Overlay::ScanWarnings(ScanWarningsOverlayState::default()));
         assert_eq!(
-            resolve_action(ctrl_e, &state, &keys),
+            resolve_action(ctrl_s, &state, &keys),
             Some(Action::CloseOverlay)
         );
     }

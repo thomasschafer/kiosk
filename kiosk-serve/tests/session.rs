@@ -287,7 +287,7 @@ fn a_click_on_a_row_that_has_moved_does_nothing() {
 }
 
 #[test]
-fn escape_reaches_the_picker_and_closing_quits() {
+fn ctrl_u_clears_the_search_and_escape_quits() {
     let root = tempfile::tempdir().unwrap();
     let search_dir = root.path().to_path_buf();
     let (mut client, session, _) = connect(move || two_repo_start(&search_dir, mock_backend()));
@@ -296,11 +296,13 @@ fn escape_reaches_the_picker_and_closing_quits() {
     });
     client.type_text("al");
     client.view_until(|view| picker_list(view).is_some_and(|list| row_names(list) == ["alpha"]));
-    client.key("escape", None);
+    client.key("ctrl-u", None);
     let view = client
         .view_until(|view| picker_list(view).is_some_and(|list| list["query"]["before"] == ""));
     assert_eq!(row_names(picker_list(&view).unwrap()), ["alpha", "beta"]);
-    client.send(&json!({ "t": "close" }));
+    client.type_text("al");
+    client.view_until(|view| picker_list(view).is_some_and(|list| row_names(list) == ["alpha"]));
+    client.key("escape", None);
     assert_eq!(client.end(), json!({ "t": "exit", "outcome": "quit" }));
     assert_eq!(session.join().unwrap().unwrap(), Outcome::Quit);
 }

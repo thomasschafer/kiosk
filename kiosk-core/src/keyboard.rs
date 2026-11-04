@@ -1,3 +1,5 @@
+use crate::state::TextEdit;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     Quit,
@@ -11,11 +13,8 @@ pub enum Action {
         viewport_rows: usize,
     },
     Insert(char),
-    Backspace,
-    DeleteWord,
-    CursorLeft,
-    CursorRight,
-    ClearQuery,
+    /// Edits the search in front, or moves its cursor.
+    Edit(TextEdit),
     OpenRepo,
     OpenBranches,
     OpenBranch,

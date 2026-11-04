@@ -1104,7 +1104,7 @@ pub fn footer_hints(keys: &KeysConfig, mode: &Mode) -> Vec<Hint> {
     let binding_mode = KeysConfig::mode_for(mode);
     let mut hints = Vec::new();
     let mut add = |command, label: &'static str| {
-        if let Some(key) = keys.first_key(binding_mode, command) {
+        if let Some(key) = keys.preferred_key(binding_mode, command) {
             hints.push(Hint::for_key(key, label));
         }
     };
@@ -1143,8 +1143,6 @@ pub fn footer_hints(keys: &KeysConfig, mode: &Mode) -> Vec<Hint> {
             | Mode::ConfirmWorktreeDelete(_)
     ) {
         add(Command::Back, "back");
-    } else {
-        add(Command::Clear, "clear/quit");
     }
     add(Command::Help, "help");
     add(Command::Quit, "quit");

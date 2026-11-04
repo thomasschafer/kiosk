@@ -3,7 +3,8 @@
 use std::time::Duration;
 
 use anyhow::{Result, bail};
-use kiosk_core::config::{ConfigExtension, ManagedWorktreesConfig, OnOpenConfig};
+use kiosk_core::config::{ConfigExtension, ManagedWorktreesConfig, OnOpenConfig, ThemeConfig};
+use kiosk_tui::theme::ThemedConfig;
 use serde::{Deserialize, Serialize};
 
 const MIN_POLL_INTERVAL_MS: u64 = 100;
@@ -60,6 +61,15 @@ pub struct Config {
     pub on_open: OnOpenConfig,
     /// Configure agent status.
     pub agent: AgentConfig,
+    /// Customize terminal-palette colors used by the picker. Light-terminal users
+    /// can set `muted`, `border`, and other colors explicitly.
+    pub theme: ThemeConfig,
+}
+
+impl ThemedConfig for Config {
+    fn theme(&self) -> &ThemeConfig {
+        &self.theme
+    }
 }
 
 impl ConfigExtension for Config {

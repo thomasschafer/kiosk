@@ -17,7 +17,7 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use crate::theme::Theme;
+use crate::theme::{Theme, ThemedConfig};
 
 struct TerminalRestoreGuard;
 
@@ -30,14 +30,14 @@ impl Drop for TerminalRestoreGuard {
 /// Runs `product`'s picker in the terminal. A missing config file starts the setup wizard,
 /// which writes one. `current_cwd` is where the user is, for preselecting the repository and
 /// branch they are in. Without a `backend` the picker can be browsed but opens nothing.
-pub fn run<B: Backend, E>(
+pub fn run<B: Backend, E: ThemedConfig>(
     product: &'static Product,
     mut loaded: LoadedConfig<E>,
     git: Arc<dyn GitProvider>,
     backend: Option<Arc<B>>,
     current_cwd: Option<&Path>,
 ) -> Result<RunOutcome> {
-    let theme = Theme::from_config(&loaded.core.theme);
+    let theme = Theme::from_config(loaded.extension.theme());
     let _restore_guard = TerminalRestoreGuard;
     let mut terminal = ratatui::try_init()?;
     if !loaded.exists

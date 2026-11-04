@@ -2,6 +2,7 @@ use std::{
     fs::{self, OpenOptions},
     io::{self, Write},
     path::{Path, PathBuf},
+    sync::LazyLock,
 };
 
 use anyhow::{Context, Result, bail};
@@ -10,10 +11,17 @@ use serde::Serialize;
 use crossterm::event::{KeyCode, KeyModifiers};
 
 use crate::{
-    config::{SearchDirEntry, keys::KeyChord},
+    config::{
+        SearchDirEntry,
+        keys::{KeyChord, KeysConfig},
+    },
     keymap::KeyInput,
     state::TextInput,
 };
+
+/// The wizard runs before there is a config, so its directory field edits with the
+/// default text-editing keys.
+static DEFAULT_KEYS: LazyLock<KeysConfig> = LazyLock::new(KeysConfig::default);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SetupDir {
@@ -233,22 +241,27 @@ impl SetupState {
     }
 }
 
-/// The chords [`SetupState::handle_key`] acts on besides typed characters, so a frontend
-/// can claim them before its host's own shortcuts do.
-pub const SETUP_CHORDS: [KeyChord; 12] = [
+/// The wizard's own chords, besides its text editing.
+const WIZARD_CHORDS: [KeyChord; 10] = [
     KeyChord::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
     KeyChord::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
-    KeyChord::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
     KeyChord::new(KeyCode::Enter, KeyModifiers::NONE),
     KeyChord::new(KeyCode::Esc, KeyModifiers::NONE),
     KeyChord::new(KeyCode::Tab, KeyModifiers::NONE),
     KeyChord::new(KeyCode::Backspace, KeyModifiers::NONE),
-    KeyChord::new(KeyCode::Backspace, KeyModifiers::ALT),
     KeyChord::new(KeyCode::Up, KeyModifiers::NONE),
     KeyChord::new(KeyCode::Down, KeyModifiers::NONE),
     KeyChord::new(KeyCode::Left, KeyModifiers::NONE),
     KeyChord::new(KeyCode::Right, KeyModifiers::NONE),
 ];
+
+/// The chords [`SetupState::handle_key`] acts on besides typed characters, so a frontend
+/// can claim them before its host's own shortcuts do.
+pub fn setup_chords() -> impl Iterator<Item = KeyChord> {
+    WIZARD_CHORDS
+        .into_iter()
+        .chain(DEFAULT_KEYS.text_edit_chords())
+}
 
 /// What a key press in the setup wizard asks of whoever runs it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -296,7 +309,6 @@ impl SetupState {
     fn handle_directory_key(&mut self, input: KeyInput, home: Option<&Path>) -> bool {
         let chord = input.chord;
         let control = chord.modifiers.contains(KeyModifiers::CONTROL);
-        let alt = chord.modifiers.contains(KeyModifiers::ALT);
         match chord.code {
             KeyCode::Enter => {
                 if let Err(message) = self.begin_depth() {
@@ -304,30 +316,17 @@ impl SetupState {
                 }
             }
             KeyCode::Tab => self.tab_complete(home),
-            KeyCode::Esc if self.input.text.is_empty() => return true,
-            KeyCode::Esc => {
-                self.input.clear();
-                self.update_completions(home);
-            }
+            KeyCode::Esc => return true,
             KeyCode::Char('x') if control => {
                 if self.remove_last().is_none() {
                     self.message = Some("No directory to remove".into());
                 }
             }
-            KeyCode::Backspace if alt => {
-                self.input.delete_word();
-                self.update_completions(home);
+            _ if let Some(edit) = DEFAULT_KEYS.text_edit(chord) => {
+                if self.input.apply(edit) {
+                    self.update_completions(home);
+                }
             }
-            KeyCode::Backspace => {
-                self.input.backspace();
-                self.update_completions(home);
-            }
-            KeyCode::Char('w') if control => {
-                self.input.delete_word();
-                self.update_completions(home);
-            }
-            KeyCode::Left if !control && !alt => self.input.cursor_left(),
-            KeyCode::Right if !control && !alt => self.input.cursor_right(),
             _ => {
                 if let Some(character) = input.text.filter(|character| !character.is_control())
                     && !control
@@ -915,6 +914,57 @@ mod key_tests {
 
     fn press(state: &mut SetupState, event: KeyEvent) -> SetupOutcome {
         state.handle_key(KeyInput::from_event(event), None)
+    }
+
+    #[test]
+    fn wizard_directory_input_edits_like_the_picker_and_esc_quits_whatever_is_typed() {
+        let mut state = SetupState::default();
+        state.continue_from_welcome();
+        for character in "~/code".chars() {
+            press(
+                &mut state,
+                KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE),
+            );
+        }
+        press(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT),
+        );
+        press(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(state.input.text, "~/");
+        press(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
+        );
+        press(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+        );
+        assert_eq!(state.input.text, "x~/");
+        press(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(state.input.text, "");
+        press(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+        );
+        assert_eq!(
+            press(&mut state, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            SetupOutcome::Quit
+        );
+    }
+
+    #[test]
+    fn every_default_text_edit_chord_is_claimed_for_the_wizard() {
+        let claimed = setup_chords().collect::<Vec<_>>();
+        for chord in DEFAULT_KEYS.text_edit_chords() {
+            assert!(claimed.contains(&chord), "{chord}");
+        }
     }
 
     #[test]

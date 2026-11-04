@@ -10,6 +10,7 @@ use crate::{
 };
 
 use super::*;
+use crate::state::TextEdit;
 
 fn items(names: &[&str]) -> Vec<FilterItem> {
     names
@@ -336,7 +337,7 @@ fn scan_warnings_view_opens_only_with_warnings_and_leaves_the_picker_untouched()
 
     act(&mut state, Action::MoveSelection(-1));
     act(&mut state, Action::MoveSelection(3));
-    act(&mut state, Action::CursorLeft);
+    act(&mut state, Action::Edit(TextEdit::CursorLeft));
     act(&mut state, Action::Insert('x'));
     assert_eq!(
         state.overlay,

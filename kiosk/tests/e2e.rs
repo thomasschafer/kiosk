@@ -48,10 +48,9 @@ fn scan_warning_details_list_each_unreadable_directory() {
 
     env.start_picker(&env.path("projects"));
     env.wait_for_screen("the scan warning", |screen| {
-        screen.contains("1 directory could not be scanned")
-            && screen.contains("ctrl+e details / ctrl+x dismiss")
+        screen.contains("1 directory could not be scanned") && screen.contains("ctrl+s details")
     });
-    env.keys(&["C-e"]);
+    env.keys(&["C-s"]);
     let screen = env.wait_for_screen("the details view", |screen| {
         screen.contains("failed to inspect .git entry")
     });

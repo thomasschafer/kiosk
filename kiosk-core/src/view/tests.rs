@@ -603,7 +603,7 @@ fn toast_shows_the_front_notification_with_its_queue_and_hints() {
             label: "Error",
             message: "failed badly".into(),
             counter: Some("1/2".into()),
-            hints: vec![Hint::new("ctrl+x", "dismiss")],
+            hints: Vec::new(),
         })
     );
     assert_eq!(ToastLevel::Error.tone(), Tone::Error);
@@ -620,12 +620,12 @@ fn toast_counter_only_appears_for_pending_toasts() {
 
 #[test]
 fn dismiss_hint_uses_the_effective_remapped_binding() {
-    let keys = keys("[general]\n\"C-x\" = \"noop\"\n\"C-d\" = \"dismiss_toast\"");
+    let keys = keys("[general]\n\"C-g\" = \"dismiss_toast\"");
     let mut state = AppState::new(&TEST_PRODUCT, None);
     state.push_toast(ToastKind::Error, "failed");
     assert_eq!(
         hints(&toast_hints(&keys, state.toasts.front().unwrap())),
-        [("ctrl+d", "dismiss")]
+        [("ctrl+g", "dismiss")]
     );
 }
 
@@ -639,11 +639,11 @@ fn scan_summary_names_the_details_key_unless_it_is_unbound() {
     let toast = state.toasts.front().unwrap();
     assert_eq!(
         hints(&toast_hints(&KeysConfig::default(), toast)),
-        [("ctrl+e", "details"), ("ctrl+x", "dismiss")]
+        [("ctrl+s", "details")]
     );
     assert_eq!(
-        hints(&toast_hints(&keys("[general]\n\"C-e\" = \"noop\""), toast)),
-        [("ctrl+x", "dismiss")]
+        hints(&toast_hints(&keys("[general]\n\"C-s\" = \"noop\""), toast)),
+        []
     );
 }
 
@@ -797,9 +797,8 @@ fn footer_hints_follow_the_mode() {
         [
             ("enter", "open"),
             ("tab", "branches"),
-            ("esc", "clear/quit"),
             ("ctrl+h", "help"),
-            ("q", "quit"),
+            ("esc", "quit"),
         ]
     );
     assert_eq!(
@@ -866,12 +865,12 @@ fn every_bound_chord_is_listed_once_and_noop_bindings_are_left_out() {
         1,
         "ctrl+x is bound in two layers"
     );
-    let keys = keys("[repo_select]\nq = \"noop\"");
+    let keys = keys("[branch_select]\n\"C-o\" = \"noop\"");
     assert!(
         !keys
             .all_chords()
             .iter()
-            .any(|chord| chord.to_string() == "q")
+            .any(|chord| chord.to_string() == "ctrl+o")
     );
 }
 

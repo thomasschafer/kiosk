@@ -23,6 +23,39 @@ pub use crate::picker::delete::{DeleteFlowState, DeleteWorktreeTarget};
 pub use crate::picker::new_branch::{BaseBranchSelection, RemoteBranchChoice, RemoteBranchPrompt};
 pub use crate::picker::repo::RepoEntry;
 
+/// A change to a text field's text or cursor. Words, as in readline, are runs of letters
+/// and digits, so `feat/login-page` is three of them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextEdit {
+    Clear,
+    Backspace,
+    DeleteForward,
+    DeleteWordBackward,
+    DeleteWordForward,
+    DeleteToEnd,
+    CursorLeft,
+    CursorRight,
+    CursorWordLeft,
+    CursorWordRight,
+    CursorStart,
+    CursorEnd,
+}
+
+impl TextEdit {
+    /// Whether the edit can change the text, rather than only move the cursor.
+    pub const fn changes_text(self) -> bool {
+        matches!(
+            self,
+            Self::Clear
+                | Self::Backspace
+                | Self::DeleteForward
+                | Self::DeleteWordBackward
+                | Self::DeleteWordForward
+                | Self::DeleteToEnd
+        )
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TextInput {
     pub text: String,
@@ -30,12 +63,14 @@ pub struct TextInput {
 }
 
 impl TextInput {
+    /// Where each grapheme starts, then the end of the text.
     fn boundaries(&self) -> Vec<usize> {
         let mut boundaries: Vec<_> = self.text.grapheme_indices(true).map(|(i, _)| i).collect();
         boundaries.push(self.text.len());
         boundaries
     }
 
+    /// Puts the cursor on a grapheme boundary and returns its index in `boundaries`.
     fn clamp_cursor(&mut self, boundaries: &[usize]) -> usize {
         let cursor = self.cursor.min(self.text.len());
         let index = match boundaries.binary_search(&cursor) {
@@ -43,6 +78,37 @@ impl TextInput {
             Err(index) => index.saturating_sub(1),
         };
         self.cursor = boundaries.get(index).copied().unwrap_or_default();
+        index
+    }
+
+    /// Whether the grapheme starting at boundary `index` belongs to a word.
+    fn in_word(&self, boundaries: &[usize], index: usize) -> bool {
+        self.text[boundaries[index]..]
+            .chars()
+            .next()
+            .is_some_and(char::is_alphanumeric)
+    }
+
+    /// The boundary index of the start of the word before boundary `index`.
+    fn word_start_before(&self, boundaries: &[usize], mut index: usize) -> usize {
+        while index > 0 && !self.in_word(boundaries, index - 1) {
+            index -= 1;
+        }
+        while index > 0 && self.in_word(boundaries, index - 1) {
+            index -= 1;
+        }
+        index
+    }
+
+    /// The boundary index of the end of the word after boundary `index`.
+    fn word_end_after(&self, boundaries: &[usize], mut index: usize) -> usize {
+        let last = boundaries.len() - 1;
+        while index < last && !self.in_word(boundaries, index) {
+            index += 1;
+        }
+        while index < last && self.in_word(boundaries, index) {
+            index += 1;
+        }
         index
     }
 
@@ -59,44 +125,49 @@ impl TextInput {
     }
 
     pub fn backspace(&mut self) {
-        let boundaries = self.boundaries();
-        let index = self.clamp_cursor(&boundaries);
-        if index > 0 {
-            let previous = boundaries[index - 1];
-            self.text.drain(previous..self.cursor);
-            self.cursor = previous;
-        }
+        self.apply(TextEdit::Backspace);
     }
 
-    pub fn delete_word(&mut self) {
-        if self.cursor == 0 || self.text.is_empty() {
-            return;
-        }
-        let boundaries = self.boundaries();
-        self.clamp_cursor(&boundaries);
-        let before = &self.text[..self.cursor];
-        let trimmed = before.trim_end_matches(char::is_whitespace);
-        let word_start = trimmed.rfind(char::is_whitespace).map_or(0, |index| {
-            index + self.text[index..].chars().next().unwrap().len_utf8()
-        });
-        self.text.drain(word_start..self.cursor);
-        self.cursor = word_start;
-    }
-
-    pub fn cursor_left(&mut self) {
+    /// Applies `edit`, returning whether the text changed.
+    pub fn apply(&mut self, edit: TextEdit) -> bool {
+        let before = self.text.len();
         let boundaries = self.boundaries();
         let index = self.clamp_cursor(&boundaries);
-        if index > 0 {
-            self.cursor = boundaries[index - 1];
+        let last = boundaries.len() - 1;
+        let remove = |input: &mut Self, from: usize, to: usize| {
+            let (from, to) = (boundaries[from], boundaries[to]);
+            input.text.drain(from..to);
+            input.cursor = from;
+        };
+        match edit {
+            TextEdit::Clear => self.clear(),
+            TextEdit::Backspace if index > 0 => remove(self, index - 1, index),
+            TextEdit::DeleteForward if index < last => remove(self, index, index + 1),
+            TextEdit::DeleteWordBackward => {
+                let start = self.word_start_before(&boundaries, index);
+                remove(self, start, index);
+            }
+            TextEdit::DeleteWordForward => {
+                let end = self.word_end_after(&boundaries, index);
+                remove(self, index, end);
+            }
+            TextEdit::DeleteToEnd => remove(self, index, last),
+            TextEdit::CursorLeft if index > 0 => self.cursor = boundaries[index - 1],
+            TextEdit::CursorRight if index < last => self.cursor = boundaries[index + 1],
+            TextEdit::CursorWordLeft => {
+                self.cursor = boundaries[self.word_start_before(&boundaries, index)];
+            }
+            TextEdit::CursorWordRight => {
+                self.cursor = boundaries[self.word_end_after(&boundaries, index)];
+            }
+            TextEdit::CursorStart => self.cursor = 0,
+            TextEdit::CursorEnd => self.cursor = self.text.len(),
+            TextEdit::Backspace
+            | TextEdit::DeleteForward
+            | TextEdit::CursorLeft
+            | TextEdit::CursorRight => {}
         }
-    }
-
-    pub fn cursor_right(&mut self) {
-        let boundaries = self.boundaries();
-        let index = self.clamp_cursor(&boundaries);
-        if index + 1 < boundaries.len() {
-            self.cursor = boundaries[index + 1];
-        }
+        self.text.len() != before
     }
 }
 
@@ -686,8 +757,76 @@ mod tests {
         }
         input.backspace();
         assert_eq!(input.text, "one ");
-        input.delete_word();
+        input.apply(TextEdit::DeleteWordBackward);
         assert_eq!(input.text, "");
+    }
+
+    fn typed(text: &str, cursor: usize) -> TextInput {
+        TextInput {
+            text: text.into(),
+            cursor,
+        }
+    }
+
+    #[test]
+    fn words_are_runs_of_letters_and_digits() {
+        let mut input = typed("feat/login-page", 15);
+        input.apply(TextEdit::CursorWordLeft);
+        assert_eq!(input.cursor, 11, "before page");
+        input.apply(TextEdit::CursorWordLeft);
+        assert_eq!(input.cursor, 5, "before login");
+        input.apply(TextEdit::CursorWordRight);
+        assert_eq!(input.cursor, 10, "after login");
+        input.apply(TextEdit::CursorStart);
+        input.apply(TextEdit::CursorWordRight);
+        assert_eq!(input.cursor, 4, "after feat");
+
+        let mut input = typed("feat/login-page", 15);
+        assert!(input.apply(TextEdit::DeleteWordBackward));
+        assert_eq!((input.text.as_str(), input.cursor), ("feat/login-", 11));
+        let mut input = typed("feat/login-page", 4);
+        assert!(input.apply(TextEdit::DeleteWordForward));
+        assert_eq!((input.text.as_str(), input.cursor), ("feat-page", 4));
+    }
+
+    #[test]
+    fn edits_at_the_ends_of_the_text_change_nothing() {
+        for edit in [
+            TextEdit::Backspace,
+            TextEdit::DeleteWordBackward,
+            TextEdit::CursorLeft,
+            TextEdit::CursorWordLeft,
+        ] {
+            let mut input = typed("ab", 0);
+            assert!(!input.apply(edit), "{edit:?}");
+            assert_eq!((input.text.as_str(), input.cursor), ("ab", 0), "{edit:?}");
+        }
+        for edit in [
+            TextEdit::DeleteForward,
+            TextEdit::DeleteWordForward,
+            TextEdit::DeleteToEnd,
+            TextEdit::CursorRight,
+            TextEdit::CursorWordRight,
+        ] {
+            let mut input = typed("ab", 2);
+            assert!(!input.apply(edit), "{edit:?}");
+            assert_eq!((input.text.as_str(), input.cursor), ("ab", 2), "{edit:?}");
+        }
+    }
+
+    #[test]
+    fn line_edits_work_from_the_cursor() {
+        let mut input = typed("one 👩‍💻 two", 4);
+        input.apply(TextEdit::DeleteForward);
+        assert_eq!(input.text, "one  two", "the whole grapheme goes");
+        input.apply(TextEdit::DeleteToEnd);
+        assert_eq!((input.text.as_str(), input.cursor), ("one ", 4));
+        input.apply(TextEdit::CursorStart);
+        assert_eq!(input.cursor, 0);
+        input.apply(TextEdit::CursorEnd);
+        assert_eq!(input.cursor, 4);
+        input.apply(TextEdit::Clear);
+        assert_eq!((input.text.as_str(), input.cursor), ("", 0));
     }
 
     #[test]

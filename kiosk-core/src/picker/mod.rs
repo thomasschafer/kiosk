@@ -475,24 +475,15 @@ pub(crate) fn process_action<B: Backend>(
                 list.input.insert_char(character);
             });
         }
-        Action::Backspace => {
-            edit_active_list(state, filter_worker, |list| list.input.backspace());
+        Action::Edit(edit) if edit.changes_text() => {
+            edit_active_list(state, filter_worker, |list| {
+                list.input.apply(edit);
+            });
         }
-        Action::DeleteWord => {
-            edit_active_list(state, filter_worker, |list| list.input.delete_word());
-        }
-        Action::CursorLeft => {
+        Action::Edit(edit) => {
             if let Some(list) = active_list_mut(state) {
-                list.input.cursor_left();
+                list.input.apply(edit);
             }
-        }
-        Action::CursorRight => {
-            if let Some(list) = active_list_mut(state) {
-                list.input.cursor_right();
-            }
-        }
-        Action::ClearQuery => {
-            edit_active_list(state, filter_worker, |list| list.input.clear());
         }
         Action::OpenRepo => repo::open_selected(state, backend, sender),
         Action::OpenBranches => branch::enter(state, git, backend, sender),

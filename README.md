@@ -29,7 +29,9 @@ From the branch view, you can again fuzzy match across branches:
 - `ctrl+o` creates a new branch named after your search, in a new worktree
 - `ctrl+x` removes a branch's worktree and closes its session
 
-`ctrl+h` shows every binding for the current view. Run outside tmux, kiosk attaches to the session you pick once the picker closes.
+Esc goes back, or quits from the repo view, and `ctrl+u` clears the search, which otherwise edits like a shell prompt: `alt+b` and `alt+f` move by word, `ctrl+a` and `ctrl+e` to the start and end, and `ctrl+k` deletes to the end.
+
+`ctrl+h` (or `f1`) shows every binding for the current view. Run outside tmux, kiosk attaches to the session you pick once the picker closes.
 
 Sessions kiosk creates are named after the repo and branch (`my-project/feat-thing`), but kiosk finds them by the folder they show, so renaming them is fine. Sessions you made yourself count as showing the folder they were started in.
 
@@ -252,15 +254,32 @@ Defaults:
 ```toml
 [keys.general]
 "ctrl+c" = "quit"
-"ctrl+e" = "scan_warnings"
 "ctrl+h" = "help"
-"ctrl+x" = "dismiss_toast"
+"ctrl+s" = "scan_warnings"
+"f1" = "help"
 
 [keys.text_edit]
+"alt+b" = "cursor_word_left"
 "alt+backspace" = "delete_word"
+"alt+d" = "delete_word_forward"
+"alt+delete" = "delete_word_forward"
+"alt+f" = "cursor_word_right"
+"alt+left" = "cursor_word_left"
+"alt+right" = "cursor_word_right"
 "backspace" = "backspace"
+"ctrl+a" = "cursor_start"
+"ctrl+b" = "cursor_left"
+"ctrl+d" = "delete_forward"
+"ctrl+e" = "cursor_end"
+"ctrl+f" = "cursor_right"
+"ctrl+k" = "delete_to_end"
+"ctrl+left" = "cursor_word_left"
+"ctrl+right" = "cursor_word_right"
+"ctrl+u" = "clear"
 "ctrl+w" = "delete_word"
-"esc" = "clear"
+"delete" = "delete_forward"
+"end" = "cursor_end"
+"home" = "cursor_start"
 "left" = "cursor_left"
 "right" = "cursor_right"
 
@@ -276,7 +295,7 @@ Defaults:
 
 [keys.repo_select]
 "enter" = "open"
-"q" = "quit"
+"esc" = "quit"
 "tab" = "branches_view"
 
 [keys.branch_select]

@@ -534,12 +534,15 @@ mod tests {
 pub struct TestExtension {
     /// Lines of the test section.
     pub extra: Vec<String>,
+    /// The test product's terminal colours.
+    pub theme: ThemeConfig,
 }
 ";
 
     #[derive(Debug, Clone, Default, Serialize, Deserialize)]
     struct TestExtension {
         extra: Vec<String>,
+        theme: kiosk_core::config::ThemeConfig,
     }
 
     impl ConfigExtension for TestExtension {
@@ -587,12 +590,16 @@ pub struct TestExtension {
         let reference = config_reference::<NoExtension>(&ProductDocs {
             sources,
             extension: "NoExtension",
-            order: &["search_dirs", "include_non_git", "theme", "keys"],
+            order: &["search_dirs", "include_non_git", "keys"],
             examples: &[],
             wording: &[],
         })
         .unwrap();
         assert!(reference.contains("### `[keys]`"));
+        assert!(
+            !reference.contains("[theme]"),
+            "only a product that draws in a terminal has a theme"
+        );
     }
 
     const ON_OPEN_EXTENSION: &str = r"
@@ -618,7 +625,7 @@ pub struct OnOpenExtension {
         config_reference::<OnOpenExtension>(&ProductDocs {
             sources: &[ON_OPEN_EXTENSION],
             extension: "OnOpenExtension",
-            order: &["search_dirs", "include_non_git", "on_open", "theme", "keys"],
+            order: &["search_dirs", "include_non_git", "on_open", "keys"],
             examples: &[],
             wording,
         })

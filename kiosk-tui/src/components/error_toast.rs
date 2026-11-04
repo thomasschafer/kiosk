@@ -148,11 +148,7 @@ mod tests {
             let width = terminal_width.saturating_sub(4).clamp(1, 100);
             let text_width = width.saturating_sub(4).max(1);
             let counter = if queued { "  1/2" } else { "" };
-            let body = vec![
-                Line::from(vec![Span::raw(message), Span::raw(counter)]),
-                Line::raw(""),
-                Line::raw("ctrl+x dismiss"),
-            ];
+            let body = vec![Line::from(vec![Span::raw(message), Span::raw(counter)])];
             let expected_height = super::super::wrapped_content_height(&body, text_width)
                 .saturating_add(2)
                 .min(terminal_height.max(1));

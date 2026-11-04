@@ -11,6 +11,7 @@ use kiosk_core::{
     backend::Backend,
     config::{ResolvedSearchDir, keys::KeysConfig},
     git::GitProvider,
+    keyboard::Action,
     picker::{Picker, RunOutcome},
     state::{AppState, Mode, Overlay},
 };
@@ -26,6 +27,8 @@ use crate::{components, theme::Theme};
 
 const EVENT_POLL_INTERVAL: Duration = Duration::from_millis(40);
 const TOAST_AUTO_DISMISS: Duration = Duration::from_secs(5);
+/// How long a key that acts on the selection waits for filtering of what was just typed.
+const SETTLE_FILTERS: Duration = Duration::from_secs(2);
 
 #[derive(Debug)]
 struct RedrawState {
@@ -86,6 +89,11 @@ pub fn run<B: Backend>(
                         continue;
                     };
                     redraw.mark_dirty();
+                    if !matches!(action, Action::Insert(_))
+                        && let Some(outcome) = picker.settle_filters(state, SETTLE_FILTERS)
+                    {
+                        return Ok(outcome);
+                    }
                     if let Some(outcome) = picker.handle_action(state, action) {
                         return Ok(outcome);
                     }

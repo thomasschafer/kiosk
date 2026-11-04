@@ -6,10 +6,11 @@ use std::{
     path::PathBuf,
     sync::{
         Arc, Condvar, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc,
     },
     thread,
+    time::{Duration, Instant},
 };
 
 use fuzzy_matcher::{FuzzyMatcher, skim::SkimMatcherV2};
@@ -174,6 +175,30 @@ impl<B: Backend> Picker<B> {
 }
 
 impl<B: Backend> Picker<B> {
+    /// Applies filtering still under way, waiting up to `timeout` for it, so a command that
+    /// acts on the selection acts on what the latest query matches. Without this, a key
+    /// pressed right after typing can open what the previous query selected. Past
+    /// `timeout`, the selection stays what the person last saw.
+    ///
+    /// Returns an outcome a tick reached while waiting, which ends the picker as one from
+    /// [`Picker::tick`] does.
+    pub fn settle_filters(&self, state: &mut AppState, timeout: Duration) -> Option<RunOutcome> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let busy = self.filter_worker.busy();
+            if let Some(outcome) = self.tick(state).outcome {
+                return Some(outcome);
+            }
+            if !busy && !self.filter_worker.busy() {
+                return None;
+            }
+            if Instant::now() >= deadline {
+                return None;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+
     /// Selects the item at `position` of the list in front, then does what `command` does
     /// to the selection: what clicking a row (`Command::Open`) or one of its buttons does.
     ///
@@ -228,14 +253,19 @@ pub(crate) struct FilterRequest {
 pub(crate) struct FilterWorker {
     pending: Arc<(Mutex<Option<FilterRequest>>, Condvar)>,
     cancel: Arc<AtomicBool>,
+    /// Requests whose results have not been sent yet: the one waiting and the one being
+    /// filtered.
+    outstanding: Arc<AtomicUsize>,
 }
 
 impl FilterWorker {
     pub(crate) fn spawn(sender: EventSender) -> Self {
         let pending = Arc::new((Mutex::new(None::<FilterRequest>), Condvar::new()));
         let cancel = Arc::new(AtomicBool::new(false));
+        let outstanding = Arc::new(AtomicUsize::new(0));
         let thread_pending = Arc::clone(&pending);
         let thread_cancel = Arc::clone(&cancel);
+        let thread_outstanding = Arc::clone(&outstanding);
         thread::spawn(move || {
             let matcher = SkimMatcherV2::default();
             loop {
@@ -257,15 +287,29 @@ impl FilterWorker {
                     matches: filtered,
                     selected: request.selected,
                 });
+                thread_outstanding.fetch_sub(1, Ordering::AcqRel);
             }
         });
-        Self { pending, cancel }
+        Self {
+            pending,
+            cancel,
+            outstanding,
+        }
     }
 
     pub(crate) fn request(&self, request: FilterRequest) {
         let (lock, condition) = &*self.pending;
-        *lock.lock().unwrap() = Some(request);
+        let mut pending = lock.lock().unwrap();
+        // A request still waiting is replaced, and its result never comes.
+        if pending.replace(request).is_none() {
+            self.outstanding.fetch_add(1, Ordering::AcqRel);
+        }
         condition.notify_one();
+    }
+
+    /// Whether a requested result has yet to be sent.
+    fn busy(&self) -> bool {
+        self.outstanding.load(Ordering::Acquire) > 0
     }
 }
 

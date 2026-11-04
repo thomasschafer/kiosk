@@ -176,11 +176,16 @@ pub enum ButtonCommand {
 }
 
 impl ButtonCommand {
+    /// What the button does where the picker is: nothing while an overlay, such as help,
+    /// takes the input, as no button in front of it names this command.
     pub fn action(
         self,
         state: &kiosk_core::state::AppState,
     ) -> Option<kiosk_core::keyboard::Action> {
         use kiosk_core::{config::keys::Command, keymap};
+        if state.overlay.is_some() {
+            return None;
+        }
         match self {
             Self::Open => keymap::command_to_action(Command::Open, state),
             Self::Repositories => keymap::back_to_repos(state),
@@ -266,6 +271,29 @@ mod tests {
         assert!(check_client(PROTOCOL_VERSION).is_ok());
         let error = check_client(PROTOCOL_VERSION + 1).unwrap_err().to_string();
         assert!(error.contains("install matching versions"), "{error}");
+    }
+
+    #[test]
+    fn buttons_do_nothing_behind_an_overlay() {
+        use kiosk_core::{
+            config::keys::KeysConfig,
+            product::TEST_PRODUCT,
+            state::{AppState, HelpOverlayState, Overlay},
+        };
+        let mut state = AppState::new(&TEST_PRODUCT, None);
+        assert!(ButtonCommand::Help.action(&state).is_some());
+        state.overlay = Some(Overlay::Help(HelpOverlayState::for_mode(
+            &KeysConfig::default(),
+            KeysConfig::mode_for(&state.mode),
+        )));
+        for button in [
+            ButtonCommand::Open,
+            ButtonCommand::Repositories,
+            ButtonCommand::NewBranch,
+            ButtonCommand::Help,
+        ] {
+            assert_eq!(button.action(&state), None, "{button:?}");
+        }
     }
 
     #[test]

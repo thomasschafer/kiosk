@@ -31,7 +31,7 @@ pub fn serve<B: Backend, E>(
 ) -> Result<()> {
     match launch::stage() {
         launch::Stage::Foreground => {
-            let handshake = launch::start_background(&launch::log_path(product.name))?;
+            let handshake = launch::start_background(product.name)?;
             println!("{}", serde_json::to_string(&handshake)?);
             Ok(())
         }
@@ -47,9 +47,16 @@ pub fn serve<B: Backend, E>(
                     .and_then(|start| session::run(&connection, product, start))
             }))
             .unwrap_or_else(|panic| Err(anyhow!("it crashed: {}", panic_message(&*panic))));
-            result
-                .map(|_| ())
-                .inspect_err(|error| connection.fail(&title, error))
+            match result {
+                Ok(_) => {
+                    launch::remove_log();
+                    Ok(())
+                }
+                Err(error) => {
+                    connection.fail(&title, &error);
+                    Err(error)
+                }
+            }
         }
     }
 }

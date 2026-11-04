@@ -34,6 +34,10 @@ use crate::{
 /// How often the picker looks for background results while nothing else wakes it.
 const TICK: Duration = Duration::from_millis(16);
 const TOAST_AUTO_DISMISS: Duration = Duration::from_secs(5);
+/// The most messages handled before background results and the view get a turn.
+const BATCH: usize = 64;
+/// How long a command waits for filtering of what was just typed.
+const SETTLE: Duration = Duration::from_secs(2);
 
 /// What a session needs to run a product's picker.
 pub struct Start<B: Backend, E> {
@@ -264,7 +268,10 @@ impl Session<'_> {
                 )))?;
             }
             let mut timeout = TICK;
-            while let Some(message) = self.next(timeout)? {
+            for _ in 0..BATCH {
+                let Some(message) = self.next(timeout)? else {
+                    break;
+                };
                 changed = true;
                 let step = handle_message(message, &picker, &mut state, &mut viewports);
                 if let Step::Finish(outcome) = step {
@@ -282,6 +289,11 @@ fn handle_message<B: Backend>(
     state: &mut AppState,
     viewports: &mut Viewports,
 ) -> Step {
+    if acts_on_selection(&message)
+        && let Some(outcome) = picker.settle_filters(state, SETTLE)
+    {
+        return Step::Finish(outcome.into());
+    }
     let outcome = match message {
         ClientMessage::Key {
             keystroke,
@@ -330,6 +342,26 @@ fn handle_message<B: Backend>(
         ClientMessage::Hello { .. } => unreachable!("next refuses a second hello"),
     };
     outcome.map_or(Step::Continue, |outcome| Step::Finish(outcome.into()))
+}
+
+/// Whether `message` may act on the selection, which must first reflect what was typed.
+/// Typing itself only filters, and waiting for each key's filtering would slow typing down.
+fn acts_on_selection(message: &ClientMessage) -> bool {
+    match message {
+        ClientMessage::Key { key_char, .. } => key_char
+            .as_deref()
+            .is_none_or(|text| text.chars().any(char::is_control)),
+        ClientMessage::Activate { .. }
+        | ClientMessage::Command { .. }
+        | ClientMessage::Dismiss
+        | ClientMessage::Scroll { .. } => true,
+        ClientMessage::Paste { .. }
+        | ClientMessage::Viewport { .. }
+        | ClientMessage::FolderMode { .. }
+        | ClientMessage::Completion { .. }
+        | ClientMessage::Close
+        | ClientMessage::Hello { .. } => false,
+    }
 }
 
 /// The rows the list in front has room for.

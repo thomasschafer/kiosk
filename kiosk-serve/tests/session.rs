@@ -223,6 +223,28 @@ fn typing_filters_and_enter_opens_the_selection() {
 }
 
 #[test]
+fn enter_right_after_typing_opens_what_the_query_matches() {
+    let root = tempfile::tempdir().unwrap();
+    let search_dir = root.path().to_path_buf();
+    let backend = mock_backend();
+    let session_backend = Arc::clone(&backend);
+    let (mut client, session, _) = connect(move || two_repo_start(&search_dir, session_backend));
+    client.view_until(|view| {
+        picker_list(view).is_some_and(|list| list["rows"].as_array().unwrap().len() == 2)
+    });
+    // Sent together, so the session has the enter before filtering for "bet" is done.
+    client.type_text("bet");
+    client.key("enter", None);
+    assert_eq!(client.end(), json!({ "t": "exit", "outcome": "opened" }));
+    assert_eq!(session.join().unwrap().unwrap(), Outcome::Opened);
+    let calls = format!("{:?}", backend.calls());
+    assert!(
+        calls.contains("beta") && !calls.contains("alpha"),
+        "{calls}"
+    );
+}
+
+#[test]
 fn clicking_a_row_opens_it() {
     let root = tempfile::tempdir().unwrap();
     let search_dir = root.path().to_path_buf();

@@ -13,7 +13,7 @@ use std::{
     fs::File,
     io::{BufRead, BufReader, Read, Write},
     net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream},
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::{Command, Stdio},
     sync::mpsc,
     thread,
@@ -27,6 +27,9 @@ use crate::protocol::{ClientMessage, PROTOCOL_VERSION};
 
 /// Set on the background copy, so it listens rather than starting another.
 const STAGE_VAR: &str = "KIOSK_SERVE_STAGE";
+/// Tells the background copy where its standard error goes, so it can remove the file
+/// once it has ended cleanly.
+const LOG_VAR: &str = "KIOSK_SERVE_LOG";
 const BACKGROUND_STAGE: &str = "background";
 
 /// How long the background copy waits for a client to connect and present the secret.
@@ -60,16 +63,18 @@ pub fn stage() -> Stage {
 }
 
 /// Starts this program again in the background with the same arguments and returns its
-/// handshake once it listens. Its standard error goes to `log`, which the error names if it
-/// fails to start.
-pub fn start_background(log: &Path) -> Result<Handshake> {
+/// handshake once it listens. Its standard error goes to a new log file named after
+/// `product_name`, which the error quotes if it fails to start.
+pub fn start_background(product_name: &str) -> Result<Handshake> {
     let program = std::env::current_exe().context("finding this program to start it again")?;
     let arguments: Vec<OsString> = std::env::args_os().skip(1).collect();
-    let stderr = File::create(log).with_context(|| format!("creating {}", log.display()))?;
+    let (log, stderr) = create_log(product_name)?;
+    let log = log.as_path();
     let mut command = Command::new(program);
     command
         .args(arguments)
         .env(STAGE_VAR, BACKGROUND_STAGE)
+        .env(LOG_VAR, log)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(stderr);
@@ -267,9 +272,36 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
             == 0
 }
 
-/// Where the background copy's standard error goes: `<temp>/<product>-serve.log`.
-pub fn log_path(product_name: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("{product_name}-serve.log"))
+/// A log file of this run's own: created new, under a name no one can have chosen in
+/// advance, and on Unix readable by this user only, as the temporary directory may be
+/// shared.
+fn create_log(product_name: &str) -> Result<(PathBuf, File)> {
+    let mut suffix = [0_u8; 8];
+    getrandom::fill(&mut suffix).map_err(|error| anyhow::anyhow!("naming a log file: {error}"))?;
+    let suffix = suffix.iter().fold(String::new(), |mut name, byte| {
+        use std::fmt::Write as _;
+        let _ = write!(name, "{byte:02x}");
+        name
+    });
+    let path = std::env::temp_dir().join(format!("{product_name}-serve-{suffix}.log"));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options
+        .open(&path)
+        .with_context(|| format!("creating {}", path.display()))?;
+    Ok((path, file))
+}
+
+/// Removes the background copy's log once it has ended cleanly; a failed run keeps it.
+pub fn remove_log() {
+    if let Some(path) = std::env::var_os(LOG_VAR) {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 #[cfg(test)]
@@ -351,6 +383,21 @@ mod tests {
         assert_eq!(&handshake, listening.handshake());
         assert_eq!(handshake.token.len(), 64);
         assert_eq!(handshake.protocol, PROTOCOL_VERSION);
+    }
+
+    #[test]
+    fn each_run_logs_to_a_new_file_of_its_own() {
+        let (first, _) = create_log("kiosk-test").unwrap();
+        let (second, _) = create_log("kiosk-test").unwrap();
+        assert_ne!(first, second);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&first).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        std::fs::remove_file(first).unwrap();
+        std::fs::remove_file(second).unwrap();
     }
 
     #[test]

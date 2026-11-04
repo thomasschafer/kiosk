@@ -16,6 +16,9 @@ use crate::protocol::{ClientMessage, NoticeLevel, ServerMessage};
 
 /// The longest line a client may send; a paste is the longest thing it sends.
 const MAX_LINE: u64 = 1 << 20;
+/// How many messages wait for the session before the reader stops reading, so a client
+/// that sends faster than the session works holds back rather than fills memory.
+const INCOMING_QUEUE: usize = 256;
 /// How long a send may wait on a client that has stopped reading.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Names a file to append every message to, `> ` before what the frontend sent and `< `
@@ -93,7 +96,7 @@ impl Connection {
             last_sent: Instant::now(),
             trace: trace.clone(),
         };
-        let (sender, incoming) = mpsc::channel();
+        let (sender, incoming) = mpsc::sync_channel(INCOMING_QUEUE);
         thread::spawn(move || read_messages(reader, &sender, &trace));
         Ok(Self {
             writer: Arc::new(Mutex::new(writer)),
@@ -149,7 +152,7 @@ impl Drop for Connection {
     }
 }
 
-fn read_messages(stream: TcpStream, sender: &mpsc::Sender<Incoming>, trace: &Trace) {
+fn read_messages(stream: TcpStream, sender: &mpsc::SyncSender<Incoming>, trace: &Trace) {
     let mut reader = BufReader::new(stream);
     loop {
         let mut line = Vec::new();

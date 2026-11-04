@@ -127,6 +127,10 @@ gh_bin=$TEST_ROOT/gh-bin
 mkdir -p "$gh_bin"
 cat >"$gh_bin/gh" <<SH
 #!/bin/sh
+if [ "\$*" = "auth status" ]; then
+    [ -z "\${FAKE_GH_SIGNED_OUT:-}" ]
+    exit
+fi
 printf '%s\n' "\$*" >>"$TEST_ROOT/gh-calls"
 [ -z "\${FAKE_GH_REFUSES:-}" ]
 SH
@@ -144,6 +148,12 @@ if env -u KIOSK_SKIP_ATTESTATION PATH="$gh_bin:$PATH" FAKE_GH_REFUSES=1 HERDR_AP
 fi
 grep -q 'has no valid build attestation' "$TEST_ROOT/out" || fail "unclear refusal: $(cat "$TEST_ROOT/out")"
 [[ ! -e $TEST_ROOT/unattested/mods/kiosk ]] || fail "installed something anyway"
+rm -f "$TEST_ROOT/gh-calls"
+env -u KIOSK_SKIP_ATTESTATION PATH="$gh_bin:$PATH" FAKE_GH_SIGNED_OUT=1 HERDR_APP_HOME="$TEST_ROOT/signed-out" \
+    sh "$installer" >"$TEST_ROOT/out" 2>&1 || fail "$(cat "$TEST_ROOT/out")"
+grep -q "verified $binary: checksum (log in to the GitHub CLI" "$TEST_ROOT/out" || fail "unclear skip: $(cat "$TEST_ROOT/out")"
+[[ ! -e $TEST_ROOT/gh-calls ]] || fail "asked a signed-out gh: $(cat "$TEST_ROOT/gh-calls")"
+assert_installed "$TEST_ROOT/signed-out"
 
 printf 'test: a linked development install is left alone\n'
 linked=$TEST_ROOT/linked

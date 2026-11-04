@@ -167,7 +167,7 @@ server.serve_forever()
     Write-Output "test: with the GitHub CLI, build attestations are checked too"
     $ghBin = Join-Path $testRoot "gh-bin"
     New-Item -ItemType Directory -Path $ghBin | Out-Null
-    New-FakeProgram $ghBin "gh" "echo %*>>`"$ghCalls`"`r`nif defined FAKE_GH_REFUSES exit /b 1`r`nexit /b 0" "printf '%s\n' `"`$*`" >>'$ghCalls'`n[ -z `"`${FAKE_GH_REFUSES:-}`" ]"
+    New-FakeProgram $ghBin "gh" "if `"%*`"==`"auth status`" (if defined FAKE_GH_SIGNED_OUT (exit /b 1) else (exit /b 0))`r`necho %*>>`"$ghCalls`"`r`nif defined FAKE_GH_REFUSES exit /b 1`r`nexit /b 0" "if [ `"`$*`" = 'auth status' ]; then [ -z `"`${FAKE_GH_SIGNED_OUT:-}`" ]; exit; fi`nprintf '%s\n' `"`$*`" >>'$ghCalls'`n[ -z `"`${FAKE_GH_REFUSES:-}`" ]"
     $pathWithoutGh = $env:PATH
     $env:PATH = "$ghBin$([IO.Path]::PathSeparator)$($env:PATH)"
     $env:KIOSK_SKIP_ATTESTATION = $null
@@ -183,6 +183,15 @@ server.serve_forever()
     Assert-True ($run.Code -ne 0 -and $run.Output.Contains("has no valid build attestation")) "installed without a valid attestation: $($run.Output)"
     Assert-True (-not (Test-Path -LiteralPath (Join-Path (Join-Path $env:HERDR_APP_HOME "mods") "kiosk"))) "installed something anyway"
     $env:FAKE_GH_REFUSES = $null
+    Remove-Item -LiteralPath $ghCalls -Force
+    $env:FAKE_GH_SIGNED_OUT = "1"
+    $env:HERDR_APP_HOME = Join-Path $testRoot "signed-out"
+    $run = Invoke-Installer @("-Version", $version)
+    Assert-True ($run.Code -eq 0) "the signed-out install failed: $($run.Output)"
+    Assert-True ($run.Output.Contains("verified ${binary}: checksum (log in to the GitHub CLI")) "unclear skip: $($run.Output)"
+    Assert-True (-not (Test-Path -LiteralPath $ghCalls)) "asked a signed-out gh"
+    Assert-Installed $env:HERDR_APP_HOME
+    $env:FAKE_GH_SIGNED_OUT = $null
     $env:PATH = $pathWithoutGh
     $env:KIOSK_SKIP_ATTESTATION = "1"
 

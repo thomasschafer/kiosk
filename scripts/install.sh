@@ -102,12 +102,14 @@ verify() {
     [ "$(printf '%s' "$expected" | tr 'A-F' 'a-f')" = "$actual" ] || fail "$name does not match its checksum"
     if [ -n "${KIOSK_SKIP_ATTESTATION:-}" ]; then
         say "verified $name: checksum (KIOSK_SKIP_ATTESTATION skips its build attestation)"
-    elif command -v gh >/dev/null 2>&1; then
+    elif ! command -v gh >/dev/null 2>&1; then
+        say "verified $name: checksum (install the GitHub CLI to check its build attestation too)"
+    elif ! gh auth status >/dev/null 2>&1; then
+        say "verified $name: checksum (log in to the GitHub CLI to check its build attestation too)"
+    else
         gh attestation verify "$file" --repo "$REPOSITORY" >/dev/null ||
             fail "$name has no valid build attestation from $REPOSITORY"
         say "verified $name: checksum and build attestation"
-    else
-        say "verified $name: checksum (install the GitHub CLI to check its build attestation too)"
     fi
 }
 

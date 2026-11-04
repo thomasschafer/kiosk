@@ -39,9 +39,10 @@ irm https://raw.githubusercontent.com/thomasschafer/herdr-app-kiosk/main/scripts
 
 The script installs the latest release's mod and prebuilt binary together in the app's
 `mods/kiosk` folder. It checks both against the release's `SHA256SUMS` and, if the
-[GitHub CLI](https://cli.github.com) is installed, against the release's build attestations,
-which show that this repository's release workflow built them. Pass `--version v0.1.0` (or
-set `KIOSK_INSTALL_VERSION` on Windows) for a particular release, and run it again to update.
+[GitHub CLI](https://cli.github.com) is installed and logged in, against the release's build
+attestations, which show that this repository's release workflow built them. Pass
+`--version v0.1.0` (or set `KIOSK_INSTALL_VERSION` on Windows) for a particular release, and
+run it again to update.
 Read the [shell script](scripts/install.sh) or [PowerShell script](scripts/install.ps1)
 first if you prefer.
 

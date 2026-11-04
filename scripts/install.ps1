@@ -126,15 +126,20 @@ function Confirm-Download([string] $Path, [string] $Sums) {
     if ($env:KIOSK_SKIP_ATTESTATION) {
         Write-Step "verified ${name}: checksum (KIOSK_SKIP_ATTESTATION skips its build attestation)"
     }
-    elseif (Get-Command gh -ErrorAction SilentlyContinue) {
+    elseif (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
+        Write-Step "verified ${name}: checksum (install the GitHub CLI to check its build attestation too)"
+    }
+    else {
+        gh auth status *> $null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Step "verified ${name}: checksum (log in to the GitHub CLI to check its build attestation too)"
+            return
+        }
         gh attestation verify $Path --repo $repository | Out-Null
         if ($LASTEXITCODE -ne 0) {
             Stop-Install "$name has no valid build attestation from $repository"
         }
         Write-Step "verified ${name}: checksum and build attestation"
-    }
-    else {
-        Write-Step "verified ${name}: checksum (install the GitHub CLI to check its build attestation too)"
     }
 }
 

@@ -198,7 +198,7 @@ if command -v herdr-app >/dev/null 2>&1; then
     HERDR_APP_HOME=$app_home herdr-app check "$mod_dir" >&2 || fail "the app could not load $mod_dir"
 fi
 if [ "$(uname -s 2>/dev/null || true)" = Darwin ]; then
-    shortcut=cmd-p
+    shortcut=cmd-k
 else
     shortcut=ctrl-shift-r
 fi

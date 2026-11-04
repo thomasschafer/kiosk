@@ -115,9 +115,9 @@ it, on the `popover` colour with the app's frame:
 - Covered content must not take clicks: GPUI has no occlusion in mods, so rows under a
   dialog drop their handlers.
 - A read on the socket gives up after 30 s; the program pings every 10 s while quiet.
-- `keys.json` binds `cmd-p`, which on macOS takes over the app's own tab picker. On Linux and
-  Windows `cmd` is the Super or Windows key, so bind something else there, such as
-  `ctrl-shift-r`.
+- `keys.json` binds `cmd-k`, which the app leaves free; check the person's own `keys.json`
+  doesn't already use it. On Linux and Windows `cmd` is the Super or Windows key, so bind
+  something else there, such as `ctrl-shift-r`.
 - The mod and the program must come from the same release; an older binary is refused with
   what to install.
 

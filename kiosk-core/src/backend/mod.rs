@@ -13,9 +13,11 @@ use std::{
 };
 
 pub mod annotation;
+pub mod args;
 pub mod identity;
 #[cfg(any(test, feature = "test-support"))]
 pub mod mock;
+pub mod on_open;
 pub mod placement;
 pub(crate) mod worktree;
 

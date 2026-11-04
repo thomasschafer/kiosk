@@ -60,7 +60,7 @@ pub fn resolve_input(input: KeyInput, state: &AppState, keys: &KeysConfig) -> Op
     match &state.overlay {
         Some(Overlay::Help(_)) => {
             let command = keys.command_for(KeysConfig::mode_for(&state.mode), chord);
-            return help_overlay_action(input, command);
+            return help_overlay_action(input, command, keys);
         }
         Some(Overlay::ScanWarnings(_)) => {
             let opening = keys.command_for(KeysConfig::mode_for(&state.mode), chord);
@@ -153,12 +153,23 @@ fn pointer_list_in_front(state: &AppState) -> bool {
 }
 
 /// Help owns its own query, so typing filters it and `esc` always closes it.
-fn help_overlay_action(input: KeyInput, command: Option<Command>) -> Option<Action> {
+/// Help's search edits with the text-editing keys even over a dialog that has none, unless
+/// the dialog binds the chord itself.
+fn help_overlay_action(
+    input: KeyInput,
+    command: Option<Command>,
+    keys: &KeysConfig,
+) -> Option<Action> {
     if input.chord == ESC {
         return Some(Action::CloseOverlay);
     }
     if let Some(action) = command.and_then(help_command_to_action) {
         return Some(action);
+    }
+    if command.is_none()
+        && let Some(edit) = keys.text_edit(input.chord)
+    {
+        return Some(Action::Edit(edit));
     }
     input.typed().map(Action::Insert)
 }
@@ -321,6 +332,41 @@ mod tests {
         assert_eq!(
             resolve_action(key(KeyCode::Char('x'), KeyModifiers::NONE), &state, &keys),
             Some(Action::OpenBranches)
+        );
+    }
+
+    #[test]
+    fn help_over_a_dialog_still_edits_its_search() {
+        let mut state = AppState::new(&TEST_PRODUCT, None);
+        state.mode = Mode::ConfirmWorktreeDelete(DeleteFlowState::new(
+            BranchContext {
+                repo_path: "/repo".into(),
+                repo_name: "repo".into(),
+            },
+            DeleteWorktreeTarget::new("feat".into(), "/wt".into(), false),
+        ));
+        state.overlay = Some(Overlay::Help(HelpOverlayState {
+            rows: Vec::new(),
+            list: SearchableList::new(0),
+        }));
+        let keys = KeysConfig::default();
+        assert_eq!(
+            resolve_action(key(KeyCode::Backspace, KeyModifiers::NONE), &state, &keys),
+            Some(Action::Edit(TextEdit::Backspace))
+        );
+        assert_eq!(
+            resolve_action(
+                key(KeyCode::Char('u'), KeyModifiers::CONTROL),
+                &state,
+                &keys
+            ),
+            Some(Action::Edit(TextEdit::Clear))
+        );
+        let keys = toml::from_str::<KeysConfig>("[modal]\nbackspace = \"noop\"").unwrap();
+        assert_eq!(
+            resolve_action(key(KeyCode::Backspace, KeyModifiers::NONE), &state, &keys),
+            None,
+            "the dialog's own binding wins"
         );
     }
 

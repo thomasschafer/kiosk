@@ -1,6 +1,6 @@
 //! The Herdr desktop app as a backend. The app has no worktree API, so kiosk does the
 //! Git work and this backend drives the window through the `herdr-app` CLI (spaces,
-//! splits, focus) and herdr-core's `hc` (terminal folders). Kiosk sessions are app
+//! splits, focus) and herdr-core's `hc` (terminal folders, typing into terminals). Kiosk sessions are app
 //! spaces: a space counts as showing a checkout when its first terminal's live folder is
 //! inside it, the rule the app's own `worktree` mod uses.
 
@@ -186,6 +186,7 @@ struct SpaceCreated {
 #[derive(Deserialize)]
 struct PaneCreated {
     pane: String,
+    terminal: String,
 }
 
 #[derive(Deserialize)]
@@ -389,22 +390,46 @@ impl HerdrApp {
         Ok(())
     }
 
-    /// One `pane.split` that starts the new terminal in the checkout with the
-    /// command typed ahead into its shell: the shell runs it as soon as it is
-    /// ready, keeps it in its history, and stays when it ends.
+    /// Opens a shell beside the pane in the checkout, then types the command into it, so
+    /// the shell keeps it in its history and stays when it ends.
     fn pane_open(
         &self,
         request: &PaneSplitRequest,
         command: &str,
     ) -> Result<PaneSplitResponse, PaneOpenError> {
-        self.split(request, command).map_err(PaneOpenError::Split)
+        let created = self.split(request, command).map_err(PaneOpenError::Split)?;
+        let sent = self
+            .host
+            .hc(&[
+                "send".into(),
+                "--".into(),
+                created.terminal.clone(),
+                command.into(),
+            ])
+            .map(drop);
+        // Focus goes back even when the command didn't reach the new pane.
+        let refocused = if request.focus {
+            Ok(())
+        } else {
+            self.command("pane.focus", &json!({ "pane": request.pane_id }))
+                .map(drop)
+        };
+        match (sent, refocused) {
+            (Ok(()), Ok(())) => Ok(PaneSplitResponse {
+                pane_id: created.pane,
+            }),
+            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(PaneOpenError::Run(error)),
+            (Err(sent), Err(refocused)) => Err(PaneOpenError::Run(AppError::Also(
+                Box::new(sent),
+                Box::new(refocused),
+            ))),
+        }
     }
 
-    fn split(
-        &self,
-        request: &PaneSplitRequest,
-        command: &str,
-    ) -> Result<PaneSplitResponse, AppError> {
+    /// `pane.split` starts in the split pane's live folder, wherever its shell has gone,
+    /// so this opens the terminal with `terminal.open` beside the pane, focused first,
+    /// which takes the folder.
+    fn split(&self, request: &PaneSplitRequest, command: &str) -> Result<PaneCreated, AppError> {
         checked(args::nonempty("pane id", &request.pane_id))?;
         checked(args::nonempty("command", command))?;
         checked(args::absolute("cwd", &request.cwd))?;
@@ -415,21 +440,11 @@ impl HerdrApp {
                     .into(),
             ));
         }
-        let created: PaneCreated = self.command_json(
-            "pane.split",
-            &json!({
-                "direction": request.direction.as_str(),
-                "pane": request.pane_id,
-                "folder": folder,
-                "type": command,
-            }),
-        )?;
-        if !request.focus {
-            self.command("pane.focus", &json!({ "pane": request.pane_id }))?;
-        }
-        Ok(PaneSplitResponse {
-            pane_id: created.pane,
-        })
+        self.command("pane.focus", &json!({ "pane": request.pane_id }))?;
+        self.command_json(
+            "terminal.open",
+            &json!({ "place": request.direction.as_str(), "folder": folder }),
+        )
     }
 
     fn checkout_paths(&self, repo: &Path) -> Result<Vec<PathBuf>, AppError> {

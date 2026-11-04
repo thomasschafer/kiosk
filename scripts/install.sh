@@ -66,8 +66,26 @@ if [ -L "$mod_dir" ]; then
     fail "$mod_dir is a link (to $(readlink "$mod_dir")); remove it to install a copy instead"
 fi
 
-tmp=$(mktemp -d "${TMPDIR:-/tmp}/herdr-app-kiosk-install.XXXXXX") || fail 'could not create a temporary directory'
-trap 'rm -rf -- "$tmp"' EXIT HUP INT TERM
+# Staged in the app home, on the same filesystem as the mods, so the swap below is two renames.
+mkdir -p "$app_home/mods" || fail "could not create $app_home/mods"
+tmp=$(mktemp -d "$app_home/.herdr-app-kiosk-install.XXXXXX") || fail "could not create a temporary directory in $app_home"
+previous=$tmp/previous
+activated=false
+# However the script ends, an earlier install moved aside for the swap below goes back
+# unless the new one took its place; staging is only removed once nothing is left in it.
+cleanup() {
+    if ! $activated && [ -e "$previous" ]; then
+        if [ ! -e "$mod_dir" ] && mv -- "$previous" "$mod_dir"; then
+            say "put the earlier install back in $mod_dir"
+        else
+            say "could not put the earlier install back; it is in $previous"
+            return
+        fi
+    fi
+    rm -rf -- "$tmp"
+}
+trap cleanup EXIT
+trap 'exit 130' HUP INT TERM
 
 download() {
     if command -v curl >/dev/null 2>&1; then
@@ -107,8 +125,9 @@ verify() {
     elif ! gh auth status >/dev/null 2>&1; then
         say "verified $name: checksum (log in to the GitHub CLI to check its build attestation too)"
     else
-        gh attestation verify "$file" --repo "$REPOSITORY" >/dev/null ||
-            fail "$name has no valid build attestation from $REPOSITORY"
+        gh attestation verify "$file" --repo "$REPOSITORY" --signer-workflow "$REPOSITORY/.github/workflows/release.yml" \
+            --source-ref "refs/tags/$version" --deny-self-hosted-runners >/dev/null ||
+            fail "$name has no valid build attestation from $REPOSITORY's release workflow for $version"
         say "verified $name: checksum and build attestation"
     fi
 }
@@ -168,13 +187,11 @@ fi
 
 # Swapped in whole, so the app never loads half of an update. A running picker keeps the
 # old binary it has open.
-mkdir -p "$app_home/mods"
 if [ -e "$mod_dir" ]; then
-    rm -rf -- "$mod_dir.old"
-    mv -- "$mod_dir" "$mod_dir.old"
+    mv -- "$mod_dir" "$previous" || fail "could not move the installed $mod_dir aside; it is unchanged"
 fi
-mv -- "$staged" "$mod_dir"
-rm -rf -- "$mod_dir.old"
+mv -- "$staged" "$mod_dir" || fail "could not install $mod_dir"
+activated=true
 say "installed $mod_dir"
 
 if command -v herdr-app >/dev/null 2>&1; then

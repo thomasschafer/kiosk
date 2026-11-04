@@ -105,8 +105,44 @@ printf 'test: reinstalling a given release replaces the whole folder\n'
 touch "$home/mods/kiosk/stale.js"
 HERDR_APP_HOME=$home sh "$installer" --version "$VERSION" >/dev/null 2>&1
 [[ ! -e $home/mods/kiosk/stale.js ]] || fail "a stale file survived"
-[[ ! -e $home/mods/kiosk.old ]] || fail "the old install was left behind"
+[[ $(cd "$home" && find . -mindepth 1 -maxdepth 2 ! -path './keys.json' | sort | tr '\n' ' ') == "./mods ./mods/kiosk " ]] ||
+    fail "the install left behind: $(cd "$home" && find . -mindepth 1 -maxdepth 2)"
 assert_installed "$home"
+
+printf 'test: an update that cannot take its place leaves the earlier install\n'
+fake_mv=$TEST_ROOT/failing-mv
+mkdir -p "$fake_mv"
+cat >"$fake_mv/mv" <<SH
+#!/bin/sh
+[ "\$1" = -- ] && [ "\$3" = "$home/mods/kiosk" ] && [ "\${2##*/}" = kiosk ] && exit 1
+exec "$(command -v mv)" "\$@"
+SH
+chmod +x "$fake_mv/mv"
+touch "$home/mods/kiosk/earlier"
+if PATH="$fake_mv:$PATH" HERDR_APP_HOME=$home sh "$installer" --version "$VERSION" 2>"$TEST_ROOT/out"; then
+    fail "reported a failed swap as installed"
+fi
+grep -q 'put the earlier install back' "$TEST_ROOT/out" || fail "unclear failure: $(cat "$TEST_ROOT/out")"
+[[ -e $home/mods/kiosk/earlier ]] || fail "the earlier install was not put back"
+[[ -z $(cd "$home" && find . -maxdepth 1 -name '.herdr-app-kiosk-install.*') ]] || fail "the staging folder was left behind"
+
+printf 'test: an update interrupted mid-swap leaves the earlier install\n'
+cat >"$fake_mv/mv" <<SH
+#!/bin/sh
+if [ "\$1" = -- ] && [ "\$3" = "$home/mods/kiosk" ] && [ "\${2##*/}" = kiosk ]; then
+    kill -TERM "\$PPID"
+    sleep 1
+    exit 1
+fi
+exec "$(command -v mv)" "\$@"
+SH
+if PATH="$fake_mv:$PATH" HERDR_APP_HOME=$home sh "$installer" --version "$VERSION" 2>"$TEST_ROOT/out"; then
+    fail "reported an interrupted swap as installed"
+fi
+grep -q 'put the earlier install back' "$TEST_ROOT/out" || fail "unclear failure: $(cat "$TEST_ROOT/out")"
+[[ -e $home/mods/kiosk/earlier ]] || fail "the earlier install was not put back"
+[[ -z $(cd "$home" && find . -maxdepth 1 -name '.herdr-app-kiosk-install.*') ]] || fail "the staging folder was left behind"
+rm "$home/mods/kiosk/earlier"
 
 printf 'test: the app home follows XDG_CONFIG_HOME\n'
 env -u HERDR_APP_HOME XDG_CONFIG_HOME="$TEST_ROOT/xdg" sh "$installer" >/dev/null 2>&1
@@ -139,7 +175,7 @@ attested=$TEST_ROOT/attested
 env -u KIOSK_SKIP_ATTESTATION PATH="$gh_bin:$PATH" HERDR_APP_HOME="$attested" sh "$installer" >"$TEST_ROOT/out" 2>&1 ||
     fail "$(cat "$TEST_ROOT/out")"
 grep -q "verified $binary: checksum and build attestation" "$TEST_ROOT/out" || fail "no attestation check: $(cat "$TEST_ROOT/out")"
-grep -q "attestation verify .*$binary --repo thomasschafer/herdr-app-kiosk" "$TEST_ROOT/gh-calls" ||
+grep -q "attestation verify .*$binary --repo thomasschafer/herdr-app-kiosk --signer-workflow thomasschafer/herdr-app-kiosk/.github/workflows/release.yml --source-ref refs/tags/$VERSION --deny-self-hosted-runners\$" "$TEST_ROOT/gh-calls" ||
     fail "gh was asked: $(cat "$TEST_ROOT/gh-calls")"
 assert_installed "$attested"
 if env -u KIOSK_SKIP_ATTESTATION PATH="$gh_bin:$PATH" FAKE_GH_REFUSES=1 HERDR_APP_HOME="$TEST_ROOT/unattested" \

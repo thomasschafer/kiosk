@@ -148,7 +148,11 @@ sb key Return
 wait_closed
 git -C "$HOME/code/web" rev-parse --verify -q feat/from-review >/dev/null || fail "no local tracking branch"
 
-check "clicking a row opens that repository"
+check "clicking a row opens that repository, with its [on_open] pane beside it"
+marker=$HOME/sb/on-open
+rm -f "$marker"
+printf 'search_dirs = ["~/code"]\n\n[on_open]\npanes = [{ command = "pwd > %s", direction = "right" }]\n' \
+  "$marker" >"$HOME/.config/herdr-app-kiosk/config.toml"
 open_kiosk
 wait_view '.main.total == 23'
 sb type cli
@@ -156,6 +160,12 @@ wait_view "$rows == [\"cli\"]"
 sb click 400 155
 wait_closed
 space_folders | grep -qx "$HOME/code/cli" || fail "no space for cli"
+for _ in $(seq 100); do [[ -s $marker ]] && break; sleep 0.1; done
+[[ $(cat "$marker" 2>/dev/null) == "$HOME/code/cli" ]] || fail "the [on_open] command did not run in the checkout"
+terminals=$(sb ls | jq --arg folder "$HOME/code/cli" '[.spaces[] | select(.folder == $folder) | .tabs[].terminals[]] | length')
+[[ $terminals == 2 ]] || fail "the cli space has $terminals terminals, not the shell and its [on_open] pane"
+sb shot "$shots/on-open.png" >/dev/null
+printf 'search_dirs = ["~/code"]\n' >"$HOME/.config/herdr-app-kiosk/config.toml"
 
 check "Esc with an empty query quits, and the picker exits with the popup"
 open_kiosk

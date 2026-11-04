@@ -12,6 +12,8 @@ pub enum AppError {
     Invocation(String),
     /// The program answered in a shape kiosk doesn't understand.
     InvalidResponse(String),
+    /// A step failed, and so did what should follow it whatever happened.
+    Also(Box<AppError>, Box<AppError>),
 }
 
 impl fmt::Display for AppError {
@@ -21,6 +23,7 @@ impl fmt::Display for AppError {
             Self::InvalidArgument(message) => write!(formatter, "invalid argument: {message}"),
             Self::Invocation(message) => write!(formatter, "invocation failed: {message}"),
             Self::InvalidResponse(message) => write!(formatter, "invalid response: {message}"),
+            Self::Also(first, then) => write!(formatter, "{first}; then {then}"),
         }
     }
 }

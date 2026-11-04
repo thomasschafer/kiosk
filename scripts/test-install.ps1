@@ -56,10 +56,33 @@ $server = $null
 
 # Runs the installer and returns its exit code and output, unwrapped: PowerShell colours and
 # boxes an error and wraps it to the console's width.
+function ConvertTo-Run([string] $Output) {
+    $plain = $Output -replace "\x1b\[[0-9;]*m", "" -replace "\s*\r?\n\s*(\|\s*)?", " "
+    return @{ Code = $LASTEXITCODE; Output = $plain }
+}
+
 function Invoke-Installer([string[]] $Arguments = @()) {
     $output = & pwsh -NoLogo -NoProfile -File (Join-Path $testRoot "install.ps1") @Arguments 2>&1 | Out-String
-    $plain = $output -replace "\x1b\[[0-9;]*m", "" -replace "\s*\r?\n\s*(\|\s*)?", " "
-    return @{ Code = $LASTEXITCODE; Output = $plain }
+    return ConvertTo-Run $output
+}
+
+# Runs the installer for release $Version with a Move-Item that refuses to move a staged
+# `kiosk` folder to $Destination, as when the swap fails or is interrupted at that point.
+function Invoke-InstallerFailingSwap([string] $Destination, [string] $Version) {
+    $script = @'
+param([string] $Installer, [string] $Refused, [string] $Version)
+function Move-Item([string] $LiteralPath, [string] $Destination) {
+    if ((Split-Path -Leaf $LiteralPath) -eq "kiosk" -and $Destination -eq $Refused) {
+        throw "refused by the test"
+    }
+    Microsoft.PowerShell.Management\Move-Item -LiteralPath $LiteralPath -Destination $Destination
+}
+& $Installer '-Version' $Version
+'@
+    $wrapper = Join-Path $testRoot "failing-swap.ps1"
+    Set-Content -LiteralPath $wrapper -Value $script
+    $output = & pwsh -NoLogo -NoProfile -File $wrapper -Installer (Join-Path $testRoot "install.ps1") -Refused $Destination -Version $Version 2>&1 | Out-String
+    return ConvertTo-Run $output
 }
 
 function Assert-Installed([string] $AppHome) {
@@ -145,6 +168,18 @@ server.serve_forever()
     Assert-True (-not (Test-Path -LiteralPath $stale)) "a stale file survived"
     Assert-Installed $home1
 
+    Write-Output "test: an update that cannot take its place leaves the earlier install"
+    $modDir = Join-Path (Join-Path $home1 "mods") "kiosk"
+    $earlier = Join-Path $modDir "earlier"
+    Set-Content -LiteralPath $earlier -Value ""
+    $run = Invoke-InstallerFailingSwap $modDir $version
+    Assert-True ($run.Code -ne 0) "reported a failed swap as installed: $($run.Output)"
+    Assert-True ($run.Output.Contains("put the earlier install back")) "unclear failure: $($run.Output)"
+    Assert-True (Test-Path -LiteralPath $earlier) "the earlier install was not put back"
+    $staging = @(Get-ChildItem -LiteralPath $home1 -Force -Filter ".herdr-app-kiosk-install-*")
+    Assert-True ($staging.Count -eq 0) "the staging folder was left behind"
+    Remove-Item -LiteralPath $earlier
+
     Write-Output "test: the app home follows XDG_CONFIG_HOME"
     $env:HERDR_APP_HOME = $null
     $env:XDG_CONFIG_HOME = Join-Path $testRoot "xdg"
@@ -174,8 +209,10 @@ server.serve_forever()
     $env:HERDR_APP_HOME = Join-Path $testRoot "attested"
     $run = Invoke-Installer @("-Version", $version)
     Assert-True ($run.Code -eq 0) "the attested install failed: $($run.Output)"
+    $left = @(Get-ChildItem -LiteralPath $env:HERDR_APP_HOME -Force | ForEach-Object Name)
+    Assert-True (($left -join " ") -ceq "mods") "the install left behind: $($left -join ', ')"
     Assert-True ($run.Output.Contains("verified ${binary}: checksum and build attestation")) "no attestation check: $($run.Output)"
-    Assert-True ((Get-Content -LiteralPath $ghCalls -Raw).Contains("--repo thomasschafer/herdr-app-kiosk")) "gh was not asked about the repository"
+    Assert-True ((Get-Content -LiteralPath $ghCalls -Raw).Contains("--repo thomasschafer/herdr-app-kiosk --signer-workflow thomasschafer/herdr-app-kiosk/.github/workflows/release.yml --source-ref refs/tags/$version --deny-self-hosted-runners")) "gh was not asked about the release workflow and tag"
     Assert-Installed $env:HERDR_APP_HOME
     $env:FAKE_GH_REFUSES = "1"
     $env:HERDR_APP_HOME = Join-Path $testRoot "unattested"

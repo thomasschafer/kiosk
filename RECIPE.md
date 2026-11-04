@@ -22,8 +22,11 @@ in the mod folder's `bin/`. Without it, opening kiosk shows "Kiosk isn't install
    Windows, `x86_64-pc-windows-msvc` with `.exe` on the end. Other computers have no prebuilt
    binary: build it from a clone with `cargo build --release` instead.
 3. Check its SHA-256 against its line in `SHA256SUMS`, and stop if it differs. With the GitHub
-   CLI, logged in, also check that this repository's release workflow built it:
-   `gh attestation verify <file> --repo thomasschafer/herdr-app-kiosk`.
+   CLI, logged in, also check that this repository's release workflow built it for that tag,
+   and stop if it refuses:
+   `gh attestation verify <file> --repo thomasschafer/herdr-app-kiosk --signer-workflow
+   thomasschafer/herdr-app-kiosk/.github/workflows/release.yml --source-ref
+   refs/tags/v<version> --deny-self-hosted-runners`.
 4. After copying the mod folder, put the binary in it as `mods/kiosk/bin/herdr-app-kiosk`
    (`herdr-app-kiosk.exe` on Windows) and make it executable. `herdr-app-kiosk --version`
    should print the same version.

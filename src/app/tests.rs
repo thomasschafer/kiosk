@@ -43,8 +43,10 @@ struct FakeState {
     spaces: Vec<FakeSpace>,
     next_id: usize,
     commands: Vec<(String, Value)>,
-    /// What each new terminal had typed into it as it started (`type`).
+    /// What `hc send` typed into each terminal, in order.
     typed: Vec<(String, String)>,
+    /// Makes `hc send` fail, as when the terminal ends before it is typed into.
+    refuse_send: bool,
     focused_pane: Option<String>,
 }
 
@@ -125,6 +127,33 @@ fn new_pane(state: &mut FakeState, folder: &Path) -> FakePane {
     }
 }
 
+/// The arguments upstream Herdr's `herdr-app do` takes for each command the backend uses
+/// (`src/commands.rs` there); it refuses any other.
+const COMMAND_ARGUMENTS: &[(&str, &[&str])] = &[
+    (
+        "space.new",
+        &["name", "folder", "tab", "argv", "task", "machine"],
+    ),
+    ("space.select", &["index", "id"]),
+    ("space.close", &["id", "confirmed"]),
+    ("terminal.open", &["argv", "folder", "place", "name"]),
+    ("pane.focus", &["pane", "terminal"]),
+    ("pane.close", &["pane"]),
+];
+
+fn assert_upstream_takes(name: &str, args: &Value) {
+    let (_, allowed) = COMMAND_ARGUMENTS
+        .iter()
+        .find(|(command, _)| *command == name)
+        .unwrap_or_else(|| panic!("upstream Herdr has no command {name}"));
+    for key in args.as_object().unwrap().keys() {
+        assert!(
+            allowed.contains(&key.as_str()),
+            "upstream Herdr's {name} refuses the argument {key}"
+        );
+    }
+}
+
 fn refused(message: &str) -> AppError {
     AppError::Other {
         code: "herdr_app".into(),
@@ -156,6 +185,7 @@ impl AppHost for FakeApp {
         };
         assert_eq!(verb, "do");
         let args: Value = serde_json::from_str(args).unwrap();
+        assert_upstream_takes(name, &args);
         state.commands.push((name.clone(), args.clone()));
         let output = match name.as_str() {
             "space.new" => {
@@ -184,36 +214,38 @@ impl AppHost for FakeApp {
                 state.spaces.retain(|space| space.id != id);
                 json!({ "ok": true })
             }
-            "pane.split" => {
-                let target = args["pane"].as_str().unwrap().to_string();
+            "terminal.open" => {
+                assert!(
+                    matches!(args["place"].as_str(), Some("right" | "down")),
+                    "only splits are expected: {args}"
+                );
+                let target = state
+                    .focused_pane
+                    .clone()
+                    .ok_or_else(|| refused("no pane to split"))?;
                 let index = state
                     .spaces
                     .iter()
                     .position(|space| space.panes.iter().any(|pane| pane.pane == target))
                     .ok_or_else(|| refused("no such pane"))?;
-                let folder = args["folder"].as_str().map_or_else(
-                    || {
-                        state.spaces[index]
-                            .panes
-                            .iter()
-                            .find(|pane| pane.pane == target)
-                            .unwrap()
-                            .live
-                            .clone()
-                    },
-                    PathBuf::from,
-                );
+                // Without one, the app would start in the pane's live folder.
+                let folder = PathBuf::from(args["folder"].as_str().expect("no folder given"));
                 let pane = new_pane(&mut state, &folder);
-                if let Some(line) = args["type"].as_str() {
-                    state.typed.push((pane.terminal.clone(), line.into()));
-                }
                 state.focused_pane = Some(pane.pane.clone());
                 let output = json!({ "pane": pane.pane, "terminal": pane.terminal });
                 state.spaces[index].panes.push(pane);
                 output
             }
             "pane.focus" => {
-                state.focused_pane = Some(args["pane"].as_str().unwrap().into());
+                let target = args["pane"].as_str().unwrap();
+                if !state
+                    .spaces
+                    .iter()
+                    .any(|space| space.panes.iter().any(|pane| pane.pane == target))
+                {
+                    return Err(refused("no such pane"));
+                }
+                state.focused_pane = Some(target.into());
                 json!({ "ok": true })
             }
             "pane.close" => {
@@ -232,7 +264,7 @@ impl AppHost for FakeApp {
         if let Some(want) = self.rendezvous {
             self.meet_other_gets(want);
         }
-        let state = self.state.lock().unwrap();
+        let mut state = self.state.lock().unwrap();
         let pane = |state: &FakeState, terminal: &str| {
             state
                 .spaces
@@ -255,6 +287,13 @@ impl AppHost for FakeApp {
                 })
                 .to_string()
                 .into())
+            }
+            [send, separator, terminal, text] if send == "send" && separator == "--" => {
+                if state.refuse_send || pane(&state, terminal).is_none() {
+                    return Err(refused("no such terminal"));
+                }
+                state.typed.push((terminal.clone(), text.clone()));
+                Ok(Vec::new())
             }
             _ => panic!("unexpected hc call {args:?}"),
         }
@@ -638,7 +677,7 @@ fn split_request(pane_id: &str, cwd: &Path) -> PaneSplitRequest {
 }
 
 #[test]
-fn a_pane_opens_with_its_command_typed_in_one_split_and_gives_focus_back() {
+fn a_pane_opens_beside_the_pane_with_its_command_typed_and_gives_focus_back() {
     let fixture = Fixture::new();
     let space = fixture.app.add_space(&fixture.repo);
     let root = &space.panes[0].pane;
@@ -653,9 +692,10 @@ fn a_pane_opens_with_its_command_typed_in_one_split_and_gives_focus_back() {
     assert_eq!(
         fixture.app.commands(),
         [
+            ("pane.focus".into(), json!({ "pane": root })),
             (
-                "pane.split".into(),
-                json!({ "direction": "right", "pane": root, "folder": folder, "type": "hx ." })
+                "terminal.open".into(),
+                json!({ "place": "right", "folder": folder })
             ),
             ("pane.focus".into(), json!({ "pane": root })),
         ]
@@ -704,6 +744,26 @@ fn a_pane_that_cannot_open_as_asked_is_refused_before_the_app_is_called() {
         assert!(error.to_string().contains(why), "{error}");
     }
     assert_eq!(fixture.app.commands(), []);
+}
+
+#[test]
+fn a_command_that_cannot_be_typed_is_reported_as_a_pane_made_without_it() {
+    let fixture = Fixture::new();
+    let space = fixture.app.add_space(&fixture.repo);
+    fixture.app.state.lock().unwrap().refuse_send = true;
+
+    let error = fixture
+        .backend
+        .pane_open(&split_request(&space.panes[0].pane, &fixture.repo), "hx")
+        .unwrap_err();
+
+    assert_eq!(error, PaneOpenError::Run(refused("no such terminal")));
+    assert_eq!(fixture.app.spaces()[0].panes.len(), 2);
+    assert_eq!(
+        fixture.app.state.lock().unwrap().focused_pane.as_ref(),
+        Some(&space.panes[0].pane),
+        "focus goes back to the first pane"
+    );
 }
 
 #[test]

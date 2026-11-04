@@ -87,9 +87,9 @@ The first time kiosk opens, a setup wizard asks which folders to search and writ
 config. A repository opens as an unnamed space in it, which the app names after its folder,
 and kiosk selects the space instead when one is already there. New worktrees go in
 `~/.herdr/worktrees/<repo>/<branch>`, the same place as the app's own worktree menu, and the
-sidebar nests them under their repository. `[on_open]` panes split the new space's first pane
-with their command typed into the new shell as it starts; the app always splits in half, so
-a pane with a `ratio` is refused with a notification.
+sidebar nests them under their repository. Each `[on_open]` pane is a shell opened beside the
+new space's first pane, in the checkout, with its command typed in; the app always splits in
+half, so a pane with a `ratio` is refused with a notification.
 
 If you used kiosk in the app through herdr-kiosk before, its config moves here on its own:
 kiosk copies `~/.config/herdr-kiosk/config.toml` to `~/.config/herdr-app-kiosk/config.toml`

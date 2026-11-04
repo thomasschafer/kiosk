@@ -135,16 +135,21 @@ function Confirm-Download([string] $Path, [string] $Sums) {
             Write-Step "verified ${name}: checksum (log in to the GitHub CLI to check its build attestation too)"
             return
         }
-        gh attestation verify $Path --repo $repository | Out-Null
+        gh attestation verify $Path --repo $repository --signer-workflow "$repository/.github/workflows/release.yml" `
+            --source-ref "refs/tags/$version" --deny-self-hosted-runners | Out-Null
         if ($LASTEXITCODE -ne 0) {
-            Stop-Install "$name has no valid build attestation from $repository"
+            Stop-Install "$name has no valid build attestation from ${repository}'s release workflow for $version"
         }
         Write-Step "verified ${name}: checksum and build attestation"
     }
 }
 
-$temporaryDirectory = Join-Path ([IO.Path]::GetTempPath()) "herdr-app-kiosk-install-$([Guid]::NewGuid().ToString('N'))"
+# Staged in the app home, on the same volume as the mods, so the swap below is two renames.
+New-Item -ItemType Directory -Path $modsDir -Force | Out-Null
+$temporaryDirectory = Join-Path $appHome ".herdr-app-kiosk-install-$([Guid]::NewGuid().ToString('N'))"
 New-Item -ItemType Directory -Path $temporaryDirectory | Out-Null
+$previous = Join-Path $temporaryDirectory "previous"
+$activated = $false
 try {
     $staged = Join-Path $temporaryDirectory $modName
     $stagedBin = Join-Path $staged "bin"
@@ -199,18 +204,21 @@ try {
     }
 
     # Swapped in whole, so the app never loads half of an update.
-    New-Item -ItemType Directory -Path $modsDir -Force | Out-Null
-    $old = "$modDir.old"
-    if (Test-Path -LiteralPath $old) {
-        Remove-Item -LiteralPath $old -Recurse -Force
-    }
     if (Test-Path -LiteralPath $modDir) {
-        Move-Item -LiteralPath $modDir -Destination $old
+        try {
+            Move-Item -LiteralPath $modDir -Destination $previous
+        }
+        catch {
+            Stop-Install "could not move the installed $modDir aside, so it is unchanged: $($_.Exception.Message)"
+        }
     }
-    Move-Item -LiteralPath $staged -Destination $modDir
-    if (Test-Path -LiteralPath $old) {
-        Remove-Item -LiteralPath $old -Recurse -Force
+    try {
+        Move-Item -LiteralPath $staged -Destination $modDir
     }
+    catch {
+        Stop-Install "could not install ${modDir}: $($_.Exception.Message)"
+    }
+    $activated = $true
     Write-Step "installed $modDir"
 
     if (Get-Command herdr-app -ErrorAction SilentlyContinue) {
@@ -230,7 +238,24 @@ try {
     [Console]::Error.WriteLine('  { "global": { "ctrl-shift-r": "mod.open:kiosk" } }')
 }
 finally {
-    if (Test-Path -LiteralPath $temporaryDirectory) {
+    # However the script ends, Ctrl+C included, an earlier install moved aside for the swap
+    # goes back unless the new one took its place; staging is only removed once nothing is
+    # left in it.
+    $keepTemporary = $false
+    if (-not $activated -and (Test-Path -LiteralPath $previous)) {
+        try {
+            if (Test-Path -LiteralPath $modDir) {
+                throw "$modDir is in the way"
+            }
+            Move-Item -LiteralPath $previous -Destination $modDir
+            Write-Step "put the earlier install back in $modDir"
+        }
+        catch {
+            $keepTemporary = $true
+            Write-Step "could not put the earlier install back ($($_.Exception.Message)); it is in $previous"
+        }
+    }
+    if (-not $keepTemporary -and (Test-Path -LiteralPath $temporaryDirectory)) {
         Remove-Item -LiteralPath $temporaryDirectory -Recurse -Force
     }
 }

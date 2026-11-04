@@ -1,0 +1,114 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Check versions agree
+        shell: bash
+        run: scripts/check-version.sh
+
+      - name: Lint shell scripts
+        if: runner.os == 'Linux'
+        run: shellcheck scripts/*.sh scripts/app-sandbox/*.sh scripts/app-sandbox/sandbox
+
+      - name: Check the mod's syntax
+        shell: bash
+        run: node --check mods/kiosk/main.js
+
+      - name: Test the installer
+        if: runner.os != 'Windows'
+        run: scripts/test-install.sh
+
+      - name: Validate PowerShell syntax
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $failed = $false
+          Get-ChildItem scripts -Filter *.ps1 | ForEach-Object {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              $_.FullName,
+              [ref] $tokens,
+              [ref] $errors
+            ) | Out-Null
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object { Write-Error $_.Message }
+              $failed = $true
+            }
+          }
+          if ($failed) { exit 1 }
+
+      - name: Test the PowerShell installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: scripts/test-install.ps1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        if: runner.os == 'Linux'
+        run: cargo fmt --all --check
+
+      - name: Check generated README
+        if: runner.os == 'Linux'
+        run: cargo --locked xtask readme --check
+
+      - name: Run clippy
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+
+      - name: Run tests
+        run: cargo test --locked --workspace --all-targets
+
+  mod:
+    name: Check the mod loads in the released app
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install the Herdr app
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libvulkan1 libxkbcommon0 libxkbcommon-x11-0 libwayland-client0
+          curl -fsSL https://releases.herdr.dev/app/install.sh | sh
+          echo "$HOME/.local/bin" >>"$GITHUB_PATH"
+
+      - name: Check the mod
+        run: herdr-app check mods/kiosk

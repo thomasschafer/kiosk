@@ -20,6 +20,20 @@ pub fn session_in_folder<'a, S>(live: &'a [LiveFolder<S>], folder: &Path) -> Opt
         .map(|entry| &entry.session)
 }
 
+/// Focuses the session in `folder` with `focus`, or opens one there with `create`. Returns
+/// a warning `create` gives.
+pub fn focus_or_create_folder<S, E>(
+    sessions: &[LiveFolder<S>],
+    folder: &Path,
+    focus: impl FnOnce(&S) -> Result<(), E>,
+    create: impl FnOnce() -> Result<Option<String>, E>,
+) -> Result<Option<String>, E> {
+    match session_in_folder(sessions, folder) {
+        Some(session) => focus(session).map(|()| None),
+        None => create(),
+    }
+}
+
 /// The first session showing `checkout`: its folder is inside the checkout and not inside
 /// another of the repository's `checkouts` nested below it.
 pub fn session_showing_checkout<'a, S>(

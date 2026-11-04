@@ -1,14 +1,9 @@
 # herdr-app-kiosk
 
 Fuzzy-find your Git repositories (or any folder) and their branches in the
-[Herdr](https://herdr.dev) desktop app, then open them as spaces and worktrees. It's
-[kiosk](https://github.com/thomasschafer/kiosk)'s picker, drawn natively by the app: a
-large popup over the window, in your theme, with the mouse as well as the keyboard. It works
-on macOS, Linux and Windows.
+[Herdr](https://herdr.dev) desktop app, then open them as spaces and worktrees.
 
 ![Demo of filtering a repository's branches, then creating a new branch's worktree](media/preview.gif)
-
-For the herdr TUI, use [herdr-kiosk](https://github.com/thomasschafer/herdr-kiosk).
 
 ## Install
 
@@ -68,28 +63,19 @@ ln -s "$PWD/mods/kiosk" ~/.config/herdr-app/mods/kiosk
 Bind a key to open kiosk in `~/.config/herdr-app/keys.json`, for example:
 
 ```json
-{ "global": { "cmd-p": "mod.open:kiosk" } }
+{ "global": { "cmd+k": "mod.open:kiosk" } }
 ```
-
-On macOS `cmd-p` takes over the app's own tab picker; on Linux and Windows, `ctrl-shift-r`
-is free.
 
 ## Usage
 
-Type to search, and press `enter` or click to open. `tab`, or a repository's Branches button
-when you hover it, lists its branches; typing a name no branch has and pressing `enter`
+Type to search, and press `enter` or click to open. `tab` lists its branches; typing a name no branch has and pressing `enter`
 starts a new branch, from a base you pick. `ctrl+x`, or a worktree's Remove button, removes
-its checkout after asking (the branch stays). `esc` goes back, clears the search, and closes
-from the repository list. `ctrl+h` lists every key, and they're yours to change under
-[`[keys]`](#keys).
+its checkout after asking (the branch stays). `esc` goes back and closes
+from the repository list. `ctrl+h` lists every key: they can be modified via the
+[`[keys]`](#keys) config.
 
 The first time kiosk opens, a setup wizard asks which folders to search and writes the
-config. A repository opens as an unnamed space in it, which the app names after its folder,
-and kiosk selects the space instead when one is already there. New worktrees go in
-`~/.herdr/worktrees/<repo>/<branch>`, the same place as the app's own worktree menu, and the
-sidebar nests them under their repository. Each `[on_open]` pane is a shell opened beside the
-new space's first pane, in the checkout, with its command typed in; the app always splits in
-half, so a pane with a `ratio` is refused with a notification.
+config.
 
 If you used kiosk in the app through herdr-kiosk before, its config moves here on its own:
 kiosk copies `~/.config/herdr-kiosk/config.toml` to `~/.config/herdr-app-kiosk/config.toml`

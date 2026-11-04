@@ -1,9 +1,15 @@
 use ratatui::style::{Color, Modifier, Style};
 
 use kiosk_core::{
-    config::{ThemeColor, ThemeConfig},
+    config::{ConfigExtension, ThemeColor, ThemeConfig},
     view::Tone,
 };
+
+/// A terminal product's config, which carries the terminal UI's colours as its `theme`
+/// section.
+pub trait ThemedConfig: ConfigExtension {
+    fn theme(&self) -> &ThemeConfig;
+}
 
 pub struct Theme {
     pub accent: Color,

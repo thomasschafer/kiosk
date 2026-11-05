@@ -434,6 +434,15 @@ fn validating_and_base_branch_dialogs() {
     assert_eq!(list.selected, Some(1));
     assert_eq!(texts(&list.rows[1]), expected(&[("release", Tone::Normal)]));
     assert_eq!(list.empty, None);
+    assert_eq!(
+        hints(&view.hints),
+        [
+            ("enter", "create"),
+            ("esc", "back"),
+            ("ctrl+h", "help"),
+            ("ctrl+c", "quit"),
+        ]
+    );
 
     let Mode::SelectBaseBranch { flow, .. } = &mut state.mode else {
         unreachable!()
@@ -441,6 +450,11 @@ fn validating_and_base_branch_dialogs() {
     flow.list.filtered.clear();
     flow.list.selected = None;
     let view = picker(&mut state, &KeysConfig::default(), VIEWPORTS);
+    assert_eq!(
+        hints(&view.hints),
+        [("esc", "back"), ("ctrl+h", "help"), ("ctrl+c", "quit")],
+        "with no base, there is nothing to create the branch from"
+    );
     let Some(Dialog::BaseBranch { list, .. }) = view.dialog else {
         unreachable!()
     };
@@ -831,6 +845,11 @@ fn footer_hints_follow_the_mode() {
             ("ctrl+c", "quit"),
         ]
     );
+    state.mode = Mode::ConfirmWorktreeDelete(DeleteFlowState::new(
+        context(),
+        DeleteWorktreeTarget::new("feature".into(), "/repo-feature".into(), false),
+    ));
+    assert_eq!(hints(&footer(&state))[0], ("enter", "remove"));
     state.mode = Mode::Loading {
         message: "Opening".into(),
         branch: None,

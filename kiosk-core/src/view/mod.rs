@@ -1227,15 +1227,14 @@ pub fn footer_hints(keys: &KeysConfig, state: &AppState) -> Vec<Hint> {
         Selection::NewBranch => add(Command::Open, "create"),
         Selection::Row(_) => add(
             Command::Open,
-            if matches!(
-                mode,
-                Mode::SelectBaseBranch { .. }
-                    | Mode::ConfirmRemoteBranch { .. }
-                    | Mode::ConfirmWorktreeDelete(_)
-            ) {
-                "confirm"
-            } else {
-                "open"
+            match mode {
+                Mode::SelectBaseBranch { .. } => "create",
+                Mode::ConfirmWorktreeDelete(_) => "remove",
+                Mode::ConfirmRemoteBranch { .. } => "confirm",
+                Mode::RepoSelect
+                | Mode::BranchSelect(_)
+                | Mode::ValidatingNewBranch { .. }
+                | Mode::Loading { .. } => "open",
             },
         ),
     }

@@ -36,9 +36,12 @@ wait_closed() {
   fail "the popup stayed open"
 }
 
+# The mod takes focus again 600 ms after it opens, as the app can take it back while the
+# popup appears; a key pressed before then may go to the app instead.
 open_kiosk() {
   sb open
   wait_view '.screen != null'
+  sleep 0.7
 }
 
 # The names of the rows in view, for the scripts that source this.

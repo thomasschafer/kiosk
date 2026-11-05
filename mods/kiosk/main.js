@@ -20,10 +20,10 @@ import net from "net";
 const MOD_DIR = "mods/kiosk";
 const TITLE = "Kiosk";
 // The release of herdr-app-kiosk this mod comes from, whose binary it runs.
-const VERSION = "0.1.0";
+const VERSION = "0.2.0";
 const REPOSITORY = "github.com/thomasschafer/herdr-app-kiosk";
 // The protocol this mod speaks; the picker refuses a different one.
-const PROTOCOL = 1;
+const PROTOCOL = 2;
 
 // The dialog's share of the window, as mod.json opens it. Kiosk draws its own panel inside
 // it (mod.json's frame is none): hung from the top, and as tall as what it shows, so a short
@@ -320,8 +320,10 @@ function badge(t, b) {
 // (`active`); the placeholder when nothing is.
 function queryText(t, query, placeholder, active, size) {
   const empty = !query.before && !query.after;
+  // The cursor takes no room, so moving it through the text leaves the characters where they are.
   const cursor = active
-    ? div().w(1.5).h(size + 3).flex_none().rounded(1).bg(t.accent).loop("opacity", { from: 0.15, to: 1, period: 1100 })
+    ? div().w(0).h(size + 3).flex_none().relative()
+      .child(div().absolute().top(0).left(-0.75).w(1.5).h(size + 3).rounded(1).bg(t.accent).loop("opacity", { from: 0.15, to: 1, period: 1100 }))
     : div();
   return h_flex().flex_1().min_w(0).overflow_hidden().items_center().whitespace_nowrap().text_size(size)
     .child(div().flex_none().text_color(t.foreground).child(query.before))
@@ -348,6 +350,25 @@ function panel(t, id = "kiosk-panel") {
 // The selected row's fill: a light theme needs more of the accent to show it.
 function selectedFill(t) {
   return tint(t.accent, settings().dark ? 0.13 : 0.16);
+}
+
+// `text` with the characters at `matches` (character indices, ascending) marked in `color`:
+// where the search matched it.
+function marked(text, matches, color) {
+  const characters = Array.from(text);
+  matches.forEach((position, i) => {
+    if (!Number.isInteger(position) || position < 0 || position >= characters.length || (i > 0 && position <= matches[i - 1])) {
+      throw new Error(`the picker marked ${JSON.stringify(matches)} in ${JSON.stringify(text)}`);
+    }
+  });
+  const marks = new Set(matches);
+  const runs = [];
+  characters.forEach((character, i) => {
+    const mark = marks.has(i);
+    if (runs.length && runs[runs.length - 1].mark === mark) runs[runs.length - 1].text += character;
+    else runs.push({ mark, text: character });
+  });
+  return runs.map((run) => run.mark ? div().flex_none().text_color(color).font_semibold().child(run.text) : div().flex_none().child(run.text));
 }
 
 function divider(t) {
@@ -684,8 +705,14 @@ export default class Kiosk extends View {
     const scrolled = list.total > list.rows.length;
     return area.h(height).when(scrolled, (el) => el.pr(8))
       .children(list.rows.map((r, i) => row(r, i === list.selected)))
-      .when(scrolled, (el) => el.child(div().absolute().right(0).w(3).rounded(2).bg(tint(t.foreground, 0.16))
-        .top((list.offset / list.total) * height).h(Math.max(16, (list.rows.length / list.total) * height))));
+      .when(scrolled, (el) => el.child(this.thumb(t, list.offset, list.rows.length, list.total, height, 0)));
+  }
+
+  // Where a scrolled list's view is: `shown` of `total` from `offset`, in a track `height`
+  // tall that starts `top` down.
+  thumb(t, offset, shown, total, height, top) {
+    return div().absolute().right(0).w(3).rounded(2).bg(tint(t.foreground, 0.16))
+      .top(top + (offset / total) * height).h(Math.max(16, (shown / total) * height));
   }
 
   row(t, r, selected) {
@@ -703,7 +730,8 @@ export default class Kiosk extends View {
     // A branch only a remote has reads as the remote's: `origin/` before its name.
     const name = h_flex().flex_none().max_w("60%").min_w(0).items_center().text_size(13.5)
       .when(!!remote, (el) => el.child(div().flex_none().text_color(t.dim).child(`${remote?.name}/`)))
-      .child(div().min_w(0).truncate().text_color(remote ? t.muted : toneColor(t, r.name.tone)).when(selected, (el) => el.font_medium()).child(r.name.text));
+      .child(h_flex().min_w(0).overflow_hidden().whitespace_nowrap().text_color(remote ? t.foreground : toneColor(t, r.name.tone)).when(selected, (el) => el.font_medium())
+        .children(marked(r.name.text, r.matches, t.accent)));
     return h_flex().id(`kiosk-row-${id}`).h(ROW).flex_none().px(INSET).rounded(7).gap(ICON_GAP).items_center().cursor_pointer()
       .when(selected, (el) => el.bg(selectedFill(t)))
       .when(!selected, (el) => el.hover((s) => s.bg(t.hover)))
@@ -800,8 +828,9 @@ export default class Kiosk extends View {
       .child(divider(t))
       .when(!!h.notice, (el) => el.child(div().px(EDGE).pt(10).text_size(12).text_color(t.muted).child(h.notice)))
       .child(
-        v_flex().id("kiosk-help").p(PAD).flex_none().overflow_hidden()
+        v_flex().id("kiosk-help").p(PAD).flex_none().relative().overflow_hidden()
           .on_scroll_wheel((e, cx) => this.scroll(e, cx))
+          .when(h.total > h.entries.length, (el) => el.child(this.thumb(t, h.offset, h.entries.length, h.total, rows.length * HELP_ROW, PAD)))
           .when(!!h.empty, (el) => el.child(div().h(EMPTY).flex().items_center().justify_center().text_color(t.muted).child(h.empty)))
           .children(rows.map((entry) => {
             const line = h_flex().h(HELP_ROW).flex_none().items_center().px(INSET);

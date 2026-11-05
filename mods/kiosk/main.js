@@ -55,6 +55,9 @@ const ICONS = "mods/workspace-chrome";
 const CONTEXT = "KioskPicker";
 // The most a paste sends, well inside the app's 1 MiB limit on one socket write.
 const MAX_PASTE = 128 * 1024;
+// The longest snapshot of the spaces the mod passes the picker, well inside the 32,767
+// characters Windows allows a whole command line. The picker asks the app itself without one.
+const MAX_SNAPSHOT = 8 * 1024;
 
 // A failure to tell the person about: a notification's title, and what to do about it.
 class KioskError extends Error {
@@ -86,21 +89,34 @@ function context() {
 }
 
 // Each space on this machine with the live folder of each of its terminals, in the app's
-// order. The picker uses these instead of asking the app (a process for each terminal) until
-// it changes the window itself.
+// order, as JSON. The picker uses these instead of asking the app (a process for each
+// terminal) until it changes the window itself. Null when a terminal's folder isn't known
+// yet, which the picker would otherwise take as a space with no folder, or when there are too
+// many to pass: either way the picker asks the app.
 function snapshot() {
   const all = panes();
-  return spaces()
+  const local = spaces()
     .filter((s) => !s.machine)
     .map((s) => ({
       id: s.id,
       folders: s.tabs.flatMap((t) => all.filter((p) => p.tab === t.id && p.terminal).map((p) => p.cwd ?? null)),
     }));
+  if (local.some((s) => s.folders.includes(null))) return null;
+  const json = JSON.stringify(local);
+  return json.length <= MAX_SNAPSHOT ? json : null;
 }
 
 // Runs `herdr-app-kiosk serve` from the first place it can, returning where the picker listens.
 async function launch() {
-  const args = ["serve", "--app-home", appHome(), "--context", JSON.stringify(context()), "--spaces", JSON.stringify(snapshot())];
+  const spacesSnapshot = snapshot();
+  const args = [
+    "serve",
+    "--app-home",
+    appHome(),
+    "--context",
+    JSON.stringify(context()),
+    ...(spacesSnapshot === null ? [] : ["--spaces", spacesSnapshot]),
+  ];
   const missing = [];
   for (const program of binaries()) {
     let r;

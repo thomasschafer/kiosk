@@ -85,9 +85,22 @@ function context() {
   return { focused_pane_cwd: space ? now.cwd : null, workspace_cwd: place(space) };
 }
 
+// Each space on this machine with the live folder of each of its terminals, in the app's
+// order. The picker uses these instead of asking the app (a process for each terminal) until
+// it changes the window itself.
+function snapshot() {
+  const all = panes();
+  return spaces()
+    .filter((s) => !s.machine)
+    .map((s) => ({
+      id: s.id,
+      folders: s.tabs.flatMap((t) => all.filter((p) => p.tab === t.id && p.terminal).map((p) => p.cwd ?? null)),
+    }));
+}
+
 // Runs `herdr-app-kiosk serve` from the first place it can, returning where the picker listens.
 async function launch() {
-  const args = ["serve", "--app-home", appHome(), "--context", JSON.stringify(context())];
+  const args = ["serve", "--app-home", appHome(), "--context", JSON.stringify(context()), "--spaces", JSON.stringify(snapshot())];
   const missing = [];
   for (const program of binaries()) {
     let r;

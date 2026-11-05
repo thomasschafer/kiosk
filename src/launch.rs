@@ -7,13 +7,15 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use serde::Deserialize;
+use serde::{Deserialize, de::DeserializeOwned};
+
+use crate::app::Space;
 
 /// The command the mod runs.
 pub const SERVE_COMMAND: &str = "serve";
 
-const USAGE: &str =
-    "usage: herdr-app-kiosk serve [--app-home <folder>] [--context <json>] | --version";
+const USAGE: &str = "usage: herdr-app-kiosk serve [--app-home <folder>] [--context <json>] \
+     [--spaces <json>] | --version";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Invocation {
@@ -30,6 +32,8 @@ pub struct ServeArgs {
     pub app_home: Option<PathBuf>,
     /// Where the person is in the app.
     pub context: AppContext,
+    /// The app's spaces when the mod started kiosk, if it passed them.
+    pub spaces: Option<Vec<Space>>,
 }
 
 /// Where the person is in the app when they open kiosk.
@@ -78,18 +82,19 @@ pub fn invocation_with(args: impl IntoIterator<Item = OsString>) -> Result<Invoc
                 }
                 serve.app_home = Some(path);
             }
-            Some("--context") => {
-                let json = value("--context")?;
-                let Some(json) = json.to_str() else {
-                    bail!("--context is not valid UTF-8");
-                };
-                serve.context = serde_json::from_str(json)
-                    .map_err(|error| anyhow::anyhow!("invalid --context: {error}"))?;
-            }
+            Some("--context") => serve.context = json_value("--context", &value("--context")?)?,
+            Some("--spaces") => serve.spaces = Some(json_value("--spaces", &value("--spaces")?)?),
             _ => bail!("unknown option {}; {USAGE}", flag.to_string_lossy()),
         }
     }
     Ok(Invocation::Serve(serve))
+}
+
+fn json_value<T: DeserializeOwned>(flag: &str, json: &OsString) -> Result<T> {
+    let Some(json) = json.to_str() else {
+        bail!("{flag} is not valid UTF-8");
+    };
+    serde_json::from_str(json).map_err(|error| anyhow::anyhow!("invalid {flag}: {error}"))
 }
 
 /// The program `name` on `PATH`, as a shell would find it.
@@ -172,6 +177,32 @@ mod tests {
     }
 
     #[test]
+    fn serve_reads_the_spaces_the_mod_saw() {
+        let invocation = invoke(&[
+            SERVE_COMMAND,
+            "--spaces",
+            r#"[{"id":"sp1","folders":["/repo",null]},{"id":"sp2","folders":[]}]"#,
+        ])
+        .unwrap();
+        let Invocation::Serve(serve) = invocation else {
+            panic!("{invocation:?}");
+        };
+        assert_eq!(
+            serve.spaces,
+            Some(vec![
+                Space {
+                    id: "sp1".into(),
+                    folders: vec![Some("/repo".into()), None],
+                },
+                Space {
+                    id: "sp2".into(),
+                    folders: vec![],
+                },
+            ])
+        );
+    }
+
+    #[test]
     fn the_space_folder_is_the_fallback_and_unknown_context_fields_are_ignored() {
         let context: AppContext = serde_json::from_str(
             r#"{"focused_pane_cwd":"","workspace_cwd":"/repo","future_field":true}"#,
@@ -196,6 +227,11 @@ mod tests {
             (&[SERVE_COMMAND, "--app-home"], "needs a value"),
             (&[SERVE_COMMAND, "--app-home", "relative"], "absolute"),
             (&[SERVE_COMMAND, "--context", "not json"], "--context"),
+            (
+                &[SERVE_COMMAND, "--spaces", r#"[{"id":"sp1"}]"#],
+                "--spaces",
+            ),
+            (&[SERVE_COMMAND, "--spaces"], "needs a value"),
         ] {
             let error = invoke(args).unwrap_err().to_string();
             assert!(error.contains(expected), "{args:?}: {error}");

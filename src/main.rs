@@ -53,13 +53,16 @@ fn prepare(
         args.app_home,
     );
     let git = Arc::new(CliGitProvider) as Arc<dyn GitProvider>;
-    let backend = HerdrApp::new(
+    let mut backend = HerdrApp::new(
         Arc::new(host),
         Arc::clone(&git),
         placement,
         Arc::new(notifier),
         loaded.extension.on_open.clone(),
     );
+    if let Some(spaces) = args.spaces {
+        backend = backend.with_spaces(spaces);
+    }
     Ok(kiosk_serve::Start {
         current_cwd: args.context.current_cwd().map(ToOwned::to_owned),
         loaded,

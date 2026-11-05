@@ -5,9 +5,10 @@
 //! inside it, the rule the app's own `worktree` mod uses.
 
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
     process::Command,
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 use serde::{Deserialize, de::DeserializeOwned};
@@ -190,11 +191,11 @@ struct HcForeground {
 }
 
 /// A space on this machine, with the live folder of each of its panes' terminals in the
-/// app's order.
-#[derive(Debug, Clone)]
-struct Space {
-    id: String,
-    folders: Vec<Option<PathBuf>>,
+/// app's order. The app's `kiosk` mod passes these with `--spaces`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Space {
+    pub id: String,
+    pub folders: Vec<Option<PathBuf>>,
 }
 
 impl Space {
@@ -231,6 +232,14 @@ pub struct HerdrApp {
     placement: WorktreePlacement,
     notices: Arc<dyn Notices>,
     on_open: OnOpenConfig,
+    /// The spaces as the mod saw them when it started kiosk, used instead of asking the app
+    /// (one `herdr-app ls` and an `hc get` per terminal, which add up where starting a
+    /// process is slow) until kiosk changes the window itself. The mod's popup is modal, so
+    /// only a terminal changing folder while kiosk is open can make them stale.
+    snapshot: Mutex<Option<Vec<Space>>>,
+    /// Each space folder's main checkout, as Git reported it since kiosk last changed the
+    /// window.
+    main_checkouts: Mutex<HashMap<PathBuf, Option<PathBuf>>>,
 }
 
 /// Where the app backend's notifications go: the app mod, which shows them as the app's own.
@@ -260,10 +269,25 @@ impl HerdrApp {
             placement,
             notices,
             on_open,
+            snapshot: Mutex::new(None),
+            main_checkouts: Mutex::new(HashMap::new()),
         }
     }
 
+    /// Starts from the spaces the mod saw, rather than asking the app for them.
+    #[must_use]
+    pub fn with_spaces(self, spaces: Vec<Space>) -> Self {
+        *self.snapshot.lock().expect("snapshot lock") = Some(spaces);
+        self
+    }
+
     fn command(&self, name: &str, args: &Value) -> Result<Vec<u8>, AppError> {
+        // The window is about to change, so what was known about it no longer holds.
+        self.snapshot.lock().expect("snapshot lock").take();
+        self.main_checkouts
+            .lock()
+            .expect("main checkouts lock")
+            .clear();
         self.host
             .herdr_app(&["do".into(), name.into(), args.to_string()])
     }
@@ -288,6 +312,9 @@ impl HerdrApp {
     /// The spaces on this machine. Spaces on other machines are left out: their
     /// folders are not paths here.
     fn spaces(&self) -> Result<Vec<Space>, AppError> {
+        if let Some(spaces) = self.snapshot.lock().expect("snapshot lock").clone() {
+            return Ok(spaces);
+        }
         let spaces: Vec<(String, Vec<String>)> = self
             .list()?
             .spaces
@@ -428,6 +455,27 @@ impl HerdrApp {
         )
     }
 
+    /// The main checkout of the repository `folder` is in, if any.
+    fn main_checkout(&self, folder: &Path) -> Result<Option<PathBuf>, AppError> {
+        if let Some(known) = self
+            .main_checkouts
+            .lock()
+            .expect("main checkouts lock")
+            .get(folder)
+        {
+            return Ok(known.clone());
+        }
+        let found = self
+            .git
+            .main_checkout(folder)
+            .map_err(|error| git_error(&error))?;
+        self.main_checkouts
+            .lock()
+            .expect("main checkouts lock")
+            .insert(folder.to_path_buf(), found.clone());
+        Ok(found)
+    }
+
     fn checkout_paths(&self, repo: &Path) -> Result<Vec<PathBuf>, AppError> {
         self.git
             .list_worktrees(repo)
@@ -463,12 +511,7 @@ impl Backend for HerdrApp {
         self.spaces()?
             .iter()
             .filter_map(Space::place)
-            .filter_map(|place| {
-                self.git
-                    .main_checkout(&place)
-                    .map_err(|error| git_error(&error))
-                    .transpose()
-            })
+            .filter_map(|place| self.main_checkout(&place).transpose())
             .collect()
     }
 

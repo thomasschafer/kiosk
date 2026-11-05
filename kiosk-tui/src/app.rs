@@ -181,11 +181,9 @@ pub(crate) fn draw(
             unreachable!("loading mode returned above")
         }
     }
-    if let Some(footer) = components::dialog::hint_line(
-        &kiosk_core::view::footer_hints(keys, &state.mode),
-        "  ",
-        theme,
-    ) {
+    if let Some(footer) =
+        components::dialog::hint_line(&kiosk_core::view::footer_hints(keys, state), "  ", theme)
+    {
         frame.render_widget(
             Paragraph::new(footer).alignment(Alignment::Center),
             footer_area,

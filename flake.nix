@@ -25,7 +25,7 @@
               clippy
               gcc
               tmux
-            ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
+            ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [
               pkgs.libiconv
             ];
           };
@@ -43,7 +43,7 @@
             src = ./.;
             cargoLock.lockFile = ./Cargo.lock;
             cargoBuildFlags = [ "-p" "kiosk" ];
-            buildInputs = pkgs.lib.optionals pkgs.stdenv.isDarwin [
+            buildInputs = pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [
               pkgs.libiconv
             ];
             doCheck = false;

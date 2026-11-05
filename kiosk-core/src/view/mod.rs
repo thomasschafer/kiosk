@@ -12,9 +12,9 @@ use serde::Serialize;
 use crate::{
     backend::{Label, annotation::AnnotationIndex},
     config::keys::{BindingMode, Command, KeyChord, KeysConfig},
-    display::sanitize,
+    display::{sanitize, sanitized_positions},
     keymap::SCAN_WARNINGS_BINDING_MODE,
-    picker::{delete::DeleteFlowState, new_branch::BaseBranchSelection},
+    picker::{delete::DeleteFlowState, match_positions, new_branch::BaseBranchSelection},
     state::{
         AppState, BranchEntry, HelpOverlayState, Mode, Overlay, RemoteBranchChoice,
         RemoteBranchPrompt, RepoEntry, SearchableList, TextInput, Toast, ToastKind, scan_summary,
@@ -181,6 +181,9 @@ pub struct Row {
     /// The row's position among all matches, which pointer selection names.
     pub position: usize,
     pub name: Segment,
+    /// Which characters of `name` the search matched (character indices, ascending), for a
+    /// frontend to mark.
+    pub matches: Vec<usize>,
     /// What kind of item it is beyond its name, in the order a terminal writes them.
     pub badges: Vec<Badge>,
     /// The backend's labels, drawn at the end of the row.
@@ -354,6 +357,10 @@ pub struct HelpView {
     pub entries: Vec<HelpEntry>,
     /// Which of `entries` is selected.
     pub selected: Option<usize>,
+    /// The position of `entries[0]` among all of them, sections and blank lines included, and
+    /// how many there are.
+    pub offset: usize,
+    pub total: usize,
     pub empty: Option<&'static str>,
 }
 
@@ -487,7 +494,7 @@ pub fn picker(state: &mut AppState, keys: &KeysConfig, viewports: Viewports) -> 
         dialog,
         overlay,
         toast,
-        hints: footer_hints(keys, &state.mode),
+        hints: footer_hints(keys, state),
     }
 }
 
@@ -535,8 +542,9 @@ fn rows_in_view<T>(
 pub fn repo_list(state: &mut AppState, viewport_rows: usize) -> ListView {
     let view = &mut state.repo_view;
     let annotations = &state.annotations;
+    let query = view.list.input.text.clone();
     let (rows, selected) = rows_in_view(&mut view.list, &view.entries, viewport_rows, |entry| {
-        repo_row(entry, annotations)
+        repo_row(entry, annotations, &query)
     });
     let empty = if view.loading {
         rows.is_empty().then(|| DISCOVERING_REPOS.to_owned())
@@ -561,11 +569,13 @@ pub fn repo_list(state: &mut AppState, viewport_rows: usize) -> ListView {
     }
 }
 
-fn repo_row(entry: &RepoEntry, annotations: &AnnotationIndex) -> Row {
+fn repo_row(entry: &RepoEntry, annotations: &AnnotationIndex, query: &str) -> Row {
+    let name = entry.display_name();
     Row {
         id: repo_id(entry),
         position: 0,
-        name: Segment::new(sanitize(&entry.display_name()).into_owned(), Tone::Normal),
+        name: Segment::new(sanitize(&name).into_owned(), Tone::Normal),
+        matches: name_matches(query, "", &name),
         badges: if entry.repo.is_git {
             Vec::new()
         } else {
@@ -573,11 +583,26 @@ fn repo_row(entry: &RepoEntry, annotations: &AnnotationIndex) -> Row {
         },
         labels: labels(annotations.repo(&entry.repo.path)),
         open: entry.is_open,
-        actions: RowActions {
-            branches: entry.repo.is_git,
-            delete: false,
-        },
+        actions: repo_actions(entry),
     }
+}
+
+fn repo_actions(entry: &RepoEntry) -> RowActions {
+    RowActions {
+        branches: entry.repo.is_git,
+        delete: false,
+    }
+}
+
+/// Where `query` matched `name`, which was searched as `prefix` and `name` together: the
+/// matched characters' positions in `name` as `sanitize` shows it.
+fn name_matches(query: &str, prefix: &str, name: &str) -> Vec<usize> {
+    let skipped = prefix.chars().count();
+    let in_name: Vec<usize> = match_positions(query, &format!("{prefix}{name}"))
+        .into_iter()
+        .filter_map(|position| position.checked_sub(skipped))
+        .collect();
+    sanitized_positions(name, &in_name)
 }
 
 /// The branch list, scrolled so its selection is among its `viewport_rows` rows.
@@ -587,21 +612,25 @@ pub fn branch_list(state: &mut AppState, keys: &KeysConfig, viewport_rows: usize
     let repo_path = context
         .map(|context| context.repo_path.clone())
         .unwrap_or_default();
-    let main_checkout =
-        context.map(|context| crate::path::canonical_or_original(&context.repo_path));
+    let main_checkout = main_checkout(state);
+    let creates = creates_branch(state, keys);
     let view = &mut state.branch_view;
     let annotations = &state.annotations;
+    let search = view.list.input.text.clone();
     let (rows, selected) = rows_in_view(&mut view.list, &view.entries, viewport_rows, |branch| {
-        branch_row(&repo_path, branch, annotations, main_checkout.as_deref())
+        branch_row(
+            &repo_path,
+            branch,
+            annotations,
+            main_checkout.as_deref(),
+            &search,
+        )
     });
     let query = Query::new(&view.list.input);
     let empty = if view.loading {
         rows.is_empty().then(|| LOADING_BRANCHES.to_owned())
-    } else if rows.is_empty() && !query.is_empty() {
-        keys.first_key(BindingMode::Branch, Command::Open)
-            .map(|key| create_branch_message(&key, &view.list.input.text))
     } else {
-        None
+        creates.map(|key| create_branch_message(&key, &search))
     };
     ListView {
         kind: ListKind::Branches,
@@ -619,16 +648,47 @@ pub fn branch_list(state: &mut AppState, keys: &KeysConfig, viewport_rows: usize
     }
 }
 
+/// The repository's own checkout in the branch list, which cannot be removed.
+fn main_checkout(state: &AppState) -> Option<std::path::PathBuf> {
+    state
+        .branch_context()
+        .map(|context| crate::path::canonical_or_original(&context.repo_path))
+}
+
+/// The open key's chord when no branch matches what is typed in the branch list, so opening
+/// creates a branch of that name.
+fn creates_branch(state: &AppState, keys: &KeysConfig) -> Option<KeyChord> {
+    let view = &state.branch_view;
+    (!view.loading && view.list.filtered.is_empty() && !view.list.input.text.is_empty())
+        .then(|| keys.first_key(BindingMode::Branch, Command::Open))
+        .flatten()
+}
+
+fn in_main_checkout(branch: &BranchEntry, main_checkout: Option<&Path>) -> bool {
+    branch
+        .worktree_path()
+        .is_some_and(|path| main_checkout.is_some_and(|main| crate::path::equivalent(path, main)))
+}
+
+/// `main_checkout` is the repository's own checkout, which cannot be removed.
+fn branch_actions(branch: &BranchEntry, main_checkout: Option<&Path>) -> RowActions {
+    RowActions {
+        branches: false,
+        delete: branch.remote.is_none()
+            && branch.worktree_path().is_some()
+            && !in_main_checkout(branch, main_checkout),
+    }
+}
+
 /// `main_checkout` is the repository's own checkout, which cannot be removed.
 fn branch_row(
     repo: &Path,
     branch: &BranchEntry,
     annotations: &AnnotationIndex,
     main_checkout: Option<&Path>,
+    query: &str,
 ) -> Row {
-    let branch_in_main_checkout = branch
-        .worktree_path()
-        .is_some_and(|path| main_checkout.is_some_and(|main| crate::path::equivalent(path, main)));
+    let branch_in_main_checkout = in_main_checkout(branch, main_checkout);
     let (name, badges) = if let Some(remote) = &branch.remote {
         (
             Segment::new(sanitize(&branch.name).into_owned(), Tone::Faint),
@@ -657,28 +717,31 @@ fn branch_row(
     let labels = branch
         .worktree_path()
         .map_or(&[][..], |path| annotations.checkout(path));
+    // The list is searched by the name a terminal shows, `origin/feature` for a remote's.
+    let prefix = branch
+        .remote
+        .as_ref()
+        .map_or_else(String::new, |remote| format!("{remote}/"));
     Row {
         id: branch_id(repo, branch),
         position: 0,
         name,
+        matches: name_matches(query, &prefix, &branch.name),
         badges,
         labels: self::labels(labels),
         open: branch.is_open(),
-        actions: RowActions {
-            branches: false,
-            delete: branch.remote.is_none()
-                && branch.worktree_path().is_some()
-                && !branch_in_main_checkout,
-        },
+        actions: branch_actions(branch, main_checkout),
     }
 }
 
 /// The new branch's base choices, scrolled so the selection is among `viewport_rows` rows.
 pub fn base_list(repo: &Path, flow: &mut BaseBranchSelection, viewport_rows: usize) -> ListView {
+    let search = flow.list.input.text.clone();
     let (rows, selected) = rows_in_view(&mut flow.list, &flow.bases, viewport_rows, |base| Row {
         id: base_id(repo, &flow.new_name, base),
         position: 0,
         name: Segment::new(sanitize(base).into_owned(), Tone::Normal),
+        matches: name_matches(&search, "", base),
         badges: Vec::new(),
         labels: Vec::new(),
         open: false,
@@ -954,10 +1017,11 @@ pub fn confirm_cancel_keys(keys: &KeysConfig) -> (Option<KeyChord>, Option<KeyCh
     )
 }
 
-pub fn confirm_cancel_hints(keys: &KeysConfig) -> Vec<Hint> {
-    let (confirm, cancel) = confirm_cancel_keys(keys);
-    confirm
-        .map(|key| Hint::for_key(key, "confirm"))
+/// A dialog's hints: its open key, labelled with what it does (`confirm`), and its back key.
+pub fn confirm_cancel_hints(keys: &KeysConfig, confirm: &'static str) -> Vec<Hint> {
+    let (confirm_key, cancel) = confirm_cancel_keys(keys);
+    confirm_key
+        .map(|key| Hint::for_key(key, confirm))
         .into_iter()
         .chain(cancel.map(|key| Hint::for_key(key, "cancel")))
         .collect()
@@ -1039,7 +1103,7 @@ pub fn remote_branch_dialog(repo: &Path, prompt: &RemoteBranchPrompt, keys: &Key
         selected: prompt.selected(),
         hints: [
             move_hints(keys, BindingMode::Choice),
-            confirm_cancel_hints(keys),
+            confirm_cancel_hints(keys, REMOTE_BRANCH_CONFIRM),
         ]
         .concat(),
     }
@@ -1069,7 +1133,7 @@ pub fn delete_dialog(flow: &DeleteFlowState, backend_name: &str, keys: &KeysConf
         force: target.force(),
         closes_in,
         busy: target.in_progress().then_some(REMOVING_CHECKOUT),
-        hints: confirm_cancel_hints(keys),
+        hints: confirm_cancel_hints(keys, DELETE_CONFIRM),
     }
 }
 
@@ -1100,7 +1164,57 @@ pub fn toast_hints(keys: &KeysConfig, toast: &Toast) -> Vec<Hint> {
 }
 
 /// The footer's hints for `mode`, in the order they are drawn.
-pub fn footer_hints(keys: &KeysConfig, mode: &Mode) -> Vec<Hint> {
+/// What the open key is called in the remote-branch and remove dialogs, alike in their own
+/// hints and the footer's.
+const REMOTE_BRANCH_CONFIRM: &str = "confirm";
+const DELETE_CONFIRM: &str = "remove";
+
+/// What the open key acts on, which decides the hints offered for the selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Selection {
+    /// A row, and what else can be done to it.
+    Row(RowActions),
+    /// No branch matches what is typed, so opening creates a branch of that name.
+    NewBranch,
+    /// Nothing matches, so there is nothing to open.
+    Nothing,
+}
+
+impl Selection {
+    pub fn of(state: &AppState, keys: &KeysConfig) -> Self {
+        let row = match &state.mode {
+            Mode::RepoSelect => state.selected_repo().map(repo_actions),
+            Mode::BranchSelect(_) => {
+                if creates_branch(state, keys).is_some() {
+                    return Self::NewBranch;
+                }
+                // Delete is offered only when pressing it would start removing the checkout.
+                state.selected_branch().map(|_| RowActions {
+                    branches: false,
+                    delete: crate::picker::delete::selected_target(state).is_ok(),
+                })
+            }
+            Mode::SelectBaseBranch { flow, .. } => flow
+                .list
+                .selected
+                .filter(|selected| *selected < flow.list.filtered.len())
+                .map(|_| RowActions::default()),
+            Mode::ValidatingNewBranch { .. }
+            | Mode::ConfirmRemoteBranch { .. }
+            | Mode::ConfirmWorktreeDelete(_)
+            | Mode::Loading { .. } => Some(RowActions::default()),
+        };
+        row.map_or(Self::Nothing, Self::Row)
+    }
+}
+
+pub fn footer_hints(keys: &KeysConfig, state: &AppState) -> Vec<Hint> {
+    let mode = &state.mode;
+    let selection = Selection::of(state, keys);
+    let actions = match selection {
+        Selection::Row(actions) => Some(actions),
+        Selection::NewBranch | Selection::Nothing => None,
+    };
     let binding_mode = KeysConfig::mode_for(mode);
     let mut hints = Vec::new();
     let mut add = |command, label: &'static str| {
@@ -1115,25 +1229,30 @@ pub fn footer_hints(keys: &KeysConfig, mode: &Mode) -> Vec<Hint> {
         add(Command::Quit, "quit");
         return hints;
     }
-    add(
-        Command::Open,
-        if matches!(
-            mode,
-            Mode::SelectBaseBranch { .. }
-                | Mode::ConfirmRemoteBranch { .. }
-                | Mode::ConfirmWorktreeDelete(_)
-        ) {
-            "confirm"
-        } else {
-            "open"
-        },
-    );
-    if matches!(mode, Mode::RepoSelect) {
+    match selection {
+        Selection::Nothing => {}
+        Selection::NewBranch => add(Command::Open, "create"),
+        Selection::Row(_) => add(
+            Command::Open,
+            match mode {
+                Mode::SelectBaseBranch { .. } => "create",
+                Mode::ConfirmWorktreeDelete(_) => DELETE_CONFIRM,
+                Mode::ConfirmRemoteBranch { .. } => REMOTE_BRANCH_CONFIRM,
+                Mode::RepoSelect
+                | Mode::BranchSelect(_)
+                | Mode::ValidatingNewBranch { .. }
+                | Mode::Loading { .. } => "open",
+            },
+        ),
+    }
+    if matches!(mode, Mode::RepoSelect) && actions.is_some_and(|actions| actions.branches) {
         add(Command::BranchesView, "branches");
     }
     if matches!(mode, Mode::BranchSelect(_)) {
         add(Command::NewBranch, "new");
-        add(Command::Delete, "delete");
+        if actions.is_some_and(|actions| actions.delete) {
+            add(Command::Delete, "delete");
+        }
     }
     if matches!(
         mode,
@@ -1228,7 +1347,10 @@ fn help_view(
     let entries = help_entries(overlay);
     let selected = scroll_help(overlay, &entries, viewport_rows);
     let offset = overlay.list.scroll_offset;
+    let total = entries.len();
     HelpView {
+        offset,
+        total,
         title: HELP_TITLE,
         placeholder: HELP_PLACEHOLDER,
         query: Query::new(&overlay.list.input),

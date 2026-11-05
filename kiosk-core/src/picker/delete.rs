@@ -493,7 +493,7 @@ pub(crate) fn refresh_open_state(state: &mut AppState) {
     }
 }
 
-fn selected_target(state: &AppState) -> Result<DeleteWorktreeTarget, &'static str> {
+pub(crate) fn selected_target(state: &AppState) -> Result<DeleteWorktreeTarget, &'static str> {
     let Mode::BranchSelect(context) = &state.mode else {
         return Err("Worktrees can only be deleted from the branch view");
     };

@@ -348,6 +348,22 @@ fn fuzzy_filter(
         .collect()
 }
 
+/// Which characters of `text` (character indices, ascending) `query` matches, as the lists
+/// are filtered; none for an empty query or text it doesn't match.
+pub(crate) fn match_positions(query: &str, text: &str) -> Vec<usize> {
+    thread_local! {
+        static MATCHER: SkimMatcherV2 = SkimMatcherV2::default();
+    }
+    if query.is_empty() {
+        return Vec::new();
+    }
+    MATCHER.with(|matcher| {
+        matcher
+            .fuzzy_indices(text, query)
+            .map_or_else(Vec::new, |(_, positions)| positions)
+    })
+}
+
 fn load_open_folder_indicators<B: Backend>(
     changes: &mut TickChanges,
     backend: Option<&Arc<B>>,

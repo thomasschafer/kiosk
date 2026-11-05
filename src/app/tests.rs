@@ -48,6 +48,9 @@ struct FakeState {
     /// Makes `hc send` fail, as when the terminal ends before it is typed into.
     refuse_send: bool,
     focused_pane: Option<String>,
+    /// Window commands and typing, in the order they happened: `do <command>` and
+    /// `send <terminal>`.
+    events: Vec<String>,
     /// How many times the backend asked for the spaces (`herdr-app ls`) and for a terminal's
     /// folder (`hc get`).
     listings: usize,
@@ -192,6 +195,7 @@ impl AppHost for FakeApp {
         let args: Value = serde_json::from_str(args).unwrap();
         assert_upstream_takes(name, &args);
         state.commands.push((name.clone(), args.clone()));
+        state.events.push(format!("do {name}"));
         let output = match name.as_str() {
             "space.new" => {
                 let folder = PathBuf::from(args["folder"].as_str().unwrap());
@@ -299,6 +303,7 @@ impl AppHost for FakeApp {
                     return Err(refused("no such terminal"));
                 }
                 state.typed.push((terminal.clone(), text.clone()));
+                state.events.push(format!("send {terminal}"));
                 Ok(Vec::new())
             }
             _ => panic!("unexpected hc call {args:?}"),
@@ -312,6 +317,20 @@ struct Fixture {
     app: Arc<FakeApp>,
     backend: Arc<HerdrApp>,
     notices: Arc<PostedNotices>,
+    /// Where the backend's `[on_open]` panes wait until `background.wait()`.
+    background: Arc<Background>,
+    later: Arc<SavedNotices>,
+}
+
+/// Notices saved for the mod to show later, in order.
+#[derive(Default)]
+struct SavedNotices(Mutex<Vec<(String, String)>>);
+
+impl LaterNotices for SavedNotices {
+    fn save(&self, title: &str, body: &str) -> Result<(), String> {
+        self.0.lock().unwrap().push((title.into(), body.into()));
+        Ok(())
+    }
 }
 
 /// Notifications posted, in order.
@@ -331,12 +350,32 @@ fn backend(
     temp: &Path,
     on_open: OnOpenConfig,
 ) -> HerdrApp {
+    backend_with(
+        app,
+        notices,
+        temp,
+        on_open,
+        &Arc::new(Background::deferred()),
+        &Arc::new(SavedNotices::default()),
+    )
+}
+
+fn backend_with(
+    app: &Arc<FakeApp>,
+    notices: &Arc<PostedNotices>,
+    temp: &Path,
+    on_open: OnOpenConfig,
+    background: &Arc<Background>,
+    later: &Arc<SavedNotices>,
+) -> HerdrApp {
     HerdrApp::new(
         Arc::clone(app) as Arc<dyn AppHost>,
         Arc::new(CliGitProvider),
         WorktreePlacement::new(temp.join("worktrees")).unwrap(),
         Arc::clone(notices) as Arc<dyn Notices>,
         on_open,
+        Arc::clone(background),
+        Arc::clone(later) as Arc<dyn LaterNotices>,
     )
 }
 
@@ -440,13 +479,24 @@ impl Fixture {
         let repo = repo_fixture(temp.path(), "repo");
         let app = Arc::new(FakeApp::default());
         let notices = Arc::new(PostedNotices::default());
-        let backend = Arc::new(backend(&app, &notices, temp.path(), on_open));
+        let background = Arc::new(Background::deferred());
+        let later = Arc::new(SavedNotices::default());
+        let backend = Arc::new(backend_with(
+            &app,
+            &notices,
+            temp.path(),
+            on_open,
+            &background,
+            &later,
+        ));
         Self {
             temp,
             repo,
             app,
             backend,
             notices,
+            background,
+            later,
         }
     }
 
@@ -780,6 +830,7 @@ fn a_pane_opens_beside_the_pane_with_its_command_typed_and_gives_focus_back() {
 
     let split = fixture
         .backend
+        .window
         .pane_open(&split_request(root, &fixture.repo), "hx .")
         .unwrap();
 
@@ -804,6 +855,11 @@ fn a_pane_opens_beside_the_pane_with_its_command_typed_and_gives_focus_back() {
     );
     assert_eq!(state.typed, [(new.terminal.clone(), "hx .".into())]);
     assert_eq!(state.focused_pane.as_ref(), Some(root));
+    assert_eq!(
+        state.events.last(),
+        Some(&format!("send {}", new.terminal)),
+        "focus goes back before the command is typed"
+    );
 }
 
 #[test]
@@ -814,6 +870,7 @@ fn a_pane_starts_in_the_checkout_wherever_the_split_pane_has_gone() {
 
     fixture
         .backend
+        .window
         .pane_open(&split_request(&space.panes[0].pane, &fixture.repo), "hx")
         .unwrap();
 
@@ -828,7 +885,8 @@ fn a_pane_that_cannot_open_as_asked_is_refused_before_the_app_is_called() {
     let request = split_request(&space.panes[0].pane, &fixture.repo);
 
     for (request, command, why) in [(&relative, "hx", "absolute"), (&request, "", "command")] {
-        let Err(PaneOpenError::Split(error)) = fixture.backend.pane_open(request, command) else {
+        let Err(PaneOpenError::Split(error)) = fixture.backend.window.pane_open(request, command)
+        else {
             panic!("{why}: expected a refused split");
         };
         assert!(error.to_string().contains(why), "{error}");
@@ -844,6 +902,7 @@ fn a_command_that_cannot_be_typed_is_reported_as_a_pane_made_without_it() {
 
     let error = fixture
         .backend
+        .window
         .pane_open(&split_request(&space.panes[0].pane, &fixture.repo), "hx")
         .unwrap_err();
 
@@ -862,6 +921,7 @@ fn a_refused_split_is_reported_as_no_pane_made() {
 
     let error = fixture
         .backend
+        .window
         .pane_open(&split_request("missing", &fixture.repo), "hx")
         .unwrap_err();
 
@@ -942,7 +1002,7 @@ fn editor_on_open() -> OnOpenConfig {
 }
 
 #[test]
-fn opening_a_repo_runs_on_open_panes_in_the_new_space() {
+fn opening_a_repo_reports_it_opened_before_its_on_open_panes() {
     let fixture = Fixture::with_on_open(editor_on_open());
 
     let opened = fixture
@@ -951,6 +1011,22 @@ fn opening_a_repo_runs_on_open_panes_in_the_new_space() {
         .unwrap();
 
     assert_eq!(opened, Opened::default());
+    assert_eq!(fixture.app.command_names(), ["space.new"]);
+    assert_eq!(fixture.app.state.lock().unwrap().typed, Vec::new());
+    fixture.background.wait();
+    assert_eq!(fixture.app.spaces()[0].panes.len(), 2);
+}
+
+#[test]
+fn opening_a_repo_runs_on_open_panes_in_the_new_space() {
+    let fixture = Fixture::with_on_open(editor_on_open());
+
+    fixture
+        .backend
+        .open_checkout(&fixture.repo, &fixture.repo)
+        .unwrap();
+    fixture.background.wait();
+
     let spaces = fixture.app.spaces();
     assert_eq!(spaces.len(), 1);
     let [root, editor] = spaces[0].panes.as_slice() else {
@@ -985,7 +1061,29 @@ fn an_on_open_pane_with_a_ratio_opens_in_half_with_one_warning_at_start() {
         .unwrap();
 
     assert_eq!(opened.warning, None);
+    fixture.background.wait();
     assert_eq!(fixture.app.spaces()[0].panes.len(), 2);
+    assert_eq!(*fixture.later.0.lock().unwrap(), Vec::new());
+}
+
+#[test]
+fn on_open_panes_that_fail_are_saved_for_the_mod_to_show_later() {
+    let fixture = Fixture::with_on_open(editor_on_open());
+    fixture.app.state.lock().unwrap().refuse_send = true;
+
+    let opened = fixture
+        .backend
+        .open_checkout(&fixture.repo, &fixture.repo)
+        .unwrap();
+    fixture.background.wait();
+
+    assert_eq!(opened, Opened::default());
+    let later = fixture.later.0.lock().unwrap();
+    let [(title, body)] = later.as_slice() else {
+        panic!("expected one saved notice, got {later:?}");
+    };
+    assert_eq!(title, ON_OPEN_FAILED);
+    assert!(body.contains("no such terminal"), "{body}");
 }
 
 #[cfg(unix)]
@@ -1136,6 +1234,8 @@ fn each_space_folders_main_checkout_is_asked_once_until_the_window_changes() {
         WorktreePlacement::new(fixture.temp.path().join("worktrees")).unwrap(),
         Arc::clone(&fixture.notices) as Arc<dyn Notices>,
         OnOpenConfig::default(),
+        Arc::clone(&fixture.background),
+        Arc::clone(&fixture.later) as Arc<dyn LaterNotices>,
     );
 
     backend.open_repos().unwrap();

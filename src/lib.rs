@@ -5,10 +5,12 @@
 //! adds, and how the mod starts it.
 
 pub mod app;
+pub mod background;
 pub mod config;
 pub mod error;
 pub mod launch;
 pub mod migrate;
+pub mod notices;
 #[cfg(all(test, unix))]
 mod test_support;
 

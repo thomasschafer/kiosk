@@ -12,7 +12,7 @@
 
 import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { appHome, closeOverlay, exec, focused, notify, panes, props, settings, spaces, theme, window } from "herdr";
+import { appHome, closeOverlay, exec, focused, notify, panes, props, readTextFile, settings, spaces, theme, window, writeTextFile } from "herdr";
 import { Buffer } from "buffer";
 import net from "net";
 
@@ -58,6 +58,9 @@ const MAX_PASTE = 128 * 1024;
 // The longest snapshot of the spaces the mod passes the picker, well inside the 32,767
 // characters Windows allows a whole command line. The picker asks the app itself without one.
 const MAX_SNAPSHOT = 8 * 1024;
+// Where the picker saves notices it couldn't show because its popup had closed, one JSON
+// object per line, below the app's home.
+const SAVED_NOTICES = "data/kiosk/notices.jsonl";
 
 // A failure to tell the person about: a notification's title, and what to do about it.
 class KioskError extends Error {
@@ -104,6 +107,29 @@ function snapshot() {
   if (local.some((s) => s.folders.includes(null))) return null;
   const json = JSON.stringify(local);
   return json.length <= MAX_SNAPSHOT ? json : null;
+}
+
+// Shows the notices the picker saved last time, such as an `[on_open]` pane that didn't open.
+// The file is emptied only if nothing was added since it was read; otherwise its notices wait
+// for the next time, rather than any being lost.
+async function showSavedNotices() {
+  const path = `${appHome()}/${SAVED_NOTICES}`;
+  const text = await readTextFile(path);
+  if (!text) return;
+  try {
+    await writeTextFile(path, "", text);
+  } catch {
+    return;
+  }
+  for (const line of text.split("\n").filter((l) => l.trim())) {
+    let notice;
+    try {
+      notice = JSON.parse(line);
+    } catch (error) {
+      notice = { title: "Kiosk saved an unreadable notice", body: `${line} (${error})` };
+    }
+    notify({ title: notice.title, body: notice.body, level: "warning" });
+  }
 }
 
 // Runs `herdr-app-kiosk serve` from the first place it can, returning where the picker listens.
@@ -362,6 +388,13 @@ export default class Kiosk extends View {
     this.status = "Starting…";
     // `herdr-app check` loads the mod with no overlay; only a shown copy starts the picker.
     if (!props()?.overlay) return;
+    cx.spawn(async () => {
+      try {
+        await showSavedNotices();
+      } catch (error) {
+        notify({ title: "Kiosk couldn't show its saved notices", body: String(error), level: "warning" });
+      }
+    });
     cx.spawn(async (cx) => {
       try {
         const { socket, token } = await start();

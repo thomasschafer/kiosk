@@ -8,7 +8,10 @@ use crate::{
     backend::{Annotations, Tone as LabelTone, mock::MockBackend},
     git::{GitProvider, Repo, ScanWarning, mock::MockGitProvider},
     keyboard::Action,
-    picker::{FilterWorker, Picker, RunOutcome, new_branch::test_remote_prompt, process_action},
+    picker::{
+        FilterWorker, Picker, RunOutcome, branch::OpenCheckoutLoadState,
+        new_branch::test_remote_prompt, process_action,
+    },
     product::TEST_PRODUCT,
     spawn::EventSender,
     state::{
@@ -576,7 +579,7 @@ fn delete_dialog_warns_about_changes_and_closing_and_hides_hints_while_removing(
             force: false,
             closes_in: None,
             busy: None,
-            hints: vec![Hint::new("enter", "confirm"), Hint::new("esc", "cancel")],
+            hints: vec![Hint::new("enter", "remove"), Hint::new("esc", "cancel")],
         }
     );
     let Dialog::ConfirmDelete {
@@ -821,7 +824,9 @@ fn footer_hints_follow_the_mode() {
         ]
     );
     assert_eq!(
-        hints(&footer(&state_with_branches(vec![linked("feature")]))),
+        hints(&footer(&loaded(state_with_branches(vec![linked(
+            "feature"
+        )])))),
         [
             ("enter", "open"),
             ("ctrl+o", "new"),
@@ -866,6 +871,15 @@ fn linked(name: &str) -> BranchEntry {
     }
 }
 
+/// The branch list once it knows which checkouts are open, which removing one waits for.
+fn loaded(mut state: AppState) -> AppState {
+    state.branch_view.open_checkout_load_state = OpenCheckoutLoadState::Loaded {
+        repo_path: context().repo_path,
+        generation: state.branch_view.generation,
+    };
+    state
+}
+
 fn nothing_matches(list: &mut SearchableList, query: &str) {
     list.input.text = query.into();
     list.input.cursor = query.len();
@@ -892,7 +906,13 @@ fn footer_hints_offer_only_what_the_selection_can_do() {
         "nothing to open"
     );
 
-    let mut state = state_with_branches(vec![BranchEntry::local("plain")]);
+    let state = state_with_branches(vec![linked("feature")]);
+    assert!(
+        !hints(&footer(&state)).contains(&("ctrl+x", "delete")),
+        "removing waits until it is known whether the checkout is open"
+    );
+
+    let mut state = loaded(state_with_branches(vec![BranchEntry::local("plain")]));
     assert_eq!(
         hints(&footer(&state)),
         [

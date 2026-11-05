@@ -1017,10 +1017,11 @@ pub fn confirm_cancel_keys(keys: &KeysConfig) -> (Option<KeyChord>, Option<KeyCh
     )
 }
 
-pub fn confirm_cancel_hints(keys: &KeysConfig) -> Vec<Hint> {
-    let (confirm, cancel) = confirm_cancel_keys(keys);
-    confirm
-        .map(|key| Hint::for_key(key, "confirm"))
+/// A dialog's hints: its open key, labelled with what it does (`confirm`), and its back key.
+pub fn confirm_cancel_hints(keys: &KeysConfig, confirm: &'static str) -> Vec<Hint> {
+    let (confirm_key, cancel) = confirm_cancel_keys(keys);
+    confirm_key
+        .map(|key| Hint::for_key(key, confirm))
         .into_iter()
         .chain(cancel.map(|key| Hint::for_key(key, "cancel")))
         .collect()
@@ -1102,7 +1103,7 @@ pub fn remote_branch_dialog(repo: &Path, prompt: &RemoteBranchPrompt, keys: &Key
         selected: prompt.selected(),
         hints: [
             move_hints(keys, BindingMode::Choice),
-            confirm_cancel_hints(keys),
+            confirm_cancel_hints(keys, REMOTE_BRANCH_CONFIRM),
         ]
         .concat(),
     }
@@ -1132,7 +1133,7 @@ pub fn delete_dialog(flow: &DeleteFlowState, backend_name: &str, keys: &KeysConf
         force: target.force(),
         closes_in,
         busy: target.in_progress().then_some(REMOVING_CHECKOUT),
-        hints: confirm_cancel_hints(keys),
+        hints: confirm_cancel_hints(keys, DELETE_CONFIRM),
     }
 }
 
@@ -1163,6 +1164,11 @@ pub fn toast_hints(keys: &KeysConfig, toast: &Toast) -> Vec<Hint> {
 }
 
 /// The footer's hints for `mode`, in the order they are drawn.
+/// What the open key is called in the remote-branch and remove dialogs, alike in their own
+/// hints and the footer's.
+const REMOTE_BRANCH_CONFIRM: &str = "confirm";
+const DELETE_CONFIRM: &str = "remove";
+
 /// What the open key acts on, which decides the hints offered for the selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Selection {
@@ -1182,10 +1188,11 @@ impl Selection {
                 if creates_branch(state, keys).is_some() {
                     return Self::NewBranch;
                 }
-                let main_checkout = main_checkout(state);
-                state
-                    .selected_branch()
-                    .map(|branch| branch_actions(branch, main_checkout.as_deref()))
+                // Delete is offered only when pressing it would start removing the checkout.
+                state.selected_branch().map(|_| RowActions {
+                    branches: false,
+                    delete: crate::picker::delete::selected_target(state).is_ok(),
+                })
             }
             Mode::SelectBaseBranch { flow, .. } => flow
                 .list
@@ -1229,8 +1236,8 @@ pub fn footer_hints(keys: &KeysConfig, state: &AppState) -> Vec<Hint> {
             Command::Open,
             match mode {
                 Mode::SelectBaseBranch { .. } => "create",
-                Mode::ConfirmWorktreeDelete(_) => "remove",
-                Mode::ConfirmRemoteBranch { .. } => "confirm",
+                Mode::ConfirmWorktreeDelete(_) => DELETE_CONFIRM,
+                Mode::ConfirmRemoteBranch { .. } => REMOTE_BRANCH_CONFIRM,
                 Mode::RepoSelect
                 | Mode::BranchSelect(_)
                 | Mode::ValidatingNewBranch { .. }

@@ -6,7 +6,7 @@ mod repo;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_fixtures;
 
-pub use cli::CliGitProvider;
+pub use cli::{CliGitProvider, StopFetchesOnDrop};
 pub use provider::{
     DirtyWorktreeRequiresForce, GitProvider, LocalBranchAlreadyExists,
     is_dirty_worktree_requires_force, is_local_branch_already_exists,

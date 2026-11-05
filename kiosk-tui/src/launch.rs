@@ -38,6 +38,8 @@ pub fn run<B: Backend, E: ThemedConfig>(
     current_cwd: Option<&Path>,
 ) -> Result<RunOutcome> {
     let theme = Theme::from_config(loaded.extension.theme());
+    // Dropped after the terminal is restored, so the picker is gone while fetches stop.
+    let _stop_fetches = kiosk_core::git::StopFetchesOnDrop::new();
     let _restore_guard = TerminalRestoreGuard;
     let mut terminal = ratatui::try_init()?;
     if !loaded.exists

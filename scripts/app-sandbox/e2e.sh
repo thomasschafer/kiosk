@@ -2,54 +2,25 @@
 # The kiosk mod end to end in the app sandbox: real key presses and clicks on the released
 # Herdr app, checked against what kiosk showed (its message trace) and what the app did
 # (`herdr-app ls`, the checkouts on disk). Run through `run.sh e2e`.
+# lib.sh, sourced below and not followed without -x, defines `rows` and the like.
+# shellcheck disable=SC1091,SC2154
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
-sb() { "$here/sandbox" "$@"; }
-trace=$HOME/sb/trace.jsonl
+# shellcheck source=lib.sh
+source "$here/lib.sh"
 shots=${E2E_SHOTS:-/src/target/app-e2e}
 mkdir -p "$shots"
 
 step=0
-fail() {
+on_fail() {
   sb shot "$shots/failure.png" >/dev/null 2>&1 || true
-  echo "FAIL ($step): $*" >&2
-  echo "last view: $(last_view | head -c 2000)" >&2
-  exit 1
+  echo "at check $step" >&2
 }
 check() {
   step=$((step + 1))
   echo "- $1"
 }
-
-last_view() { grep '^< {"t":"view"' "$trace" 2>/dev/null | tail -1 | cut -c3- | jq -c .view; }
-
-# Waits until the latest view satisfies the jq filter `$1`.
-wait_view() {
-  for _ in $(seq 100); do
-    if [[ $(last_view | jq -r "$1" 2>/dev/null) == true ]]; then return; fi
-    sleep 0.1
-  done
-  fail "the view never satisfied $1"
-}
-
-open_overlays() { sb status | jq -r '.overlays | join(" ")'; }
-
-wait_closed() {
-  for _ in $(seq 100); do
-    [[ " $(open_overlays) " != *" kiosk "* ]] && return
-    sleep 0.1
-  done
-  fail "the popup stayed open"
-}
-
-open_kiosk() {
-  sb open
-  wait_view '.screen != null'
-}
-
-rows='[.main.rows[].name.text]'
-space_folders() { sb ls | jq -r '.spaces[].folder'; }
 
 sb down >/dev/null 2>&1 || true
 EXTRA_REPOS=16 sb fixtures
@@ -89,7 +60,7 @@ wait_view '.main.kind == "branches" and .main.title == "api — select branch"'
 wait_view '[.main.rows[] | select(.name.text == "feat/auth") | .actions.delete] == [true]'
 wait_view '[.main.rows[] | select(.name.text == "main") | .actions.delete] == [false]'
 sb shot "$shots/branches.png" >/dev/null
-sb click 190 110
+sb click 355 108
 wait_view '.main.kind == "repos" and .main.query.before == "api"'
 sb key ctrl+u
 wait_view '.main.query.before == ""'
@@ -157,7 +128,7 @@ open_kiosk
 wait_view '.main.total == 23'
 sb type cli
 wait_view "$rows == [\"cli\"]"
-sb click 400 196
+sb click 500 161
 wait_closed
 space_folders | grep -qx "$HOME/code/cli" || fail "no space for cli"
 for _ in $(seq 100); do [[ -s $marker ]] && break; sleep 0.1; done
@@ -181,6 +152,16 @@ check "closing the popup from outside ends the picker too"
 open_kiosk
 wait_view '.main.state == "list"'
 sb "do" overlay.close >/dev/null
+wait_closed
+for _ in $(seq 50); do pgrep -x herdr-app-kiosk >/dev/null || break; sleep 0.1; done
+! pgrep -x herdr-app-kiosk >/dev/null || fail "a picker outlived its popup"
+
+check "a click below the panel, in the popup's empty part, closes it like one beside it"
+open_kiosk
+wait_view '.main.state == "list"'
+sb type docs
+wait_view "$rows == [\"docs\"]"
+sb click 640 650
 wait_closed
 for _ in $(seq 50); do pgrep -x herdr-app-kiosk >/dev/null || break; sleep 0.1; done
 ! pgrep -x herdr-app-kiosk >/dev/null || fail "a picker outlived its popup"

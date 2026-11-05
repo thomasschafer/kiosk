@@ -25,32 +25,37 @@ const REPOSITORY = "github.com/thomasschafer/herdr-app-kiosk";
 // The protocol this mod speaks; the picker refuses a different one.
 const PROTOCOL = 1;
 
-// The dialog's share of the window, as mod.json opens it. Each list shows as many rows as fit
-// in it (see `viewportFor`), and the picker fills them.
+// The dialog's share of the window, as mod.json opens it. Kiosk draws its own panel inside
+// it (mod.json's frame is none): hung from the top, and as tall as what it shows, so a short
+// list makes a short panel. Each list shows as many rows as fit (see `viewportFor`), and the
+// picker fills them.
 const SHARE = 0.8;
-// One set of measurements for the whole picker, so edges and text line up everywhere:
-// content sits EDGE from the popup's sides, a field's text INSET inside its border, and a
-// row's highlight spans exactly the field's width, with its icon and text where the
-// field's are.
-const EDGE = 16;
-const CARD_EDGE = 20;
-const INSET = 11;
+// One set of measurements for the whole picker, so edges and text line up everywhere: a
+// row's highlight sits PAD inside the panel and its icon INSET inside the highlight, and the
+// search bar's icon and text line up with the icons and names below them. A dialog takes the
+// panel's place, at the same width, rather than piling a second box on it.
+const PANEL = 720;
+const RADIUS = 12;
 const BORDER = 1;
-const ROW_INSET = INSET + BORDER;
-const ICON = 15;
-const ICON_GAP = 9;
-const ROW = 32;
-const HELP_ROW = 24;
-const WARNING_ROW = 44;
-const GAP = 10;
-const HEADER = 24;
-const FIELD = 38;
+const PAD = 8;
+const INSET = 12;
+const ICON = 16;
+const ICON_GAP = 12;
+const ROW = 34;
+// More rows than this make a wall rather than a list; the search narrows them instead.
+const MAX_ROWS = 10;
+const EMPTY = 116;
+const HELP_ROW = 28;
+const WARNING_ROW = 48;
+const BAR = 52;
+const TITLE_BAR = 48;
+// A title bar with a line under its title.
+const TALL_TITLE_BAR = 64;
 const FOOTER = 40;
-const TOAST = 40;
-// What a card holds besides its list, at most: title, field, buttons and the gaps between.
-const BASES_CHROME = 150;
-const HELP_CHROME = 120;
-const WARNINGS_CHROME = 70;
+// A footer with buttons in it, which are taller than its hints.
+const BUTTON_FOOTER = 52;
+const TOAST = 36;
+const EDGE = 20;
 const ICONS = "mods/workspace-chrome";
 const CONTEXT = "KioskPicker";
 // The most a paste sends, well inside the app's 1 MiB limit on one socket write.
@@ -194,20 +199,27 @@ class Lines {
   }
 }
 
-// How many rows each list shows in a dialog `height` px tall: the picker's list fills what
-// its title, field and footer leave, and a card's list what fits in a card inside the dialog.
+// How many rows each list shows in a dialog `height` px tall: what the panel's search bar,
+// title and footer leave, up to a list's most.
 function viewportFor(height, toast) {
-  const inner = height - 2 * BORDER;
   const fit = (space, row, least, most) => Math.max(least, Math.min(most, Math.floor(space / row)));
-  const list = inner - EDGE - HEADER - FIELD - FOOTER - 3 * GAP - (toast ? TOAST + GAP : 0);
-  const card = inner - 2 * EDGE - 2 * CARD_EDGE - 2 * BORDER;
+  const panel = height - 2 * BORDER;
+  const list = panel - BAR - BORDER - 2 * PAD - BORDER - FOOTER - (toast ? TOAST + PAD : 0);
   return {
-    list: fit(list, ROW, 1, Infinity),
-    bases: fit(card - BASES_CHROME, ROW, 3, 10),
-    // Help hangs below the title row rather than in the middle.
-    help: fit(card - HEADER - GAP - HELP_CHROME, HELP_ROW, 4, 20),
-    scan_warnings: fit(card - WARNINGS_CHROME, WARNING_ROW, 2, 8),
+    list: fit(list, ROW, 1, MAX_ROWS),
+    bases: fit(panel - TALL_TITLE_BAR - BORDER - BAR - BORDER - 2 * PAD - BORDER - BUTTON_FOOTER, ROW, 3, 8),
+    help: fit(panel - TITLE_BAR - BORDER - BAR - BORDER - 2 * PAD, HELP_ROW, 4, 18),
+    scan_warnings: fit(panel - TITLE_BAR - BORDER - 2 * PAD - BORDER - FOOTER, WARNING_ROW, 2, 8),
   };
+}
+
+// `color` (#rrggbb, or #rrggbbaa whose alpha this replaces) at `opacity`.
+function tint(color, opacity) {
+  if (typeof color !== "string" || !/^#[0-9a-f]{6}([0-9a-f]{2})?$/i.test(color)) {
+    throw new Error(`the theme's color ${JSON.stringify(color)} isn't #rrggbb`);
+  }
+  if (!(opacity >= 0 && opacity <= 1)) throw new Error(`an opacity of ${opacity}`);
+  return color.slice(0, 7) + Math.round(opacity * 255).toString(16).padStart(2, "0");
 }
 
 // What each of the picker's tones looks like in the app's theme.
@@ -241,8 +253,8 @@ function toneColor(t, tone) {
 
 const icon = (t, name, color, size = 14) => svg(`${ICONS}/${name}.svg`).size(size).flex_none().text_color(color ?? t.dim);
 
-function spinner(t, color) {
-  return svg(`${ICONS}/spinner.svg`).size(12).flex_none().text_color(color ?? t.dim).spin(900);
+function spinner(t, color, size = 12) {
+  return svg(`${ICONS}/spinner.svg`).size(size).flex_none().text_color(color ?? t.dim).spin(900);
 }
 
 // A key as the app writes keys: symbols on macOS (⌃H), words elsewhere (Ctrl+H).
@@ -269,17 +281,20 @@ function keyLabel(key) {
 }
 
 function keycap(t, label) {
-  return div().flex_none().px(5).h(18).flex().items_center().rounded(4).bg(t.raised).border_1().border_color(t.border)
-    .text_size(10.5).text_color(t.muted).child(keyLabel(label));
+  return div().flex_none().min_w(18).px(5).h(18).flex().items_center().justify_center().rounded(4)
+    .bg(tint(t.foreground, 0.06)).border_1().border_color(tint(t.foreground, settings().dark ? 0.08 : 0.12))
+    .text_size(11).font_medium().text_color(t.muted).child(keyLabel(label));
 }
 
-// The picker's key hints. Leaving is always the Close button in the header, so its hints
-// are left out.
+// The picker's key hints. Leaving is always the last thing a person needs, so its `quit`
+// reads as closing.
 function hints(t, list) {
-  const shown = list.filter((h) => h.label !== "quit");
-  return h_flex().flex_wrap().gap_x(14).gap(4).items_center().text_size(11.5).text_color(t.dim)
-    .children(shown.map((h) => h_flex().gap(6).items_center().child(keycap(t, h.key)).child(h.label)));
+  return h_flex().flex_wrap().gap_x(18).gap(4).items_center().text_size(12).text_color(t.muted)
+    .children(list.map((h) => h_flex().gap(5).items_center().child(keycap(t, h.key)).child(h.label === "quit" ? "close" : h.label)));
 }
+
+// Help and leaving go at the footer's end, apart from what can be done to the selection.
+const TRAILING_HINTS = new Set(["help", "quit"]);
 
 // How each badge reads in a row. The main checkout goes without saying.
 const BADGES = {
@@ -297,46 +312,49 @@ function shownBadges(badges) {
 
 function badge(t, b) {
   const [label, color] = (BADGES[b.kind] ?? ((tt) => [b.kind, tt.muted]))(t, b);
-  return div().flex_none().h(18).px(6).flex().items_center().rounded(5).border_1().border_color(t.border)
-    .text_size(10.5).text_color(color).child(label);
+  return div().flex_none().h(18).px(6).flex().items_center().rounded(4).bg(tint(color, 0.13))
+    .text_size(11).font_medium().text_color(color).child(label);
 }
 
-// The search field: the picker owns the text, so the mod draws it and, while typing goes to
-// it (`active`), its cursor.
-function field(t, query, placeholder, active = true) {
+// What the picker has typed, with the cursor drawn where it is while typing goes there
+// (`active`); the placeholder when nothing is.
+function queryText(t, query, placeholder, active, size) {
   const empty = !query.before && !query.after;
   const cursor = active
-    ? div().w(1.5).h(16).flex_none().bg(t.accent).loop("opacity", { from: 0.15, to: 1, period: 1100 })
+    ? div().w(1.5).h(size + 3).flex_none().rounded(1).bg(t.accent).loop("opacity", { from: 0.15, to: 1, period: 1100 })
     : div();
-  return h_flex().h(38).flex_none().px(INSET).gap(ICON_GAP).items_center().rounded(9).border_1()
-    .border_color(active ? t.accent : t.border).bg(t.background).text_size(13.5)
+  return h_flex().flex_1().min_w(0).overflow_hidden().items_center().whitespace_nowrap().text_size(size)
+    .child(div().flex_none().text_color(t.foreground).child(query.before))
+    .child(cursor)
+    .when(empty, (el) => el.child(div().pl(1).truncate().text_color(t.dim).child(placeholder)))
+    .when(!empty, (el) => el.child(div().flex_none().text_color(t.foreground).child(query.after)));
+}
+
+// A search field in the setup wizard.
+function field(t, query, placeholder, active = true) {
+  return h_flex().h(38).flex_none().px(INSET).gap(ICON_GAP).items_center().rounded(8).border_1()
+    .border_color(active ? tint(t.accent, 0.7) : t.border).bg(t.background)
     .child(icon(t, "search", t.dim, ICON))
-    .child(
-      h_flex().flex_1().min_w(0).overflow_hidden().items_center().whitespace_nowrap()
-        .child(div().flex_none().text_color(t.foreground).child(query.before))
-        .child(cursor)
-        .when(empty, (el) => el.child(div().pl(1).truncate().text_color(t.dim).child(placeholder)))
-        .when(!empty, (el) => el.child(div().flex_none().text_color(t.foreground).child(query.after))),
-    );
+    .child(queryText(t, query, placeholder, active, 13.5));
 }
 
-// A dialog's card. It keeps its clicks, so they don't reach the backdrop behind it.
-function card(t, width) {
-  return v_flex().id("kiosk-card").on_click((_e, cx) => cx.stop_propagation()).w(width).max_w("92%").p(CARD_EDGE).gap(12).rounded(12).bg(t.popover).border_1().border_color(t.border)
-    .shadow_lg().text_size(13);
+// The panel everything sits in. It keeps its clicks, so a click on it doesn't count as one
+// beside it.
+function panel(t, id = "kiosk-panel") {
+  return v_flex().id(id).on_click((_e, cx) => cx.stop_propagation()).w(PANEL).max_w_full().flex_none().relative()
+    .rounded(RADIUS).bg(t.popover).border_1().border_color(t.border).shadow_2xl().text_size(13);
 }
 
-// What covers the picker behind a dialog: `dismiss` runs on a click beside the dialog, and
-// `top` hangs it from the top rather than centring it.
-function backdrop(t, child, dismiss, top = false) {
-  return div().id("kiosk-backdrop").absolute().inset(0).bg(`${t.canvas}d9`).flex().justify_center()
-    .when(top, (el) => el.items_start().pt(EDGE + HEADER + GAP))
-    .when(!top, (el) => el.items_center())
-    .on_click((_e, cx) => { cx.stop_propagation(); dismiss(); })
-    .child(child);
+// The selected row's fill: a light theme needs more of the accent to show it.
+function selectedFill(t) {
+  return tint(t.accent, settings().dark ? 0.13 : 0.16);
 }
 
-function heading(t, text, size = 14) {
+function divider(t) {
+  return div().h(BORDER).flex_none().bg(t.border);
+}
+
+function heading(t, text, size = 15) {
   return div().text_size(size).font_semibold().text_color(t.foreground).child(text);
 }
 
@@ -359,18 +377,6 @@ function helpRows(h) {
   // A blank line only separates sections; at the end, the next section is out of view.
   while (rows.length && rows[rows.length - 1].kind === "blank") rows.pop();
   return rows;
-}
-
-// What a list is called, as the app would name it.
-function listTitle(list) {
-  switch (list.kind) {
-    case "repos":
-      return { title: "Repositories" };
-    case "branches":
-      return { parent: "Repositories", title: list.subject ?? "Branches" };
-    default:
-      return { title: list.title };
-  }
 }
 
 export default class Kiosk extends View {
@@ -534,34 +540,53 @@ export default class Kiosk extends View {
     this.send({ t: "viewport", ...viewport });
   }
 
+  // The dialog's whole area is this mod's, though the panel only fills its top: a click on
+  // the rest is a click beside the picker, which closes it as one beside the dialog would.
   render() {
     this.fitViewport();
     const t = theme();
     let root = v_flex().id("kiosk").key_context(CONTEXT).track_focus(this.handle).size_full().min_h(0).relative()
-      .bg(t.popover).text_size(13).text_color(t.foreground)
-      .on_key_down((e, cx) => this.key(e, cx));
+      .items_center().text_size(13).text_color(t.foreground)
+      .on_key_down((e, cx) => this.key(e, cx))
+      .on_click((_e, cx) => { cx.stop_propagation(); this.finish(); });
     for (const keystroke of this.chords) {
       root = root.on_action(`kiosk.key:${keystroke}`, () => this.send({ t: "key", keystroke, key_char: null }));
     }
     const v = this.view;
-    if (!v) return root.child(this.starting(t));
+    if (!v) return root.child(this.message(t, spinner(t), this.status));
     if (v.screen === "setup") return root.child(this.setup(t, v));
     if (v.screen === "no_search_dirs") return root.child(this.noSearchDirs(t, v));
     return root.child(this.picker(t, v));
   }
 
-  starting(t) {
-    return v_flex().size_full().p(EDGE).gap(10)
-      .child(this.header(t, { title: TITLE }))
-      .child(h_flex().flex_1().items_center().justify_center().gap(8).py(40)
-        .child(spinner(t)).child(div().text_color(t.dim).child(this.status)));
+  // A panel with one centred line of news, such as the picker starting.
+  message(t, lead, text, hint) {
+    return panel(t)
+      .child(this.titleBar(t, TITLE))
+      .child(v_flex().h(140).items_center().justify_center().gap(8)
+        .child(h_flex().gap(10).items_center().child(lead).child(div().text_color(t.muted).child(text)))
+        .when(!!hint, (el) => el.child(div().text_size(12).text_color(t.dim).child(hint))));
   }
 
-  // A button for one of the picker's commands; `primary` for the one Enter does.
-  button(t, id, label, command, primary = false) {
-    return h_flex().id(`kiosk-button-${id}`).flex_none().h(28).px(12).rounded(7).items_center().text_size(12.5).cursor_pointer()
-      .when(primary, (el) => el.bg(t.solid).text_color(t.solid_foreground).font_semibold().hover((s) => s.opacity(0.88)))
-      .when(!primary, (el) => el.border_1().border_color(t.border).text_color(t.foreground).hover((s) => s.bg(t.hover)))
+  // A panel's title over a divider: `after` follows the title, `subtitle` goes under it and
+  // `right` at the end.
+  titleBar(t, title, { after, subtitle, right } = {}) {
+    return h_flex().h(subtitle ? TALL_TITLE_BAR : TITLE_BAR).flex_none().px(EDGE).gap(10).items_center().border_b_1().border_color(t.border)
+      .child(v_flex().flex_1().min_w(0).gap(3)
+        .child(h_flex().min_w(0).gap(8).items_center()
+          .child(div().min_w(0).truncate().text_size(14).font_semibold().child(title))
+          .when(!!after, (el) => el.child(after)))
+        .when(!!subtitle, (el) => el.child(div().truncate().text_size(12.5).text_color(t.muted).child(subtitle))))
+      .when(!!right, (el) => el.child(right));
+  }
+
+  // A button for one of the picker's commands; `kind` is `primary` for the one Enter does, or
+  // `danger` when that one can't be undone.
+  button(t, id, label, command, kind = null) {
+    return h_flex().id(`kiosk-button-${id}`).flex_none().h(30).px(14).rounded(7).items_center().text_size(12.5).font_medium().cursor_pointer()
+      .when(kind === "primary", (el) => el.bg(t.accent).text_color(t.accent_foreground).hover((s) => s.opacity(0.9)))
+      .when(kind === "danger", (el) => el.bg(t.ansi1).text_color(t.popover).hover((s) => s.opacity(0.9)))
+      .when(kind === null, (el) => el.bg(tint(t.foreground, 0.07)).text_color(t.foreground).hover((s) => s.bg(tint(t.foreground, 0.11))))
       .when(command !== null, (el) => el.on_click((_e, cx) => { cx.stop_propagation(); this.send({ t: "command", command }); }))
       .child(label);
   }
@@ -572,69 +597,241 @@ export default class Kiosk extends View {
   }
 
   // A setup wizard button: the wizard is driven by keys, so it presses `keystroke`.
-  keyButton(t, id, label, keystroke, primary = false) {
-    return this.button(t, id, label, null, primary)
+  keyButton(t, id, label, keystroke, kind = null) {
+    return this.button(t, id, label, null, kind)
       .on_click((_e, cx) => { cx.stop_propagation(); this.send({ t: "key", keystroke, key_char: null }); });
   }
 
-  buttons(t, ...children) {
-    return h_flex().flex_none().pt(4).gap(8).justify_end().children(children);
+  // The panel's last line: the picker's hints, with help and leaving at the end unless
+  // `buttons` take it.
+  footer(t, list, ...buttons) {
+    const leading = buttons.length ? list : list.filter((h) => !TRAILING_HINTS.has(h.label));
+    const trailing = buttons.length ? [] : list.filter((h) => TRAILING_HINTS.has(h.label));
+    return h_flex().flex_none().h(buttons.length ? BUTTON_FOOTER : FOOTER).px(PAD + INSET).gap(16).items_center()
+      .border_t_1().border_color(t.border).rounded_b(RADIUS).bg(tint(t.foreground, 0.025))
+      .child(div().flex_1().min_w(0).child(hints(t, leading)))
+      .when(trailing.length > 0, (el) => el.child(hints(t, trailing)))
+      .when(buttons.length > 0, (el) => el.child(h_flex().flex_none().gap(8).children(buttons)));
   }
 
-  // A footer of hints with buttons at its end.
-  actions(t, list, ...buttons) {
-    return h_flex().flex_none().pt(4).items_center().gap(12)
-      .child(div().flex_1().min_w(0).child(hints(t, list)))
-      .child(this.buttons(t, ...buttons));
+  // A search bar: the query, what it searches within (`scope`) before it, and `right` at its end.
+  searchBar(t, query, placeholder, active, scope, right) {
+    return h_flex().h(BAR).flex_none().pl(PAD + INSET).pr(EDGE).gap(ICON_GAP).items_center()
+      .child(icon(t, "search", active ? t.muted : t.dim, ICON))
+      .child(h_flex().flex_1().min_w(0).gap(8).items_center()
+        .when(!!scope, (el) => el.child(scope))
+        .child(queryText(t, query, placeholder, active, 15)))
+      .when(!!right, (el) => el.child(right));
   }
 
-  // The title row: `name.parent` before the title goes back to it; `right` sits before Esc.
-  header(t, name, right) {
-    const crumb = name.parent
-      ? h_flex().id("kiosk-back").flex_none().gap(4).items_center().rounded(6).px(4).ml(-7).mr(-4).h(24).cursor_pointer()
-        .text_color(t.dim).hover((s) => s.bg(t.hover).text_color(t.foreground))
-        .on_click((_e, cx) => { cx.stop_propagation(); this.send({ t: "command", command: "repositories" }); })
-        .child(icon(t, "chevron-left", t.dim, 13))
-        .child(div().text_size(14).child(name.parent))
-      : null;
-    return h_flex().flex_none().h(24).items_center().gap(6)
-      .when(!!crumb, (el) => el.child(crumb).child(div().text_size(14).text_color(t.dim).child("/")))
-      .child(div().flex_1().min_w(0).truncate().text_size(14).font_semibold().text_color(t.foreground).child(name.title))
-      .when(!!right, (el) => el.child(right))
+  // In a repository's branches, the repository goes before the search, and clicking it goes
+  // back to the repositories.
+  scope(t, list) {
+    if (list.kind !== "branches") return null;
+    return h_flex().id("kiosk-back").flex_none().h(26).pl(5).pr(9).gap(4).items_center().rounded(6).cursor_pointer()
+      .bg(tint(t.foreground, 0.07)).hover((s) => s.bg(tint(t.foreground, 0.12)))
+      .on_click((_e, cx) => { cx.stop_propagation(); this.send({ t: "command", command: "repositories" }); })
+      .child(icon(t, "chevron-left", t.dim, 13))
+      .child(div().text_size(13).font_medium().text_color(t.foreground).child(list.subject ?? "Repository"));
+  }
+
+  // The picker, or the dialog over it in its place.
+  picker(t, v) {
+    const main = v.main;
+    const dismiss = () => this.send({ t: "dismiss" });
+    if (v.dialog) return this.layer(this.dialog(t, v.dialog, v.hints), dismiss);
+    if (v.overlay?.kind === "help") return this.layer(this.help(t, v.overlay), dismiss);
+    if (v.overlay?.kind === "scan_warnings") return this.layer(this.scanWarnings(t, v.overlay), dismiss);
+    if (main.state === "loading") return this.message(t, spinner(t, t.accent, 14), main.message, main.hint);
+    return panel(t)
+      .child(this.searchBar(t, main.query, main.placeholder, true, this.scope(t, main), this.summary(t, main)))
+      .child(divider(t))
+      .child(div().p(PAD).child(this.list(t, main, "list", (row, selected) => this.row(t, row, selected))))
+      .when(!!v.toast, (el) => el.child(div().px(PAD).pb(PAD).child(this.toast(t, v.toast))))
+      .child(this.footer(t, v.hints));
+  }
+
+  // What holds a dialog: a click beside it runs `dismiss` rather than closing the picker.
+  layer(child, dismiss) {
+    return v_flex().id("kiosk-layer").size_full().items_center()
+      .on_click((_e, cx) => { cx.stop_propagation(); dismiss(); })
+      .child(child);
+  }
+
+  summary(t, list) {
+    return h_flex().flex_none().gap(6).items_center().text_size(12).text_color(t.dim)
+      .when(!!list.activity, (el) => el.child(spinner(t)).child(`${list.activity}…`).child(div().text_color(t.border).child("·")))
+      .child(list.summary);
+  }
+
+  // A list of the picker's rows, each one ROW tall, and as many as it was sent: a short list
+  // makes a short panel. With more than fit, a thumb at its side says where the view is.
+  list(t, list, name, row) {
+    const area = v_flex().id(`kiosk-${name}`).flex_none().relative().overflow_hidden()
+      .on_scroll_wheel((e, cx) => this.scroll(e, cx));
+    if (!list.rows.length) {
+      // The picker says what happened, then what can be done about it, as two sentences.
+      const empty = list.empty ?? "";
+      const split = empty.indexOf(". ");
+      const [what, next] = split < 0 ? [empty, null] : [empty.slice(0, split), empty.slice(split + 2)];
+      return area.h(EMPTY).items_center().justify_center().gap(4)
+        .child(div().size(32).mb(8).flex().items_center().justify_center().rounded(8).bg(tint(t.foreground, 0.06))
+          .child(icon(t, list.kind === "repos" ? "search" : "git-branch", t.muted, 16)))
+        .child(div().text_size(13.5).text_color(t.foreground).child(what))
+        .when(!!next, (el) => el.child(div().text_size(12.5).text_color(t.muted).child(next.charAt(0).toUpperCase() + next.slice(1))));
+    }
+    const height = list.rows.length * ROW;
+    const scrolled = list.total > list.rows.length;
+    return area.h(height).when(scrolled, (el) => el.pr(8))
+      .children(list.rows.map((r, i) => row(r, i === list.selected)))
+      .when(scrolled, (el) => el.child(div().absolute().right(0).w(3).rounded(2).bg(tint(t.foreground, 0.16))
+        .top((list.offset / list.total) * height).h(Math.max(16, (list.rows.length / list.total) * height))));
+  }
+
+  row(t, r, selected) {
+    const id = r.id;
+    const hovered = this.hovered === id;
+    const folder = r.badges.some((b) => b.kind === "folder");
+    const glyph = r.actions.branches || folder ? "folder" : "git-branch";
+    const remote = r.badges.find((b) => b.kind === "remote");
+    const action = (name, iconName, label, command) =>
+      h_flex().id(`kiosk-${name}-${id}`).flex_none().gap(5).px(8).h(22).rounded(5).items_center().text_size(12).text_color(t.muted).cursor_pointer()
+        .bg(tint(t.foreground, 0.07)).hover((s) => s.bg(tint(t.foreground, 0.12)).text_color(t.foreground))
+        .on_click((_e, cx) => { cx.stop_propagation(); this.send({ t: "activate", position: r.position, id: r.id, command }); })
+        .child(icon(t, iconName, null, 12))
+        .child(label);
+    // A branch only a remote has reads as the remote's: `origin/` before its name.
+    const name = h_flex().flex_none().max_w("60%").min_w(0).items_center().text_size(13.5)
+      .when(!!remote, (el) => el.child(div().flex_none().text_color(t.dim).child(`${remote?.name}/`)))
+      .child(div().min_w(0).truncate().text_color(remote ? t.muted : toneColor(t, r.name.tone)).when(selected, (el) => el.font_medium()).child(r.name.text));
+    return h_flex().id(`kiosk-row-${id}`).h(ROW).flex_none().px(INSET).rounded(7).gap(ICON_GAP).items_center().cursor_pointer()
+      .when(selected, (el) => el.bg(selectedFill(t)))
+      .when(!selected, (el) => el.hover((s) => s.bg(t.hover)))
+      .on_hover((on, cx) => {
+        if (on) this.hovered = id;
+        else if (this.hovered === id) this.hovered = null;
+        cx.notify();
+      })
+      .on_click(() => this.send({ t: "activate", position: r.position, id: r.id }))
+      .child(icon(t, glyph, selected ? t.accent : t.dim, ICON))
+      .child(name)
+      .children(shownBadges(r.badges).filter((b) => b.kind !== "remote").map((b) => badge(t, b)))
+      .child(div().flex_1())
+      .children(r.labels.map((l) => div().flex_none().text_size(12).text_color(toneColor(t, l.tone)).child(l.text)))
+      .when(r.open && !hovered, (el) => el.child(h_flex().flex_none().gap(6).items_center().text_size(12).text_color(t.muted)
+        .child(div().size(6).rounded(3).bg(t.done)).child("open")))
+      .when(hovered && r.actions.branches, (el) => el.child(action("branches", "git-branch", "Branches", "branches")))
+      .when(hovered && r.actions.delete, (el) => el.child(action("delete", "x", "Remove", "delete")));
+  }
+
+  toast(t, toast) {
+    const color = toneColor(t, toast.level);
+    return h_flex().flex_none().h(TOAST).gap(10).px(INSET).rounded(8).items_center().bg(tint(color, 0.08)).border_1().border_color(tint(color, 0.25))
+      .child(div().flex_none().size(7).rounded(4).bg(color))
+      .child(div().flex_1().min_w(0).truncate().text_size(12.5).text_color(t.foreground).child(toast.message))
+      .when(!!toast.counter, (el) => el.child(div().flex_none().text_size(11.5).text_color(t.dim).child(toast.counter)))
+      .child(hints(t, toast.hints));
+  }
+
+  // A dialog in the panel's place. `footer` is the picker's hints, which follow the dialog.
+  dialog(t, d, footer) {
+    const body = (...children) => v_flex().px(EDGE).py(18).gap(14).children(children);
+    switch (d.kind) {
+      case "validating_branch":
+        return panel(t, "kiosk-dialog")
+          .child(this.titleBar(t, d.title))
+          .child(body(h_flex().gap(10).items_center().child(spinner(t, t.accent)).child(div().text_color(t.muted).child(d.message))));
+      case "base_branch":
+        return panel(t, "kiosk-dialog")
+          .child(this.titleBar(t, "New branch", {
+            after: d.list.subject
+              ? h_flex().flex_none().h(22).px(8).gap(5).items_center().rounded(5).bg(selectedFill(t)).text_size(12.5).font_medium().text_color(t.accent)
+                .child(icon(t, "git-branch", t.accent, 12)).child(d.list.subject)
+              : null,
+            subtitle: "Pick the branch to start it from",
+          }))
+          .child(this.searchBar(t, d.list.query, d.list.placeholder, true, null, this.summary(t, d.list)))
+          .child(divider(t))
+          .child(div().p(PAD).child(this.list(t, d.list, "bases", (row, selected) => this.row(t, row, selected))))
+          .child(this.footer(t, footer, this.dismissButton(t), this.button(t, "create", "Create branch", "open", "primary")));
+      case "remote_branch":
+        return panel(t, "kiosk-dialog")
+          .child(this.titleBar(t, d.title))
+          .child(body(...d.lines.map((line) => div().text_color(t.muted).child(line))))
+          .child(v_flex().px(PAD).pb(PAD).children(d.choices.map((choice, i) =>
+            h_flex().id(`kiosk-choice-${i}`).px(INSET).h(ROW).gap(ICON_GAP).rounded(7).items_center().cursor_pointer()
+              .when(i === d.selected, (el) => el.bg(selectedFill(t)))
+              .when(i !== d.selected, (el) => el.hover((s) => s.bg(t.hover)))
+              .on_click(() => this.send({ t: "activate", position: i, id: choice.id }))
+              .child(icon(t, "git-branch", i === d.selected ? t.accent : t.dim, ICON))
+              .child(choice.label))))
+          .child(this.footer(t, d.hints, this.dismissButton(t), this.button(t, "continue", "Continue", "open", "primary")));
+      case "confirm_delete":
+        return panel(t, "kiosk-dialog")
+          .child(this.titleBar(t, d.force ? "Force-remove this checkout?" : "Remove this checkout?"))
+          .child(body(
+            ...(d.warning ? [h_flex().gap(10).items_center().text_size(12.5).text_color(t.foreground)
+              .child(div().flex_none().size(7).rounded(4).bg(t.blocked)).child(d.warning)] : []),
+            h_flex().px(INSET).h(ROW).gap(ICON_GAP).items_center().rounded(7).bg(tint(t.foreground, 0.05))
+              .child(icon(t, "folder", t.dim, ICON))
+              .child(div().flex_1().min_w(0).truncate().text_size(12.5).text_color(t.foreground).child(d.path)),
+            div().text_size(12.5).text_color(t.muted).child(d.closes_in
+              ? `Its space in ${d.closes_in} closes too. The branch stays.`
+              : "The branch stays."),
+          ))
+          .child(d.busy
+            ? h_flex().h(BUTTON_FOOTER).px(EDGE).gap(8).items_center().border_t_1().border_color(t.border).child(spinner(t, t.accent)).child(div().text_color(t.muted).child(d.busy))
+            : this.footer(t, footer, this.dismissButton(t), this.button(t, "remove", d.force ? "Force-remove" : "Remove checkout", "open", "danger")));
+      default:
+        throw new Error(`the picker sent a dialog this mod doesn't know: ${d.kind}`);
+    }
+  }
+
+  help(t, h) {
+    // As tall as its rows, which are fewer than the picker's entries where keys group.
+    const rows = helpRows(h);
+    // The picker names the key that closes help only in its summary.
+    const closing = /^(.*) \((\S+): close\)$/.exec(h.summary);
+    return panel(t, "kiosk-dialog")
+      .child(this.titleBar(t, "Keyboard shortcuts"))
+      .child(this.searchBar(t, h.query, h.placeholder, true, null, h_flex().flex_none().gap(14).items_center()
+        .child(div().text_size(12).text_color(t.dim).child(closing ? closing[1] : h.summary))
+        .when(!!closing, (el) => el.child(hints(t, [{ key: closing[2], label: "quit" }])))))
+      .child(divider(t))
+      .when(!!h.notice, (el) => el.child(div().px(EDGE).pt(10).text_size(12).text_color(t.muted).child(h.notice)))
       .child(
-        div().id("kiosk-close").flex_none().ml(4).px(6).h(20).flex().items_center().rounded(5).text_size(11).text_color(t.dim).cursor_pointer()
-          .hover((s) => s.bg(t.hover).text_color(t.foreground))
-          .on_click((_e, cx) => { cx.stop_propagation(); this.finish(); })
-          .child("Close"),
+        v_flex().id("kiosk-help").p(PAD).flex_none().overflow_hidden()
+          .on_scroll_wheel((e, cx) => this.scroll(e, cx))
+          .when(!!h.empty, (el) => el.child(div().h(EMPTY).flex().items_center().justify_center().text_color(t.muted).child(h.empty)))
+          .children(rows.map((entry) => {
+            const line = h_flex().h(HELP_ROW).flex_none().items_center().px(INSET);
+            if (entry.kind === "section") return line.items_end().pb(4).text_size(11).font_semibold().text_color(t.dim).child(entry.name.toUpperCase());
+            if (entry.kind === "blank") return line.h(HELP_ROW / 2);
+            return line.id(`kiosk-help-${entry.positions[0]}`).gap(12).rounded(7).cursor_pointer()
+              .when(entry.selected, (el) => el.bg(selectedFill(t)))
+              .when(!entry.selected, (el) => el.hover((s) => s.bg(t.hover)))
+              .on_click(() => this.send({ t: "activate", position: entry.positions[0], id: entry.ids[0] }))
+              .child(div().flex_1().min_w(0).truncate().text_size(13).child(entry.description))
+              .child(h_flex().flex_none().gap(4).justify_end().children(entry.keys.map((k) => keycap(t, k))));
+          })),
       );
   }
 
-  picker(t, v) {
-    const main = v.main;
-    const covered = !!v.dialog || !!v.overlay;
-    let content;
-    if (main.state === "loading") {
-      content = v_flex().size_full().p(EDGE).gap(10)
-        .child(this.header(t, { title: TITLE }))
-        .child(
-          v_flex().flex_1().items_center().justify_center().gap(8).py(40)
-            .child(h_flex().gap(8).items_center().child(spinner(t, t.accent)).child(div().text_color(t.foreground).child(main.message)))
-            .when(!!main.hint, (el) => el.child(div().text_size(12).text_color(t.dim).child(main.hint))),
-        );
-    } else {
-      content = v_flex().size_full().gap(GAP).pt(EDGE)
-        .child(div().px(EDGE).child(this.header(t, listTitle(main), this.summary(t, main))))
-        .child(div().px(EDGE).child(field(t, main.query, main.placeholder, !covered)))
-        .child(div().px(EDGE).flex_1().min_h(0).child(this.list(t, main, "list", this.rows("list"), (row, selected) => this.row(t, row, selected, !covered))))
-        .when(!!v.toast, (el) => el.child(div().px(EDGE).child(this.toast(t, v.toast))))
-        .child(h_flex().flex_none().px(EDGE).h(40).items_center().border_t(1).border_color(t.border).child(hints(t, v.hints)));
-    }
-    let screen = div().size_full().relative().child(content);
-    const dismiss = () => this.send({ t: "dismiss" });
-    if (v.dialog) screen = screen.child(backdrop(t, this.dialog(t, v.dialog, v.hints), dismiss));
-    if (v.overlay?.kind === "help") screen = screen.child(backdrop(t, this.help(t, v.overlay), dismiss, true));
-    if (v.overlay?.kind === "scan_warnings") screen = screen.child(backdrop(t, this.scanWarnings(t, v.overlay), dismiss));
-    return screen;
+  scanWarnings(t, s) {
+    return panel(t, "kiosk-dialog")
+      .child(this.titleBar(t, s.title))
+      .child(
+        v_flex().id("kiosk-warnings").p(PAD).h(Math.min(this.rows("scan_warnings"), Math.max(s.warnings.length, 1)) * WARNING_ROW + 2 * PAD).flex_none().overflow_hidden()
+          .on_scroll_wheel((e, cx) => this.scroll(e, cx))
+          .children(s.warnings.map((w) =>
+            h_flex().h(WARNING_ROW).flex_none().px(INSET).gap(ICON_GAP).items_center()
+              // The dot lines up with the path, the line the warning is about.
+              .child(div().flex_none().w(ICON).h(34).pt(6).flex().justify_center().child(div().size(7).rounded(4).bg(t.blocked)))
+              .child(v_flex().flex_1().min_w(0).gap(2)
+                .child(div().truncate().text_size(13).child(w.path))
+                .child(div().truncate().text_size(12).text_color(t.muted).child(w.message))))),
+      )
+      .child(this.footer(t, s.hints));
   }
 
   // The rows `name` shows, as last told to the picker; views come only after that.
@@ -643,239 +840,87 @@ export default class Kiosk extends View {
     return this.viewport[name];
   }
 
-  summary(t, list) {
-    return h_flex().flex_none().gap(6).items_center().text_size(11.5).text_color(t.dim)
-      .when(!!list.activity, (el) => el.child(spinner(t)).child(`${list.activity}…`).child(div().text_color(t.border).child("·")))
-      .child(list.summary);
-  }
-
-  // A list of the picker's rows: `rows` of them, each one row tall.
-  list(t, list, name, rows, row) {
-    const area = v_flex().id(`kiosk-${name}`).h(rows * ROW).flex_none().overflow_hidden()
-      .on_scroll_wheel((e, cx) => this.scroll(e, cx));
-    if (!list.rows.length) {
-      return area.child(
-        v_flex().h(rows * ROW).items_center().justify_center().gap(8).text_color(t.dim)
-          .child(icon(t, list.kind === "repos" ? "folder" : "git-branch", t.dim, 18))
-          .child(div().text_size(12.5).child(list.empty ?? "")),
-      );
-    }
-    return area.children(list.rows.map((r, i) => row(r, i === list.selected)));
-  }
-
-  // `interactive`: whether the row takes the pointer, which it doesn't under a dialog.
-  row(t, r, selected, interactive) {
-    const id = r.id;
-    const hovered = interactive && this.hovered === id;
-    const folder = r.badges.some((b) => b.kind === "folder");
-    const glyph = r.actions.branches || folder ? "folder" : "git-branch";
-    const action = (name, iconName, label, command) =>
-      h_flex().id(`kiosk-${name}-${id}`).flex_none().gap(5).px(7).h(22).rounded(6).items_center().text_size(11.5).text_color(t.muted).cursor_pointer()
-        .hover((s) => s.bg(t.raised).text_color(t.foreground))
-        .on_click((_e, cx) => { cx.stop_propagation(); this.send({ t: "activate", position: r.position, id: r.id, command }); })
-        .child(icon(t, iconName, null, 12))
-        .child(label);
-    return h_flex().id(`kiosk-row-${id}`).h(ROW).flex_none().px(ROW_INSET).rounded(7).gap(ICON_GAP).items_center()
-      .when(selected, (el) => el.bg(t.selected))
-      .when(interactive, (el) => el.cursor_pointer()
-        .when(!selected, (row) => row.hover((s) => s.bg(t.hover)))
-        .on_hover((on, cx) => {
-          if (on) this.hovered = id;
-          else if (this.hovered === id) this.hovered = null;
-          cx.notify();
-        })
-        .on_click(() => this.send({ t: "activate", position: r.position, id: r.id })))
-      .child(icon(t, glyph, selected ? t.muted : t.dim, ICON))
-      .child(div().flex_none().max_w("60%").truncate().text_color(toneColor(t, r.name.tone)).when(selected, (el) => el.font_medium()).child(r.name.text))
-      .children(shownBadges(r.badges).map((b) => badge(t, b)))
-      .child(div().flex_1())
-      .children(r.labels.map((l) => div().flex_none().text_size(11.5).text_color(toneColor(t, l.tone)).child(l.text)))
-      .when(r.open && !hovered, (el) => el.child(h_flex().flex_none().gap(5).items_center().text_size(11.5).text_color(t.muted)
-        .child(div().size(6).rounded(3).bg(t.done)).child("open")))
-      .when(hovered && r.actions.branches, (el) => el.child(action("branches", "git-branch", "Branches", "branches")))
-      .when(hovered && r.actions.delete, (el) => el.child(action("delete", "x", "Remove", "delete")));
-  }
-
-  toast(t, toast) {
-    const color = toneColor(t, toast.level);
-    return h_flex().flex_none().h(TOAST).gap(ICON_GAP).px(INSET).rounded(9).items_center().bg(t.raised).border_1().border_color(t.border)
-      .child(div().flex_none().size(7).rounded(4).bg(color))
-      .child(div().flex_1().min_w(0).truncate().text_size(12.5).text_color(t.foreground).child(toast.message))
-      .when(!!toast.counter, (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child(toast.counter)))
-      .child(hints(t, toast.hints));
-  }
-
-  // `footer` is the picker's hints, which the dialog covers.
-  dialog(t, d, footer) {
-    switch (d.kind) {
-      case "validating_branch":
-        return card(t, 400)
-          .child(heading(t, d.title))
-          .child(h_flex().gap(8).items_center().child(spinner(t, t.accent)).child(div().text_color(t.muted).child(d.message)));
-      case "base_branch":
-        return card(t, 520)
-          .child(v_flex().gap(3)
-            .child(h_flex().gap(6).items_center().child(heading(t, "New branch"))
-              .when(!!d.list.subject, (el) => el.child(div().text_size(14).font_semibold().text_color(t.accent).child(d.list.subject))))
-            .child(div().text_size(12).text_color(t.dim).child("Pick the branch to start it from")))
-          .child(field(t, d.list.query, d.list.placeholder))
-          .child(this.list(t, d.list, "bases", this.rows("bases"), (row, selected) => this.row(t, row, selected, true)))
-          .child(this.buttons(t, this.dismissButton(t), this.button(t, "create", "Create branch", "open", true)));
-      case "remote_branch":
-        return card(t, 500)
-          .child(heading(t, d.title))
-          .children(d.lines.map((line) => div().text_color(t.muted).child(line)))
-          .child(
-            v_flex().gap(2).children(d.choices.map((choice, i) =>
-              h_flex().id(`kiosk-choice-${i}`).px(ROW_INSET).h(ROW).gap(ICON_GAP).rounded(7).items_center().cursor_pointer()
-                .when(i === d.selected, (el) => el.bg(t.selected))
-                .when(i !== d.selected, (el) => el.hover((s) => s.bg(t.hover)))
-                .on_click(() => this.send({ t: "activate", position: i, id: choice.id }))
-                .child(icon(t, "git-branch", i === d.selected ? t.muted : t.dim, ICON))
-                .child(choice.label))),
-          )
-          .child(this.buttons(t, this.dismissButton(t), this.button(t, "continue", "Continue", "open", true)));
-      case "confirm_delete":
-        return card(t, 500)
-          .child(heading(t, d.force ? "Force-remove this checkout?" : "Remove this checkout?"))
-          .when(!!d.warning, (el) => el.child(h_flex().gap(8).items_center().text_size(12.5).text_color(t.blocked)
-            .child(div().size(7).rounded(4).bg(t.blocked)).child(d.warning)))
-          .child(h_flex().px(INSET).h(ROW).gap(ICON_GAP).items_center().rounded(9).bg(t.background).border_1().border_color(t.border)
-            .child(icon(t, "folder", t.dim, ICON))
-            .child(div().flex_1().min_w(0).truncate().text_size(12.5).text_color(t.foreground).child(d.path)))
-          .child(div().text_size(12.5).text_color(t.muted).child(d.closes_in
-            ? `Its space in ${d.closes_in} closes too. The branch stays.`
-            : "The branch stays."))
-          .child(d.busy
-            ? h_flex().pt(4).gap(8).items_center().child(spinner(t, t.accent)).child(div().text_color(t.muted).child(d.busy))
-            : this.buttons(t, this.dismissButton(t), this.button(t, "remove", d.force ? "Force-remove" : "Remove", "open", true)));
-      default:
-        return card(t, 400).child(div().text_color(t.ansi1).child(`Unknown dialog ${d.kind}`));
-    }
-  }
-
-  help(t, h) {
-    // As tall as its rows, which are fewer than the picker's entries where keys group; it
-    // hangs from the top, so a search that filters them only moves its bottom edge.
-    const rows = helpRows(h);
-    return card(t, 600)
-      .child(h_flex().items_center().child(div().flex_1().child(heading(t, "Keyboard shortcuts"))).child(div().text_size(11.5).text_color(t.dim).child(h.summary.replace(" (esc: close)", ""))))
-      .child(field(t, h.query, h.placeholder))
-      .when(!!h.notice, (el) => el.child(div().text_size(11.5).text_color(t.muted).child(h.notice)))
-      .child(
-        v_flex().id("kiosk-help").h(Math.max(rows.length, 1) * HELP_ROW).flex_none().overflow_hidden()
-          .on_scroll_wheel((e, cx) => this.scroll(e, cx))
-          .when(!!h.empty, (el) => el.child(div().p(12).text_color(t.dim).child(h.empty)))
-          .children(rows.map((entry) => {
-            const line = h_flex().h(HELP_ROW).flex_none().items_center().px(ROW_INSET);
-            if (entry.kind === "section") return line.text_size(10.5).font_semibold().text_color(t.dim).child(entry.name.toUpperCase());
-            if (entry.kind === "blank") return line;
-            return line.id(`kiosk-help-${entry.positions[0]}`).gap(12).rounded(6).cursor_pointer()
-              .when(entry.selected, (el) => el.bg(t.selected))
-              .when(!entry.selected, (el) => el.hover((s) => s.bg(t.hover)))
-              .on_click(() => this.send({ t: "activate", position: entry.positions[0], id: entry.ids[0] }))
-              .child(div().flex_1().min_w(0).truncate().text_size(12.5).child(entry.description))
-              .child(h_flex().flex_none().gap(4).justify_end().children(entry.keys.map((k) => keycap(t, k))));
-          })),
-      );
-  }
-
-  scanWarnings(t, s) {
-    return card(t, 600)
-      .child(h_flex().gap(8).items_center().child(div().size(7).rounded(4).bg(t.blocked)).child(heading(t, s.title)))
-      .child(
-        v_flex().id("kiosk-warnings").h(Math.min(this.rows("scan_warnings"), Math.max(s.warnings.length, 1)) * WARNING_ROW).flex_none().overflow_hidden()
-          .on_scroll_wheel((e, cx) => this.scroll(e, cx))
-          .children(s.warnings.map((w) =>
-            v_flex().h(WARNING_ROW).flex_none().justify_center().gap(2)
-              .child(div().truncate().text_size(12.5).child(w.path))
-              .child(div().truncate().text_size(11.5).text_color(t.muted).child(w.message)))),
-      )
-      .child(hints(t, s.hints));
-  }
-
   setup(t, v) {
-    const page = (...children) =>
-      v_flex().size_full().p(EDGE).gap(14)
-        .child(this.header(t, { title: `Set up ${TITLE}` }))
-        .children(children);
+    const page = (footer, ...children) =>
+      panel(t)
+        .child(this.titleBar(t, `Set up ${TITLE}`))
+        .child(v_flex().px(EDGE).py(18).gap(16).children(children))
+        .child(footer);
     const label = (text) => div().text_size(11).font_semibold().text_color(t.dim).child(text.toUpperCase());
+    const path = (text) => div().h(22).px(7).flex().items_center().rounded(5).bg(tint(t.foreground, 0.06)).text_size(12).text_color(t.muted).truncate().child(text);
     const added = (dirs) =>
-      v_flex().gap(2).children(dirs.map((dir) =>
-        h_flex().h(28).px(ROW_INSET).gap(ICON_GAP).items_center()
-          .child(icon(t, "folder", t.dim, ICON))
+      v_flex().gap(4).children(dirs.map((dir) =>
+        h_flex().h(40).px(INSET).gap(ICON_GAP).items_center().rounded(8).bg(tint(t.foreground, 0.045))
+          .child(icon(t, "folder", t.muted, ICON))
           .child(div().flex_1().min_w(0).truncate().child(dir.path))
-          .child(div().text_size(11.5).text_color(t.dim).child(dir.depth))
+          .child(div().text_size(12).text_color(t.dim).child(dir.depth))
           .when(dir.all_folders, (el) => el.child(badge(t, { kind: "folder" })))));
     switch (v.step) {
       case "welcome":
         return page(
-          v_flex().flex_1().justify_center().gap(8).py(16)
+          this.footer(t, v.hints, this.keyButton(t, "quit", "Quit", "escape"), this.keyButton(t, "continue", "Get started", "enter", "primary")),
+          v_flex().gap(8)
             .child(div().text_size(18).font_semibold().child(v.heading))
-            .child(div().text_color(t.muted).child(v.intro))
-            .child(div().text_color(t.muted).child(v.explanation))
-            .child(h_flex().pt(6).gap(4).text_size(12).child(div().text_color(t.dim).child(v.config_label)).child(div().truncate().text_color(t.muted).child(v.config_path))),
-          this.actions(t, v.hints, this.keyButton(t, "quit", "Quit", "escape"), this.keyButton(t, "continue", "Get started", "enter", true)));
+            .child(v_flex().gap(2).text_color(t.muted).child(v.intro).child(v.explanation)),
+          h_flex().gap(8).items_center().text_size(12).child(div().text_color(t.dim).child(v.config_label)).child(path(v.config_path)));
       case "directories":
         return page(
+          v.message
+            ? h_flex().flex_none().h(FOOTER).px(EDGE).gap(10).items_center().border_t_1().border_color(t.border).text_color(t.blocked)
+              .child(div().size(7).rounded(4).bg(t.blocked)).child(v.message)
+            : this.footer(t, v.hints, v.depth
+              ? this.keyButton(t, "add", "Add directory", "enter", "primary")
+              : this.keyButton(t, "done", v.added.length && !v.path.query.before ? "Continue" : "Add", "enter", "primary")),
           div().text_color(t.muted).child(v.instructions),
-          v_flex().gap(6)
+          v_flex().gap(8)
             .child(label(v.path.label))
             .child(v.depth
-              ? h_flex().h(38).px(INSET).gap(ICON_GAP).items_center().rounded(9).border_1().border_color(t.border).bg(t.background).text_color(t.muted)
+              ? h_flex().h(38).px(INSET).gap(ICON_GAP).items_center().rounded(8).border_1().border_color(t.border).bg(t.background).text_color(t.muted)
                 .child(icon(t, "folder", t.dim, ICON)).child(v.path.query.before + v.path.query.after)
-              : field(t, v.path.query, v.path.placeholder)),
-          v.depth
-            ? v_flex().gap(6).child(label(v.depth.label)).child(field(t, v.depth.query, v.depth.placeholder))
-            : v_flex().gap(1).children(v.completions.map((completion, i) =>
-              h_flex().id(`kiosk-completion-${i}`).px(ROW_INSET).h(28).gap(ICON_GAP).rounded(7).items_center().cursor_pointer().text_size(12.5).text_color(t.muted)
-                .when(i === v.selected_completion, (el) => el.bg(t.selected).text_color(t.foreground))
-                .when(i !== v.selected_completion, (el) => el.hover((s) => s.bg(t.hover)))
+              : field(t, v.path.query, v.path.placeholder))
+            .when(!v.depth && v.completions.length > 0, (el) => el.child(v_flex().gap(2).children(v.completions.map((completion, i) =>
+              h_flex().id(`kiosk-completion-${i}`).px(INSET).h(ROW).gap(ICON_GAP).rounded(7).items_center().cursor_pointer().text_size(13).text_color(t.muted)
+                .when(i === v.selected_completion, (row) => row.bg(selectedFill(t)).text_color(t.foreground))
+                .when(i !== v.selected_completion, (row) => row.hover((s) => s.bg(t.hover)))
                 .on_click(() => this.send({ t: "completion", index: i }))
-                .child(icon(t, "folder", t.dim, ICON))
-                .child(completion))),
-          v_flex().flex_1().min_h(0).gap(6)
+                .child(icon(t, "folder", i === v.selected_completion ? t.accent : t.dim, ICON))
+                .child(completion))))),
+          ...(v.depth ? [v_flex().gap(8).child(label(v.depth.label)).child(field(t, v.depth.query, v.depth.placeholder))] : []),
+          v_flex().gap(6)
             .child(label(v.added_title))
-            .child(v.added.length ? added(v.added) : div().text_size(12.5).text_color(t.dim).child(v.nothing_added)),
-          v.message
-            ? h_flex().gap(8).items_center().text_color(t.blocked).child(div().size(7).rounded(4).bg(t.blocked)).child(v.message)
-            : this.actions(t, v.hints, v.depth
-              ? this.keyButton(t, "add", "Add directory", "enter", true)
-              : this.keyButton(t, "done", v.added.length && !v.path.query.before ? "Continue" : "Add", "enter", true)));
+            .child(v.added.length ? added(v.added) : div().text_size(12.5).text_color(t.dim).child(v.nothing_added)));
       case "folder_mode":
         return page(
-          v_flex().gap(4)
+          this.footer(t, v.hints, this.keyButton(t, "back", "Back", "escape"), this.keyButton(t, "confirm", "Confirm", "enter", "primary")),
+          v_flex().gap(6)
             .child(heading(t, v.question))
             .child(h_flex().gap(6).items_center().text_size(12).text_color(t.dim).child(icon(t, "folder", t.dim, 12)).child(v.directory).child("·").child(v.depth)),
-          v_flex().gap(6).children(v.options.map((option) =>
-            h_flex().id(`kiosk-mode-${option.mode}`).px(INSET).h(40).gap(ICON_GAP).rounded(9).items_center().cursor_pointer().border_1()
-              .border_color(option.selected ? t.accent : t.border)
-              .when(option.selected, (el) => el.bg(t.selected))
+          v_flex().gap(8).children(v.options.map((option) =>
+            h_flex().id(`kiosk-mode-${option.mode}`).px(INSET).h(42).gap(ICON_GAP).rounded(8).items_center().cursor_pointer().border_1()
+              .border_color(option.selected ? tint(t.accent, 0.7) : t.border)
+              .when(option.selected, (el) => el.bg(tint(t.accent, 0.08)))
               .when(!option.selected, (el) => el.hover((s) => s.bg(t.hover)))
               .on_click(() => this.send({ t: "folder_mode", mode: option.mode }))
-              .child(div().size(ICON).flex_none().rounded(8).border_1().border_color(option.selected ? t.accent : t.border).flex().items_center().justify_center()
-                .when(option.selected, (el) => el.child(div().size(6).rounded(3).bg(t.accent))))
-              .child(option.label))),
-          div().flex_1(),
-          this.actions(t, v.hints, this.keyButton(t, "back", "Back", "escape"), this.keyButton(t, "confirm", "Confirm", "enter", true)));
+              .child(div().size(ICON).flex_none().rounded(8).border_1().border_color(option.selected ? t.accent : t.input).flex().items_center().justify_center()
+                .when(option.selected, (el) => el.bg(t.accent).child(div().size(6).rounded(3).bg(t.accent_foreground))))
+              .child(option.label))));
       case "confirm":
         return page(
-          heading(t, v.heading, 16),
+          this.footer(t, v.hints, this.keyButton(t, "back", "Back", "escape"), this.keyButton(t, "write", "Save and open", "enter", "primary")),
+          heading(t, v.heading),
           added(v.dirs),
-          h_flex().gap(4).text_size(12).child(div().text_color(t.dim).child(v.write_label)).child(div().truncate().text_color(t.muted).child(v.config_path)),
-          div().flex_1(),
-          this.actions(t, v.hints, this.keyButton(t, "back", "Back", "escape"), this.keyButton(t, "write", "Save and open", "enter", true)));
+          h_flex().gap(8).items_center().text_size(12).child(div().text_color(t.dim).child(v.write_label)).child(path(v.config_path)));
       default:
-        return page(div().text_color(t.ansi1).child(`Unknown setup step ${v.step}`));
+        throw new Error(`the picker sent a setup step this mod doesn't know: ${v.step}`);
     }
   }
 
   noSearchDirs(t, v) {
-    return v_flex().size_full().p(EDGE).gap(10)
-      .child(this.header(t, { title: TITLE }))
-      .child(v_flex().flex_1().items_center().justify_center().gap(8).py(32)
+    return panel(t)
+      .child(this.titleBar(t, TITLE))
+      .child(v_flex().items_center().justify_center().gap(8).py(32)
         .child(icon(t, "folder", t.dim, 20))
-        .child(heading(t, v.title))
+        .child(div().pt(4).child(heading(t, v.title)))
         .child(div().text_size(12.5).text_color(t.muted).child(v.location))
         .child(div().text_size(12).text_color(t.dim).child(v.hint)));
   }

@@ -232,15 +232,14 @@ fn space_places(spaces: &[Space]) -> Vec<LiveFolder<SpaceId>> {
 
 pub struct HerdrApp {
     host: Arc<dyn AppHost>,
-    window: Window,
     git: Arc<dyn GitProvider>,
     placement: WorktreePlacement,
     notices: Arc<dyn Notices>,
     on_open: OnOpenConfig,
-    /// Where a repository's `[on_open]` panes open, after the picker has reported it opened,
-    /// so the popup closes without waiting for them.
+    /// Where the commands of a repository's `[on_open]` panes are typed, after the picker has
+    /// reported it opened, so the popup closes without waiting for their shells to start.
     background: Arc<Background>,
-    /// Where those panes' failures go, as the popup has closed by then.
+    /// Where failures to type them go, as the popup has closed by then.
     later: Arc<dyn LaterNotices>,
     /// The spaces as the mod saw them when it started kiosk, used instead of asking the app
     /// (one `herdr-app ls` and an `hc get` per terminal, which add up where starting a
@@ -264,84 +263,52 @@ impl Notices for kiosk_serve::Notifier {
     }
 }
 
-/// Changes to the window, which the background `[on_open]` panes make too.
-#[derive(Clone)]
-struct Window {
-    host: Arc<dyn AppHost>,
+/// An `[on_open]` pane's command, to be typed into the pane's new terminal by
+/// `type_commands`.
+#[derive(Debug, PartialEq, Eq)]
+struct Typing {
+    /// The pane's place in `[on_open]`, from 1.
+    pane: usize,
+    terminal: String,
+    command: String,
 }
 
-impl Window {
-    fn command(&self, name: &str, args: &Value) -> Result<Vec<u8>, AppError> {
-        self.host
-            .herdr_app(&["do".into(), name.into(), args.to_string()])
-    }
-
-    fn command_json<T: DeserializeOwned>(&self, name: &str, args: &Value) -> Result<T, AppError> {
-        let output = self.command(name, args)?;
-        parse(&output, &format!("herdr-app do {name}"))
-    }
-
-    /// Opens a shell beside the pane in the checkout, then types the command into it, so
-    /// the shell keeps it in its history and stays when it ends. Focus goes back to the pane
-    /// before the command is typed, as typing waits for the new shell, and the person may
-    /// already be typing in the pane.
-    fn pane_open(
-        &self,
-        request: &PaneSplitRequest,
-        command: &str,
-    ) -> Result<PaneSplitResponse, PaneOpenError> {
-        let created = self.split(request, command).map_err(PaneOpenError::Split)?;
-        let refocused = if request.focus {
-            Ok(())
-        } else {
-            self.command("pane.focus", &json!({ "pane": request.pane_id }))
-                .map(drop)
-        };
-        // Typed even when focus didn't go back: `hc send` finds the terminal by its address.
-        let sent = self
-            .host
-            .hc(&[
-                "send".into(),
-                "--".into(),
-                created.terminal.clone(),
-                command.into(),
-            ])
-            .map(drop);
-        match (sent, refocused) {
-            (Ok(()), Ok(())) => Ok(PaneSplitResponse {
-                pane_id: created.pane,
-            }),
-            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(PaneOpenError::Run(error)),
-            (Err(sent), Err(refocused)) => Err(PaneOpenError::Run(AppError::Also(
-                Box::new(sent),
-                Box::new(refocused),
-            ))),
-        }
-    }
-
-    /// `pane.split` starts in the split pane's live folder, wherever its shell has gone,
-    /// so this opens the terminal with `terminal.open` beside the pane, focused first,
-    /// which takes the folder.
-    fn split(&self, request: &PaneSplitRequest, command: &str) -> Result<PaneCreated, AppError> {
-        checked(args::nonempty("pane id", &request.pane_id))?;
-        checked(args::nonempty("command", command))?;
-        checked(args::absolute("cwd", &request.cwd))?;
-        // The app always splits in half; `ignored_ratio_warning` says so once, at start.
-        let folder = checked(args::utf8_path("cwd", &request.cwd))?;
-        self.command("pane.focus", &json!({ "pane": request.pane_id }))?;
-        self.command_json(
-            "terminal.open",
-            &json!({ "place": request.direction.as_str(), "folder": folder }),
-        )
-    }
+/// Types each command into its terminal, all at once, as each waits for its new shell to
+/// start. Returns a warning for those that didn't reach their terminal.
+fn type_commands(host: &dyn AppHost, typing: &[Typing]) -> Option<String> {
+    let errors: Vec<String> = std::thread::scope(|scope| {
+        let sends: Vec<_> = typing
+            .iter()
+            .map(|typing| {
+                let send = scope.spawn(move || {
+                    host.hc(&[
+                        "send".into(),
+                        "--".into(),
+                        typing.terminal.clone(),
+                        typing.command.clone(),
+                    ])
+                });
+                (typing.pane, send)
+            })
+            .collect();
+        sends
+            .into_iter()
+            .filter_map(|(pane, send)| match send.join() {
+                Ok(Ok(_)) => None,
+                Ok(Err(error)) => Some(format!("pane {pane} run failed: {error}")),
+                Err(panic) => std::panic::resume_unwind(panic),
+            })
+            .collect()
+    });
+    (!errors.is_empty()).then(|| format!("on_open: {}", errors.join("; ")))
 }
 
-/// The title of the notice for `[on_open]` panes that didn't open.
-const ON_OPEN_FAILED: &str = "Kiosk couldn't open every [on_open] pane";
+/// The title of the notice for `[on_open]` commands that weren't typed.
+const ON_OPEN_FAILED: &str = "Kiosk couldn't run every [on_open] command";
 
 impl HerdrApp {
-    /// New checkouts go in `placement`, notifications go to `notices`, and `[on_open]` panes
-    /// open in `background`, with their failures going to `later`.
+    /// New checkouts go in `placement`, notifications go to `notices`, and `[on_open]`
+    /// commands are typed in `background`, with their failures going to `later`.
     pub fn new(
         host: Arc<dyn AppHost>,
         git: Arc<dyn GitProvider>,
@@ -352,9 +319,6 @@ impl HerdrApp {
         later: Arc<dyn LaterNotices>,
     ) -> Self {
         Self {
-            window: Window {
-                host: Arc::clone(&host),
-            },
             host,
             git,
             placement,
@@ -374,23 +338,20 @@ impl HerdrApp {
         self
     }
 
-    /// The window is about to change, so what was known about it no longer holds.
-    fn forget_window(&self) {
+    fn command(&self, name: &str, args: &Value) -> Result<Vec<u8>, AppError> {
+        // The window is about to change, so what was known about it no longer holds.
         self.snapshot.lock().expect("snapshot lock").take();
         self.main_checkouts
             .lock()
             .expect("main checkouts lock")
             .clear();
-    }
-
-    fn command(&self, name: &str, args: &Value) -> Result<Vec<u8>, AppError> {
-        self.forget_window();
-        self.window.command(name, args)
+        self.host
+            .herdr_app(&["do".into(), name.into(), args.to_string()])
     }
 
     fn command_json<T: DeserializeOwned>(&self, name: &str, args: &Value) -> Result<T, AppError> {
-        self.forget_window();
-        self.window.command_json(name, args)
+        let output = self.command(name, args)?;
+        parse(&output, &format!("herdr-app do {name}"))
     }
 
     fn list(&self) -> Result<AppList, AppError> {
@@ -499,6 +460,48 @@ impl HerdrApp {
         Ok(())
     }
 
+    /// Opens a shell beside the pane in the checkout and gives focus back to the pane. The
+    /// command is added to `typing`, as `[on_open]` pane `number`, for `type_commands` to type
+    /// into the shell, so the shell keeps it in its history and stays when it ends.
+    fn pane_open(
+        &self,
+        request: &PaneSplitRequest,
+        command: &str,
+        number: usize,
+        typing: &mut Vec<Typing>,
+    ) -> Result<PaneSplitResponse, PaneOpenError> {
+        let created = self.split(request, command).map_err(PaneOpenError::Split)?;
+        // Typed even when focus doesn't go back: `hc send` finds the terminal by its address.
+        typing.push(Typing {
+            pane: number,
+            terminal: created.terminal,
+            command: command.into(),
+        });
+        if !request.focus {
+            self.command("pane.focus", &json!({ "pane": request.pane_id }))
+                .map_err(PaneOpenError::Run)?;
+        }
+        Ok(PaneSplitResponse {
+            pane_id: created.pane,
+        })
+    }
+
+    /// `pane.split` starts in the split pane's live folder, wherever its shell has gone,
+    /// so this opens the terminal with `terminal.open` beside the pane, focused first,
+    /// which takes the folder.
+    fn split(&self, request: &PaneSplitRequest, command: &str) -> Result<PaneCreated, AppError> {
+        checked(args::nonempty("pane id", &request.pane_id))?;
+        checked(args::nonempty("command", command))?;
+        checked(args::absolute("cwd", &request.cwd))?;
+        // The app always splits in half; `ignored_ratio_warning` says so once, at start.
+        let folder = checked(args::utf8_path("cwd", &request.cwd))?;
+        self.command("pane.focus", &json!({ "pane": request.pane_id }))?;
+        self.command_json(
+            "terminal.open",
+            &json!({ "place": request.direction.as_str(), "folder": folder }),
+        )
+    }
+
     /// The main checkout of the repository `folder` is in, if any.
     fn main_checkout(&self, folder: &Path) -> Result<Option<PathBuf>, AppError> {
         if let Some(known) = self
@@ -601,16 +604,17 @@ impl Backend for HerdrApp {
             })
             .map_or(checkout, PathBuf::as_path);
         let (_, pane) = self.open_space(checkout)?;
-        if !self.on_open.panes.is_empty() {
-            let window = self.window.clone();
-            let on_open = self.on_open.clone();
-            let checkout = checkout.to_path_buf();
+        let mut typing = Vec::new();
+        let mut number = 0;
+        let warning = on_open::apply(&self.on_open, &pane, checkout, |request, command| {
+            number += 1;
+            self.pane_open(request, command, number, &mut typing)
+        });
+        if !typing.is_empty() {
+            let host = Arc::clone(&self.host);
             let later = Arc::clone(&self.later);
             self.background.spawn(move || {
-                let warning = on_open::apply(&on_open, &pane, &checkout, |request, command| {
-                    window.pane_open(request, command)
-                });
-                if let Some(warning) = warning
+                if let Some(warning) = type_commands(host.as_ref(), &typing)
                     && let Err(error) = later.save(ON_OPEN_FAILED, &warning)
                 {
                     eprintln!(
@@ -619,7 +623,7 @@ impl Backend for HerdrApp {
                 }
             });
         }
-        Ok(Opened::default())
+        Ok(Opened { warning })
     }
 
     fn open_folder(&self, folder: &Path) -> Result<Opened, AppError> {

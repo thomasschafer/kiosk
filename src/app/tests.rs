@@ -48,9 +48,6 @@ struct FakeState {
     /// Makes `hc send` fail, as when the terminal ends before it is typed into.
     refuse_send: bool,
     focused_pane: Option<String>,
-    /// Window commands and typing, in the order they happened: `do <command>` and
-    /// `send <terminal>`.
-    events: Vec<String>,
     /// How many times the backend asked for the spaces (`herdr-app ls`) and for a terminal's
     /// folder (`hc get`).
     listings: usize,
@@ -61,23 +58,23 @@ struct FakeState {
 #[derive(Default)]
 struct FakeApp {
     state: Mutex<FakeState>,
-    /// When set, each `hc get` waits (up to a deadline) for this many to be in flight at once.
+    /// When set, each `hc` call waits (up to a deadline) for this many to be in flight at once.
     rendezvous: Option<usize>,
-    /// `hc get`s in flight now, and the most there have been at once.
-    gets: (Mutex<(usize, usize)>, Condvar),
+    /// `hc` calls in flight now, and the most there have been at once.
+    hc_calls: (Mutex<(usize, usize)>, Condvar),
 }
 
 impl FakeApp {
-    fn meet_other_gets(&self, want: usize) {
-        let (gets, changed) = &self.gets;
-        let mut gets = gets.lock().unwrap();
-        gets.0 += 1;
-        gets.1 = gets.1.max(gets.0);
+    fn meet_other_hc_calls(&self, want: usize) {
+        let (calls, changed) = &self.hc_calls;
+        let mut calls = calls.lock().unwrap();
+        calls.0 += 1;
+        calls.1 = calls.1.max(calls.0);
         changed.notify_all();
-        let (mut gets, _) = changed
-            .wait_timeout_while(gets, Duration::from_secs(2), |gets| gets.1 < want)
+        let (mut calls, _) = changed
+            .wait_timeout_while(calls, Duration::from_secs(2), |calls| calls.1 < want)
             .unwrap();
-        gets.0 -= 1;
+        calls.0 -= 1;
     }
 }
 
@@ -195,7 +192,6 @@ impl AppHost for FakeApp {
         let args: Value = serde_json::from_str(args).unwrap();
         assert_upstream_takes(name, &args);
         state.commands.push((name.clone(), args.clone()));
-        state.events.push(format!("do {name}"));
         let output = match name.as_str() {
             "space.new" => {
                 let folder = PathBuf::from(args["folder"].as_str().unwrap());
@@ -271,7 +267,7 @@ impl AppHost for FakeApp {
 
     fn hc(&self, args: &[String]) -> Result<Vec<u8>, AppError> {
         if let Some(want) = self.rendezvous {
-            self.meet_other_gets(want);
+            self.meet_other_hc_calls(want);
         }
         let mut state = self.state.lock().unwrap();
         let pane = |state: &FakeState, terminal: &str| {
@@ -303,7 +299,6 @@ impl AppHost for FakeApp {
                     return Err(refused("no such terminal"));
                 }
                 state.typed.push((terminal.clone(), text.clone()));
-                state.events.push(format!("send {terminal}"));
                 Ok(Vec::new())
             }
             _ => panic!("unexpected hc call {args:?}"),
@@ -317,7 +312,7 @@ struct Fixture {
     app: Arc<FakeApp>,
     backend: Arc<HerdrApp>,
     notices: Arc<PostedNotices>,
-    /// Where the backend's `[on_open]` panes wait until `background.wait()`.
+    /// Where the backend's `[on_open]` commands wait to be typed until `background.wait()`.
     background: Arc<Background>,
     later: Arc<SavedNotices>,
 }
@@ -475,9 +470,13 @@ impl Fixture {
     }
 
     fn with_on_open(on_open: OnOpenConfig) -> Self {
+        Self::with_app(FakeApp::default(), on_open)
+    }
+
+    fn with_app(app: FakeApp, on_open: OnOpenConfig) -> Self {
         let temp = TempDir::new().unwrap();
         let repo = repo_fixture(temp.path(), "repo");
-        let app = Arc::new(FakeApp::default());
+        let app = Arc::new(app);
         let notices = Arc::new(PostedNotices::default());
         let background = Arc::new(Background::deferred());
         let later = Arc::new(SavedNotices::default());
@@ -823,15 +822,15 @@ fn split_request(pane_id: &str, cwd: &Path) -> PaneSplitRequest {
 }
 
 #[test]
-fn a_pane_opens_beside_the_pane_with_its_command_typed_and_gives_focus_back() {
+fn a_pane_opens_beside_the_pane_with_focus_given_back_and_its_command_left_to_type() {
     let fixture = Fixture::new();
     let space = fixture.app.add_space(&fixture.repo);
     let root = &space.panes[0].pane;
+    let mut typing = Vec::new();
 
     let split = fixture
         .backend
-        .window
-        .pane_open(&split_request(root, &fixture.repo), "hx .")
+        .pane_open(&split_request(root, &fixture.repo), "hx .", 2, &mut typing)
         .unwrap();
 
     assert_ne!(&split.pane_id, root);
@@ -853,12 +852,15 @@ fn a_pane_opens_beside_the_pane_with_its_command_typed_and_gives_focus_back() {
         (new.pane.as_str(), new.start.as_path()),
         (split.pane_id.as_str(), fixture.repo.as_path())
     );
-    assert_eq!(state.typed, [(new.terminal.clone(), "hx .".into())]);
     assert_eq!(state.focused_pane.as_ref(), Some(root));
+    assert_eq!(state.typed, []);
     assert_eq!(
-        state.events.last(),
-        Some(&format!("send {}", new.terminal)),
-        "focus goes back before the command is typed"
+        typing,
+        [Typing {
+            pane: 2,
+            terminal: new.terminal.clone(),
+            command: "hx .".into()
+        }]
     );
 }
 
@@ -870,8 +872,12 @@ fn a_pane_starts_in_the_checkout_wherever_the_split_pane_has_gone() {
 
     fixture
         .backend
-        .window
-        .pane_open(&split_request(&space.panes[0].pane, &fixture.repo), "hx")
+        .pane_open(
+            &split_request(&space.panes[0].pane, &fixture.repo),
+            "hx",
+            1,
+            &mut Vec::new(),
+        )
         .unwrap();
 
     assert_eq!(fixture.app.spaces()[0].panes[1].start, fixture.repo);
@@ -883,49 +889,93 @@ fn a_pane_that_cannot_open_as_asked_is_refused_before_the_app_is_called() {
     let space = fixture.app.add_space(&fixture.repo);
     let relative = split_request(&space.panes[0].pane, Path::new("repo"));
     let request = split_request(&space.panes[0].pane, &fixture.repo);
+    let mut typing = Vec::new();
 
     for (request, command, why) in [(&relative, "hx", "absolute"), (&request, "", "command")] {
-        let Err(PaneOpenError::Split(error)) = fixture.backend.window.pane_open(request, command)
+        let Err(PaneOpenError::Split(error)) =
+            fixture.backend.pane_open(request, command, 1, &mut typing)
         else {
             panic!("{why}: expected a refused split");
         };
         assert!(error.to_string().contains(why), "{error}");
     }
     assert_eq!(fixture.app.commands(), []);
-}
-
-#[test]
-fn a_command_that_cannot_be_typed_is_reported_as_a_pane_made_without_it() {
-    let fixture = Fixture::new();
-    let space = fixture.app.add_space(&fixture.repo);
-    fixture.app.state.lock().unwrap().refuse_send = true;
-
-    let error = fixture
-        .backend
-        .window
-        .pane_open(&split_request(&space.panes[0].pane, &fixture.repo), "hx")
-        .unwrap_err();
-
-    assert_eq!(error, PaneOpenError::Run(refused("no such terminal")));
-    assert_eq!(fixture.app.spaces()[0].panes.len(), 2);
-    assert_eq!(
-        fixture.app.state.lock().unwrap().focused_pane.as_ref(),
-        Some(&space.panes[0].pane),
-        "focus goes back to the first pane"
-    );
+    assert_eq!(typing, []);
 }
 
 #[test]
 fn a_refused_split_is_reported_as_no_pane_made() {
     let fixture = Fixture::new();
+    let mut typing = Vec::new();
 
     let error = fixture
         .backend
-        .window
-        .pane_open(&split_request("missing", &fixture.repo), "hx")
+        .pane_open(
+            &split_request("missing", &fixture.repo),
+            "hx",
+            1,
+            &mut typing,
+        )
         .unwrap_err();
 
     assert_eq!(error, PaneOpenError::Split(refused("no such pane")));
+    assert_eq!(typing, []);
+}
+
+#[test]
+fn commands_that_cannot_be_typed_are_reported_with_their_pane() {
+    let fixture = Fixture::new();
+    let space = fixture.app.add_space(&fixture.repo);
+    let terminal = space.panes[0].terminal.clone();
+    let typing = |pane| Typing {
+        pane,
+        terminal: terminal.clone(),
+        command: "hx".into(),
+    };
+    fixture.app.state.lock().unwrap().refuse_send = true;
+
+    let warning = type_commands(fixture.app.as_ref(), &[typing(1), typing(3)]);
+
+    assert_eq!(
+        warning.as_deref(),
+        Some(&*format!(
+            "on_open: pane 1 run failed: {error}; pane 3 run failed: {error}",
+            error = refused("no such terminal")
+        ))
+    );
+}
+
+#[test]
+fn commands_are_typed_all_at_once() {
+    let mut on_open = editor_on_open();
+    on_open.panes.push(OnOpenPaneConfig {
+        command: "cargo test".into(),
+        direction: OnOpenPaneDirection::Down,
+        ratio: None,
+    });
+    let fixture = Fixture::with_app(
+        FakeApp {
+            rendezvous: Some(2),
+            ..FakeApp::default()
+        },
+        on_open,
+    );
+
+    fixture
+        .backend
+        .open_checkout(&fixture.repo, &fixture.repo)
+        .unwrap();
+    fixture.background.wait();
+
+    assert_eq!(
+        fixture.app.hc_calls.0.lock().unwrap().1,
+        2,
+        "both in flight together"
+    );
+    let state = fixture.app.state.lock().unwrap();
+    let mut typed: Vec<&str> = state.typed.iter().map(|(_, text)| text.as_str()).collect();
+    typed.sort_unstable();
+    assert_eq!(typed, ["cargo test", "hx"]);
 }
 
 #[test]
@@ -949,7 +999,7 @@ fn every_terminal_folder_is_looked_up_at_once_and_kept_with_its_pane() {
     let spaces = backend.spaces().unwrap();
 
     assert_eq!(
-        app.gets.0.lock().unwrap().1,
+        app.hc_calls.0.lock().unwrap().1,
         folders.len(),
         "all in flight together"
     );
@@ -1002,7 +1052,7 @@ fn editor_on_open() -> OnOpenConfig {
 }
 
 #[test]
-fn opening_a_repo_reports_it_opened_before_its_on_open_panes() {
+fn opening_a_repo_opens_its_on_open_panes_and_types_their_commands_after() {
     let fixture = Fixture::with_on_open(editor_on_open());
 
     let opened = fixture
@@ -1011,10 +1061,35 @@ fn opening_a_repo_reports_it_opened_before_its_on_open_panes() {
         .unwrap();
 
     assert_eq!(opened, Opened::default());
-    assert_eq!(fixture.app.command_names(), ["space.new"]);
-    assert_eq!(fixture.app.state.lock().unwrap().typed, Vec::new());
+    assert_eq!(
+        fixture.app.command_names(),
+        ["space.new", "pane.focus", "terminal.open", "pane.focus"],
+        "the pane is open and focus back before the picker reports the repo opened"
+    );
+    assert_eq!(fixture.app.state.lock().unwrap().typed, []);
     fixture.background.wait();
-    assert_eq!(fixture.app.spaces()[0].panes.len(), 2);
+    assert_eq!(fixture.app.state.lock().unwrap().typed.len(), 1);
+}
+
+#[test]
+fn an_on_open_pane_that_cannot_open_is_reported_when_the_repo_opens() {
+    let mut on_open = editor_on_open();
+    on_open.panes[0].command = String::new();
+    let fixture = Fixture::with_on_open(on_open);
+
+    let opened = fixture
+        .backend
+        .open_checkout(&fixture.repo, &fixture.repo)
+        .unwrap();
+
+    let warning = opened.warning.unwrap();
+    assert!(
+        warning.starts_with("on_open: pane 1 split failed:"),
+        "{warning}"
+    );
+    fixture.background.wait();
+    assert_eq!(fixture.app.state.lock().unwrap().typed, []);
+    assert_eq!(*fixture.later.0.lock().unwrap(), []);
 }
 
 #[test]
@@ -1063,11 +1138,11 @@ fn an_on_open_pane_with_a_ratio_opens_in_half_with_one_warning_at_start() {
     assert_eq!(opened.warning, None);
     fixture.background.wait();
     assert_eq!(fixture.app.spaces()[0].panes.len(), 2);
-    assert_eq!(*fixture.later.0.lock().unwrap(), Vec::new());
+    assert_eq!(*fixture.later.0.lock().unwrap(), []);
 }
 
 #[test]
-fn on_open_panes_that_fail_are_saved_for_the_mod_to_show_later() {
+fn on_open_commands_that_fail_are_saved_for_the_mod_to_show_later() {
     let fixture = Fixture::with_on_open(editor_on_open());
     fixture.app.state.lock().unwrap().refuse_send = true;
 

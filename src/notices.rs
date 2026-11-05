@@ -1,5 +1,5 @@
 //! Notifications the picker can't show because its popup has closed, such as an `[on_open]`
-//! pane that failed to open after it reported the repository opened. They are saved in the
+//! command it couldn't type after it reported the repository opened. They are saved in the
 //! app's home, one JSON object per line, for the mod to show the next time it opens.
 
 use std::{

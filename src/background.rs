@@ -1,5 +1,5 @@
-//! Work that carries on after the picker has told the app what it opened, such as `[on_open]`
-//! panes, so the popup can close without waiting for it. The process waits for it before it
+//! Work that carries on after the picker has told the app what it opened, such as typing
+//! `[on_open]` commands, so the popup can close without waiting for it. The process waits for it before it
 //! exits.
 
 use std::{sync::Mutex, thread::JoinHandle};

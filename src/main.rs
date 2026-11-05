@@ -35,8 +35,8 @@ fn start() -> Result<()> {
             let served = kiosk_serve::serve(&PRODUCT, |notifier| {
                 prepare(args, notifier, Arc::clone(&background))
             });
-            // The popup has closed by now, but what was opened may still be getting its
-            // `[on_open]` panes.
+            // The popup has closed by now, but the `[on_open]` panes of what was opened may
+            // still be waiting for their commands.
             background.wait();
             served
         }

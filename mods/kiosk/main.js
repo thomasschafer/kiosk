@@ -109,7 +109,7 @@ function snapshot() {
   return json.length <= MAX_SNAPSHOT ? json : null;
 }
 
-// Shows the notices the picker saved last time, such as an `[on_open]` pane that didn't open.
+// Shows the notices the picker saved last time, such as an `[on_open]` command it couldn't type.
 // The file is emptied only if nothing was added since it was read; otherwise its notices wait
 // for the next time, rather than any being lost.
 async function showSavedNotices() {

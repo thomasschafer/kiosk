@@ -695,6 +695,7 @@ fn help_lists_bindings_under_section_headings_with_gaps_between() {
     assert_eq!(help.entries.len(), VIEWPORTS.help);
     assert_eq!(help.entries[..2], entries[..2]);
     assert_eq!(help.selected, Some(1));
+    assert_eq!((help.offset, help.total), (0, entries.len()));
     assert_eq!(help.empty, None);
 }
 
@@ -712,6 +713,10 @@ fn help_scrolls_its_selection_into_view_counting_headings() {
     assert_eq!(help.notice, Some(HELP_TOAST_NOTICE));
     assert_eq!(help.entries.len(), VIEWPORTS.help);
     assert_eq!(help.entries[..], entries[entries.len() - VIEWPORTS.help..]);
+    assert_eq!(
+        (help.offset, help.total),
+        (entries.len() - VIEWPORTS.help, entries.len())
+    );
     assert_eq!(help.selected, Some(VIEWPORTS.help - 1));
     assert!(matches!(
         help.entries[VIEWPORTS.help - 1],
@@ -791,9 +796,9 @@ fn scan_warning_hints_name_a_lone_scroll_direction() {
 #[test]
 fn footer_hints_follow_the_mode() {
     let keys = KeysConfig::default();
-    let footer = |mode: &Mode| footer_hints(&keys, mode);
+    let footer = |state: &AppState| footer_hints(&keys, state);
     assert_eq!(
-        hints(&footer(&Mode::RepoSelect)),
+        hints(&footer(&state_with_repos(&["a"]))),
         [
             ("enter", "open"),
             ("tab", "branches"),
@@ -802,7 +807,7 @@ fn footer_hints_follow_the_mode() {
         ]
     );
     assert_eq!(
-        hints(&footer(&Mode::BranchSelect(context()))),
+        hints(&footer(&state_with_branches(vec![linked("feature")]))),
         [
             ("enter", "open"),
             ("ctrl+o", "new"),
@@ -812,11 +817,13 @@ fn footer_hints_follow_the_mode() {
             ("ctrl+c", "quit"),
         ]
     );
+    let mut state = state_with_repos(&["a"]);
+    state.mode = Mode::ConfirmRemoteBranch {
+        context: context(),
+        prompt: test_remote_prompt("x", &[], false),
+    };
     assert_eq!(
-        hints(&footer(&Mode::ConfirmRemoteBranch {
-            context: context(),
-            prompt: test_remote_prompt("x", &[], false),
-        })),
+        hints(&footer(&state)),
         [
             ("enter", "confirm"),
             ("esc", "back"),
@@ -824,13 +831,113 @@ fn footer_hints_follow_the_mode() {
             ("ctrl+c", "quit"),
         ]
     );
+    state.mode = Mode::Loading {
+        message: "Opening".into(),
+        branch: None,
+    };
+    assert_eq!(hints(&footer(&state)), [("ctrl+c", "quit")]);
+}
+
+fn linked(name: &str) -> BranchEntry {
+    BranchEntry {
+        checkout: Some(BranchCheckout::closed(
+            format!("/worktrees/repo/{name}").into(),
+        )),
+        ..BranchEntry::local(name)
+    }
+}
+
+fn nothing_matches(list: &mut SearchableList, query: &str) {
+    list.input.text = query.into();
+    list.input.cursor = query.len();
+    list.filtered.clear();
+    list.selected = None;
+}
+
+#[test]
+fn footer_hints_offer_only_what_the_selection_can_do() {
+    let defaults = KeysConfig::default();
+    let footer = |state: &AppState| footer_hints(&defaults, state);
+
+    let mut state = state_with_repos(&["a"]);
+    state.repo_view.entries = vec![RepoEntry::new(repo("notes", false))];
     assert_eq!(
-        hints(&footer(&Mode::Loading {
-            message: "Opening".into(),
-            branch: None,
-        })),
-        [("ctrl+c", "quit")]
+        hints(&footer(&state)),
+        [("enter", "open"), ("ctrl+h", "help"), ("esc", "quit")],
+        "a plain folder has no branches"
     );
+    nothing_matches(&mut state.repo_view.list, "zzz");
+    assert_eq!(
+        hints(&footer(&state)),
+        [("ctrl+h", "help"), ("esc", "quit")],
+        "nothing to open"
+    );
+
+    let mut state = state_with_branches(vec![BranchEntry::local("plain")]);
+    assert_eq!(
+        hints(&footer(&state)),
+        [
+            ("enter", "open"),
+            ("ctrl+o", "new"),
+            ("esc", "back"),
+            ("ctrl+h", "help"),
+            ("ctrl+c", "quit"),
+        ],
+        "a branch without a checkout of its own has nothing to remove"
+    );
+    nothing_matches(&mut state.branch_view.list, "new-thing");
+    assert_eq!(
+        hints(&footer(&state)),
+        [
+            ("enter", "create"),
+            ("ctrl+o", "new"),
+            ("esc", "back"),
+            ("ctrl+h", "help"),
+            ("ctrl+c", "quit"),
+        ]
+    );
+    assert_eq!(
+        hints(&footer_hints(
+            &keys("[branch_select]\nenter = \"noop\""),
+            &state
+        )),
+        [
+            ("ctrl+o", "new"),
+            ("esc", "back"),
+            ("ctrl+h", "help"),
+            ("ctrl+c", "quit"),
+        ],
+        "with nothing bound to open, nothing creates the branch"
+    );
+}
+
+#[test]
+fn rows_mark_where_the_search_matched_their_names() {
+    let mut state = state_with_repos(&["docs", "tab\there"]);
+    state.repo_view.list.input.text = "oc".into();
+    let view = picker(&mut state, &KeysConfig::default(), VIEWPORTS);
+    assert_eq!(list(&view).rows[0].matches, [1, 2]);
+    assert_eq!(list(&view).rows[1].matches, Vec::<usize>::new());
+
+    // Shown as `tab\there`: the escape moves the characters after it.
+    state.repo_view.list.input.text = "bh".into();
+    let view = picker(&mut state, &KeysConfig::default(), VIEWPORTS);
+    assert_eq!(list(&view).rows[1].name.text, "tab\\there");
+    assert_eq!(list(&view).rows[1].matches, [2, 5]);
+
+    state.repo_view.list.input.text = String::new();
+    let view = picker(&mut state, &KeysConfig::default(), VIEWPORTS);
+    assert!(list(&view).rows.iter().all(|row| row.matches.is_empty()));
+
+    // A remote's branch is searched as `origin/feature` but named `feature`.
+    let mut state = state_with_branches(vec![BranchEntry {
+        remote: Some("origin".into()),
+        ..BranchEntry::local("feature")
+    }]);
+    state.branch_view.list.input.text = "orfe".into();
+    let view = picker(&mut state, &KeysConfig::default(), VIEWPORTS);
+    assert_eq!(list(&view).rows[0].name.text, "feature");
+    assert_eq!(list(&view).rows[0].matches, [0, 1]);
 }
 
 #[test]

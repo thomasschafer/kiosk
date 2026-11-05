@@ -57,7 +57,7 @@ pub fn run<B: Backend, E>(
 ) -> Result<Outcome> {
     // Dropped once the frontend has been told how the session ended, so fetches stop after
     // the picker is gone rather than outliving this process.
-    let _stop_fetches = kiosk_core::git::StopFetchesOnDrop;
+    let _stop_fetches = kiosk_core::git::StopFetchesOnDrop::new();
     let Start {
         mut loaded,
         git,

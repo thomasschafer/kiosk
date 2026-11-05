@@ -25,8 +25,8 @@ const CHILD_POLL_INTERVAL: Duration = Duration::from_millis(25);
 // is killed.
 const FETCH_STOP_GRACE: Duration = Duration::from_millis(500);
 
-/// The fetches running in this process. Stopping them is for good: it is for when kiosk exits,
-/// so that no fetch outlives it.
+/// The fetches running in this process. A picker run accepts fetches until it ends, then stops
+/// them, so that none outlives it.
 struct Fetches {
     state: Mutex<FetchesState>,
     ended: Condvar,
@@ -72,6 +72,11 @@ impl Fetches {
         self.lock().phase == FetchesPhase::Stopping
     }
 
+    /// Accepts fetches again, for a new picker run.
+    fn accept(&self) {
+        self.lock().phase = FetchesPhase::Accepting;
+    }
+
     /// Stops every running fetch, and any started later, waiting up to `timeout` for them to
     /// end.
     fn stop(&self, timeout: Duration) {
@@ -101,7 +106,24 @@ impl Drop for RunningFetch<'_> {
 /// in, such as a herdr popup or a Herdr app dialog, from ending until the fetch finishes or is
 /// killed.
 #[must_use]
-pub struct StopFetchesOnDrop;
+pub struct StopFetchesOnDrop {
+    _private: (),
+}
+
+impl StopFetchesOnDrop {
+    /// Accepts fetches until the returned guard is dropped, even after an earlier run stopped
+    /// them.
+    pub fn new() -> Self {
+        FETCHES.accept();
+        Self { _private: () }
+    }
+}
+
+impl Default for StopFetchesOnDrop {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Drop for StopFetchesOnDrop {
     fn drop(&mut self) {
@@ -1322,6 +1344,19 @@ mod tests {
             );
             thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    #[test]
+    fn a_new_run_accepts_fetches_after_an_earlier_one_stopped_them() {
+        let fetches = Fetches::new();
+        fetches.stop(Duration::ZERO);
+        fetches.accept();
+        let mut command = Command::new("git");
+        command.arg("--version");
+
+        let output = run_fetch_with_timeout(command, FETCH_TIMEOUT, &fetches).unwrap();
+
+        assert!(output.status.success());
     }
 
     #[test]

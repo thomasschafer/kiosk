@@ -819,6 +819,18 @@ mod tests {
             Some(Action::Edit(TextEdit::Backspace)),
             "without the binding, backspace only deletes"
         );
+        let mut help = SearchableList::new(0);
+        help.input.text = "open".into();
+        state.overlay = Some(Overlay::Help(HelpOverlayState {
+            rows: Vec::new(),
+            list: help,
+        }));
+        assert_eq!(
+            resolve_action(backspace, &state, &keys),
+            Some(Action::Edit(TextEdit::Backspace)),
+            "help's search over the branches only deletes"
+        );
+        state.overlay = None;
         state.branch_view.list.input.text = "feat".into();
         assert_eq!(
             resolve_action(backspace, &state, &keys),

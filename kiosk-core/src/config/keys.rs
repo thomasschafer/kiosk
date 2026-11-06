@@ -266,11 +266,12 @@ impl Command {
         }
     }
 
-    /// The edit a text-editing command makes, or `None` for any other command.
+    /// The edit a text-editing command makes, or `None` for any other command. Where a
+    /// key can only edit text, as in help's search, `backspace_or_back` only deletes.
     pub const fn text_edit(self) -> Option<TextEdit> {
         Some(match self {
             Self::Clear => TextEdit::Clear,
-            Self::Backspace => TextEdit::Backspace,
+            Self::Backspace | Self::BackspaceOrBack => TextEdit::Backspace,
             Self::DeleteForward => TextEdit::DeleteForward,
             Self::DeleteWord => TextEdit::DeleteWordBackward,
             Self::DeleteWordForward => TextEdit::DeleteWordForward,
@@ -291,7 +292,6 @@ impl Command {
             | Self::Open
             | Self::BranchesView
             | Self::Back
-            | Self::BackspaceOrBack
             | Self::NewBranch
             | Self::Delete => return None,
         })
@@ -586,21 +586,33 @@ impl KeysConfig {
     pub(crate) fn from_raw(raw: RawKeysConfig, product: &Product) -> Result<Self, String> {
         let mut keys = Self::default();
         for &(layer, chord, command) in product.keys {
-            keys.bind(layer, chord, command)
+            parse_chord(chord)
+                .and_then(|parsed| keys.bind(layer, parsed, command))
                 .map_err(|error| format!("{}'s default keys: {error}", product.name))?;
         }
         for (layer, bindings) in raw.into_layers() {
+            // Spellings of one chord, such as `C-b` and `ctrl+b`, would otherwise race in
+            // the map's arbitrary order.
+            let mut written: HashMap<KeyChord, (String, Command)> = HashMap::new();
             for (chord, action) in bindings {
-                keys.bind(layer, &chord, action.parse()?)?;
+                let parsed = parse_chord(&chord)?;
+                let command = action.parse()?;
+                if let Some((earlier, earlier_command)) =
+                    written.insert(parsed, (chord.clone(), command))
+                    && earlier_command != command
+                {
+                    return Err(format!(
+                        "'{earlier}' and '{chord}' in [keys.{}] are the same key bound to different actions",
+                        layer.name()
+                    ));
+                }
+                keys.bind(layer, parsed, command)?;
             }
         }
         Ok(keys)
     }
 
-    fn bind(&mut self, layer: KeyLayer, chord: &str, command: Command) -> Result<(), String> {
-        let parsed = chord
-            .parse::<KeyChord>()
-            .map_err(|error| format!("invalid key chord '{chord}': {error}"))?;
+    fn bind(&mut self, layer: KeyLayer, parsed: KeyChord, command: Command) -> Result<(), String> {
         if !layer.allowed().contains(&command) {
             return Err(format!(
                 "key action '{}' is not allowed in [keys.{}]",
@@ -850,6 +862,12 @@ const BRANCH_SELECT: &[Command] = &[
     Command::BackspaceOrBack,
 ];
 
+fn parse_chord(chord: &str) -> Result<KeyChord, String> {
+    chord
+        .parse()
+        .map_err(|error| format!("invalid key chord '{chord}': {error}"))
+}
+
 const fn command_rank(command: Command) -> u8 {
     match command {
         Command::Open => 0,
@@ -991,6 +1009,25 @@ mod tests {
         let error = KeysConfig::for_product(&product).unwrap_err();
         assert!(error.contains("kiosk-test's default keys"), "{error}");
         assert!(error.contains("not allowed in [keys.general]"), "{error}");
+    }
+
+    #[test]
+    fn two_spellings_of_a_key_may_not_disagree_within_a_section() {
+        let error =
+            KeysConfig::from_toml("[branch_select]\n\"C-b\" = \"open\"\n\"ctrl+b\" = \"back\"")
+                .unwrap_err();
+        assert!(
+            error.contains("same key bound to different actions"),
+            "{error}"
+        );
+        assert!(error.contains("[keys.branch_select]"), "{error}");
+        let agreeing =
+            KeysConfig::from_toml("[branch_select]\n\"C-b\" = \"open\"\n\"ctrl+b\" = \"open\"")
+                .unwrap();
+        assert_eq!(
+            agreeing.command_for(BindingMode::Branch, "C-b".parse().unwrap()),
+            Some(Command::Open)
+        );
     }
 
     #[test]

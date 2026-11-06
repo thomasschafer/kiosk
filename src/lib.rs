@@ -14,7 +14,10 @@ pub mod notices;
 #[cfg(all(test, unix))]
 mod test_support;
 
-use kiosk_core::product::Product;
+use kiosk_core::{
+    config::keys::{Command, KeyLayer},
+    product::Product,
+};
 
 pub const PRODUCT: Product = Product {
     name: "herdr-app-kiosk",
@@ -23,4 +26,9 @@ pub const PRODUCT: Product = Product {
     backend_name: "Herdr",
     no_backend_message: "not running in the Herdr app",
     setup_intro: "Pick repositories and branches without leaving Herdr.",
+    keys: &[(
+        KeyLayer::BranchSelect,
+        "backspace",
+        Command::BackspaceOrBack,
+    )],
 };

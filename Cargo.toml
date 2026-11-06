@@ -1,6 +1,6 @@
 [package]
 name = "herdr-app-kiosk"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 description = "Fuzzy repo and branch picker for the Herdr desktop app, drawn natively by its kiosk mod"
 license = "MIT"
@@ -9,14 +9,14 @@ publish = false
 
 [dependencies]
 anyhow = "1"
-kiosk-core = "0.6"
-kiosk-serve = "0.6"
+kiosk-core = "0.7"
+kiosk-serve = "0.7"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml_edit = "0.25.18"
 
 [dev-dependencies]
-kiosk-core = { version = "0.6", features = ["test-support"] }
+kiosk-core = { version = "0.7", features = ["test-support"] }
 tempfile = "3"
 
 [workspace]

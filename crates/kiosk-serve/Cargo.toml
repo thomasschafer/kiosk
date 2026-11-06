@@ -1,0 +1,34 @@
+[package]
+name = "kiosk-serve"
+version.workspace = true
+publish = false
+edition.workspace = true
+authors = ["thomasschafer97@gmail.com"]
+license = "MIT"
+description = "Runs a kiosk picker for a native frontend over a local socket, generic over the multiplexer backend"
+homepage = "https://github.com/thomasschafer/kiosk"
+repository = "https://github.com/thomasschafer/kiosk"
+keywords = ["cli", "worktree", "git", "gui"]
+categories = ["command-line-utilities"]
+
+[dependencies]
+anyhow.workspace = true
+crossterm.workspace = true
+getrandom = "0.3"
+kiosk-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console"] }
+
+[dev-dependencies]
+kiosk-core = { workspace = true, features = ["test-support"] }
+tempfile.workspace = true
+
+[lints]
+workspace = true
+
+[[test]]
+name = "detach"
+harness = false

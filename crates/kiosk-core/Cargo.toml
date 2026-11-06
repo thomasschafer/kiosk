@@ -1,0 +1,36 @@
+[package]
+name = "kiosk-core"
+version.workspace = true
+publish = false
+edition.workspace = true
+authors = ["thomasschafer97@gmail.com"]
+license = "MIT"
+description = "Core library for kiosk pickers: repository discovery, git worktrees, picker state and backend traits"
+homepage = "https://github.com/thomasschafer/kiosk"
+repository = "https://github.com/thomasschafer/kiosk"
+keywords = ["cli", "worktree", "git"]
+categories = ["command-line-utilities"]
+
+[features]
+# Mock git and backend implementations for tests in this crate and in products.
+test-support = []
+
+[dependencies]
+anyhow.workspace = true
+crossterm.workspace = true
+fuzzy-matcher = "0.3"
+rayon = "1"
+serde.workspace = true
+serde_ignored = "0.1"
+serde_json.workspace = true
+toml.workspace = true
+unicode-segmentation = "1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

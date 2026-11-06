@@ -227,7 +227,13 @@ fn a_checkout_nothing_shows_is_removed_and_pruned_with_git_for_every_backend() {
             [(repo(), checkout.clone(), false)]
         );
         assert_eq!(*git.prune_calls.lock().unwrap(), [repo()]);
-        assert_eq!(backend.calls(), [BackendCall::Checkouts { repo: repo() }]);
+        assert_eq!(
+            backend.calls(),
+            [BackendCall::Checkouts {
+                repo: repo(),
+                freshness: Freshness::Current,
+            }]
+        );
     }
 }
 
@@ -252,7 +258,10 @@ fn managed_removal_of_an_open_checkout_removes_it_then_closes_its_session() {
     assert_eq!(removed_before_close, [(repo(), checkout.clone(), true)]);
     assert_eq!(
         calls_before_close,
-        [BackendCall::Checkouts { repo: repo() }]
+        [BackendCall::Checkouts {
+            repo: repo(),
+            freshness: Freshness::Current,
+        }]
     );
     assert_eq!(
         *git.remove_calls.lock().unwrap(),
@@ -285,7 +294,13 @@ fn managed_removal_leaves_the_session_open_when_git_refuses_a_dirty_checkout() {
     let outcome = remove(&git, &backend, &checkout, false);
 
     assert_eq!(outcome, WorktreeRemovalOutcome::DirtyRequiresForce);
-    assert_eq!(backend.calls(), [BackendCall::Checkouts { repo: repo() }]);
+    assert_eq!(
+        backend.calls(),
+        [BackendCall::Checkouts {
+            repo: repo(),
+            freshness: Freshness::Current,
+        }]
+    );
 }
 
 #[test]
@@ -347,7 +362,13 @@ fn a_managed_session_stays_open_when_the_record_cannot_be_forgotten() {
         *git.remove_calls.lock().unwrap(),
         [(repo(), checkout, false)]
     );
-    assert_eq!(backend.calls(), [BackendCall::Checkouts { repo: repo() }]);
+    assert_eq!(
+        backend.calls(),
+        [BackendCall::Checkouts {
+            repo: repo(),
+            freshness: Freshness::Current,
+        }]
+    );
 }
 
 #[test]

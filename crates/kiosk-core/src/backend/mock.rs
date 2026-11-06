@@ -8,7 +8,7 @@ use std::{
 };
 
 use super::{
-    Annotations, Annotator, Backend, CheckoutState, KnownCheckout, ManagedWorktrees,
+    Annotations, Annotator, Backend, CheckoutState, Freshness, KnownCheckout, ManagedWorktrees,
     NativeWorktrees, Opened, RemoveError, Removed, WorktreePlacement, Worktrees,
 };
 
@@ -29,6 +29,7 @@ pub enum BackendCall {
     OpenFolders,
     Checkouts {
         repo: PathBuf,
+        freshness: Freshness,
     },
     OpenCheckout {
         repo: PathBuf,
@@ -150,8 +151,15 @@ impl Backend for MockBackend {
         next(&self.open_folders_results, "open_folders")
     }
 
-    fn checkouts(&self, repo: &Path) -> Result<Vec<CheckoutState<String>>, MockError> {
-        self.record(BackendCall::Checkouts { repo: repo.into() });
+    fn checkouts(
+        &self,
+        repo: &Path,
+        freshness: Freshness,
+    ) -> Result<Vec<CheckoutState<String>>, MockError> {
+        self.record(BackendCall::Checkouts {
+            repo: repo.into(),
+            freshness,
+        });
         next(&self.checkouts_results, "checkouts")
     }
 

@@ -34,7 +34,11 @@ pub trait Backend: Send + Sync + 'static {
     /// Folders that sessions are currently in, for marking plain folders as open.
     fn open_folders(&self) -> Result<Vec<PathBuf>, Self::Error>;
     /// Every checkout of `repo` the backend knows about, with the session showing it.
-    fn checkouts(&self, repo: &Path) -> Result<Vec<CheckoutState<Self::SessionId>>, Self::Error>;
+    fn checkouts(
+        &self,
+        repo: &Path,
+        freshness: Freshness,
+    ) -> Result<Vec<CheckoutState<Self::SessionId>>, Self::Error>;
     /// Focuses the session showing `checkout`, a checkout of `repo`, or opens one.
     fn open_checkout(&self, repo: &Path, checkout: &Path) -> Result<Opened, Self::Error>;
     /// Focuses the session in `folder`, a folder outside any repository, or opens one.
@@ -81,6 +85,16 @@ pub trait ManagedWorktrees<B: Backend + ?Sized>: Send + Sync {
     fn placement(&self) -> &WorktreePlacement;
     /// Closes a session whose checkout kiosk has removed.
     fn close(&self, session: &B::SessionId) -> Result<(), B::Error>;
+}
+
+/// How up to date a backend's account of its sessions must be.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Freshness {
+    /// What the backend saw earlier will do, as the answer is only shown.
+    MayBeStale,
+    /// The answer decides what happens to a session, such as whether it is closed, so it
+    /// must be read now: a session's terminals can have moved since.
+    Current,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

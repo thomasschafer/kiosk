@@ -12,7 +12,7 @@ use std::{
 use rayon::ThreadPoolBuilder;
 
 use crate::{
-    backend::{Backend, KnownCheckout, Opened, annotation::AnnotationIndex, worktree},
+    backend::{Backend, Freshness, KnownCheckout, Opened, annotation::AnnotationIndex, worktree},
     config::ResolvedSearchDir,
     event::{AppEvent, BranchOperationFailure, CloseGate},
     git::{GitProvider, Repo, ScanWarning, is_local_branch_already_exists},
@@ -549,26 +549,28 @@ pub fn spawn_open_checkouts<B: Backend>(
 ) {
     let backend = Arc::clone(backend);
     let sender = sender.clone();
-    thread::spawn(move || match backend.checkouts(&repo_path) {
-        Ok(checkouts) => {
-            sender.send(AppEvent::OpenCheckoutsLoaded {
-                repo_path,
-                generation,
-                open: checkouts
-                    .into_iter()
-                    .filter(|checkout| checkout.session.is_some())
-                    .map(|checkout| checkout.path)
-                    .collect(),
-            });
-        }
-        Err(error) => {
-            sender.send(AppEvent::OpenCheckoutsFailed {
-                repo_path,
-                generation,
-                message: format!("could not load open branch indicators: {error}"),
-            });
-        }
-    });
+    thread::spawn(
+        move || match backend.checkouts(&repo_path, Freshness::MayBeStale) {
+            Ok(checkouts) => {
+                sender.send(AppEvent::OpenCheckoutsLoaded {
+                    repo_path,
+                    generation,
+                    open: checkouts
+                        .into_iter()
+                        .filter(|checkout| checkout.session.is_some())
+                        .map(|checkout| checkout.path)
+                        .collect(),
+                });
+            }
+            Err(error) => {
+                sender.send(AppEvent::OpenCheckoutsFailed {
+                    repo_path,
+                    generation,
+                    message: format!("could not load open branch indicators: {error}"),
+                });
+            }
+        },
+    );
 }
 
 /// Runs a branch operation on a new thread. Success closes the picker; `on_failure` turns an

@@ -508,13 +508,21 @@ impl Fixture {
         path
     }
 
+    /// This fixture with its backend starting from the spaces as they are now, as when the
+    /// mod passes them.
+    fn with_spaces_seen(mut self) -> Self {
+        let backend = Arc::into_inner(self.backend).expect("the fixture's only backend");
+        self.backend = Arc::new(backend.with_spaces(snapshot(&self.app)));
+        self
+    }
+
     fn worktree_root(&self) -> PathBuf {
         self.temp.path().join("worktrees")
     }
 
     fn checkout_state(&self, path: &Path) -> CheckoutState<SpaceId> {
         self.backend
-            .checkouts(&self.repo)
+            .checkouts(&self.repo, Freshness::MayBeStale)
             .unwrap()
             .into_iter()
             .find(|state| canonical(&state.path) == canonical(path))
@@ -645,7 +653,10 @@ fn a_checkout_nested_in_the_repo_owns_the_spaces_inside_it() {
     );
     let space = fixture.app.add_space(&nested);
 
-    let checkouts = fixture.backend.checkouts(&fixture.repo).unwrap();
+    let checkouts = fixture
+        .backend
+        .checkouts(&fixture.repo, Freshness::MayBeStale)
+        .unwrap();
 
     let [main, nested_state] = checkouts.as_slice() else {
         panic!("expected two checkouts, got {checkouts:?}");
@@ -746,6 +757,22 @@ fn removing_a_worktree_deletes_the_checkout_then_closes_its_space() {
     assert!(!feature.exists());
     assert!(fixture.app.spaces().is_empty());
     assert_eq!(fixture.app.command_names(), ["space.close"]);
+}
+
+#[test]
+fn removing_a_worktree_leaves_a_space_that_has_since_moved_out_of_it() {
+    let fixture = Fixture::new();
+    let feature = fixture.linked("feature");
+    fixture.app.add_space(&feature);
+    let fixture = fixture.with_spaces_seen();
+    fixture.app.state.lock().unwrap().spaces[0].panes[0].live = fixture.repo.clone();
+
+    let outcome = fixture.remove("feature", &feature, false);
+
+    assert_eq!(outcome, WorktreeRemovalOutcome::Removed { warning: None });
+    assert!(!feature.exists());
+    assert_eq!(fixture.app.spaces().len(), 1);
+    assert_eq!(fixture.app.command_names(), Vec::<String>::new());
 }
 
 #[test]
@@ -996,7 +1023,7 @@ fn every_terminal_folder_is_looked_up_at_once_and_kept_with_its_pane() {
         OnOpenConfig::default(),
     );
 
-    let spaces = backend.spaces().unwrap();
+    let spaces = backend.spaces(Freshness::MayBeStale).unwrap();
 
     assert_eq!(
         app.hc_calls.0.lock().unwrap().1,

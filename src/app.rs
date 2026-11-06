@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 
 use kiosk_core::{
     backend::{
-        Backend, CheckoutState, ManagedWorktrees, Opened, WorktreePlacement, Worktrees,
+        Backend, CheckoutState, Freshness, ManagedWorktrees, Opened, WorktreePlacement, Worktrees,
         identity::{LiveFolder, session_showing_checkout},
     },
     git::GitProvider,
@@ -244,7 +244,8 @@ pub struct HerdrApp {
     /// The spaces as the mod saw them when it started kiosk, used instead of asking the app
     /// (one `herdr-app ls` and an `hc get` per terminal, which add up where starting a
     /// process is slow) until kiosk changes the window itself. The mod's popup is modal, so
-    /// only a terminal changing folder while kiosk is open can make them stale.
+    /// only a terminal changing folder while kiosk is open can make them stale, which is why
+    /// [`Freshness::Current`] asks the app regardless.
     snapshot: Mutex<Option<Vec<Space>>>,
     /// Each space folder's main checkout, as Git reported it since kiosk last changed the
     /// window.
@@ -368,8 +369,10 @@ impl HerdrApp {
 
     /// The spaces on this machine. Spaces on other machines are left out: their
     /// folders are not paths here.
-    fn spaces(&self) -> Result<Vec<Space>, AppError> {
-        if let Some(spaces) = self.snapshot.lock().expect("snapshot lock").clone() {
+    fn spaces(&self, freshness: Freshness) -> Result<Vec<Space>, AppError> {
+        if freshness == Freshness::MayBeStale
+            && let Some(spaces) = self.snapshot.lock().expect("snapshot lock").clone()
+        {
             return Ok(spaces);
         }
         let spaces: Vec<(String, Vec<String>)> = self
@@ -555,7 +558,7 @@ impl Backend for HerdrApp {
     type Error = AppError;
 
     fn open_repos(&self) -> Result<Vec<PathBuf>, AppError> {
-        self.spaces()?
+        self.spaces(Freshness::MayBeStale)?
             .iter()
             .filter_map(Space::place)
             .filter_map(|place| self.main_checkout(&place).transpose())
@@ -564,17 +567,21 @@ impl Backend for HerdrApp {
 
     fn open_folders(&self) -> Result<Vec<PathBuf>, AppError> {
         Ok(self
-            .spaces()?
+            .spaces(Freshness::MayBeStale)?
             .into_iter()
             .flat_map(|space| space.folders)
             .flatten()
             .collect())
     }
 
-    fn checkouts(&self, repo: &Path) -> Result<Vec<CheckoutState<SpaceId>>, AppError> {
+    fn checkouts(
+        &self,
+        repo: &Path,
+        freshness: Freshness,
+    ) -> Result<Vec<CheckoutState<SpaceId>>, AppError> {
         checked(args::absolute("repository", repo))?;
         let checkouts = self.checkout_paths(repo)?;
-        let places = space_places(&self.spaces()?);
+        let places = space_places(&self.spaces(freshness)?);
         Ok(checkouts
             .iter()
             .map(|path| CheckoutState {
@@ -587,7 +594,7 @@ impl Backend for HerdrApp {
     fn open_checkout(&self, repo: &Path, checkout: &Path) -> Result<Opened, AppError> {
         checked(args::absolute("checkout", checkout))?;
         let checkouts = self.checkout_paths(repo)?;
-        let places = space_places(&self.spaces()?);
+        let places = space_places(&self.spaces(Freshness::MayBeStale)?);
         if let Some(space) = session_showing_checkout(&places, checkout, &checkouts) {
             self.select_space(&space.0)?;
             return Ok(Opened::default());
@@ -629,7 +636,7 @@ impl Backend for HerdrApp {
     fn open_folder(&self, folder: &Path) -> Result<Opened, AppError> {
         checked(args::absolute("folder", folder))?;
         let panes: Vec<_> = self
-            .spaces()?
+            .spaces(Freshness::MayBeStale)?
             .into_iter()
             .flat_map(|space| {
                 space

@@ -3,7 +3,7 @@
 
 use std::{fmt, path::Path};
 
-use super::{Backend, KnownCheckout, Opened, RemoveError, Worktrees};
+use super::{Backend, Freshness, KnownCheckout, Opened, RemoveError, Worktrees};
 use crate::{
     event::WorktreeRemovalOutcome,
     git::{GitProvider, is_dirty_worktree_requires_force, local_branch_ref},
@@ -109,7 +109,7 @@ pub(crate) fn remove_checkout<B: Backend>(
     before_close: impl FnOnce() -> Result<(), String>,
 ) -> WorktreeRemovalOutcome {
     let canonical_checkout = crate::path::canonical_or_original(checkout);
-    let session = match backend.checkouts(repo) {
+    let session = match backend.checkouts(repo, Freshness::Current) {
         Ok(checkouts) => checkouts
             .into_iter()
             .find(|state| {

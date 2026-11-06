@@ -10,7 +10,7 @@ use std::{
 
 use crate::{
     backend::{
-        CheckoutState, RemoveError, Removed,
+        CheckoutState, Freshness, RemoveError, Removed,
         mock::{BackendCall, MockBackend, MockError},
     },
     event::{AppEvent, WorktreeRemovalOutcome},
@@ -183,6 +183,7 @@ fn checkout_becoming_open_after_confirmation_routes_removal_through_the_backend(
         [
             BackendCall::Checkouts {
                 repo: "/repo".into(),
+                freshness: Freshness::Current,
             },
             BackendCall::Remove {
                 session: "w_1".into(),
@@ -222,6 +223,7 @@ fn fresh_open_state_failure_refuses_removal_without_falling_back_to_git() {
         backend.calls(),
         [BackendCall::Checkouts {
             repo: "/repo".into(),
+            freshness: Freshness::Current,
         }]
     );
 }
@@ -267,6 +269,7 @@ fn native_delete_requires_a_second_force_confirmation_then_refreshes() {
         [
             BackendCall::Checkouts {
                 repo: "/repo".into(),
+                freshness: Freshness::Current,
             },
             BackendCall::Remove {
                 session: "w_1".into(),
@@ -274,6 +277,7 @@ fn native_delete_requires_a_second_force_confirmation_then_refreshes() {
             },
             BackendCall::Checkouts {
                 repo: "/repo".into(),
+                freshness: Freshness::Current,
             },
             BackendCall::Remove {
                 session: "w_1".into(),
@@ -333,9 +337,11 @@ fn closed_git_checkout_requires_force_confirmation_and_prunes_after_success() {
         [
             BackendCall::Checkouts {
                 repo: "/repo".into(),
+                freshness: Freshness::Current,
             },
             BackendCall::Checkouts {
                 repo: "/repo".into(),
+                freshness: Freshness::Current,
             },
         ]
     );
@@ -388,6 +394,7 @@ fn managed_delete_of_an_open_checkout_removes_it_with_git_then_closes_its_sessio
         [
             BackendCall::Checkouts {
                 repo: "/repo".into(),
+                freshness: Freshness::Current,
             },
             BackendCall::Close {
                 session: "s_1".into(),

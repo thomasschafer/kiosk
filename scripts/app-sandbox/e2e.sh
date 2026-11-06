@@ -28,11 +28,13 @@ sb up
 sb install >/dev/null
 
 check "a picker the popup closed before reaching gives up and leaves no log"
-# The picker is held back from starting, so the popup closes before it can connect. The
-# app reloads the mod when its folder changes, so each change is given time to settle.
+# The picker is held back from starting until the popup has closed, so it cannot connect.
+# The app reloads the mod when its folder changes, so each change is given time to settle.
 bin=$HOME/sb/home/mods/kiosk/bin
+release=/tmp/kiosk-e2e-release
+rm -f "$release"
 cp "$bin/herdr-app-kiosk" "$bin/held-herdr-app-kiosk"
-printf '#!/bin/sh\nsleep 2\nexec "%s" "$@"\n' "$bin/held-herdr-app-kiosk" >"$bin/.held.new"
+printf '#!/bin/sh\nuntil [ -e %s ]; do sleep 0.05; done\nexec "%s" "$@"\n' "$release" "$bin/held-herdr-app-kiosk" >"$bin/.held.new"
 chmod +x "$bin/.held.new"
 mv -f "$bin/.held.new" "$bin/herdr-app-kiosk"
 sleep 2
@@ -44,6 +46,7 @@ for _ in $(seq 100); do
 done
 sb "do" overlay.close >/dev/null
 wait_closed
+touch "$release"
 for _ in $(seq 50); do
   pgrep -f "^$bin/held-herdr-app-kiosk serve" >/dev/null && break
   sleep 0.1
@@ -58,6 +61,8 @@ if pgrep -f "^$bin/held-herdr-app-kiosk serve" >/dev/null; then fail "the picker
 if compgen -G '/tmp/herdr-app-kiosk-serve-*.log' >/dev/null; then
   fail "the picker left its log: $(cat /tmp/herdr-app-kiosk-serve-*.log)"
 fi
+[[ -z $(sb trace) ]] || fail "the picker was reached after all"
+rm -f "$release"
 mv -f "$bin/held-herdr-app-kiosk" "$bin/herdr-app-kiosk"
 sleep 2
 

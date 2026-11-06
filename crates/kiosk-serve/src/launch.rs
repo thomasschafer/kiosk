@@ -399,12 +399,14 @@ mod tests {
     #[test]
     fn waiting_for_a_client_gives_up() {
         let listening = listen().unwrap();
+        let started = Instant::now();
         assert!(
             listening
                 .accept(Duration::from_millis(50))
                 .unwrap()
                 .is_none()
         );
+        assert!(started.elapsed() >= Duration::from_millis(50));
     }
 
     #[test]

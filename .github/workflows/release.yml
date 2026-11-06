@@ -27,7 +27,9 @@ jobs:
       - name: Require the tag, Cargo.toml and the mod to agree
         id: version
         shell: bash
-        run: echo "version=$(scripts/check-version.sh "$GITHUB_REF_NAME")" >>"$GITHUB_OUTPUT"
+        run: |
+          version=$(scripts/check-version.sh "$GITHUB_REF_NAME")
+          echo "version=$version" >>"$GITHUB_OUTPUT"
 
       - name: Require the release commit to be on main
         shell: bash

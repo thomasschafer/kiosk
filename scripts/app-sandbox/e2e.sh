@@ -27,6 +27,40 @@ EXTRA_REPOS=16 sb fixtures
 sb up
 sb install >/dev/null
 
+check "a picker the popup closed before reaching gives up and leaves no log"
+# The picker is held back from starting, so the popup closes before it can connect. The
+# app reloads the mod when its folder changes, so each change is given time to settle.
+bin=$HOME/sb/home/mods/kiosk/bin
+cp "$bin/herdr-app-kiosk" "$bin/held-herdr-app-kiosk"
+printf '#!/bin/sh\nsleep 2\nexec "%s" "$@"\n' "$bin/held-herdr-app-kiosk" >"$bin/.held.new"
+chmod +x "$bin/.held.new"
+mv -f "$bin/.held.new" "$bin/herdr-app-kiosk"
+sleep 2
+rm -f /tmp/herdr-app-kiosk-serve-*.log
+sb open
+for _ in $(seq 100); do
+  [[ " $(open_overlays) " == *" kiosk "* ]] && break
+  sleep 0.05
+done
+sb "do" overlay.close >/dev/null
+wait_closed
+for _ in $(seq 50); do
+  pgrep -f "^$bin/held-herdr-app-kiosk serve" >/dev/null && break
+  sleep 0.1
+done
+pgrep -f "^$bin/held-herdr-app-kiosk serve" >/dev/null || fail "the held picker never started"
+# It waits 15 s for a connection.
+for _ in $(seq 200); do
+  pgrep -f "^$bin/held-herdr-app-kiosk serve" >/dev/null || break
+  sleep 0.1
+done
+if pgrep -f "^$bin/held-herdr-app-kiosk serve" >/dev/null; then fail "the picker kept waiting"; fi
+if compgen -G '/tmp/herdr-app-kiosk-serve-*.log' >/dev/null; then
+  fail "the picker left its log: $(cat /tmp/herdr-app-kiosk-serve-*.log)"
+fi
+mv -f "$bin/held-herdr-app-kiosk" "$bin/herdr-app-kiosk"
+sleep 2
+
 check "the picker lists the repositories"
 open_kiosk
 wait_view '.main.state == "list" and (.main.total == 23)'

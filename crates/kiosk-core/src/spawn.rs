@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Condvar, Mutex,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, Ordering},
         mpsc,
     },
     thread::{self, JoinHandle},
@@ -125,7 +125,13 @@ impl EventSender {
     }
 
     pub fn send(&self, event: AppEvent) -> bool {
-        !self.is_cancelled() && self.tx.send(event).is_ok()
+        !self.is_cancelled() && self.deliver(event)
+    }
+
+    /// Sends `event` even once cancelled, for a removal's hand-off of its saved record,
+    /// which a stopping picker still takes (see [`crate::picker::Picker`]'s `Drop`).
+    fn deliver(&self, event: AppEvent) -> bool {
+        self.tx.send(event).is_ok()
     }
 
     pub fn is_cancelled(&self) -> bool {
@@ -149,6 +155,11 @@ impl Operations {
         let mut handles = self.0.lock().unwrap();
         handles.retain(|handle| !handle.is_finished());
         handles.push(thread::spawn(work));
+    }
+
+    /// Whether every operation started so far has finished.
+    pub(crate) fn is_idle(&self) -> bool {
+        self.0.lock().unwrap().iter().all(JoinHandle::is_finished)
     }
 
     /// Waits for every operation started so far, raising a panic from one here unless this
@@ -495,18 +506,16 @@ pub fn spawn_git_fetch(
     let sender = sender.clone();
     let deduplicator = deduplicator.clone();
     thread::spawn(move || {
+        let mut finished = FetchesFinished {
+            sender: sender.clone(),
+            repo_path: repo_path.clone(),
+            generation,
+            error: None,
+        };
         let remotes = match git.list_remotes(&repo_path) {
             Ok(remotes) => remotes,
             Err(error) => {
-                sender.send(AppEvent::GitFetchCompleted {
-                    remote: None,
-                    branches: Vec::new(),
-                    repo_path,
-                    generation,
-                    error: Some(format!("could not list remotes for fetch: {error:#}")),
-                    is_final: true,
-                    skipped_unsupported_refs: false,
-                });
+                finished.error = Some(format!("could not list remotes for fetch: {error:#}"));
                 return;
             }
         };
@@ -517,27 +526,14 @@ pub fn spawn_git_fetch(
                 (remote, turn)
             })
             .collect::<Vec<_>>();
-        if turns.is_empty() {
-            sender.send(AppEvent::GitFetchCompleted {
-                remote: None,
-                branches: Vec::new(),
-                repo_path,
-                generation,
-                error: None,
-                is_final: true,
-                skipped_unsupported_refs: false,
-            });
-            return;
-        }
-
-        let remaining = Arc::new(AtomicUsize::new(turns.len()));
+        let finished = Arc::new(finished);
         let local_names = Arc::new(local_names);
         spawn_work_parallel(FETCH_POOL_SIZE, turns, |(remote, turn)| {
             let git = Arc::clone(&git);
             let sender = sender.clone();
             let repo_path = repo_path.clone();
             let local_names = Arc::clone(&local_names);
-            let remaining = Arc::clone(&remaining);
+            let finished = Arc::clone(&finished);
             move || {
                 // A request that waited shares the other fetch's outcome and reads the
                 // refs it left, so every view gets the remote's branches and errors.
@@ -577,19 +573,38 @@ pub fn spawn_git_fetch(
                         Err(error) => (Vec::new(), Some(error), false),
                     }
                 };
-                let is_final = remaining.fetch_sub(1, Ordering::AcqRel) == 1;
                 sender.send(AppEvent::GitFetchCompleted {
-                    remote: Some(remote),
+                    remote,
                     branches,
                     repo_path,
                     generation,
                     error,
-                    is_final,
                     skipped_unsupported_refs,
                 });
+                drop(finished);
             }
         });
     });
+}
+
+/// Sends [`AppEvent::GitFetchesFinished`] when dropped. Each remote's fetch holds a share,
+/// so the last one to report sends it after every remote's own event, however they
+/// interleave.
+struct FetchesFinished {
+    sender: EventSender,
+    repo_path: PathBuf,
+    generation: u64,
+    error: Option<String>,
+}
+
+impl Drop for FetchesFinished {
+    fn drop(&mut self) {
+        self.sender.send(AppEvent::GitFetchesFinished {
+            repo_path: std::mem::take(&mut self.repo_path),
+            generation: self.generation,
+            error: self.error.take(),
+        });
+    }
 }
 
 pub fn spawn_open_checkouts<B: Backend>(
@@ -739,15 +754,14 @@ pub fn spawn_worktree_removal<B: Backend>(
     sender.spawn_operation(move |sender| {
         let wait_for_record_forgotten = || {
             let (gate, decision) = CloseGate::new();
-            if !sender.send(AppEvent::CheckoutRemoved {
+            let undecided = || Err("kiosk stopped before it could forget the removal".into());
+            if !sender.deliver(AppEvent::CheckoutRemoved {
                 worktree_path: worktree_path.clone(),
                 gate,
             }) {
-                return Ok(());
+                return undecided();
             }
-            // An error means the picker dropped the gate undecided as it stopped, so no one
-            // is left to forget the record and the session closes regardless.
-            decision.recv().unwrap_or(Ok(()))
+            decision.recv().unwrap_or_else(|_| undecided())
         };
         let outcome = worktree::remove_checkout(
             git.as_ref(),
@@ -758,7 +772,7 @@ pub fn spawn_worktree_removal<B: Backend>(
             force,
             wait_for_record_forgotten,
         );
-        sender.send(AppEvent::WorktreeRemovalFinished {
+        sender.deliver(AppEvent::WorktreeRemovalFinished {
             repo_path,
             branch_name,
             worktree_path,
@@ -1105,14 +1119,22 @@ mod tests {
         let events = [
             rx.recv_timeout(Duration::from_secs(1)).unwrap(),
             rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            rx.recv_timeout(Duration::from_secs(1)).unwrap(),
         ];
-        assert_eq!(
-            events
+        assert!(
+            events[..2]
                 .iter()
-                .filter(|event| matches!(event, AppEvent::GitFetchCompleted { is_final: true, .. }))
-                .count(),
-            1
+                .all(|event| matches!(event, AppEvent::GitFetchCompleted { .. })),
+            "{events:?}"
         );
+        assert!(matches!(
+            &events[2],
+            AppEvent::GitFetchesFinished {
+                generation: 7,
+                error: None,
+                ..
+            }
+        ));
         let mut calls = git_mock.fetch_calls.lock().unwrap().clone();
         calls.sort();
         assert_eq!(
@@ -1162,23 +1184,35 @@ mod tests {
         *gate.0.lock().unwrap() = true;
         gate.1.notify_all();
         let mut by_generation = HashMap::new();
-        for _ in 0..2 {
-            let AppEvent::GitFetchCompleted {
-                generation,
-                remote,
-                branches,
-                error,
-                is_final,
-                ..
-            } = rx.recv_timeout(Duration::from_secs(1)).unwrap()
-            else {
-                panic!("expected fetch completions");
-            };
-            assert_eq!(remote.as_deref(), Some("origin"));
-            assert!(is_final);
-            let names = branches.into_iter().map(|branch| branch.name).collect();
-            by_generation.insert(generation, (names, error));
+        let mut finished = Vec::new();
+        for _ in 0..4 {
+            match rx.recv_timeout(Duration::from_secs(1)).unwrap() {
+                AppEvent::GitFetchCompleted {
+                    generation,
+                    remote,
+                    branches,
+                    error,
+                    ..
+                } => {
+                    assert_eq!(remote, "origin");
+                    assert!(
+                        !finished.contains(&generation),
+                        "finished before its remote"
+                    );
+                    let names = branches.into_iter().map(|branch| branch.name).collect();
+                    by_generation.insert(generation, (names, error));
+                }
+                AppEvent::GitFetchesFinished {
+                    generation, error, ..
+                } => {
+                    assert_eq!(error, None);
+                    finished.push(generation);
+                }
+                event => panic!("expected fetch events, got {event:?}"),
+            }
         }
+        finished.sort_unstable();
+        assert_eq!(finished, [7, 8]);
         let fetches = git_mock.fetch_calls.lock().unwrap().len();
         (by_generation, fetches)
     }

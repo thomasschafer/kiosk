@@ -18,7 +18,7 @@ use crate::{
     product::Product,
 };
 
-pub use crate::picker::branch::{BranchContext, BranchId, OpenCheckoutLoadState};
+pub use crate::picker::branch::{BranchContext, BranchId, BranchLoad, OpenCheckouts};
 pub use crate::picker::delete::{DeleteFlowState, DeleteWorktreeTarget};
 pub use crate::picker::new_branch::{BaseBranchSelection, RemoteBranchChoice, RemoteBranchPrompt};
 pub use crate::picker::repo::RepoEntry;

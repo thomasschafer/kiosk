@@ -381,6 +381,15 @@ function heading(t, text, size = 15) {
   return div().text_size(size).font_semibold().text_color(t.foreground).child(text);
 }
 
+/**
+ * Where the popup's connection to the picker is. It is starting until the picker has been
+ * launched and connected to, then connected, writing to `socket` one line after another
+ * through `writes`, and closed once the popup is closing, after which nothing is sent.
+ * @typedef {{ state: "starting" }
+ *   | { state: "connected", socket: any, writes: Promise<void> }
+ *   | { state: "closed" }} Link
+ */
+
 export default class Kiosk extends View {
   init(_props, cx) {
     this.handle = cx.focus_handle();
@@ -388,12 +397,13 @@ export default class Kiosk extends View {
     cx.timer.after(600, () => this.handle.focus());
     this.view = null;
     this.chords = [];
-    // The rows last told to the picker, once it has said hello; render keeps them current.
+    // Whether the picker has said hello.
     this.ready = false;
+    // The rows last told to the picker, once it has said hello; render keeps them current.
     this.viewport = null;
-    this.writes = Promise.resolve();
+    /** @type {Link} */
+    this.link = { state: "starting" };
     this.wheel = 0;
-    this.status = "Starting…";
     // `herdr-app check` loads the mod with no overlay; only a shown copy starts the picker.
     if (!props()?.overlay) return;
     cx.spawn(async () => {
@@ -406,11 +416,15 @@ export default class Kiosk extends View {
     cx.spawn(async (cx) => {
       try {
         const { socket, token } = await start();
-        this.socket = socket;
+        if (this.link.state === "closed") {
+          socket.close();
+          return;
+        }
+        this.link = { state: "connected", socket, writes: Promise.resolve() };
         this.send({ t: "hello", token, protocol: PROTOCOL });
-        await this.listen(cx);
+        await this.listen(socket, cx);
       } catch (error) {
-        if (this.closing) return;
+        if (this.link.state === "closed") return;
         const known = error instanceof KioskError;
         notify({ title: known ? error.title : "Kiosk stopped", body: known ? error.body : String(error), level: "error" });
         this.finish();
@@ -418,18 +432,18 @@ export default class Kiosk extends View {
     });
   }
 
-  async listen(cx) {
+  async listen(socket, cx) {
     const lines = new Lines();
     for (;;) {
       let chunk;
       try {
-        chunk = await this.socket.read();
+        chunk = await socket.read();
       } catch (error) {
         // A read gives up after 30 s; the picker pings every 10, so a timeout means it's gone.
         throw new KioskError("Kiosk stopped responding", String(error));
       }
       if (chunk === null) {
-        if (!this.closing) throw new KioskError("Kiosk stopped", "The picker closed its connection.");
+        if (this.link.state !== "closed") throw new KioskError("Kiosk stopped", "The picker closed its connection.");
         return;
       }
       for (const line of lines.push(chunk)) {
@@ -468,35 +482,38 @@ export default class Kiosk extends View {
   }
 
   send(message) {
-    const socket = this.socket;
-    if (!socket || this.closing) return;
+    const link = this.link;
+    if (link.state !== "connected") return;
     const line = `${JSON.stringify(message)}\n`;
     // One write at a time, so the picker sees the person's input in order. A write that
     // fails loses input, so the picker can no longer be trusted to show what was done.
-    this.writes = this.writes.then(() => socket.write(line)).catch((error) => {
-      if (this.closing) return;
+    link.writes = link.writes.then(() => link.socket.write(line)).catch((error) => {
+      if (this.link.state === "closed") return;
       notify({ title: "Kiosk stopped responding", body: `Sending to the picker failed: ${error}`, level: "error" });
       this.finish();
     });
   }
 
   finish() {
-    if (this.closing) return;
-    this.closing = true;
-    this.socket?.close();
+    const link = this.link;
+    if (link.state === "closed") return;
+    this.link = { state: "closed" };
+    if (link.state === "connected") link.socket.close();
     closeOverlay(props().overlay);
   }
 
+  // A popup closed while still starting has no picker to tell, as its startup ends with
+  // it; a picker no one connects to gives up on its own.
   async close() {
-    if (this.closing) return;
-    this.closing = true;
-    const socket = this.socket;
-    if (!socket) return;
+    const link = this.link;
+    if (link.state === "closed") return;
+    this.link = { state: "closed" };
+    if (link.state !== "connected") return;
     try {
-      await this.writes;
-      await socket.write(`${JSON.stringify({ t: "close" })}\n`);
+      await link.writes;
+      await link.socket.write(`${JSON.stringify({ t: "close" })}\n`);
     } catch {}
-    socket.close();
+    link.socket.close();
   }
 
   key(e, cx) {
@@ -562,7 +579,7 @@ export default class Kiosk extends View {
 
   screen(t) {
     const v = this.view;
-    if (!v) return this.message(t, spinner(t), this.status);
+    if (!v) return this.message(t, spinner(t), "Starting…");
     if (v.screen === "setup") return this.setup(t, v);
     if (v.screen === "no_search_dirs") return this.noSearchDirs(t, v);
     return this.picker(t, v);

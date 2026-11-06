@@ -213,9 +213,9 @@ pub fn command_to_action(command: Command, state: &AppState) -> Option<Action> {
         Command::MoveDown => Some(Action::MoveSelection(1)),
         Command::Open => match &state.mode {
             Mode::RepoSelect => Some(Action::OpenRepo),
-            Mode::BranchSelect(_) if state.branch_view.loading => None,
+            Mode::BranchSelect(_) if state.branch_view.is_loading() => None,
             Mode::BranchSelect(_)
-                if !state.branch_view.loading
+                if !state.branch_view.is_loading()
                     && !active_query(state).is_empty()
                     && state.branch_view.list.filtered.is_empty() =>
             {
@@ -246,8 +246,8 @@ pub fn command_to_action(command: Command, state: &AppState) -> Option<Action> {
             _ => Some(Action::Edit(TextEdit::Backspace)),
         },
         Command::NewBranch => (matches!(state.mode, Mode::BranchSelect(_))
-            && !state.branch_view.loading)
-            .then_some(Action::StartNewBranch),
+            && !state.branch_view.is_loading())
+        .then_some(Action::StartNewBranch),
         Command::Delete => {
             matches!(state.mode, Mode::BranchSelect(_)).then_some(Action::DeleteWorktree)
         }
@@ -514,7 +514,10 @@ mod tests {
         });
         state.branch_view.list.input.text = "feat/new".into();
         state.branch_view.list.filtered.clear();
-        state.branch_view.loading = true;
+        state.branch_view.set_load(
+            state.branch_view.generation(),
+            crate::state::BranchLoad::Loading { reselect: None },
+        );
         let keys = KeysConfig::default();
 
         assert_eq!(
@@ -530,7 +533,12 @@ mod tests {
             None
         );
 
-        state.branch_view.loading = false;
+        state.branch_view.set_load(
+            state.branch_view.generation(),
+            crate::state::BranchLoad::Ready {
+                fetching_remotes: false,
+            },
+        );
         assert_eq!(
             resolve_action(
                 key(KeyCode::Char('o'), KeyModifiers::CONTROL),

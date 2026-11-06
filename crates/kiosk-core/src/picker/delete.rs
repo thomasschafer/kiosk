@@ -8,12 +8,12 @@ use super::TickChanges;
 use crate::{
     backend::Backend,
     config::ConfigWarning,
-    event::{AppEvent, WorktreeRemovalOutcome},
+    event::{AppEvent, CloseGate, WorktreeRemovalOutcome},
     git::GitProvider,
     pending_delete::PendingWorktreeDelete,
     product::Product,
     spawn::{EventSender, spawn_worktree_removal},
-    state::{AppState, BranchContext, Mode, OpenCheckoutLoadState, ToastKind},
+    state::{AppState, BranchContext, Mode, OpenCheckouts, ToastKind},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,12 +102,7 @@ pub(crate) fn handle_event(
             worktree_path,
             gate,
         } => {
-            match clear_pending(state, &worktree_path) {
-                Ok(()) => gate.open(),
-                Err(error) => gate.hold(format!(
-                    "kiosk could not save that the removal finished: {error:#}"
-                )),
-            }
+            decide(gate, clear_pending(state, &worktree_path));
             return None;
         }
         AppEvent::WorktreeRemovalFinished {
@@ -159,6 +154,46 @@ pub(crate) fn handle_event(
         }
     }
     None
+}
+
+/// Does what [`handle_event`] does with a removal's saved record once the picker has
+/// stopped: forgets it when the removal has finished with it, as nothing else will.
+/// Anything else `event` says is no longer anyone's to show.
+pub(crate) fn settle_after_stop(event: AppEvent, product: &Product) {
+    match event {
+        AppEvent::CheckoutRemoved {
+            worktree_path,
+            gate,
+        } => decide(gate, forget_saved(product, &worktree_path)),
+        AppEvent::WorktreeRemovalFinished {
+            worktree_path,
+            outcome: WorktreeRemovalOutcome::Removed { .. } | WorktreeRemovalOutcome::Failed(_),
+            ..
+        } => {
+            if let Err(error) = forget_saved(product, &worktree_path) {
+                eprintln!(
+                    "{}: could not forget the finished removal of {}: {error:#}",
+                    product.name,
+                    crate::path::display(&worktree_path)
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Lets the removal close the checkout's session once its record is forgotten.
+fn decide(gate: CloseGate, forgotten: anyhow::Result<()>) {
+    match forgotten {
+        Ok(()) => gate.open(),
+        Err(error) => gate.hold(format!(
+            "kiosk could not save that the removal finished: {error:#}"
+        )),
+    }
+}
+
+fn forget_saved(product: &Product, worktree_path: &Path) -> anyhow::Result<()> {
+    update_saved(product, &without_worktree(worktree_path)).map(drop)
 }
 
 fn handle_dirty(
@@ -230,10 +265,7 @@ fn handle_removed(
             .map_or_else(|| "repository".into(), |entry| entry.repo.name.clone()),
     };
     state.mode = Mode::BranchSelect(context);
-    state.branch_view.loading = true;
-    state.branch_view.reset_remotes();
-    state.branch_view.open_checkouts.clear();
-    state.branch_view.open_checkout_load_state = OpenCheckoutLoadState::Unknown;
+    state.branch_view.begin_load(None);
     if let Some(branch) = state
         .branch_view
         .entries
@@ -309,25 +341,9 @@ pub(crate) fn confirm<B: Backend>(
     }
     let context = flow.context.clone();
     let mut target_snapshot = flow.target.clone();
-    match &state.branch_view.open_checkout_load_state {
-        OpenCheckoutLoadState::Loaded {
-            repo_path,
-            generation,
-        } if repo_path == &context.repo_path && *generation == state.branch_view.generation => {}
-        OpenCheckoutLoadState::Failed { .. } => {
-            state.push_toast(
-                ToastKind::Error,
-                "Cannot delete checkout because open checkout state could not be loaded",
-            );
-            return;
-        }
-        OpenCheckoutLoadState::Unknown | OpenCheckoutLoadState::Loaded { .. } => {
-            state.push_toast(
-                ToastKind::Error,
-                "Open checkout state is stale or still loading; deletion was not started",
-            );
-            return;
-        }
+    if let Err(message) = open_checkouts_known(state) {
+        state.push_toast(ToastKind::Error, message);
+        return;
     }
     // Open checkout state only loads with a backend, so it has been checked for above.
     let backend = backend.expect("open checkout state was loaded from a backend");
@@ -397,22 +413,13 @@ pub(crate) fn resume<B: Backend>(
     backend: Option<&Arc<B>>,
     sender: &EventSender,
 ) {
-    if state.branch_view.loading {
+    if state.branch_view.is_loading() || open_checkouts_known(state).is_err() {
         return;
     }
     let Mode::BranchSelect(context) = &state.mode else {
         return;
     };
     let repo_path = context.repo_path.clone();
-    if !matches!(
-        &state.branch_view.open_checkout_load_state,
-        OpenCheckoutLoadState::Loaded {
-            repo_path: loaded_repo,
-            generation,
-        } if loaded_repo == &repo_path && *generation == state.branch_view.generation
-    ) {
-        return;
-    }
     let backend = backend.expect("open checkout state was loaded from a backend");
     // Another picker may have finished or dropped a deletion since this one last looked.
     if let Err(error) = update_pending(state, |_| {}) {
@@ -519,19 +526,7 @@ pub(crate) fn selected_target(state: &AppState) -> Result<DeleteWorktreeTarget, 
     {
         return Err("Worktree deletion already in progress");
     }
-    match &state.branch_view.open_checkout_load_state {
-        OpenCheckoutLoadState::Loaded {
-            repo_path,
-            generation,
-        } if repo_path == &context.repo_path && *generation == state.branch_view.generation => {}
-        OpenCheckoutLoadState::Failed {
-            repo_path,
-            generation,
-        } if repo_path == &context.repo_path && *generation == state.branch_view.generation => {
-            return Err("Cannot delete checkout because open checkout state could not be loaded");
-        }
-        _ => return Err("Open checkout state is still loading; deletion is disabled"),
-    }
+    open_checkouts_known(state)?;
     Ok(DeleteWorktreeTarget {
         branch_name: branch.name.clone(),
         worktree_path,
@@ -539,6 +534,18 @@ pub(crate) fn selected_target(state: &AppState) -> Result<DeleteWorktreeTarget, 
         force: false,
         in_progress: false,
     })
+}
+
+/// Whether the backend's open checkouts are known for the branch list, as a removal needs
+/// them to say whether it closes a session too.
+fn open_checkouts_known(state: &AppState) -> Result<(), &'static str> {
+    match state.branch_view.open_checkouts() {
+        OpenCheckouts::Loaded(_) => Ok(()),
+        OpenCheckouts::Loading => Err("Open checkout state is still loading; deletion is disabled"),
+        OpenCheckouts::Failed => {
+            Err("Cannot delete checkout because open checkout state could not be loaded")
+        }
+    }
 }
 
 fn event_matches(

@@ -38,7 +38,12 @@ pub fn serve<B: Backend, E>(
         launch::Stage::Background => {
             let listening = launch::listen()?;
             listening.announce(&mut std::io::stdout().lock())?;
-            let accepted = listening.accept(launch::ACCEPT_TIMEOUT)?;
+            let Some(accepted) = listening.accept(launch::ACCEPT_TIMEOUT)? else {
+                // The frontend closed before it connected, or could not connect and has said
+                // so itself, so there is nothing to report.
+                launch::remove_log();
+                return Ok(());
+            };
             let connection = Connection::new(accepted.stream)?;
             let title = format!("{} stopped", product.name);
             let result = catch_unwind(AssertUnwindSafe(|| {

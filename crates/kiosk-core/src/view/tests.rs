@@ -9,8 +9,8 @@ use crate::{
     git::{GitProvider, Repo, ScanWarning, mock::MockGitProvider},
     keyboard::Action,
     picker::{
-        FilterWorker, Picker, RunOutcome, branch::OpenCheckoutLoadState,
-        new_branch::test_remote_prompt, process_action,
+        FilterWorker, Picker, RunOutcome, branch::OpenCheckouts, new_branch::test_remote_prompt,
+        process_action,
     },
     product::TEST_PRODUCT,
     spawn::EventSender,
@@ -350,13 +350,21 @@ fn rows_name_their_items_and_say_what_else_they_are() {
 #[test]
 fn branch_list_reports_loading_then_fetching() {
     let mut state = state_with_branches(Vec::new());
-    state.branch_view.loading = true;
+    state.branch_view.set_load(
+        state.branch_view.generation(),
+        BranchLoad::Loading { reselect: None },
+    );
     let view = picker(&mut state, &KeysConfig::default(), VIEWPORTS);
     assert_eq!(list(&view).activity, Some("loading"));
     assert_eq!(list(&view).empty.as_deref(), Some(LOADING_BRANCHES));
 
     let mut state = state_with_branches(vec![BranchEntry::local("main")]);
-    state.branch_view.fetching_remote_repo = Some("/repo".into());
+    state.branch_view.set_load(
+        state.branch_view.generation(),
+        BranchLoad::Ready {
+            fetching_remotes: true,
+        },
+    );
     let view = picker(&mut state, &KeysConfig::default(), VIEWPORTS);
     assert_eq!(list(&view).activity, Some("fetching"));
     assert_eq!(list(&view).empty, None);
@@ -931,10 +939,9 @@ fn linked(name: &str) -> BranchEntry {
 
 /// The branch list once it knows which checkouts are open, which removing one waits for.
 fn loaded(mut state: AppState) -> AppState {
-    state.branch_view.open_checkout_load_state = OpenCheckoutLoadState::Loaded {
-        repo_path: context().repo_path,
-        generation: state.branch_view.generation,
-    };
+    state
+        .branch_view
+        .set_open_checkouts(OpenCheckouts::Loaded(Vec::new()));
     state
 }
 

@@ -42,7 +42,8 @@ pub enum WorktreeRemovalOutcome {
 /// Holds back the closing of a removed checkout's session until the picker has forgotten
 /// the removal's pending record. Closing can end the picker (Rex closes the session the
 /// picker floats in), and a record left behind would resume the removal on a later
-/// checkout of the same branch at that path.
+/// checkout of the same branch at that path. A gate dropped undecided keeps the session
+/// open, as the record may still be saved.
 #[derive(Debug, Clone)]
 pub struct CloseGate(mpsc::SyncSender<Result<(), String>>);
 
@@ -56,6 +57,12 @@ impl CloseGate {
     /// Lets the removal close the session. Call only once the record is forgotten.
     pub(crate) fn open(self) {
         self.decide(Ok(()));
+    }
+
+    /// [`Self::open`], for tests that remove checkouts without a picker.
+    #[cfg(feature = "test-support")]
+    pub fn open_for_test(self) {
+        self.open();
     }
 
     /// Keeps the session open, as the record could not be forgotten, saying why.
@@ -112,14 +119,22 @@ pub enum AppEvent {
         generation: u64,
         message: String,
     },
+    /// One remote has been fetched, or fetching it failed, with its branches as they are
+    /// now.
     GitFetchCompleted {
-        remote: Option<String>,
+        remote: String,
         branches: Vec<BranchEntry>,
         repo_path: PathBuf,
         generation: u64,
         error: Option<String>,
-        is_final: bool,
         skipped_unsupported_refs: bool,
+    },
+    /// Every remote of a fetch has sent its [`AppEvent::GitFetchCompleted`], or the
+    /// remotes could not be listed, as `error` says.
+    GitFetchesFinished {
+        repo_path: PathBuf,
+        generation: u64,
+        error: Option<String>,
     },
     BranchNameValidated {
         repo_path: PathBuf,

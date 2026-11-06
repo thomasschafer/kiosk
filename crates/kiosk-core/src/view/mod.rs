@@ -16,7 +16,7 @@ use crate::{
     keymap::SCAN_WARNINGS_BINDING_MODE,
     picker::{delete::DeleteFlowState, match_positions, new_branch::BaseBranchSelection},
     state::{
-        AppState, BranchEntry, HelpOverlayState, Mode, Overlay, RemoteBranchChoice,
+        AppState, BranchEntry, BranchLoad, HelpOverlayState, Mode, Overlay, RemoteBranchChoice,
         RemoteBranchPrompt, RepoEntry, SearchableList, TextInput, Toast, ToastKind, scan_summary,
     },
 };
@@ -633,7 +633,7 @@ pub fn branch_list(state: &mut AppState, keys: &KeysConfig, viewport_rows: usize
         )
     });
     let query = Query::new(&view.list.input);
-    let empty = if view.loading {
+    let empty = if view.is_loading() {
         rows.is_empty().then(|| LOADING_BRANCHES.to_owned())
     } else {
         creates.map(|key| create_branch_message(&key, &search))
@@ -645,7 +645,7 @@ pub fn branch_list(state: &mut AppState, keys: &KeysConfig, viewport_rows: usize
         placeholder: BRANCH_PLACEHOLDER,
         query,
         summary: list_summary(view.list.filtered.len(), view.entries.len(), "branches"),
-        activity: branch_activity(view.loading, view.fetching_remote_repo.is_some()),
+        activity: branch_activity(view.load()),
         offset: view.list.scroll_offset,
         total: view.list.filtered.len(),
         rows,
@@ -665,7 +665,7 @@ fn main_checkout(state: &AppState) -> Option<std::path::PathBuf> {
 /// creates a branch of that name.
 fn creates_branch(state: &AppState, keys: &KeysConfig) -> Option<KeyChord> {
     let view = &state.branch_view;
-    (!view.loading && view.list.filtered.is_empty() && !view.list.input.text.is_empty())
+    (!view.is_loading() && view.list.filtered.is_empty() && !view.list.input.text.is_empty())
         .then(|| keys.first_key(BindingMode::Branch, Command::Open))
         .flatten()
 }
@@ -993,13 +993,15 @@ pub fn create_branch_message(open_key: &KeyChord, name: &str) -> String {
 }
 
 /// What the branch list is still waiting for: its branches, then remote fetches.
-pub const fn branch_activity(loading: bool, fetching: bool) -> Option<&'static str> {
-    if loading {
-        Some("loading")
-    } else if fetching {
-        Some("fetching")
-    } else {
-        None
+pub const fn branch_activity(load: &BranchLoad) -> Option<&'static str> {
+    match load {
+        BranchLoad::Loading { .. } => Some("loading"),
+        BranchLoad::Ready {
+            fetching_remotes: true,
+        } => Some("fetching"),
+        BranchLoad::Ready {
+            fetching_remotes: false,
+        } => None,
     }
 }
 

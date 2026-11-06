@@ -144,6 +144,34 @@ grep -q 'put the earlier install back' "$TEST_ROOT/out" || fail "unclear failure
 [[ -z $(cd "$home" && find . -maxdepth 1 -name '.herdr-app-kiosk-install.*') ]] || fail "the staging folder was left behind"
 rm "$home/mods/kiosk/earlier"
 
+printf 'test: an update the app rejects leaves the earlier install\n'
+rejecting_app=$TEST_ROOT/rejecting-app
+mkdir -p "$rejecting_app"
+cat >"$rejecting_app/herdr-app" <<'SH'
+#!/bin/sh
+echo "check failed: the mod does not load" >&2
+exit 1
+SH
+chmod +x "$rejecting_app/herdr-app"
+touch "$home/mods/kiosk/earlier"
+if PATH="$rejecting_app:$PATH" HERDR_APP_HOME=$home sh "$installer" --version "$VERSION" 2>"$TEST_ROOT/out"; then
+    fail "reported a rejected update as installed"
+fi
+grep -q 'so it was not kept' "$TEST_ROOT/out" || fail "unclear failure: $(cat "$TEST_ROOT/out")"
+grep -q 'put the earlier install back' "$TEST_ROOT/out" || fail "the earlier install was not put back: $(cat "$TEST_ROOT/out")"
+[[ -e $home/mods/kiosk/earlier ]] || fail "the earlier install was not put back"
+[[ -z $(cd "$home" && find . -maxdepth 1 -name '.herdr-app-kiosk-install.*') ]] || fail "the staging folder was left behind"
+rm "$home/mods/kiosk/earlier"
+
+printf 'test: a first install the app rejects is not kept\n'
+rejected_home=$TEST_ROOT/rejected-home
+if PATH="$rejecting_app:$PATH" HERDR_APP_HOME=$rejected_home sh "$installer" --version "$VERSION" 2>"$TEST_ROOT/out"; then
+    fail "reported a rejected install as installed"
+fi
+grep -q 'so it was not kept' "$TEST_ROOT/out" || fail "unclear failure: $(cat "$TEST_ROOT/out")"
+[[ ! -e $rejected_home/mods/kiosk ]] || fail "the rejected install was kept"
+[[ -z $(cd "$rejected_home" && find . -maxdepth 1 -name '.herdr-app-kiosk-install.*') ]] || fail "the staging folder was left behind"
+
 printf 'test: the app home follows XDG_CONFIG_HOME\n'
 env -u HERDR_APP_HOME XDG_CONFIG_HOME="$TEST_ROOT/xdg" sh "$installer" >/dev/null 2>&1
 assert_installed "$TEST_ROOT/xdg/herdr-app"

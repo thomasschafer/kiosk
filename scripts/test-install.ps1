@@ -180,6 +180,33 @@ server.serve_forever()
     Assert-True ($staging.Count -eq 0) "the staging folder was left behind"
     Remove-Item -LiteralPath $earlier
 
+    Write-Output "test: an update the app rejects leaves the earlier install"
+    $rejectingApp = Join-Path $testRoot "rejecting-app"
+    New-Item -ItemType Directory -Path $rejectingApp | Out-Null
+    New-FakeProgram $rejectingApp "herdr-app" "echo check failed: the mod does not load 1>&2`r`nexit /b 1" "echo 'check failed: the mod does not load' >&2`nexit 1"
+    $pathWithApp = $env:PATH
+    $env:PATH = "$rejectingApp$([IO.Path]::PathSeparator)$pathWithApp"
+    Set-Content -LiteralPath $earlier -Value ""
+    $run = Invoke-Installer @("-Version", $version)
+    Assert-True ($run.Code -ne 0) "reported a rejected update as installed: $($run.Output)"
+    Assert-True ($run.Output.Contains("so it was not kept")) "unclear failure: $($run.Output)"
+    Assert-True ($run.Output.Contains("put the earlier install back")) "the earlier install was not put back: $($run.Output)"
+    Assert-True (Test-Path -LiteralPath $earlier) "the earlier install was not put back"
+    $staging = @(Get-ChildItem -LiteralPath $home1 -Force -Filter ".herdr-app-kiosk-install-*")
+    Assert-True ($staging.Count -eq 0) "the staging folder was left behind"
+    Remove-Item -LiteralPath $earlier
+
+    Write-Output "test: a first install the app rejects is not kept"
+    $env:HERDR_APP_HOME = Join-Path $testRoot "rejected-home"
+    $run = Invoke-Installer @("-Version", $version)
+    Assert-True ($run.Code -ne 0) "reported a rejected install as installed: $($run.Output)"
+    Assert-True ($run.Output.Contains("so it was not kept")) "unclear failure: $($run.Output)"
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path (Join-Path $env:HERDR_APP_HOME "mods") "kiosk"))) "the rejected install was kept"
+    $staging = @(Get-ChildItem -LiteralPath $env:HERDR_APP_HOME -Force -Filter ".herdr-app-kiosk-install-*")
+    Assert-True ($staging.Count -eq 0) "the staging folder was left behind"
+    $env:PATH = $pathWithApp
+    $env:HERDR_APP_HOME = $home1
+
     Write-Output "test: the app home follows XDG_CONFIG_HOME"
     $env:HERDR_APP_HOME = $null
     $env:XDG_CONFIG_HOME = Join-Path $testRoot "xdg"

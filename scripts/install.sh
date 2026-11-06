@@ -191,12 +191,14 @@ if [ -e "$mod_dir" ]; then
     mv -- "$mod_dir" "$previous" || fail "could not move the installed $mod_dir aside; it is unchanged"
 fi
 mv -- "$staged" "$mod_dir" || fail "could not install $mod_dir"
+# An update the app can't load goes back out, so cleanup restores the earlier install.
+if command -v herdr-app >/dev/null 2>&1 &&
+    ! HERDR_APP_HOME=$app_home herdr-app check "$mod_dir" >&2; then
+    mv -- "$mod_dir" "$tmp/rejected" || fail "the app could not load $mod_dir, which could not be removed"
+    fail "the app could not load the new $mod_dir, so it was not kept"
+fi
 activated=true
 say "installed $mod_dir"
-
-if command -v herdr-app >/dev/null 2>&1; then
-    HERDR_APP_HOME=$app_home herdr-app check "$mod_dir" >&2 || fail "the app could not load $mod_dir"
-fi
 if [ "$(uname -s 2>/dev/null || true)" = Darwin ]; then
     shortcut=cmd-k
 else

@@ -218,22 +218,29 @@ try {
     catch {
         Stop-Install "could not install ${modDir}: $($_.Exception.Message)"
     }
-    $activated = $true
-    Write-Step "installed $modDir"
-
+    # An update the app can't load goes back out, so the earlier install is restored below.
     if (Get-Command herdr-app -ErrorAction SilentlyContinue) {
         $savedHome = $env:HERDR_APP_HOME
         try {
             $env:HERDR_APP_HOME = $appHome
             herdr-app check $modDir | ForEach-Object { [Console]::Error.WriteLine($_) }
-            if ($LASTEXITCODE -ne 0) {
-                Stop-Install "the app could not load $modDir"
-            }
+            $checked = $LASTEXITCODE -eq 0
         }
         finally {
             $env:HERDR_APP_HOME = $savedHome
         }
+        if (-not $checked) {
+            try {
+                Move-Item -LiteralPath $modDir -Destination (Join-Path $temporaryDirectory "rejected")
+            }
+            catch {
+                Stop-Install "the app could not load $modDir, which could not be removed: $($_.Exception.Message)"
+            }
+            Stop-Install "the app could not load the new $modDir, so it was not kept"
+        }
     }
+    $activated = $true
+    Write-Step "installed $modDir"
     Write-Step "bind a key to open it in $(Join-Path $appHome 'keys.json'), for example:"
     [Console]::Error.WriteLine('  { "global": { "ctrl-shift-r": "mod.open:kiosk" } }')
 }

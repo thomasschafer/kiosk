@@ -538,11 +538,16 @@ fn rows_in_view<T>(
     (rows, selected)
 }
 
-/// The repository list, scrolled so its selection is among its `viewport_rows` rows.
+/// The repository list, scrolled so its selection is among its `viewport_rows` rows. Until
+/// the person moves it, the selection is the repository they are in, which goes in the
+/// middle of the view so the repositories either side of it show too.
 pub fn repo_list(state: &mut AppState, viewport_rows: usize) -> ListView {
     let view = &mut state.repo_view;
     let annotations = &state.annotations;
     let query = view.list.input.text.clone();
+    if !view.selection_touched {
+        view.list.centre_scroll_offset(viewport_rows);
+    }
     let (rows, selected) = rows_in_view(&mut view.list, &view.entries, viewport_rows, |entry| {
         repo_row(entry, annotations, &query)
     });

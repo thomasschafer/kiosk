@@ -1,5 +1,6 @@
-/target
+/target/
 result
 result-*
 .direnv
 /logs
+gpui-kit.d.ts

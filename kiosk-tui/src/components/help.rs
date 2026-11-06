@@ -141,10 +141,9 @@ mod tests {
 
     #[test]
     fn overlay_uses_effective_lowercase_bindings_and_search_metadata() {
-        let keys = toml::from_str::<KeysConfig>(
-            "[branch_select]\n\"C-b\" = \"new_branch\"\n\"C-o\" = \"noop\"",
-        )
-        .unwrap();
+        let keys =
+            KeysConfig::from_toml("[branch_select]\n\"C-b\" = \"new_branch\"\n\"C-o\" = \"noop\"")
+                .unwrap();
         let overlay = HelpOverlayState::for_mode(&keys, BindingMode::Branch);
         let row = overlay
             .rows

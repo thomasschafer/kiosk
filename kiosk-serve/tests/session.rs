@@ -125,7 +125,7 @@ fn loaded(search_dir: &Path) -> LoadedConfig<NoExtension> {
     LoadedConfig {
         core: CoreConfig {
             search_dirs: vec![SearchDirEntry::Simple(search_dir.display().to_string())],
-            ..CoreConfig::default()
+            ..CoreConfig::for_product(&TEST_PRODUCT).unwrap()
         },
         extension: NoExtension {},
         path: None,
@@ -352,7 +352,7 @@ fn the_setup_wizard_writes_the_config_then_the_picker_starts() {
         };
         Start {
             loaded: LoadedConfig {
-                core: CoreConfig::default(),
+                core: CoreConfig::for_product(&TEST_PRODUCT).unwrap(),
                 extension: NoExtension {},
                 path: Some(start_config),
                 exists: false,
@@ -406,7 +406,7 @@ fn leaving_the_setup_wizard_quits_without_writing() {
     let start_config = config_path.clone();
     let (mut client, session, _) = connect(move || Start {
         loaded: LoadedConfig {
-            core: CoreConfig::default(),
+            core: CoreConfig::for_product(&TEST_PRODUCT).unwrap(),
             extension: NoExtension {},
             path: Some(start_config),
             exists: false,
@@ -427,7 +427,7 @@ fn leaving_the_setup_wizard_quits_without_writing() {
 fn a_config_without_search_directories_says_so_until_the_user_leaves() {
     let (mut client, session, _) = connect(|| Start {
         loaded: LoadedConfig {
-            core: CoreConfig::default(),
+            core: CoreConfig::for_product(&TEST_PRODUCT).unwrap(),
             extension: NoExtension {},
             path: Some("/config/kiosk.toml".into()),
             exists: true,

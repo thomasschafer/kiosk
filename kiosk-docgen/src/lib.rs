@@ -12,7 +12,13 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use kiosk_core::config::{ConfigExtension, CoreConfig, keys::default_keys_toml};
+use kiosk_core::{
+    config::{
+        ConfigExtension, CoreConfig,
+        keys::{Command, KeyLayer, KeysConfig, default_keys_toml},
+    },
+    product::Product,
+};
 use syn::{
     Attribute, Field, Fields, GenericArgument, Item, ItemEnum, ItemStruct, Meta, PathArguments,
     Type, parse_file,
@@ -24,6 +30,8 @@ const CORE_ROOT: &str = "CoreConfig";
 
 /// What a product adds to the shared reference.
 pub struct ProductDocs<'a> {
+    /// The product, whose defaults the reference shows.
+    pub product: &'a Product,
     /// The Rust source of the product's config types, including its extension.
     pub sources: &'a [&'a str],
     /// The product's extension struct. Its doc comment introduces the reference, so it
@@ -88,8 +96,9 @@ pub fn config_reference<E: ConfigExtension>(docs: &ProductDocs<'_>) -> Result<St
             docs.extension
         )
     })?;
-    let mut defaults = toml::Value::try_from(CoreConfig::default())
-        .context("failed to serialize CoreConfig::default() as TOML")?;
+    let core_defaults = CoreConfig::for_product(docs.product)?;
+    let mut defaults = toml::Value::try_from(&core_defaults)
+        .context("failed to serialize the default CoreConfig as TOML")?;
     let extension_defaults = toml::Value::try_from(E::default())
         .with_context(|| format!("failed to serialize the default {} as TOML", docs.extension))?;
     merge_tables(&mut defaults, extension_defaults)?;
@@ -123,7 +132,14 @@ pub fn config_reference<E: ConfigExtension>(docs: &ProductDocs<'_>) -> Result<St
         let field = fields
             .get(*name)
             .with_context(|| format!("the section order names unknown section `{name}`"))?;
-        render_config_field(&mut output, field, &model, &defaults, docs.examples)?;
+        render_config_field(
+            &mut output,
+            field,
+            &model,
+            &defaults,
+            &core_defaults.keys,
+            docs.examples,
+        )?;
     }
     model.check_wording_used()?;
     Ok(output)
@@ -146,6 +162,7 @@ fn render_config_field(
     field: &Field,
     model: &ConfigModel,
     defaults: &toml::Value,
+    keys: &KeysConfig,
     examples: &[(&str, &str)],
 ) -> Result<()> {
     let name = field_name(field)?;
@@ -160,7 +177,7 @@ fn render_config_field(
 
         match type_name.as_str() {
             "ThemeConfig" => render_theme(docs, nested, model, default)?,
-            "KeysConfig" => render_keys(docs),
+            "KeysConfig" => render_keys(docs, keys)?,
             _ => {
                 push_distinct_doc(docs, &field_doc, &model.doc(&nested.attrs, &type_name)?);
                 render_curated_example(docs, &name, examples);
@@ -268,14 +285,35 @@ fn render_collection_schema(docs: &mut String, field: &Field, model: &ConfigMode
     Ok(())
 }
 
-fn render_keys(docs: &mut String) {
+fn render_keys(docs: &mut String, keys: &KeysConfig) -> Result<()> {
     docs.push_str("Assign a key to `\"noop\"` to unbind an inherited mapping.\n\n");
     docs.push_str(
         "Write chords with lowercase `ctrl+`, `alt+`, and `shift+` modifiers followed by a character or a named key such as `enter`, `esc`, `tab`, `backspace`, `delete`, an arrow, `home`, `end`, `pageup`, `pagedown`, or `space`.\n\n",
     );
-    docs.push_str("Defaults:\n\n");
-    docs.push_str(&default_keys_toml());
+    docs.push_str("Each section accepts these actions:\n\n");
+    let mut actions: Vec<Command> = Vec::new();
+    for layer in KeyLayer::ALL {
+        let names = layer
+            .allowed()
+            .iter()
+            .map(|command| format!("`{}`", command.name()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        writeln!(docs, "- `[keys.{}]`: {names}", layer.name())?;
+        for command in layer.allowed() {
+            if !actions.contains(command) {
+                actions.push(*command);
+            }
+        }
+    }
+    docs.push_str("\nWhat each action does:\n\n");
+    for command in actions {
+        writeln!(docs, "- `{}` — {}", command.name(), command.description())?;
+    }
+    docs.push_str("\nDefaults:\n\n");
+    docs.push_str(&default_keys_toml(keys));
     docs.push('\n');
+    Ok(())
 }
 
 fn render_theme(
@@ -524,7 +562,7 @@ impl<'a> ConfigModel<'a> {
 
 #[cfg(test)]
 mod tests {
-    use kiosk_core::config::NoExtension;
+    use kiosk_core::{config::NoExtension, product::TEST_PRODUCT};
     use serde::{Deserialize, Serialize};
 
     use super::*;
@@ -553,6 +591,7 @@ pub struct TestExtension {
 
     fn docs<'a>(order: &'a [&'a str]) -> ProductDocs<'a> {
         ProductDocs {
+            product: &TEST_PRODUCT,
             sources: &[EXTENSION],
             extension: "TestExtension",
             order,
@@ -588,6 +627,7 @@ pub struct TestExtension {
         let sources: &[&str] =
             &["/// Read from the bare product's config file.\npub struct NoExtension {}"];
         let reference = config_reference::<NoExtension>(&ProductDocs {
+            product: &TEST_PRODUCT,
             sources,
             extension: "NoExtension",
             order: &["search_dirs", "include_non_git", "keys"],
@@ -623,6 +663,7 @@ pub struct OnOpenExtension {
 
     fn on_open_reference(wording: &[(&str, &str)]) -> Result<String> {
         config_reference::<OnOpenExtension>(&ProductDocs {
+            product: &TEST_PRODUCT,
             sources: &[ON_OPEN_EXTENSION],
             extension: "OnOpenExtension",
             order: &["search_dirs", "include_non_git", "on_open", "keys"],

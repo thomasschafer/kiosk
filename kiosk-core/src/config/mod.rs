@@ -148,7 +148,7 @@ impl Default for ThemeConfig {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(default)]
 /// The settings every kiosk product shares. Products add their own sections through a
 /// [`ConfigExtension`].
@@ -164,6 +164,26 @@ pub struct CoreConfig {
     pub include_non_git: bool,
     /// Customize key bindings grouped by where they are active.
     pub keys: KeysConfig,
+}
+
+/// [`CoreConfig`] as written. Its keys only become bindings over the defaults of the
+/// product that reads them.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct RawCoreConfig {
+    search_dirs: Vec<SearchDirEntry>,
+    include_non_git: bool,
+    keys: keys::RawKeysConfig,
+}
+
+impl RawCoreConfig {
+    fn resolve(self, product: &Product) -> Result<CoreConfig> {
+        Ok(CoreConfig {
+            search_dirs: self.search_dirs,
+            include_non_git: self.include_non_git,
+            keys: KeysConfig::from_raw(self.keys, product).map_err(anyhow::Error::msg)?,
+        })
+    }
 }
 
 /// A product's own top-level config sections, read from the same file as
@@ -186,6 +206,11 @@ impl ConfigExtension for NoExtension {
 }
 
 impl CoreConfig {
+    /// The settings `product` has before its config file sets any.
+    pub fn for_product(product: &Product) -> Result<Self> {
+        RawCoreConfig::default().resolve(product)
+    }
+
     pub fn resolved_search_dirs_with(
         &self,
         home: Option<&Path>,
@@ -415,9 +440,11 @@ fn top_level_key(path: &serde_ignored::Path<'_>) -> Option<String> {
 /// each ignores the other's sections. A key is unknown when it belongs to neither: its
 /// top-level section was ignored as a whole by the other part.
 pub fn parse_config<E: ConfigExtension>(
+    product: &Product,
     contents: &str,
 ) -> Result<(CoreConfig, E, Vec<ConfigWarning>)> {
-    let (core, core_ignored) = parse_part::<CoreConfig>(contents)?;
+    let (core, core_ignored) = parse_part::<RawCoreConfig>(contents)?;
+    let core = core.resolve(product).context("invalid [keys]")?;
     let (extension, extension_ignored) = parse_part::<E>(contents)?;
     validate_core(&core)?;
     extension.validate()?;
@@ -459,24 +486,26 @@ pub fn load_config_with<E: ConfigExtension>(
     read_file: impl Fn(&Path) -> io::Result<Option<String>>,
 ) -> Result<LoadedConfig<E>> {
     let resolution = resolve_config_path(product, get_env);
-    let missing = |path| LoadedConfig {
-        core: CoreConfig::default(),
-        extension: E::default(),
-        path,
-        exists: false,
-        warnings: resolution.warnings.clone(),
+    let missing = |path| -> Result<LoadedConfig<E>> {
+        Ok(LoadedConfig {
+            core: CoreConfig::for_product(product)?,
+            extension: E::default(),
+            path,
+            exists: false,
+            warnings: resolution.warnings.clone(),
+        })
     };
     let Some(path) = resolution.path.clone() else {
-        return Ok(missing(None));
+        return missing(None);
     };
     let Some(contents) =
         read_file(&path).with_context(|| format!("failed to read config {}", path.display()))?
     else {
-        return Ok(missing(Some(path)));
+        return missing(Some(path));
     };
 
     let (core, extension, mut parse_warnings) =
-        parse_config::<E>(&contents).with_context(|| format!("in {}", path.display()))?;
+        parse_config::<E>(product, &contents).with_context(|| format!("in {}", path.display()))?;
     let mut warnings = resolution.warnings;
     warnings.append(&mut parse_warnings);
     Ok(LoadedConfig {
@@ -556,25 +585,29 @@ mod tests {
     }
 
     fn parse(contents: &str) -> Result<(CoreConfig, Vec<ConfigWarning>)> {
-        parse_config::<TestExtension>(contents).map(|(core, _, warnings)| (core, warnings))
+        parse_config::<TestExtension>(&TEST_PRODUCT, contents)
+            .map(|(core, _, warnings)| (core, warnings))
     }
 
     #[test]
     fn extension_sections_are_read_beside_the_core_ones_and_validated() {
-        let (core, extension, warnings) =
-            parse_config::<TestExtension>("search_dirs = [\"/repos\"]\n[extra]\nlevel = 2\n")
-                .unwrap();
+        let (core, extension, warnings) = parse_config::<TestExtension>(
+            &TEST_PRODUCT,
+            "search_dirs = [\"/repos\"]\n[extra]\nlevel = 2\n",
+        )
+        .unwrap();
         assert_eq!(warnings, vec![]);
         assert_eq!(core.search_dirs, [SearchDirEntry::Simple("/repos".into())]);
         assert_eq!(extension.extra.level, 2);
 
-        let error = parse_config::<TestExtension>("[extra]\nlevel = 9").unwrap_err();
+        let error = parse_config::<TestExtension>(&TEST_PRODUCT, "[extra]\nlevel = 9").unwrap_err();
         assert!(format!("{error:#}").contains("at most 3"), "{error:#}");
     }
 
     #[test]
     fn unknown_keys_are_reported_once_whichever_part_they_sit_under() {
         let (_, _, warnings) = parse_config::<TestExtension>(
+            &TEST_PRODUCT,
             "future = 1\n[keys.general]\n[extra]\nlevel = 1\nfuture_extra = 1\n[later]\nx = 1\n",
         )
         .unwrap();
@@ -591,7 +624,8 @@ mod tests {
 
     #[test]
     fn a_product_without_an_extension_reports_extension_sections_as_unknown() {
-        let (_, _, warnings) = parse_config::<NoExtension>("[extra]\nlevel = 1").unwrap();
+        let (_, _, warnings) =
+            parse_config::<NoExtension>(&TEST_PRODUCT, "[extra]\nlevel = 1").unwrap();
         assert_eq!(
             warnings,
             [ConfigWarning {
@@ -602,8 +636,11 @@ mod tests {
 
     #[test]
     fn type_errors_keep_their_position_in_the_file() {
-        let error =
-            parse_config::<TestExtension>("search_dirs = []\n[extra]\nlevel = \"x\"").unwrap_err();
+        let error = parse_config::<TestExtension>(
+            &TEST_PRODUCT,
+            "search_dirs = []\n[extra]\nlevel = \"x\"",
+        )
+        .unwrap_err();
         assert!(format!("{error:#}").contains("line 3"), "{error:#}");
     }
 

@@ -241,6 +241,10 @@ pub fn command_to_action(command: Command, state: &AppState) -> Option<Action> {
             | Mode::ConfirmWorktreeDelete(_) => Some(Action::CancelOverlay),
             _ => None,
         },
+        Command::BackspaceOrBack => match state.mode {
+            Mode::BranchSelect(_) if active_query(state).is_empty() => Some(Action::BackToRepos),
+            _ => Some(Action::Edit(TextEdit::Backspace)),
+        },
         Command::NewBranch => (matches!(state.mode, Mode::BranchSelect(_))
             && !state.branch_view.loading)
             .then_some(Action::StartNewBranch),
@@ -328,7 +332,7 @@ mod tests {
     #[test]
     fn configured_command_letters_still_precede_text_insertion() {
         let state = AppState::new(&TEST_PRODUCT, None);
-        let keys = toml::from_str::<KeysConfig>("[repo_select]\nx = \"branches_view\"").unwrap();
+        let keys = KeysConfig::from_toml("[repo_select]\nx = \"branches_view\"").unwrap();
         assert_eq!(
             resolve_action(key(KeyCode::Char('x'), KeyModifiers::NONE), &state, &keys),
             Some(Action::OpenBranches)
@@ -362,7 +366,7 @@ mod tests {
             ),
             Some(Action::Edit(TextEdit::Clear))
         );
-        let keys = toml::from_str::<KeysConfig>("[modal]\nbackspace = \"noop\"").unwrap();
+        let keys = KeysConfig::from_toml("[modal]\nbackspace = \"noop\"").unwrap();
         assert_eq!(
             resolve_action(key(KeyCode::Backspace, KeyModifiers::NONE), &state, &keys),
             None,
@@ -474,7 +478,7 @@ mod tests {
             "a search can start with q"
         );
 
-        let keys = toml::from_str::<KeysConfig>("[repo_select]\nq = \"quit\"").unwrap();
+        let keys = KeysConfig::from_toml("[repo_select]\nq = \"quit\"").unwrap();
         assert_eq!(resolve_action(q, &state, &keys), Some(Action::Quit));
         state.repo_view.list.input.text = "a".into();
         assert_eq!(resolve_action(q, &state, &keys), Some(Action::Insert('q')));
@@ -493,7 +497,7 @@ mod tests {
             resolve_action(chord, &state, &KeysConfig::default()),
             Some(Action::DeleteWorktree)
         );
-        let keys = toml::from_str::<KeysConfig>("[general]\n\"C-g\" = \"dismiss_toast\"").unwrap();
+        let keys = KeysConfig::from_toml("[general]\n\"C-g\" = \"dismiss_toast\"").unwrap();
         let ctrl_g = key(KeyCode::Char('g'), KeyModifiers::CONTROL);
         assert_eq!(
             resolve_action(ctrl_g, &state, &keys),
@@ -686,7 +690,7 @@ mod tests {
             }],
             list: SearchableList::new(1),
         }));
-        let keys = toml::from_str::<KeysConfig>("[repo_select]\nq = \"quit\"").unwrap();
+        let keys = KeysConfig::from_toml("[repo_select]\nq = \"quit\"").unwrap();
         assert_eq!(
             resolve_action(key(KeyCode::Char('q'), KeyModifiers::NONE), &state, &keys),
             Some(Action::Insert('q'))
@@ -726,10 +730,9 @@ mod tests {
             Some(Action::ShowScanWarnings)
         );
 
-        let keys = toml::from_str::<KeysConfig>(
-            "[general]\n\"C-s\" = \"noop\"\n\"C-g\" = \"scan_warnings\"",
-        )
-        .unwrap();
+        let keys =
+            KeysConfig::from_toml("[general]\n\"C-s\" = \"noop\"\n\"C-g\" = \"scan_warnings\"")
+                .unwrap();
         assert_eq!(resolve_action(ctrl_s, &state, &keys), None);
         assert_eq!(
             resolve_action(
@@ -784,7 +787,7 @@ mod tests {
             path: "/locked".into(),
             message: "denied".into(),
         });
-        let keys = toml::from_str::<KeysConfig>("[modal]\n\"C-s\" = \"back\"").unwrap();
+        let keys = KeysConfig::from_toml("[modal]\n\"C-s\" = \"back\"").unwrap();
         let ctrl_s = key(KeyCode::Char('s'), KeyModifiers::CONTROL);
         assert_eq!(
             resolve_action(ctrl_s, &state, &keys),
@@ -794,6 +797,32 @@ mod tests {
         assert_eq!(
             resolve_action(ctrl_s, &state, &keys),
             Some(Action::CloseOverlay)
+        );
+    }
+
+    #[test]
+    fn backspace_or_back_leaves_an_empty_branch_search_for_the_repositories() {
+        let keys =
+            KeysConfig::from_toml("[branch_select]\nbackspace = \"backspace_or_back\"").unwrap();
+        let backspace = key(KeyCode::Backspace, KeyModifiers::NONE);
+        let mut state = AppState::new(&TEST_PRODUCT, None);
+        state.mode = Mode::BranchSelect(BranchContext {
+            repo_path: "/repo".into(),
+            repo_name: "repo".into(),
+        });
+        assert_eq!(
+            resolve_action(backspace, &state, &keys),
+            Some(Action::BackToRepos)
+        );
+        assert_eq!(
+            resolve_action(backspace, &state, &KeysConfig::default()),
+            Some(Action::Edit(TextEdit::Backspace)),
+            "without the binding, backspace only deletes"
+        );
+        state.branch_view.list.input.text = "feat".into();
+        assert_eq!(
+            resolve_action(backspace, &state, &keys),
+            Some(Action::Edit(TextEdit::Backspace))
         );
     }
 }

@@ -12,6 +12,7 @@
 #   sandbox shot [file]            the window's last frame
 #   sandbox trace                  every message kiosk sent and received this session
 #   sandbox do|status|ls ...       herdr-app against the sandbox window
+#   sandbox hc ...                 herdr-core against the sandbox's terminals
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -159,5 +160,6 @@ case ${1:-} in
   shot) herdr-app shot "${2:-$root/shot.png}" ;;
   trace) cat "$KIOSK_SERVE_TRACE" ;;
   do | status | ls | check) exec herdr-app "$@" ;;
+  hc) shift; exec hc "$@" ;;
   *) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

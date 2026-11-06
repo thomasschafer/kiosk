@@ -39,6 +39,14 @@ wait_view ".main.query.before == \"infr\" and ($rows == [\"infra\"])"
 sb key alt+BackSpace
 wait_view '.main.query.before == "" and .main.total == 23'
 
+check "space is typed into the search rather than closing the popup"
+sb type 'service 0'
+wait_view '.main.query.before == "service 0"'
+sleep 0.5
+[[ " $(open_overlays) " == *" kiosk "* ]] || fail "space closed the popup"
+sb key ctrl+u
+wait_view '.main.query.before == ""'
+
 check "the wheel scrolls the list and the selection stays on screen"
 sb move 600 400
 sb wheel down 6
@@ -48,6 +56,16 @@ check "help opens over the picker and Esc closes only the help"
 sb key ctrl+h
 wait_view '.overlay.kind == "help"'
 sb shot "$shots/help.png" >/dev/null
+
+check "down in help moves to another command each time, and help keeps its length"
+selected='.overlay.entries[.overlay.selected].command'
+length=$(last_view | jq '.overlay.entries | length')
+for _ in $(seq 10); do
+  command=$(last_view | jq -r "$selected")
+  sb key Down
+  wait_view "$selected != \"$command\" and (.overlay.entries | length) == $length"
+done
+sb shot "$shots/help-scrolled.png" >/dev/null
 sb key Escape
 wait_view '.overlay == null'
 [[ " $(open_overlays) " == *" kiosk "* ]] || fail "Esc closed the popup"
@@ -165,6 +183,37 @@ sb click 640 650
 wait_closed
 for _ in $(seq 50); do pgrep -x herdr-app-kiosk >/dev/null || break; sleep 0.1; done
 ! pgrep -x herdr-app-kiosk >/dev/null || fail "a picker outlived its popup"
+
+check "kiosk opens with the repository it is in centred, then scrolls as usual"
+# service-08 is the 14th of 23 repositories, with 10 rows in view: offset 8 centres it,
+# where scrolling it just into view would leave it on the bottom row (offset 4).
+# The app tells mods a terminal's folder once its shell reports it (OSC 7), which the
+# sandbox's sh doesn't do by itself, so the new space's shell reports it here.
+# The marker is printed as osc7-2 but typed as osc7-$((1 + 1)), so only the output matches.
+folder=$HOME/code/service-08
+sb "do" space.new "$(jq -cn --arg folder "$folder" '{folder: $folder}')" >/dev/null
+terminal=
+for _ in $(seq 100); do
+  terminal=$(sb hc ls | jq -r --arg folder "$folder" '[.terminals[] | select(.cwd == $folder) | .address] | last // empty')
+  [[ -n $terminal ]] && break
+  sleep 0.1
+done
+[[ -n $terminal ]] || fail "no terminal in $folder"
+# shellcheck disable=SC2016
+sb hc send "$terminal" 'printf "\033]7;file://%s%s\033\\" "$(hostname)" "$PWD"; echo "osc7-$((1 + 1))"' >/dev/null
+reported=false
+for _ in $(seq 100); do
+  if sb hc read "$terminal" | grep -qx 'osc7-2'; then reported=true; break; fi
+  sleep 0.1
+done
+$reported || fail "the shell in $folder never reported its folder"
+open_kiosk
+wait_view '.main.total == 23 and .main.offset == 8 and .main.rows[.main.selected].name.text == "service-08"'
+sb shot "$shots/centred.png" >/dev/null
+sb key Down
+wait_view '.main.rows[.main.selected].name.text == "service-09" and .main.offset == 8'
+sb key Escape
+wait_closed
 
 check "without a config, the setup wizard writes one and the picker starts"
 rm "$HOME/.config/herdr-app-kiosk/config.toml"

@@ -180,7 +180,7 @@ checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 
 [[package]]
 name = "herdr-app-kiosk"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "kiosk-core",
@@ -209,9 +209,9 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "kiosk-core"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bda8a3023765831917feae4cd95272c718241822394ebcf37de29ec00502c21e"
+checksum = "1ff2a5b501e28d596a2c67d1d23d2b2ec9c3c55488d061f0e4daed4648d0a63c"
 dependencies = [
  "anyhow",
  "crossterm",
@@ -227,9 +227,9 @@ dependencies = [
 
 [[package]]
 name = "kiosk-docgen"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8965956ab287929f86686cc741f904b086e18d31f225747d9c18d85a75ca19eb"
+checksum = "415b18820797e863b7b27295ef6bb1c9336abd9bc904354ec97b43e0369e9ee1"
 dependencies = [
  "anyhow",
  "kiosk-core",
@@ -239,9 +239,9 @@ dependencies = [
 
 [[package]]
 name = "kiosk-serve"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "13fed23fbf447c338d4e1a2aafc1ca7c77f5e79dcf63e3183e81d005bbbe88f4"
+checksum = "0a273d276cc3ba94b5c5bfdac20592a6a765decf02a183a3418b03eef1e9642a"
 dependencies = [
  "anyhow",
  "crossterm",

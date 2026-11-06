@@ -20,10 +20,10 @@ import net from "net";
 const MOD_DIR = "mods/kiosk";
 const TITLE = "Kiosk";
 // The release of herdr-app-kiosk this mod comes from, whose binary it runs.
-const VERSION = "0.2.0";
+const VERSION = "0.3.0";
 const REPOSITORY = "github.com/thomasschafer/herdr-app-kiosk";
 // The protocol this mod speaks; the picker refuses a different one.
-const PROTOCOL = 2;
+const PROTOCOL = 3;
 
 // The dialog's share of the window, as mod.json opens it. Kiosk draws its own panel inside
 // it (mod.json's frame is none): hung from the top, and as tall as what it shows, so a short
@@ -46,6 +46,8 @@ const ROW = 34;
 const MAX_ROWS = 10;
 const EMPTY = 116;
 const HELP_ROW = 28;
+// The line over help saying a notification is in front of its keys.
+const NOTICE = 26;
 const WARNING_ROW = 48;
 const BAR = 52;
 const TITLE_BAR = 48;
@@ -208,7 +210,7 @@ function viewportFor(height, toast) {
   return {
     list: fit(list, ROW, 1, MAX_ROWS),
     bases: fit(panel - TALL_TITLE_BAR - BORDER - BAR - BORDER - 2 * PAD - BORDER - BUTTON_FOOTER, ROW, 3, 8),
-    help: fit(panel - TITLE_BAR - BORDER - BAR - BORDER - 2 * PAD, HELP_ROW, 4, 18),
+    help: fit(panel - TITLE_BAR - BORDER - BAR - BORDER - (toast ? NOTICE : 0) - 2 * PAD, HELP_ROW, 4, 18),
     scan_warnings: fit(panel - TITLE_BAR - BORDER - 2 * PAD - BORDER - FOOTER, WARNING_ROW, 2, 8),
   };
 }
@@ -289,7 +291,7 @@ function keycap(t, label) {
 // The picker's key hints. Leaving is always the last thing a person needs, so its `quit`
 // reads as closing.
 function hints(t, list) {
-  return h_flex().flex_wrap().gap_x(18).gap(4).items_center().text_size(12).text_color(t.muted)
+  return h_flex().flex_wrap().gap_x(18).gap_y(4).items_center().text_size(12).text_color(t.muted)
     .children(list.map((h) => h_flex().gap(5).items_center().child(keycap(t, h.key)).child(h.label === "quit" ? "close" : h.label)));
 }
 
@@ -377,27 +379,6 @@ function divider(t) {
 
 function heading(t, text, size = 15) {
   return div().text_size(size).font_semibold().text_color(t.foreground).child(text);
-}
-
-// The help entries in view with each command's keys on one row, as a shortcuts list reads.
-function helpRows(h) {
-  const rows = [];
-  h.entries.forEach((entry, i) => {
-    const previous = rows[rows.length - 1];
-    if (entry.kind !== "binding") {
-      rows.push(entry);
-    } else if (previous?.kind === "binding" && previous.command === entry.command) {
-      previous.keys.push(entry.key);
-      previous.positions.push(entry.position);
-      previous.ids.push(entry.id);
-      previous.selected ||= i === h.selected;
-    } else {
-      rows.push({ ...entry, keys: [entry.key], positions: [entry.position], ids: [entry.id], selected: i === h.selected });
-    }
-  });
-  // A blank line only separates sections; at the end, the next section is out of view.
-  while (rows.length && rows[rows.length - 1].kind === "blank") rows.pop();
-  return rows;
 }
 
 export default class Kiosk extends View {
@@ -823,8 +804,8 @@ export default class Kiosk extends View {
   }
 
   help(t, h) {
-    // As tall as its rows, which are fewer than the picker's entries where keys group.
-    const rows = helpRows(h);
+    // The picker sends as many entries as fit, so the list keeps its height as it scrolls.
+    const height = h.empty ? EMPTY : Math.min(this.rows("help"), h.total) * HELP_ROW;
     // The picker names the key that closes help only in its summary.
     const closing = /^(.*) \((\S+): close\)$/.exec(h.summary);
     return panel(t, "kiosk-dialog")
@@ -833,20 +814,21 @@ export default class Kiosk extends View {
         .child(div().text_size(12).text_color(t.dim).child(closing ? closing[1] : h.summary))
         .when(!!closing, (el) => el.child(hints(t, [{ key: closing[2], label: "quit" }])))))
       .child(divider(t))
-      .when(!!h.notice, (el) => el.child(div().px(EDGE).pt(10).text_size(12).text_color(t.muted).child(h.notice)))
+      .when(!!h.notice, (el) => el.child(div().h(NOTICE).flex_none().px(EDGE).flex().items_end().text_size(12).text_color(t.muted).child(h.notice)))
       .child(
-        v_flex().id("kiosk-help").p(PAD).flex_none().relative().overflow_hidden()
+        v_flex().id("kiosk-help").p(PAD).h(height + 2 * PAD).flex_none().relative().overflow_hidden()
           .on_scroll_wheel((e, cx) => this.scroll(e, cx))
-          .when(h.total > h.entries.length, (el) => el.child(this.thumb(t, h.offset, h.entries.length, h.total, rows.length * HELP_ROW, PAD)))
+          .when(h.total > h.entries.length, (el) => el.child(this.thumb(t, h.offset, h.entries.length, h.total, height, PAD)))
           .when(!!h.empty, (el) => el.child(div().h(EMPTY).flex().items_center().justify_center().text_color(t.muted).child(h.empty)))
-          .children(rows.map((entry) => {
+          .children(h.entries.map((entry, i) => {
             const line = h_flex().h(HELP_ROW).flex_none().items_center().px(INSET);
             if (entry.kind === "section") return line.items_end().pb(4).text_size(11).font_semibold().text_color(t.dim).child(entry.name.toUpperCase());
             if (entry.kind === "blank") return line.h(HELP_ROW / 2);
-            return line.id(`kiosk-help-${entry.positions[0]}`).gap(12).rounded(7).cursor_pointer()
-              .when(entry.selected, (el) => el.bg(selectedFill(t)))
-              .when(!entry.selected, (el) => el.hover((s) => s.bg(t.hover)))
-              .on_click(() => this.send({ t: "activate", position: entry.positions[0], id: entry.ids[0] }))
+            const selected = i === h.selected;
+            return line.id(`kiosk-help-${entry.position}`).gap(12).rounded(7).cursor_pointer()
+              .when(selected, (el) => el.bg(selectedFill(t)))
+              .when(!selected, (el) => el.hover((s) => s.bg(t.hover)))
+              .on_click(() => this.send({ t: "activate", position: entry.position, id: entry.id }))
               .child(div().flex_1().min_w(0).truncate().text_size(13).child(entry.description))
               .child(h_flex().flex_none().gap(4).justify_end().children(entry.keys.map((k) => keycap(t, k))));
           })),

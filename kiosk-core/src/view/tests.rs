@@ -732,12 +732,46 @@ fn help_lists_bindings_under_section_headings_with_gaps_between() {
     assert_eq!(help.title, HELP_TITLE);
     assert_eq!(help.placeholder, HELP_PLACEHOLDER);
     assert_eq!(help.notice, None);
-    assert_eq!(help.summary, format!("{bindings} bindings (esc: close)"));
+    assert_eq!(help.summary, format!("{bindings} commands (esc: close)"));
     assert_eq!(help.entries.len(), VIEWPORTS.help);
     assert_eq!(help.entries[..2], entries[..2]);
     assert_eq!(help.selected, Some(1));
     assert_eq!((help.offset, help.total), (0, entries.len()));
     assert_eq!(help.empty, None);
+}
+
+#[test]
+fn help_lists_each_command_once_with_all_its_keys_so_each_move_changes_command() {
+    let mut state = help_state(false);
+    let Some(Overlay::Help(overlay)) = &mut state.overlay else {
+        unreachable!()
+    };
+    let move_down = overlay
+        .rows
+        .iter()
+        .find(|row| row.command_name == "move_down")
+        .unwrap();
+    assert_eq!(move_down.keys, ["↓", "ctrl+n"]);
+    let mut seen = std::collections::HashSet::new();
+    for row in &overlay.rows {
+        assert!(!row.keys.is_empty(), "{row:?}");
+        assert!(
+            seen.insert((row.section_name, row.command_name)),
+            "{row:?} is listed twice"
+        );
+    }
+
+    let mut previous = None;
+    for _ in 0..overlay.rows.len() - 1 {
+        let entries = help_entries(overlay);
+        let selected = scroll_help(overlay, &entries, VIEWPORTS.help).unwrap();
+        let HelpEntry::Binding { command, .. } = &entries[selected] else {
+            panic!("selected {:?}", entries[selected]);
+        };
+        assert_ne!(previous, Some(*command));
+        previous = Some(*command);
+        overlay.list.move_selection(1);
+    }
 }
 
 #[test]
@@ -778,7 +812,7 @@ fn help_says_when_nothing_matches() {
     assert_eq!(help.empty, Some(NO_MATCHING_BINDINGS));
     assert_eq!(help.entries, Vec::<HelpEntry>::new());
     assert_eq!(help.selected, None);
-    assert_eq!(help.summary, "0 bindings (esc: close)");
+    assert_eq!(help.summary, "0 commands (esc: close)");
 }
 
 #[test]

@@ -680,7 +680,7 @@ mod tests {
         state.overlay = Some(Overlay::Help(HelpOverlayState {
             rows: vec![HelpBindingRow {
                 section_name: "general",
-                key_display: "ctrl+h".into(),
+                keys: vec!["ctrl+h".into()],
                 command_name: "help",
                 description: "Show active key bindings",
             }],

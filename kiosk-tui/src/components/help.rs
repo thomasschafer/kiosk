@@ -19,6 +19,17 @@ fn items(entries: &[HelpEntry], theme: &Theme) -> Vec<ListItem<'static>> {
             theme.style(Tone::Muted).add_modifier(Modifier::ITALIC),
         ))];
     }
+    let keys = |keys: &[String]| keys.join(", ");
+    // Descriptions line up after the longest keys, and after 14 columns at least.
+    let keys_width = entries
+        .iter()
+        .filter_map(|entry| match entry {
+            HelpEntry::Binding { keys: bound, .. } => Some(keys(bound).chars().count()),
+            HelpEntry::Section { .. } | HelpEntry::Blank => None,
+        })
+        .max()
+        .unwrap_or_default()
+        .max(14);
     entries
         .iter()
         .map(|entry| match entry {
@@ -28,13 +39,13 @@ fn items(entries: &[HelpEntry], theme: &Theme) -> Vec<ListItem<'static>> {
             )),
             HelpEntry::Blank => ListItem::new(""),
             HelpEntry::Binding {
-                key,
+                keys: bound,
                 description,
                 command,
                 ..
             } => ListItem::new(Line::from(vec![
                 Span::styled(
-                    format!("  {key:<14}"),
+                    format!("  {:<keys_width$} ", keys(bound)),
                     Style::default().add_modifier(Modifier::BOLD),
                 ),
                 Span::raw(*description),
@@ -139,9 +150,14 @@ mod tests {
             .iter()
             .find(|row| row.command_name == "new_branch")
             .unwrap();
-        assert_eq!(row.key_display, "ctrl+b");
+        assert_eq!(row.keys, ["ctrl+b"]);
         assert!(row.search_text().contains("Create a new branch"));
-        assert!(!overlay.rows.iter().any(|row| row.key_display == "ctrl+o"));
+        assert!(
+            !overlay
+                .rows
+                .iter()
+                .any(|row| row.keys.iter().any(|key| key == "ctrl+o"))
+        );
     }
 
     #[test]

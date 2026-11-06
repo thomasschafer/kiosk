@@ -9,7 +9,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::{
     backend::annotation::AnnotationIndex,
-    config::keys::{BindingMode, KeysConfig},
+    config::keys::{BindingMode, Command, KeyChord, KeysConfig, key_preference},
     git::{Repo, ScanWarning},
     picker::{
         branch::BranchViewState, delete::DeleteState, new_branch::NewBranchState,
@@ -295,10 +295,12 @@ impl SearchableList {
     }
 }
 
+/// A command in the help overlay, with every key in its section that runs it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HelpBindingRow {
     pub section_name: &'static str,
-    pub key_display: String,
+    /// Never empty: a row exists because at least one key runs its command.
+    pub keys: Vec<String>,
     pub command_name: &'static str,
     pub description: &'static str,
 }
@@ -307,7 +309,9 @@ impl HelpBindingRow {
     pub fn search_text(&self) -> String {
         format!(
             "{} {} {}",
-            self.key_display, self.command_name, self.description
+            self.keys.join(" "),
+            self.command_name,
+            self.description
         )
     }
 }
@@ -319,23 +323,29 @@ pub struct HelpOverlayState {
 }
 
 impl HelpOverlayState {
-    /// The bindings active in `mode`, grouped by section.
+    /// The commands active in `mode`, grouped by section, each once with all of its keys, so
+    /// that moving the selection always moves to another command.
     pub fn for_mode(keys: &KeysConfig, mode: BindingMode) -> Self {
-        let rows = keys
-            .sections(mode)
-            .into_iter()
-            .flat_map(|section| {
-                section
-                    .bindings
-                    .into_iter()
-                    .map(move |(key, command)| HelpBindingRow {
-                        section_name: section.name,
-                        key_display: key.to_string(),
-                        command_name: command.name(),
-                        description: command.description(),
-                    })
-            })
-            .collect::<Vec<_>>();
+        let mut rows = Vec::new();
+        for section in keys.sections(mode) {
+            let mut commands = Vec::<(Command, Vec<KeyChord>)>::new();
+            for (key, command) in section.bindings {
+                match commands.iter_mut().find(|(known, _)| *known == command) {
+                    Some((_, keys)) => keys.push(key),
+                    None => commands.push((command, vec![key])),
+                }
+            }
+            rows.extend(commands.into_iter().map(|(command, mut keys)| {
+                // Stable, so keys equally preferred keep the section's order.
+                keys.sort_by_key(key_preference);
+                HelpBindingRow {
+                    section_name: section.name,
+                    keys: keys.iter().map(ToString::to_string).collect(),
+                    command_name: command.name(),
+                    description: command.description(),
+                }
+            }));
+        }
         let list = SearchableList::new(rows.len());
         Self { rows, list }
     }

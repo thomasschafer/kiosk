@@ -1,7 +1,7 @@
 use std::{env, path::Path};
 
 use anyhow::{Result, bail};
-use kiosk::{
+use herdr_app_kiosk::{
     PRODUCT,
     config::{Config, SOURCE},
 };
@@ -11,15 +11,7 @@ const DOCS: ProductDocs<'static> = ProductDocs {
     product: &PRODUCT,
     sources: &[SOURCE],
     extension: "Config",
-    order: &[
-        "search_dirs",
-        "include_non_git",
-        "worktrees",
-        "on_open",
-        "agent",
-        "theme",
-        "keys",
-    ],
+    order: &["search_dirs", "include_non_git", "on_open", "keys"],
     examples: &[(
         "on_open",
         "[on_open]\npanes = [\n  { command = \"hx\", direction = \"right\" },\n]",
@@ -27,23 +19,23 @@ const DOCS: ProductDocs<'static> = ProductDocs {
     wording: &[
         (
             "OnOpenConfig::panes",
-            "Pane definitions, created in order without moving focus from the first pane.\n\
-             Commands run from the opened repository or worktree. They run only when kiosk\n\
-             creates a session, not when it switches to an existing one.",
+            "Pane definitions, created in order without moving focus from the primary\n\
+             pane. Commands run from the opened repository or worktree. They run only\n\
+             when a workspace is newly opened, not when an existing workspace is focused.",
         ),
         (
             "OnOpenPaneConfig",
-            "A command pane split off a new session's first pane.",
+            "A command pane created after a new workspace is opened.",
         ),
         (
             "OnOpenPaneConfig::command",
-            "Shell command typed into the new pane's shell, which stays when the command ends. \
-             The command must not be empty.",
+            "Shell command Herdr runs in the opened checkout. The command must not be empty.",
         ),
         (
             "OnOpenPaneConfig::ratio",
-            "Fraction of the split occupied by the new command pane. The value must be greater \
-             than 0 and less than 1, and defaults to 0.5 when omitted.",
+            "Fraction of the resulting split occupied by the new command pane. The value must be \
+             greater than 0 and less than 1, and defaults to 0.5 when omitted. The Herdr app \
+             always splits in half, so here it is ignored, which kiosk says when it opens.",
         ),
     ],
 };
@@ -56,6 +48,7 @@ fn main() -> Result<()> {
     if task != "readme" {
         bail!("unknown xtask '{task}'; expected 'readme'");
     }
+
     let mut check = false;
     for argument in args {
         if argument == "--check" && !check {
@@ -64,6 +57,7 @@ fn main() -> Result<()> {
             bail!("unexpected argument '{argument}'; usage: cargo xtask readme [--check]");
         }
     }
+
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("xtask has a workspace parent");

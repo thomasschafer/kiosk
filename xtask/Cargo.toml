@@ -6,8 +6,8 @@ publish = false
 
 [dependencies]
 anyhow.workspace = true
-kiosk = { path = "../kiosk" }
-kiosk-docgen = { path = "../kiosk-docgen" }
+herdr-app-kiosk = { path = ".." }
+kiosk-docgen.workspace = true
 
 [lints]
 workspace = true

@@ -1,112 +1,93 @@
 # kiosk
 
-Kiosk is a Git-aware tmux session manager, which shows the status of your AI agents (waiting for permission, running, idle or done).
+Fuzzy-find your Git repositories (or any folder) and their branches in the
+[Herdr](https://herdr.dev) desktop app, then open them as spaces and worktrees.
 
-Search for the repo you want, and optionally select a branch or create a new one. If a session already exists, you jump straight in - if it doesn't, a new session is created, with a new worktree if needed.
+![Demo of filtering a repository's branches, then creating a new branch's worktree](media/preview.gif)
 
-![kiosk preview](media/preview.png)
+## Install
 
-Worktrees are created in `~/.kiosk/worktrees/<repo>/<branch>` by default; set [`worktrees.directory`](#worktrees) to put them elsewhere.
+### From the mod gallery
 
+Kiosk is in the [mod gallery](https://herdr.dev/gallery/?type=mods). Ask your agent:
+
+```text
+Read ~/.config/herdr-app/AGENTS.md, then add this mod: https://github.com/thomasschafer/kiosk
+```
+
+The [recipe](RECIPE.md) tells it to fetch the mod's `herdr-app-kiosk` program for your
+computer and check it before installing anything.
+
+### With the install script
+
+On macOS and Linux:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/thomasschafer/kiosk/main/scripts/install.sh | sh
+```
+
+On Windows, in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/thomasschafer/kiosk/main/scripts/install.ps1 | iex
+```
+
+The script installs the latest release's mod and prebuilt binary together in the app's
+`mods/kiosk` folder. It checks both against the release's `SHA256SUMS` and, if the
+[GitHub CLI](https://cli.github.com) is installed and logged in, against the release's build
+attestations, which show that this repository's release workflow built them. Pass
+`--version v0.8.0` (or set `KIOSK_INSTALL_VERSION` on Windows) for a particular release, and
+run it again to update.
+Read the [shell script](scripts/install.sh) or [PowerShell script](scripts/install.ps1)
+first if you prefer.
+
+### From source
+
+```sh
+git clone https://github.com/thomasschafer/kiosk.git
+cd kiosk
+scripts/install.sh --from-source
+```
+
+On Windows, run `scripts\install.ps1 -FromSource`. To work on kiosk, link the mod folder
+instead, so the app runs this checkout's own build and each `cargo build --release` takes
+effect the next time kiosk opens:
+
+```sh
+cargo build --release
+ln -s "$PWD/mods/kiosk" ~/.config/herdr-app/mods/kiosk
+```
+
+### Open it
+
+Bind a key to open kiosk in `~/.config/herdr-app/keys.json`, for example:
+
+```json
+{ "global": { "cmd-k": "mod.open:kiosk" } }
+```
 
 ## Usage
 
-### Picker
+Type to search, and press `enter` or click to open. `tab` lists its branches; typing a name no branch has and pressing `enter`
+starts a new branch, from a base you pick. `ctrl+x`, or a worktree's Remove button, removes
+its checkout after asking (the branch stays). `esc` goes back and closes
+from the repository list, and `ctrl+u` clears the search. `ctrl+h` lists every key: they can be modified via the
+[`[keys]`](#keys) config.
 
-Add a keybinding to your `tmux.conf` to run `kiosk` in a popup (the following uses `<prefix> f`, but change as appropriate):
+The first time kiosk opens, a setup wizard asks which folders to search and writes the
+config.
 
-```tmux
-bind-key f display-popup -xC -yC -w90% -h90% -d "#{pane_current_path}" -E "kiosk"
-```
-
-You'll start in the repo view, which shows all repos in the folders defined in your config:
-- Start typing to fuzzy search across repos
-- Enter opens the repo with the primary checkout
-- Tab opens the branch view for that repo
-
-From the branch view, you can again fuzzy match across branches:
-- Enter opens a session in a worktree on that branch, either switching to an existing session if one exists, or creating a new one otherwise
-- `ctrl+o` creates a new branch named after your search, in a new worktree
-- `ctrl+x` removes a branch's worktree and closes its session
-
-Esc goes back, or quits from the repo view, and `ctrl+u` clears the search, which otherwise edits like a shell prompt: `alt+b` and `alt+f` move by word, `ctrl+a` and `ctrl+e` to the start and end, and `ctrl+k` deletes to the end.
-
-`ctrl+h` (or `f1`) shows every binding for the current view. Run outside tmux, kiosk attaches to the session you pick once the picker closes.
-
-Sessions kiosk creates are named after the repo and branch (`my-project/feat-thing`), but kiosk finds them by the folder they show, so renaming them is fine. Sessions you made yourself count as showing the folder they were started in.
-
-### Agent status
-
-Rows for checkouts that are open in tmux show what the agents in their sessions are doing, such as `claude waiting` or `codex running`. Kiosk reads this from two places:
-
-- Programs that report their own status with the [Program Status Protocol (OSC 7501)](https://mitchellh.com/writing/program-status-osc7501). tmux shows these reports to nobody, so kiosk pipes the output of each pane to a small collector (`tmux pipe-pane`) and sets global tmux hooks so new panes get one too. tmux allows one pipe per pane, so panes you already pipe elsewhere are left alone. Kiosk starts collecting the first time it runs in a tmux server, so set [`agent.osc7501`](#agent) to `false` if you'd rather it didn't.
-- For panes without such reports, the screens of Claude Code, Codex, Cursor, Gemini CLI and OpenCode, which kiosk recognises.
-
-To jump to the agent that has waited longest for you, bind `kiosk next`, which switches to the least recently active other session with an agent that is waiting, done, idle or in an unknown state:
-
-```tmux
-bind-key n run-shell "kiosk next"
-```
-
-`kiosk agents` lists every agent kiosk can see, which helps when a status looks wrong; add `--json` for scripts.
-
-### Config
-
-On first launch (when no config file exists), you'll see a setup wizard to create your config file. If you'd rather do this manually, see the [configuration](#configuration) section.
-
-
-## Installing
-
-### Homebrew
-
-```sh
-brew install thomasschafer/tap/kiosk
-```
-
-### Cargo
-
-Ensure you have the Rust toolchain installed, then run:
-
-```sh
-cargo install kiosk
-```
-
-### Prebuilt binaries
-
-Download the appropriate binary for your system from the [releases page](https://github.com/thomasschafer/kiosk/releases/latest):
-
-| Platform | Architecture | Download file |
-|-|-|-|
-| Linux | Intel/AMD | `*-x86_64-unknown-linux-musl.tar.gz` |
-| Linux | ARM64 | `*-aarch64-unknown-linux-musl.tar.gz` |
-| macOS | Apple Silicon| `*-aarch64-apple-darwin.tar.gz` |
-| macOS | Intel | `*-x86_64-apple-darwin.tar.gz` |
-| Windows | x64 | `*-x86_64-pc-windows-msvc.zip` |
-
-After downloading, extract the binary and move it to a directory in your `PATH`.
-
-### Building from source
-
-Ensure you have the Rust toolchain installed, then pull down the repo and run:
-
-```sh
-cargo install --path kiosk
-```
-
+If you used kiosk in the app through herdr-kiosk before, its config moves here on its own:
+kiosk copies `~/.config/herdr-kiosk/config.toml` to `~/.config/herdr-app-kiosk/config.toml`
+the first time it opens, and says so, leaving out `[theme]` as kiosk follows the app's theme.
 
 ## Configuration
 
-Here's a minimal example that contains all required keys (change values as appropriate):
-
-```toml
-search_dirs = ["~/Development"]
-```
-
 <!-- CONFIG:START -->
-Kiosk reads `$XDG_CONFIG_HOME/kiosk/config.toml`, which is
-`~/.config/kiosk/config.toml` when `XDG_CONFIG_HOME` is unset, or `config.toml` in
-`$KIOSK_CONFIG_DIR` when that is set. All sections are optional, and the defaults are
-shown below alongside curated examples for settings that benefit from one.
+Kiosk reads `$XDG_CONFIG_HOME/herdr-app-kiosk/config.toml`, which is
+`~/.config/herdr-app-kiosk/config.toml` when `XDG_CONFIG_HOME` is unset, and the setup
+wizard writes it the first time kiosk opens. All sections are optional, and the defaults
+are shown below alongside curated examples for settings that benefit from one.
 
 #### `search_dirs`
 
@@ -145,23 +126,9 @@ entries can override this value with their own `include_non_git` setting.
 
 Default: `false`
 
-### `[worktrees]`
-
-Configure worktree placement.
-
-Where kiosk creates checkouts for branches that do not have one.
-
-#### `directory`
-
-Directory holding new checkouts, each at `<directory>/<repository>/<branch>`.
-`~` and paths beginning with `~/` expand from the user's home directory; the path
-must be absolute after expansion.
-
-Default: `"~/.kiosk/worktrees"`
-
 ### `[on_open]`
 
-Configure command panes created after kiosk creates a session.
+Configure command panes created after opening a new workspace.
 
 The section is optional and contains no pane definitions by default.
 
@@ -176,70 +143,17 @@ panes = [
 
 #### `panes`
 
-Pane definitions, created in order without moving focus from the first pane.
-Commands run from the opened repository or worktree. They run only when kiosk
-creates a session, not when it switches to an existing one.
+Pane definitions, created in order without moving focus from the primary
+pane. Commands run from the opened repository or worktree. They run only
+when a workspace is newly opened, not when an existing workspace is focused.
 
-A command pane split off a new session's first pane.
+A command pane created after a new workspace is opened.
 
 Each entry is an inline table with:
 
-- `command` — Shell command typed into the new pane's shell, which stays when the command ends. The command must not be empty.
+- `command` — Shell command Herdr runs in the opened checkout. The command must not be empty.
 - `direction` — Split direction: `right` or `down`.
-- `ratio` — Fraction of the split occupied by the new command pane. The value must be greater than 0 and less than 1, and defaults to 0.5 when omitted.
-
-### `[agent]`
-
-Configure agent status.
-
-Agent status is shown beside open checkouts and used by `kiosk next`.
-
-#### `enabled`
-
-Whether to show agent status at all. Set to `false` to stop kiosk looking at
-panes.
-
-Default: `true`
-
-#### `osc7501`
-
-Whether to read the status programs report over OSC 7501. Kiosk pipes each pane's
-output (`pipe-pane`) to a small collector and sets global tmux hooks so new panes
-get one; panes you already pipe elsewhere are left alone. Set to `false` to turn
-this off, which also removes kiosk's hooks and collectors the next time kiosk runs.
-Panes without OSC 7501 status fall back to recognising known agents' screens.
-
-Default: `true`
-
-#### `poll_interval_ms`
-
-Milliseconds between status refreshes while the picker is open. The value must be
-at least 100.
-
-Default: `500`
-
-### `[theme]`
-
-Customize terminal-palette colors used by the picker. Light-terminal users
-can set `muted`, `border`, and other colors explicitly.
-
-Colors use the terminal's ANSI palette and can be `black`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `white`, `gray`, `dark_gray`, `reset`.
-
-Defaults:
-
-```toml
-[theme]
-accent = "magenta"
-secondary = "cyan"
-tertiary = "green"
-error = "red"
-warning = "yellow"
-muted = "dark_gray"
-border = "dark_gray"
-hint = "blue"
-highlight_fg = "black"
-open = "green"
-```
+- `ratio` — Fraction of the resulting split occupied by the new command pane. The value must be greater than 0 and less than 1, and defaults to 0.5 when omitted. The Herdr app always splits in half, so here it is ignored, which kiosk says when it opens.
 
 ### `[keys]`
 
@@ -336,6 +250,7 @@ Defaults:
 "tab" = "branches_view"
 
 [keys.branch_select]
+"backspace" = "backspace_or_back"
 "ctrl+o" = "new_branch"
 "ctrl+x" = "delete"
 "enter" = "open"
@@ -344,3 +259,34 @@ Defaults:
 ```
 
 <!-- CONFIG:END -->
+
+## How it works
+
+The mod runs `herdr-app-kiosk serve`, which starts the picker in the background and prints a
+loopback port and a secret. The mod connects, sends what you press and click, and draws the
+views the picker sends back. The picker is a Rust state machine in
+[kiosk-core](crates/kiosk-core), served by [kiosk-serve](crates/kiosk-serve). It ends when the
+popup closes, however the popup closes.
+
+## Development
+
+```sh
+cargo test
+scripts/test-install.sh
+scripts/app-sandbox/run.sh e2e
+```
+
+[`scripts/app-sandbox`](scripts/app-sandbox) runs the released Herdr app headless in Docker
+and drives kiosk with real key presses and clicks, checking what it shows and what the app
+does. `run.sh record` records the preview above. `cargo xtask readme` regenerates the
+configuration reference from the config's doc comments.
+
+A release is a `v*` tag on `main` whose version matches the workspace version in `Cargo.toml`
+and the mod's `VERSION`. Its workflow builds the binaries, packs the mod, writes `SHA256SUMS`,
+attests them all and publishes the release.
+
+## The tmux version
+
+Kiosk started as a tmux session manager, which is no longer maintained. Its last release is
+[v0.7.0](https://github.com/thomasschafer/kiosk/tree/v0.7.0), which is still on crates.io and
+Homebrew.

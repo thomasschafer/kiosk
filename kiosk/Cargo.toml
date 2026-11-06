@@ -13,7 +13,7 @@ categories = ["command-line-utilities"]
 
 [dependencies]
 anyhow.workspace = true
-base64 = "0.22"
+base64 = "0.23"
 clap = { version = "4", features = ["derive"] }
 kiosk-core.workspace = true
 kiosk-tui.workspace = true

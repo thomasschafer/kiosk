@@ -20,7 +20,8 @@ fn items(entries: &[HelpEntry], theme: &Theme) -> Vec<ListItem<'static>> {
         ))];
     }
     let keys = |keys: &[String]| keys.join(", ");
-    // Descriptions line up after the longest keys, and after 14 columns at least.
+    // Descriptions line up after the longest keys, within 14 to 24 columns: a command given
+    // more keys than that pushes only its own description along.
     let keys_width = entries
         .iter()
         .filter_map(|entry| match entry {
@@ -29,7 +30,7 @@ fn items(entries: &[HelpEntry], theme: &Theme) -> Vec<ListItem<'static>> {
         })
         .max()
         .unwrap_or_default()
-        .max(14);
+        .clamp(14, 24);
     entries
         .iter()
         .map(|entry| match entry {

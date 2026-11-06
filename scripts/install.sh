@@ -2,7 +2,7 @@
 # Installs kiosk for the Herdr app: the kiosk mod and its herdr-app-kiosk binary, together
 # in <app home>/mods/kiosk, where the mod looks for them.
 #
-#   curl -fsSL https://raw.githubusercontent.com/thomasschafer/herdr-app-kiosk/main/scripts/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/thomasschafer/kiosk/main/scripts/install.sh | sh
 #   sh scripts/install.sh [--version <tag>] [--from-source]
 #
 # It downloads a release's mod and prebuilt binary (the latest, or --version) and checks
@@ -12,7 +12,7 @@
 # $XDG_CONFIG_HOME/herdr-app, else ~/.config/herdr-app, as the app has it.
 set -eu
 
-REPOSITORY=thomasschafer/herdr-app-kiosk
+REPOSITORY=thomasschafer/kiosk
 RELEASES=${KIOSK_RELEASES:-"https://github.com/$REPOSITORY/releases"}
 MOD_NAME=kiosk
 
@@ -28,7 +28,7 @@ while [ $# -gt 0 ]; do
     case $1 in
         --from-source) from_source=true ;;
         --version)
-            [ $# -ge 2 ] || fail '--version needs a tag, such as v0.1.0'
+            [ $# -ge 2 ] || fail '--version needs a tag, such as v0.8.0'
             version=$2
             shift
             ;;

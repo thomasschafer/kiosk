@@ -1,7 +1,7 @@
 # Installs kiosk for the Herdr app on Windows: the kiosk mod and herdr-app-kiosk.exe,
 # together in <app home>\mods\kiosk, where the mod looks for them.
 #
-#   irm https://raw.githubusercontent.com/thomasschafer/herdr-app-kiosk/main/scripts/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/thomasschafer/kiosk/main/scripts/install.ps1 | iex
 #   scripts\install.ps1 [-Version <tag>] [-FromSource]
 #
 # It downloads a release's mod and prebuilt binary (the latest, or -Version, or
@@ -13,7 +13,7 @@
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
-$repository = "thomasschafer/herdr-app-kiosk"
+$repository = "thomasschafer/kiosk"
 $releases = if ($env:KIOSK_RELEASES) { $env:KIOSK_RELEASES.TrimEnd("/") } else { "https://github.com/$repository/releases" }
 $modName = "kiosk"
 $target = "x86_64-pc-windows-msvc"
@@ -34,7 +34,7 @@ for ($i = 0; $i -lt $args.Count; $i++) {
         "-FromSource" { $fromSource = $true }
         "-Version" {
             if ($i + 1 -ge $args.Count) {
-                Stop-Install "-Version needs a tag, such as v0.1.0"
+                Stop-Install "-Version needs a tag, such as v0.8.0"
             }
             $i++
             $version = $args[$i]

@@ -1,6 +1,6 @@
 #!/bin/sh
 # Checks that Cargo.toml and the mod agree on the version, and with the tag when given one
-# (`scripts/check-version.sh v0.1.0`), so a release's binary and mod always match.
+# (`scripts/check-version.sh v0.8.0`), so a release's binary and mod always match.
 set -eu
 
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)

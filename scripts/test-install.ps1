@@ -212,7 +212,7 @@ server.serve_forever()
     $left = @(Get-ChildItem -LiteralPath $env:HERDR_APP_HOME -Force | ForEach-Object Name)
     Assert-True (($left -join " ") -ceq "mods") "the install left behind: $($left -join ', ')"
     Assert-True ($run.Output.Contains("verified ${binary}: checksum and build attestation")) "no attestation check: $($run.Output)"
-    Assert-True ((Get-Content -LiteralPath $ghCalls -Raw).Contains("--repo thomasschafer/herdr-app-kiosk --signer-workflow thomasschafer/herdr-app-kiosk/.github/workflows/release.yml --source-ref refs/tags/$version --deny-self-hosted-runners")) "gh was not asked about the release workflow and tag"
+    Assert-True ((Get-Content -LiteralPath $ghCalls -Raw).Contains("--repo thomasschafer/kiosk --signer-workflow thomasschafer/kiosk/.github/workflows/release.yml --source-ref refs/tags/$version --deny-self-hosted-runners")) "gh was not asked about the release workflow and tag"
     Assert-Installed $env:HERDR_APP_HOME
     $env:FAKE_GH_REFUSES = "1"
     $env:HERDR_APP_HOME = Join-Path $testRoot "unattested"

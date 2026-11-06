@@ -21,7 +21,7 @@ const MOD_DIR = "mods/kiosk";
 const TITLE = "Kiosk";
 // The release of herdr-app-kiosk this mod comes from, whose binary it runs.
 const VERSION = "0.8.0";
-const REPOSITORY = "github.com/thomasschafer/herdr-app-kiosk";
+const REPOSITORY = "github.com/thomasschafer/kiosk";
 // The protocol this mod speaks; the picker refuses a different one.
 const PROTOCOL = 3;
 

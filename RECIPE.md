@@ -14,8 +14,8 @@ The mod is only the picker's face: it needs the `herdr-app-kiosk` program of the
 in the mod folder's `bin/`. Without it, opening kiosk shows "Kiosk isn't installed".
 
 1. Read the release the mod is from: `VERSION` near the top of `mods/kiosk/main.js`, such as
-   `0.1.0`, whose release is tagged `v0.1.0` at
-   <https://github.com/thomasschafer/herdr-app-kiosk/releases>.
+   `0.8.0`, whose release is tagged `v0.8.0` at
+   <https://github.com/thomasschafer/kiosk/releases>.
 2. Download that release's `SHA256SUMS` and the binary for this computer,
    `herdr-app-kiosk-v<version>-<target>`, where the target is `aarch64-apple-darwin`,
    `x86_64-apple-darwin`, `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` or, on
@@ -24,8 +24,8 @@ in the mod folder's `bin/`. Without it, opening kiosk shows "Kiosk isn't install
 3. Check its SHA-256 against its line in `SHA256SUMS`, and stop if it differs. With the GitHub
    CLI, logged in, also check that this repository's release workflow built it for that tag,
    and stop if it refuses:
-   `gh attestation verify <file> --repo thomasschafer/herdr-app-kiosk --signer-workflow
-   thomasschafer/herdr-app-kiosk/.github/workflows/release.yml --source-ref
+   `gh attestation verify <file> --repo thomasschafer/kiosk --signer-workflow
+   thomasschafer/kiosk/.github/workflows/release.yml --source-ref
    refs/tags/v<version> --deny-self-hosted-runners`.
 4. After copying the mod folder, put the binary in it as `mods/kiosk/bin/herdr-app-kiosk`
    (`herdr-app-kiosk.exe` on Windows) and make it executable. `herdr-app-kiosk --version`
@@ -76,7 +76,7 @@ it, on the `popover` colour with the app's frame:
 - Everything typed, pressed or clicked goes to the picker, which answers with what to show;
   the mod draws only that. Keys are kiosk's own (the person's `[keys]` config included), so
   Esc goes back from a branch list or dialog rather than closing the popup outright, and
-  quits from the repository list, as it does in kiosk in a terminal. Ctrl+U clears the
+  quits from the repository list. Ctrl+U clears the
   search, which edits like a shell prompt (Alt+B and Alt+F by word, Ctrl+A and Ctrl+E to
   either end).
 - Enter or a click opens the row. Tab, or a repository row's Branches button on hover, shows

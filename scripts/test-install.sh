@@ -175,7 +175,7 @@ attested=$TEST_ROOT/attested
 env -u KIOSK_SKIP_ATTESTATION PATH="$gh_bin:$PATH" HERDR_APP_HOME="$attested" sh "$installer" >"$TEST_ROOT/out" 2>&1 ||
     fail "$(cat "$TEST_ROOT/out")"
 grep -q "verified $binary: checksum and build attestation" "$TEST_ROOT/out" || fail "no attestation check: $(cat "$TEST_ROOT/out")"
-grep -q "attestation verify .*$binary --repo thomasschafer/herdr-app-kiosk --signer-workflow thomasschafer/herdr-app-kiosk/.github/workflows/release.yml --source-ref refs/tags/$VERSION --deny-self-hosted-runners\$" "$TEST_ROOT/gh-calls" ||
+grep -q "attestation verify .*$binary --repo thomasschafer/kiosk --signer-workflow thomasschafer/kiosk/.github/workflows/release.yml --source-ref refs/tags/$VERSION --deny-self-hosted-runners\$" "$TEST_ROOT/gh-calls" ||
     fail "gh was asked: $(cat "$TEST_ROOT/gh-calls")"
 assert_installed "$attested"
 if env -u KIOSK_SKIP_ATTESTATION PATH="$gh_bin:$PATH" FAKE_GH_REFUSES=1 HERDR_APP_HOME="$TEST_ROOT/unattested" \

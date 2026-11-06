@@ -1,4 +1,4 @@
-# herdr-app-kiosk
+# kiosk
 
 Fuzzy-find your Git repositories (or any folder) and their branches in the
 [Herdr](https://herdr.dev) desktop app, then open them as spaces and worktrees.
@@ -12,7 +12,7 @@ Fuzzy-find your Git repositories (or any folder) and their branches in the
 Kiosk is in the [mod gallery](https://herdr.dev/gallery/?type=mods). Ask your agent:
 
 ```text
-Read ~/.config/herdr-app/AGENTS.md, then add this mod: https://github.com/thomasschafer/herdr-app-kiosk
+Read ~/.config/herdr-app/AGENTS.md, then add this mod: https://github.com/thomasschafer/kiosk
 ```
 
 The [recipe](RECIPE.md) tells it to fetch the mod's `herdr-app-kiosk` program for your
@@ -23,20 +23,20 @@ computer and check it before installing anything.
 On macOS and Linux:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/thomasschafer/herdr-app-kiosk/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/thomasschafer/kiosk/main/scripts/install.sh | sh
 ```
 
 On Windows, in PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/thomasschafer/herdr-app-kiosk/main/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/thomasschafer/kiosk/main/scripts/install.ps1 | iex
 ```
 
 The script installs the latest release's mod and prebuilt binary together in the app's
 `mods/kiosk` folder. It checks both against the release's `SHA256SUMS` and, if the
 [GitHub CLI](https://cli.github.com) is installed and logged in, against the release's build
 attestations, which show that this repository's release workflow built them. Pass
-`--version v0.1.0` (or set `KIOSK_INSTALL_VERSION` on Windows) for a particular release, and
+`--version v0.8.0` (or set `KIOSK_INSTALL_VERSION` on Windows) for a particular release, and
 run it again to update.
 Read the [shell script](scripts/install.sh) or [PowerShell script](scripts/install.ps1)
 first if you prefer.
@@ -44,8 +44,8 @@ first if you prefer.
 ### From source
 
 ```sh
-git clone https://github.com/thomasschafer/herdr-app-kiosk.git
-cd herdr-app-kiosk
+git clone https://github.com/thomasschafer/kiosk.git
+cd kiosk
 scripts/install.sh --from-source
 ```
 
@@ -264,9 +264,9 @@ Defaults:
 
 The mod runs `herdr-app-kiosk serve`, which starts the picker in the background and prints a
 loopback port and a secret. The mod connects, sends what you press and click, and draws the
-views the picker sends back. The picker is kiosk's own Rust state machine, served by
-[kiosk-serve](https://github.com/thomasschafer/kiosk), so the behaviour and wording are the
-same as kiosk's in a terminal. It ends when the popup closes, however the popup closes.
+views the picker sends back. The picker is a Rust state machine in
+[kiosk-core](crates/kiosk-core), served by [kiosk-serve](crates/kiosk-serve). It ends when the
+popup closes, however the popup closes.
 
 ## Development
 
@@ -281,6 +281,12 @@ and drives kiosk with real key presses and clicks, checking what it shows and wh
 does. `run.sh record` records the preview above. `cargo xtask readme` regenerates the
 configuration reference from the config's doc comments.
 
-A release is a `v*` tag on `main` whose version matches `Cargo.toml` and the mod's
-`VERSION`. Its workflow builds the binaries, packs the mod, writes `SHA256SUMS`, attests them
-all and publishes the release.
+A release is a `v*` tag on `main` whose version matches the workspace version in `Cargo.toml`
+and the mod's `VERSION`. Its workflow builds the binaries, packs the mod, writes `SHA256SUMS`,
+attests them all and publishes the release.
+
+## The tmux version
+
+Kiosk started as a tmux session manager, which is no longer maintained. Its last release is
+[v0.7.0](https://github.com/thomasschafer/kiosk/tree/v0.7.0), which is still on crates.io and
+Homebrew.

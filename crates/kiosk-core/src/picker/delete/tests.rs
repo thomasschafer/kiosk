@@ -13,10 +13,11 @@ use crate::{
         CheckoutState, Freshness, RemoveError, Removed,
         mock::{BackendCall, MockBackend, MockError},
     },
+    config::keys::KeysConfig,
     event::{AppEvent, WorktreeRemovalOutcome},
     git::{GitProvider, Repo, Worktree, mock::MockGitProvider},
     pending_delete::PendingWorktreeDelete,
-    picker::{TickChanges, process_app_event},
+    picker::{Picker, TickChanges, process_app_event},
     product::TEST_PRODUCT,
     spawn::EventSender,
     state::{
@@ -425,6 +426,46 @@ fn a_managed_removal_still_closes_the_session_when_the_picker_stops_first() {
             ..
         }
     ));
+    assert_eq!(
+        backend.calls().last(),
+        Some(&BackendCall::Close {
+            session: "s_1".into()
+        })
+    );
+}
+
+#[test]
+fn dropping_the_picker_while_a_removal_waits_at_its_gate_lets_it_finish() {
+    let git_mock = Arc::new(MockGitProvider::default());
+    let git: Arc<dyn GitProvider> = git_mock.clone();
+    let backend = Arc::new(MockBackend::managed(std::env::temp_dir()));
+    queue_checkouts(&backend, Some("s_1"), 1);
+    backend.close_results.lock().unwrap().push_back(Ok(()));
+    let mut state = state_with_branch(true);
+    let picker = Picker::start(
+        Arc::clone(&git),
+        Some(Arc::clone(&backend)),
+        KeysConfig::default(),
+        Vec::new(),
+        &state,
+    );
+
+    begin(&mut state);
+    confirm(&mut state, &git, Some(&backend), &picker.sender);
+    while git_mock.remove_calls.lock().unwrap().is_empty() {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    // Long enough for the removal to queue its gate and wait on it.
+    std::thread::sleep(Duration::from_millis(100));
+    let (dropped, on_drop) = mpsc::channel();
+    std::thread::spawn(move || {
+        drop(picker);
+        dropped.send(()).unwrap();
+    });
+
+    on_drop
+        .recv_timeout(Duration::from_secs(5))
+        .expect("dropping the picker returns");
     assert_eq!(
         backend.calls().last(),
         Some(&BackendCall::Close {

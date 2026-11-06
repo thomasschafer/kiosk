@@ -4,7 +4,7 @@ use std::{
     collections::VecDeque,
     fmt,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Arc, Condvar, Mutex},
 };
 
 use super::{
@@ -79,6 +79,8 @@ pub struct MockBackend {
     pub open_folders_results: Queue<Vec<PathBuf>>,
     pub checkouts_results: Queue<Vec<CheckoutState<String>>>,
     pub open_checkout_results: Queue<Opened>,
+    /// Holds `open_checkout`, once recorded, until the flag is set.
+    pub open_checkout_gate: Option<Arc<(Mutex<bool>, Condvar)>>,
     pub open_folder_results: Queue<Opened>,
     pub notify_results: Queue<()>,
     pub open_branch_results: Queue<Opened>,
@@ -109,6 +111,7 @@ impl MockBackend {
             open_folders_results: Mutex::default(),
             checkouts_results: Mutex::default(),
             open_checkout_results: Mutex::default(),
+            open_checkout_gate: None,
             open_folder_results: Mutex::default(),
             notify_results: Mutex::default(),
             open_branch_results: Mutex::default(),
@@ -168,6 +171,13 @@ impl Backend for MockBackend {
             repo: repo.into(),
             checkout: checkout.into(),
         });
+        if let Some(gate) = &self.open_checkout_gate {
+            let (released, condition) = &**gate;
+            let mut released = released.lock().unwrap();
+            while !*released {
+                released = condition.wait(released).unwrap();
+            }
+        }
         next(&self.open_checkout_results, "open_checkout")
     }
 

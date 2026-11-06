@@ -229,8 +229,14 @@ impl<B: Backend> Picker<B> {
 }
 
 impl<B: Backend> Drop for Picker<B> {
+    /// Stops lookups, and waits for operations under way so the picker never stops halfway
+    /// through opening or removing something.
     fn drop(&mut self) {
         self.sender.cancel();
+        // A removal waits on the `CloseGate` it sent here; dropping the events still queued
+        // drops their gates, and with the receiver gone later sends fail and drop theirs.
+        drop(std::mem::replace(&mut self.receiver, mpsc::channel().1));
+        self.sender.operations().wait();
     }
 }
 

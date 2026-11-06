@@ -4,13 +4,16 @@ use std::{
     io::{BufRead, BufReader, Write},
     net::{Ipv4Addr, TcpStream},
     path::Path,
-    sync::Arc,
+    sync::{Arc, Condvar, Mutex},
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use kiosk_core::{
-    backend::{Opened, mock::MockBackend},
+    backend::{
+        Opened,
+        mock::{BackendCall, MockBackend},
+    },
     config::{CoreConfig, LoadedConfig, NoExtension, SearchDirEntry},
     git::{GitProvider, Repo, mock::MockGitProvider},
     product::TEST_PRODUCT,
@@ -161,6 +164,11 @@ fn two_repo_start(root: &Path, backend: Arc<MockBackend>) -> Start<MockBackend, 
 }
 
 fn mock_backend() -> Arc<MockBackend> {
+    Arc::new(scripted_backend())
+}
+
+/// A backend with what a session that opens one checkout asks of it queued.
+fn scripted_backend() -> MockBackend {
     let backend = MockBackend::native();
     for _ in 0..4 {
         backend
@@ -179,7 +187,7 @@ fn mock_backend() -> Arc<MockBackend> {
         .lock()
         .unwrap()
         .push_back(Ok(Opened::default()));
-    Arc::new(backend)
+    backend
 }
 
 #[test]
@@ -305,6 +313,48 @@ fn ctrl_u_clears_the_search_and_escape_quits() {
     client.key("escape", None);
     assert_eq!(client.end(), json!({ "t": "exit", "outcome": "quit" }));
     assert_eq!(session.join().unwrap().unwrap(), Outcome::Quit);
+}
+
+#[test]
+fn closing_while_something_opens_ends_the_session_only_once_it_has_opened() {
+    let root = tempfile::tempdir().unwrap();
+    let search_dir = root.path().to_path_buf();
+    let gate = Arc::new((Mutex::new(false), Condvar::new()));
+    let backend = Arc::new(MockBackend {
+        open_checkout_gate: Some(Arc::clone(&gate)),
+        ..scripted_backend()
+    });
+    let session_backend = Arc::clone(&backend);
+    let (mut client, session, _) = connect(move || two_repo_start(&search_dir, session_backend));
+    client.view_until(|view| {
+        picker_list(view).is_some_and(|list| list["rows"].as_array().unwrap().len() == 2)
+    });
+    client.key("enter", None);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !backend
+        .calls()
+        .iter()
+        .any(|call| matches!(call, BackendCall::OpenCheckout { .. }))
+    {
+        assert!(Instant::now() < deadline, "the open never started");
+        thread::sleep(Duration::from_millis(1));
+    }
+
+    client.send(&json!({ "t": "close" }));
+    // A session that ended without waiting would have ended before this.
+    let release = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(200));
+        *gate.0.lock().unwrap() = true;
+        gate.1.notify_all();
+    });
+
+    assert_eq!(session.join().unwrap().unwrap(), Outcome::Quit);
+    assert!(
+        backend.open_checkout_results.lock().unwrap().is_empty(),
+        "the session ended while the checkout was still opening"
+    );
+    assert_eq!(client.end(), json!({ "t": "exit", "outcome": "quit" }));
+    release.join().unwrap();
 }
 
 #[test]

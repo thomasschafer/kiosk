@@ -6,7 +6,7 @@ use std::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc,
     },
-    thread,
+    thread::{self, JoinHandle},
 };
 
 use rayon::ThreadPoolBuilder;
@@ -101,11 +101,27 @@ impl Drop for FetchClaim {
 pub struct EventSender {
     tx: mpsc::Sender<AppEvent>,
     cancel: Arc<AtomicBool>,
+    operations: Operations,
 }
 
 impl EventSender {
     pub fn new(tx: mpsc::Sender<AppEvent>, cancel: Arc<AtomicBool>) -> Self {
-        Self { tx, cancel }
+        Self {
+            tx,
+            cancel,
+            operations: Operations::default(),
+        }
+    }
+
+    /// The operations started through this sender and its clones.
+    pub(crate) fn operations(&self) -> &Operations {
+        &self.operations
+    }
+
+    /// Runs `work` as an operation (see [`Operations`]), giving it a clone of this sender.
+    fn spawn_operation(&self, work: impl FnOnce(Self) + Send + 'static) {
+        let sender = self.clone();
+        self.operations.spawn(move || work(sender));
     }
 
     pub fn send(&self, event: AppEvent) -> bool {
@@ -118,6 +134,42 @@ impl EventSender {
 
     pub fn cancel(&self) {
         self.cancel.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Threads running work that changes the backend or repositories, such as opening a
+/// checkout or removing a worktree. Unlike lookups, these must not be abandoned halfway, so
+/// a picker waits for them when it is dropped. Its process can then exit knowing the backend
+/// has finished what it was asked, including handing off any work that carries on after.
+#[derive(Clone, Default)]
+pub(crate) struct Operations(Arc<Mutex<Vec<JoinHandle<()>>>>);
+
+impl Operations {
+    fn spawn(&self, work: impl FnOnce() + Send + 'static) {
+        let mut handles = self.0.lock().unwrap();
+        handles.retain(|handle| !handle.is_finished());
+        handles.push(thread::spawn(work));
+    }
+
+    /// Waits for every operation started so far, raising a panic from one here unless this
+    /// thread is already panicking.
+    ///
+    /// Anything an operation waits on from the picker, such as a [`CloseGate`], must be
+    /// gone first, or this never returns.
+    pub(crate) fn wait(&self) {
+        loop {
+            let handles = std::mem::take(&mut *self.0.lock().unwrap());
+            if handles.is_empty() {
+                return;
+            }
+            for handle in handles {
+                if let Err(panic) = handle.join()
+                    && !thread::panicking()
+                {
+                    std::panic::resume_unwind(panic);
+                }
+            }
+        }
     }
 }
 
@@ -306,8 +358,7 @@ fn spawn_repo_level_open<B: Backend>(
     open: impl FnOnce(&B) -> Result<Opened, B::Error> + Send + 'static,
 ) {
     let backend = Arc::clone(backend);
-    let sender = sender.clone();
-    thread::spawn(move || match open(&backend) {
+    sender.spawn_operation(move |sender| match open(&backend) {
         Ok(opened) => {
             sender.send(AppEvent::RepoOpened {
                 warning: opened.warning,
@@ -586,9 +637,8 @@ fn spawn_branch_operation<B: Backend>(
 ) {
     let git = Arc::clone(git);
     let backend = Arc::clone(backend);
-    let sender = sender.clone();
-    thread::spawn(
-        move || match operation(git.as_ref(), &backend, &repo_path) {
+    sender.spawn_operation(
+        move |sender| match operation(git.as_ref(), &backend, &repo_path) {
             Ok(opened) => {
                 sender.send(AppEvent::RepoOpened {
                     warning: opened.warning,
@@ -686,8 +736,7 @@ pub fn spawn_worktree_removal<B: Backend>(
 ) {
     let git = Arc::clone(git);
     let backend = Arc::clone(backend);
-    let sender = sender.clone();
-    thread::spawn(move || {
+    sender.spawn_operation(move |sender| {
         let wait_for_record_forgotten = || {
             let (gate, decision) = CloseGate::new();
             if !sender.send(AppEvent::CheckoutRemoved {

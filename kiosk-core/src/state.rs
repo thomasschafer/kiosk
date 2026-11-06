@@ -248,6 +248,27 @@ impl SearchableList {
         } else if selected >= self.scroll_offset.saturating_add(viewport_rows) {
             self.scroll_offset = selected + 1 - viewport_rows;
         }
+        self.clamp_scroll_offset(viewport_rows);
+    }
+
+    /// Scrolls so the selection is in the middle of the `viewport_rows` rows in view, or as
+    /// near it as the start and end of the list allow.
+    pub fn centre_scroll_offset(&mut self, viewport_rows: usize) {
+        if self.filtered.is_empty() {
+            self.scroll_offset = 0;
+            return;
+        }
+        let viewport_rows = viewport_rows.max(1);
+        let selected = self
+            .selected
+            .unwrap_or_default()
+            .min(self.filtered.len() - 1);
+        self.scroll_offset = selected.saturating_sub(viewport_rows / 2);
+        self.clamp_scroll_offset(viewport_rows);
+    }
+
+    /// Keeps the last row from scrolling above the bottom of the view.
+    fn clamp_scroll_offset(&mut self, viewport_rows: usize) {
         self.scroll_offset = self
             .scroll_offset
             .min(self.filtered.len().saturating_sub(viewport_rows));
@@ -840,6 +861,22 @@ mod tests {
         list.update_scroll_offset(3);
         assert_eq!(list.selected, Some(1));
         assert_eq!(list.scroll_offset, 1);
+    }
+
+    #[test]
+    fn searchable_list_centres_its_selection_as_far_as_its_ends_allow() {
+        let mut list = SearchableList::new(20);
+        let centred = |list: &mut SearchableList, selected| {
+            list.selected = Some(selected);
+            list.centre_scroll_offset(5);
+            list.scroll_offset
+        };
+        assert_eq!(centred(&mut list, 10), 8, "two rows above, two below");
+        assert_eq!(centred(&mut list, 1), 0, "too near the top to centre");
+        assert_eq!(centred(&mut list, 18), 15, "too near the bottom to centre");
+        assert_eq!(centred(&mut list, 19), 15);
+        let mut short = SearchableList::new(3);
+        assert_eq!(centred(&mut short, 2), 0, "a list that fits never scrolls");
     }
 
     #[test]

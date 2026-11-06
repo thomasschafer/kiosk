@@ -192,6 +192,30 @@ fn repo_list_explains_why_it_is_empty() {
 }
 
 #[test]
+fn repo_list_centres_the_repository_it_preselects_then_scrolls_as_usual() {
+    let names = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"];
+    let mut state = state_with_repos(&names);
+    let viewports = Viewports {
+        list: 5,
+        ..VIEWPORTS
+    };
+    let offset =
+        |state: &mut AppState| list(&picker(state, &KeysConfig::default(), viewports)).offset;
+    // As the preselection leaves it: the repository the person is in, untouched.
+    state.repo_view.list.selected = Some(7);
+    assert_eq!(offset(&mut state), 5, "h in the middle of f to j");
+    state.repo_view.list.selected = Some(10);
+    assert_eq!(offset(&mut state), 7, "k too near the end to centre");
+
+    state.repo_view.list.selected = Some(7);
+    offset(&mut state);
+    crate::picker::repo::move_selection(&mut state, 1);
+    assert_eq!(offset(&mut state), 5, "moving within view doesn't scroll");
+    crate::picker::repo::move_selection(&mut state, 2);
+    assert_eq!(offset(&mut state), 6, "moving past the end scrolls one row");
+}
+
+#[test]
 fn repo_list_keeps_rows_while_scanning_and_says_so() {
     let mut state = state_with_repos(&["a"]);
     state.repo_view.loading = true;

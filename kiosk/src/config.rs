@@ -93,7 +93,7 @@ mod tests {
     use super::*;
 
     fn parse(contents: &str) -> Result<Config> {
-        parse_config::<Config>(contents).map(|(_, config, _)| config)
+        parse_config::<Config>(&crate::PRODUCT, contents).map(|(_, config, _)| config)
     }
 
     #[test]
@@ -108,6 +108,7 @@ mod tests {
     #[test]
     fn every_section_parses_without_warnings() {
         let (_, config, warnings) = parse_config::<Config>(
+            &crate::PRODUCT,
             r#"
 [worktrees]
 directory = "~/trees"
@@ -152,9 +153,11 @@ poll_interval_ms = 250
 
     #[test]
     fn unknown_keys_in_kiosk_sections_are_reported() {
-        let (_, _, warnings) =
-            parse_config::<Config>("[agent]\nlabels = 1\n[session]\nsplit_command = \"hx\"\n")
-                .unwrap();
+        let (_, _, warnings) = parse_config::<Config>(
+            &crate::PRODUCT,
+            "[agent]\nlabels = 1\n[session]\nsplit_command = \"hx\"\n",
+        )
+        .unwrap();
         let messages: Vec<_> = warnings
             .iter()
             .map(|warning| warning.message.as_str())

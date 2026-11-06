@@ -782,8 +782,11 @@ mod tests {
             },
         ])
         .unwrap();
-        let (parsed, _, _) =
-            crate::config::parse_config::<crate::config::NoExtension>(&contents).unwrap();
+        let (parsed, _, _) = crate::config::parse_config::<crate::config::NoExtension>(
+            &crate::product::TEST_PRODUCT,
+            &contents,
+        )
+        .unwrap();
         assert_eq!(parsed.search_dirs.len(), 2);
         assert!(contents.contains("depth = 4"));
     }

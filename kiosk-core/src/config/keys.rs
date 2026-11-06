@@ -5,9 +5,12 @@ use std::{
 };
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 
-use crate::state::{Mode, TextEdit};
+use crate::{
+    product::Product,
+    state::{Mode, TextEdit},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct KeyChord {
@@ -187,6 +190,7 @@ pub enum Command {
     Delete,
     Clear,
     Backspace,
+    BackspaceOrBack,
     DeleteForward,
     DeleteWord,
     DeleteWordForward,
@@ -216,6 +220,7 @@ impl Command {
             Self::Delete => "delete",
             Self::Clear => "clear",
             Self::Backspace => "backspace",
+            Self::BackspaceOrBack => "backspace_or_back",
             Self::DeleteForward => "delete_forward",
             Self::DeleteWord => "delete_word",
             Self::DeleteWordForward => "delete_word_forward",
@@ -245,6 +250,9 @@ impl Command {
             Self::Delete => "Delete the selected checkout",
             Self::Clear => "Clear the search query",
             Self::Backspace => "Delete the previous character",
+            Self::BackspaceOrBack => {
+                "Delete the previous character, or go back when the search is empty"
+            }
             Self::DeleteForward => "Delete the next character",
             Self::DeleteWord => "Delete the previous word",
             Self::DeleteWordForward => "Delete the next word",
@@ -258,11 +266,12 @@ impl Command {
         }
     }
 
-    /// The edit a text-editing command makes, or `None` for any other command.
+    /// The edit a text-editing command makes, or `None` for any other command. Where a
+    /// key can only edit text, as in help's search, `backspace_or_back` only deletes.
     pub const fn text_edit(self) -> Option<TextEdit> {
         Some(match self {
             Self::Clear => TextEdit::Clear,
-            Self::Backspace => TextEdit::Backspace,
+            Self::Backspace | Self::BackspaceOrBack => TextEdit::Backspace,
             Self::DeleteForward => TextEdit::DeleteForward,
             Self::DeleteWord => TextEdit::DeleteWordBackward,
             Self::DeleteWordForward => TextEdit::DeleteWordForward,
@@ -308,6 +317,7 @@ impl FromStr for Command {
             "delete" | "delete_worktree" => Ok(Self::Delete),
             "clear" | "clear_query" => Ok(Self::Clear),
             "backspace" => Ok(Self::Backspace),
+            "backspace_or_back" => Ok(Self::BackspaceOrBack),
             "delete_forward" => Ok(Self::DeleteForward),
             "delete_word" => Ok(Self::DeleteWord),
             "delete_word_forward" => Ok(Self::DeleteWordForward),
@@ -346,13 +356,16 @@ pub struct KeysConfig {
     /// `branches_view`, `quit`, and `noop`.
     repo_select: HashMap<KeyChord, Command>,
     /// Bindings specific to the branch picker. Accepted actions are `open`, `back`,
-    /// `new_branch`, `delete`, and `noop`.
+    /// `new_branch`, `delete`, `backspace`, `backspace_or_back`, and `noop`.
+    /// `backspace_or_back` deletes like `backspace` but goes back to the repositories
+    /// when the search is empty; bind the key to `backspace` instead to only delete.
     branch_select: HashMap<KeyChord, Command>,
 }
 
+/// The `[keys]` section as written, before it is layered over the defaults.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-struct RawKeysConfig {
+pub(crate) struct RawKeysConfig {
     general: HashMap<String, String>,
     text_edit: HashMap<String, String>,
     list_navigation: HashMap<String, String>,
@@ -360,6 +373,68 @@ struct RawKeysConfig {
     repo_select: HashMap<String, String>,
     branch_select: HashMap<String, String>,
 }
+
+impl RawKeysConfig {
+    fn into_layers(self) -> [(KeyLayer, HashMap<String, String>); 6] {
+        [
+            (KeyLayer::General, self.general),
+            (KeyLayer::TextEdit, self.text_edit),
+            (KeyLayer::ListNavigation, self.list_navigation),
+            (KeyLayer::Modal, self.modal),
+            (KeyLayer::RepoSelect, self.repo_select),
+            (KeyLayer::BranchSelect, self.branch_select),
+        ]
+    }
+}
+
+/// A section of [`KeysConfig`], named as in the `[keys]` config section.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyLayer {
+    General,
+    TextEdit,
+    ListNavigation,
+    Modal,
+    RepoSelect,
+    BranchSelect,
+}
+
+impl KeyLayer {
+    pub const ALL: [Self; 6] = [
+        Self::General,
+        Self::TextEdit,
+        Self::ListNavigation,
+        Self::Modal,
+        Self::RepoSelect,
+        Self::BranchSelect,
+    ];
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::General => "general",
+            Self::TextEdit => "text_edit",
+            Self::ListNavigation => "list_navigation",
+            Self::Modal => "modal",
+            Self::RepoSelect => "repo_select",
+            Self::BranchSelect => "branch_select",
+        }
+    }
+
+    /// The commands a binding in this section may name.
+    pub const fn allowed(self) -> &'static [Command] {
+        match self {
+            Self::General => GENERAL,
+            Self::TextEdit => TEXT_EDIT,
+            Self::ListNavigation => LIST_NAVIGATION,
+            Self::Modal => MODAL,
+            Self::RepoSelect => REPO_SELECT,
+            Self::BranchSelect => BRANCH_SELECT,
+        }
+    }
+}
+
+/// A binding a product adds to kiosk's defaults: the section it goes in, its chord as
+/// the config writes chords, and its command.
+pub type KeyBinding = (KeyLayer, &'static str, Command);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BindingMode {
@@ -439,19 +514,11 @@ fn map(entries: &[(&str, Command)]) -> HashMap<KeyChord, Command> {
         .collect()
 }
 
-pub fn default_keys_toml() -> String {
-    let keys = KeysConfig::default();
-    let sections = [
-        ("general", &keys.general),
-        ("text_edit", &keys.text_edit),
-        ("list_navigation", &keys.list_navigation),
-        ("modal", &keys.modal),
-        ("repo_select", &keys.repo_select),
-        ("branch_select", &keys.branch_select),
-    ];
+/// `keys`' bindings as a TOML block for the config reference.
+pub fn default_keys_toml(keys: &KeysConfig) -> String {
     let mut output = String::from("```toml\n");
-    for (name, bindings) in sections {
-        let _ = writeln!(output, "[keys.{name}]");
+    for (layer, bindings) in keys.layers() {
+        let _ = writeln!(output, "[keys.{}]", layer.name());
         let mut bindings = bindings.iter().collect::<Vec<_>>();
         bindings.sort_by(|(left_key, left_command), (right_key, right_command)| {
             config_key_name(left_key)
@@ -510,19 +577,84 @@ fn escape_toml_string(value: &str) -> String {
 }
 
 impl KeysConfig {
-    fn from_raw(raw: RawKeysConfig) -> Result<Self, String> {
+    /// kiosk's default bindings with `product`'s over them.
+    pub fn for_product(product: &Product) -> Result<Self, String> {
+        Self::from_raw(RawKeysConfig::default(), product)
+    }
+
+    /// The user's bindings over `product`'s, over kiosk's defaults.
+    pub(crate) fn from_raw(raw: RawKeysConfig, product: &Product) -> Result<Self, String> {
         let mut keys = Self::default();
-        extend_layer(&mut keys.general, raw.general, GENERAL)?;
-        extend_layer(&mut keys.text_edit, raw.text_edit, TEXT_EDIT)?;
-        extend_layer(
-            &mut keys.list_navigation,
-            raw.list_navigation,
-            LIST_NAVIGATION,
-        )?;
-        extend_layer(&mut keys.modal, raw.modal, MODAL)?;
-        extend_layer(&mut keys.repo_select, raw.repo_select, REPO_SELECT)?;
-        extend_layer(&mut keys.branch_select, raw.branch_select, BRANCH_SELECT)?;
+        for &(layer, chord, command) in product.keys {
+            parse_chord(chord)
+                .and_then(|parsed| keys.bind(layer, parsed, command))
+                .map_err(|error| format!("{}'s default keys: {error}", product.name))?;
+        }
+        for (layer, bindings) in raw.into_layers() {
+            // Spellings of one chord, such as `C-b` and `ctrl+b`, would otherwise race in
+            // the map's arbitrary order.
+            let mut written: HashMap<KeyChord, (String, Command)> = HashMap::new();
+            for (chord, action) in bindings {
+                let parsed = parse_chord(&chord)?;
+                let command = action.parse()?;
+                if let Some((earlier, earlier_command)) =
+                    written.insert(parsed, (chord.clone(), command))
+                    && earlier_command != command
+                {
+                    return Err(format!(
+                        "'{earlier}' and '{chord}' in [keys.{}] are the same key bound to different actions",
+                        layer.name()
+                    ));
+                }
+                keys.bind(layer, parsed, command)?;
+            }
+        }
         Ok(keys)
+    }
+
+    fn bind(&mut self, layer: KeyLayer, parsed: KeyChord, command: Command) -> Result<(), String> {
+        if !layer.allowed().contains(&command) {
+            return Err(format!(
+                "key action '{}' is not allowed in [keys.{}]",
+                command.name(),
+                layer.name()
+            ));
+        }
+        self.layer_mut(layer).insert(parsed, command);
+        Ok(())
+    }
+
+    fn layers(&self) -> [(KeyLayer, &HashMap<KeyChord, Command>); 6] {
+        KeyLayer::ALL.map(|layer| (layer, self.layer(layer)))
+    }
+
+    const fn layer(&self, layer: KeyLayer) -> &HashMap<KeyChord, Command> {
+        match layer {
+            KeyLayer::General => &self.general,
+            KeyLayer::TextEdit => &self.text_edit,
+            KeyLayer::ListNavigation => &self.list_navigation,
+            KeyLayer::Modal => &self.modal,
+            KeyLayer::RepoSelect => &self.repo_select,
+            KeyLayer::BranchSelect => &self.branch_select,
+        }
+    }
+
+    /// Parses a `[keys]` section's contents for `TEST_PRODUCT`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn from_toml(contents: &str) -> Result<Self, String> {
+        let raw = toml::from_str(contents).map_err(|error| error.to_string())?;
+        Self::from_raw(raw, &crate::product::TEST_PRODUCT)
+    }
+
+    fn layer_mut(&mut self, layer: KeyLayer) -> &mut HashMap<KeyChord, Command> {
+        match layer {
+            KeyLayer::General => &mut self.general,
+            KeyLayer::TextEdit => &mut self.text_edit,
+            KeyLayer::ListNavigation => &mut self.list_navigation,
+            KeyLayer::Modal => &mut self.modal,
+            KeyLayer::RepoSelect => &mut self.repo_select,
+            KeyLayer::BranchSelect => &mut self.branch_select,
+        }
     }
 
     /// The chords the text-editing bindings act on.
@@ -565,19 +697,13 @@ impl KeysConfig {
     /// Every chord bound to a command in any layer, so a frontend can claim them before
     /// its host's own shortcuts do.
     pub fn all_chords(&self) -> Vec<KeyChord> {
-        let mut chords = [
-            &self.general,
-            &self.text_edit,
-            &self.list_navigation,
-            &self.modal,
-            &self.repo_select,
-            &self.branch_select,
-        ]
-        .into_iter()
-        .flatten()
-        .filter(|(_, command)| **command != Command::Noop)
-        .map(|(chord, _)| *chord)
-        .collect::<Vec<_>>();
+        let mut chords = self
+            .layers()
+            .into_iter()
+            .flat_map(|(_, bindings)| bindings)
+            .filter(|(_, command)| **command != Command::Noop)
+            .map(|(chord, _)| *chord)
+            .collect::<Vec<_>>();
         chords.sort_by_key(ToString::to_string);
         chords.dedup();
         chords
@@ -732,26 +858,14 @@ const BRANCH_SELECT: &[Command] = &[
     Command::Back,
     Command::NewBranch,
     Command::Delete,
+    Command::Backspace,
+    Command::BackspaceOrBack,
 ];
 
-fn extend_layer(
-    layer: &mut HashMap<KeyChord, Command>,
-    raw: HashMap<String, String>,
-    allowed: &[Command],
-) -> Result<(), String> {
-    for (key, action) in raw {
-        let chord = key
-            .parse::<KeyChord>()
-            .map_err(|error| format!("invalid key chord '{key}': {error}"))?;
-        let command = action.parse::<Command>()?;
-        if !allowed.contains(&command) {
-            return Err(format!(
-                "key action '{action}' is not allowed in this keys section"
-            ));
-        }
-        layer.insert(chord, command);
-    }
-    Ok(())
+fn parse_chord(chord: &str) -> Result<KeyChord, String> {
+    chord
+        .parse()
+        .map_err(|error| format!("invalid key chord '{chord}': {error}"))
 }
 
 const fn command_rank(command: Command) -> u8 {
@@ -765,31 +879,22 @@ const fn command_rank(command: Command) -> u8 {
         Command::MoveDown => 6,
         Command::Clear => 7,
         Command::Backspace => 8,
-        Command::DeleteForward => 9,
-        Command::DeleteWord => 10,
-        Command::DeleteWordForward => 11,
-        Command::DeleteToEnd => 12,
-        Command::CursorLeft => 13,
-        Command::CursorRight => 14,
-        Command::CursorWordLeft => 15,
-        Command::CursorWordRight => 16,
-        Command::CursorStart => 17,
-        Command::CursorEnd => 18,
-        Command::Help => 19,
-        Command::DismissToast => 20,
-        Command::ScanWarnings => 21,
-        Command::Quit => 22,
-        Command::Noop => 23,
-    }
-}
-
-impl<'de> Deserialize<'de> for KeysConfig {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let raw = RawKeysConfig::deserialize(deserializer)?;
-        Self::from_raw(raw).map_err(serde::de::Error::custom)
+        Command::BackspaceOrBack => 9,
+        Command::DeleteForward => 10,
+        Command::DeleteWord => 11,
+        Command::DeleteWordForward => 12,
+        Command::DeleteToEnd => 13,
+        Command::CursorLeft => 14,
+        Command::CursorRight => 15,
+        Command::CursorWordLeft => 16,
+        Command::CursorWordRight => 17,
+        Command::CursorStart => 18,
+        Command::CursorEnd => 19,
+        Command::Help => 20,
+        Command::DismissToast => 21,
+        Command::ScanWarnings => 22,
+        Command::Quit => 23,
+        Command::Noop => 24,
     }
 }
 
@@ -805,8 +910,7 @@ mod tests {
             Some(KeyChord::new(KeyCode::Up, KeyModifiers::NONE))
         );
         let keys =
-            toml::from_str::<KeysConfig>("[list_navigation]\nup = \"noop\"\ndown = \"noop\"")
-                .unwrap();
+            KeysConfig::from_toml("[list_navigation]\nup = \"noop\"\ndown = \"noop\"").unwrap();
         assert_eq!(
             keys.preferred_key(BindingMode::Choice, Command::MoveUp),
             Some(KeyChord::new(KeyCode::Char('p'), KeyModifiers::CONTROL))
@@ -815,7 +919,7 @@ mod tests {
 
     #[test]
     fn preferred_key_shows_a_chord_before_a_letter_a_search_would_type() {
-        let keys = toml::from_str::<KeysConfig>("[general]\nq = \"quit\"").unwrap();
+        let keys = KeysConfig::from_toml("[general]\nq = \"quit\"").unwrap();
         assert_eq!(
             keys.preferred_key(BindingMode::Branch, Command::Quit),
             Some(KeyChord::new(KeyCode::Char('c'), KeyModifiers::CONTROL))
@@ -824,8 +928,7 @@ mod tests {
             keys.preferred_key(BindingMode::Repo, Command::Quit),
             Some(KeyChord::new(KeyCode::Esc, KeyModifiers::NONE))
         );
-        let keys =
-            toml::from_str::<KeysConfig>("[general]\nq = \"quit\"\n\"C-c\" = \"noop\"").unwrap();
+        let keys = KeysConfig::from_toml("[general]\nq = \"quit\"\n\"C-c\" = \"noop\"").unwrap();
         assert_eq!(
             keys.preferred_key(BindingMode::Branch, Command::Quit),
             Some(KeyChord::new(KeyCode::Char('q'), KeyModifiers::NONE)),
@@ -858,28 +961,80 @@ mod tests {
     #[test]
     fn rejects_invalid_chords_and_unknown_actions() {
         let bad_chord =
-            toml::from_str::<KeysConfig>("[branch_select]\n\"Hyper-Nope\" = \"new_branch\"")
-                .unwrap_err()
-                .to_string();
+            KeysConfig::from_toml("[branch_select]\n\"Hyper-Nope\" = \"new_branch\"").unwrap_err();
         assert!(bad_chord.contains("invalid key chord"));
         let bad_action =
-            toml::from_str::<KeysConfig>("[branch_select]\n\"C-b\" = \"launch_missiles\"")
-                .unwrap_err()
-                .to_string();
+            KeysConfig::from_toml("[branch_select]\n\"C-b\" = \"launch_missiles\"").unwrap_err();
         assert!(bad_action.contains("unknown key action"));
         let shifted_number =
-            toml::from_str::<KeysConfig>("[repo_select]\n\"S-1\" = \"branches_view\"")
-                .unwrap_err()
-                .to_string();
+            KeysConfig::from_toml("[repo_select]\n\"S-1\" = \"branches_view\"").unwrap_err();
         assert!(shifted_number.contains("bind the resulting character directly"));
+    }
+
+    const BACKSPACE_OR_BACK_PRODUCT: Product = Product {
+        keys: &[(
+            KeyLayer::BranchSelect,
+            "backspace",
+            Command::BackspaceOrBack,
+        )],
+        ..crate::product::TEST_PRODUCT
+    };
+
+    #[test]
+    fn product_keys_sit_over_the_defaults_and_under_the_users() {
+        let backspace = "backspace".parse().unwrap();
+        let product = KeysConfig::for_product(&BACKSPACE_OR_BACK_PRODUCT).unwrap();
+        assert_eq!(
+            product.command_for(BindingMode::Branch, backspace),
+            Some(Command::BackspaceOrBack)
+        );
+        assert_eq!(
+            product.command_for(BindingMode::Repo, backspace),
+            Some(Command::Backspace)
+        );
+        let raw = toml::from_str("[branch_select]\nbackspace = \"backspace\"").unwrap();
+        let user = KeysConfig::from_raw(raw, &BACKSPACE_OR_BACK_PRODUCT).unwrap();
+        assert_eq!(
+            user.command_for(BindingMode::Branch, backspace),
+            Some(Command::Backspace)
+        );
+    }
+
+    #[test]
+    fn a_product_key_must_be_allowed_where_it_is_bound() {
+        let product = Product {
+            keys: &[(KeyLayer::General, "backspace", Command::BackspaceOrBack)],
+            ..crate::product::TEST_PRODUCT
+        };
+        let error = KeysConfig::for_product(&product).unwrap_err();
+        assert!(error.contains("kiosk-test's default keys"), "{error}");
+        assert!(error.contains("not allowed in [keys.general]"), "{error}");
+    }
+
+    #[test]
+    fn two_spellings_of_a_key_may_not_disagree_within_a_section() {
+        let error =
+            KeysConfig::from_toml("[branch_select]\n\"C-b\" = \"open\"\n\"ctrl+b\" = \"back\"")
+                .unwrap_err();
+        assert!(
+            error.contains("same key bound to different actions"),
+            "{error}"
+        );
+        assert!(error.contains("[keys.branch_select]"), "{error}");
+        let agreeing =
+            KeysConfig::from_toml("[branch_select]\n\"C-b\" = \"open\"\n\"ctrl+b\" = \"open\"")
+                .unwrap();
+        assert_eq!(
+            agreeing.command_for(BindingMode::Branch, "C-b".parse().unwrap()),
+            Some(Command::Open)
+        );
     }
 
     #[test]
     fn user_keys_merge_with_defaults_and_override_matching_chords() {
-        let keys = toml::from_str::<KeysConfig>(
-            "[branch_select]\n\"C-b\" = \"new_branch\"\n\"C-o\" = \"noop\"",
-        )
-        .unwrap();
+        let keys =
+            KeysConfig::from_toml("[branch_select]\n\"C-b\" = \"new_branch\"\n\"C-o\" = \"noop\"")
+                .unwrap();
         assert_eq!(
             keys.command_for(BindingMode::Branch, "C-b".parse().unwrap()),
             Some(Command::NewBranch)
@@ -896,10 +1051,9 @@ mod tests {
 
     #[test]
     fn help_rows_are_derived_from_overridden_bindings() {
-        let keys = toml::from_str::<KeysConfig>(
-            "[branch_select]\n\"C-b\" = \"new_branch\"\n\"C-o\" = \"noop\"",
-        )
-        .unwrap();
+        let keys =
+            KeysConfig::from_toml("[branch_select]\n\"C-b\" = \"new_branch\"\n\"C-o\" = \"noop\"")
+                .unwrap();
         let rendered = keys
             .sections(BindingMode::Branch)
             .into_iter()

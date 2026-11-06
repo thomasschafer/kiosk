@@ -18,4 +18,5 @@ toml.workspace = true
 workspace = true
 
 [dev-dependencies]
+kiosk-core = { workspace = true, features = ["test-support"] }
 serde.workspace = true

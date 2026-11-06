@@ -245,7 +245,7 @@ mod tests {
 
     #[test]
     fn modal_hints_follow_effective_remapped_bindings() {
-        let keys = toml::from_str::<KeysConfig>(
+        let keys = KeysConfig::from_toml(
             "[general]\n\"C-c\" = \"noop\"\n\"C-q\" = \"quit\"\n[modal]\nenter = \"noop\"\nesc = \"noop\"\n\"C-y\" = \"open\"\n\"C-g\" = \"back\"",
         )
         .unwrap();

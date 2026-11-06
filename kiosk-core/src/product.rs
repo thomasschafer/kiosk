@@ -1,5 +1,7 @@
-//! What distinguishes one kiosk product from another outside its backend: its name and
-//! where it keeps its files.
+//! What distinguishes one kiosk product from another outside its backend: its name,
+//! where it keeps its files and the key bindings it adds.
+
+use crate::config::keys::KeyBinding;
 
 /// A kiosk product, such as the herdr plugin or the tmux picker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19,6 +21,9 @@ pub struct Product {
     pub no_backend_message: &'static str,
     /// The setup wizard's one-sentence description of what the product does.
     pub setup_intro: &'static str,
+    /// Bindings the product adds to kiosk's default keys. The user's own bindings still
+    /// replace them.
+    pub keys: &'static [KeyBinding],
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -29,4 +34,5 @@ pub const TEST_PRODUCT: Product = Product {
     backend_name: "the test backend",
     no_backend_message: "no test backend",
     setup_intro: "Pick repositories and branches in tests.",
+    keys: &[],
 };

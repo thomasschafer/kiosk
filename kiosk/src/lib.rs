@@ -16,4 +16,5 @@ pub const PRODUCT: Product = Product {
     backend_name: "tmux",
     no_backend_message: "tmux is not available",
     setup_intro: "Pick repositories and branches, and open them in tmux sessions.",
+    keys: &[],
 };

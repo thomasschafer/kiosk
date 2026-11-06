@@ -94,7 +94,7 @@ fn hints(hints: &[Hint]) -> Vec<(&str, &str)> {
 }
 
 fn keys(toml: &str) -> KeysConfig {
-    toml::from_str(toml).unwrap()
+    KeysConfig::from_toml(toml).unwrap()
 }
 
 #[test]

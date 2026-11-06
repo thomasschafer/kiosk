@@ -626,18 +626,12 @@ impl KeysConfig {
     /// obvious binding to show; then function keys, which laptops often hide behind `fn`;
     /// then plain characters, which a search types instead while it has text.
     pub fn preferred_key(&self, mode: BindingMode, wanted: Command) -> Option<KeyChord> {
-        let rank = |key: &KeyChord| match (key.modifiers == KeyModifiers::NONE, key.code) {
-            (true, KeyCode::Char(_)) => 3,
-            (_, KeyCode::F(_)) => 2,
-            (true, _) => 0,
-            (false, _) => 1,
-        };
         self.sections(mode)
             .into_iter()
             .flat_map(|section| section.bindings)
             .filter_map(|(key, command)| (command == wanted).then_some(key))
             .enumerate()
-            .min_by_key(|(order, key)| (rank(key), *order))
+            .min_by_key(|(order, key)| (key_preference(key), *order))
             .map(|(_, key)| key)
     }
 
@@ -688,6 +682,17 @@ impl KeysConfig {
             }
         }
         sections
+    }
+}
+
+/// How readily a key is offered for its command, lowest first (see
+/// [`KeysConfig::preferred_key`]).
+pub fn key_preference(key: &KeyChord) -> u8 {
+    match (key.modifiers == KeyModifiers::NONE, key.code) {
+        (true, KeyCode::Char(_)) => 3,
+        (_, KeyCode::F(_)) => 2,
+        (true, _) => 0,
+        (false, _) => 1,
     }
 }
 

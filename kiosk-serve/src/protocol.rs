@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 
 /// Bumped whenever a message changes shape, so a frontend and a picker from different
 /// versions refuse each other rather than misread each other.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Refuses a client that speaks another version of the protocol, saying which to update.
 pub fn check_client(protocol: u32) -> anyhow::Result<()> {

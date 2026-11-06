@@ -351,7 +351,7 @@ pub struct HelpView {
     pub query: Query,
     /// Explains that a notification is in front of the bindings listed.
     pub notice: Option<&'static str>,
-    /// Such as `12 bindings (esc: close)`.
+    /// Such as `12 commands (esc: close)`.
     pub summary: String,
     /// The entries in view.
     pub entries: Vec<HelpEntry>,
@@ -376,7 +376,8 @@ pub enum HelpEntry {
         position: usize,
         /// Which binding it is (see [`item_id`]), which a click names alongside its position.
         id: String,
-        key: String,
+        /// Every key that runs `command` here, in the order to show them.
+        keys: Vec<String>,
         description: &'static str,
         command: &'static str,
     },
@@ -844,7 +845,7 @@ enum ItemId<'a> {
     },
     Help {
         index: usize,
-        key: &'a str,
+        command: &'a str,
     },
 }
 
@@ -928,7 +929,7 @@ fn choice_id(repo: &Path, prompt: &RemoteBranchPrompt, choice: &RemoteBranchChoi
 fn help_id(index: usize, row: &crate::state::HelpBindingRow) -> String {
     ItemId::Help {
         index,
-        key: &row.key_display,
+        command: row.command_name,
     }
     .encode()
 }
@@ -1293,7 +1294,7 @@ pub fn help_entries(overlay: &HelpOverlayState) -> Vec<HelpEntry> {
         entries.push(HelpEntry::Binding {
             position,
             id: help_id(*row_index, row),
-            key: row.key_display.clone(),
+            keys: row.keys.clone(),
             description: row.description,
             command: row.command_name,
         });
@@ -1341,7 +1342,7 @@ pub fn scroll_help(
 }
 
 pub fn help_summary(matching: usize) -> String {
-    format!("{matching} bindings (esc: close)")
+    format!("{matching} commands (esc: close)")
 }
 
 fn help_view(

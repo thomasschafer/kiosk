@@ -563,21 +563,28 @@ export default class Kiosk extends View {
 
   // The dialog's whole area is this mod's, though the panel only fills its top: a click on
   // the rest is a click beside the picker, which closes it as one beside the dialog would.
+  // That click is caught below the element holding the keyboard, as GPUI also clicks a
+  // focused element when space is pressed, and space is typed into the search.
   render() {
     this.fitViewport();
     const t = theme();
-    let root = v_flex().id("kiosk").key_context(CONTEXT).track_focus(this.handle).size_full().min_h(0).relative()
-      .items_center().text_size(13).text_color(t.foreground)
-      .on_key_down((e, cx) => this.key(e, cx))
-      .on_click((_e, cx) => { cx.stop_propagation(); this.finish(); });
+    let root = v_flex().id("kiosk").key_context(CONTEXT).track_focus(this.handle).size_full().min_h(0)
+      .text_size(13).text_color(t.foreground)
+      .on_key_down((e, cx) => this.key(e, cx));
     for (const keystroke of this.chords) {
       root = root.on_action(`kiosk.key:${keystroke}`, () => this.send({ t: "key", keystroke, key_char: null }));
     }
+    const beside = v_flex().id("kiosk-beside").size_full().min_h(0).relative().items_center()
+      .on_click((_e, cx) => { cx.stop_propagation(); this.finish(); });
+    return root.child(beside.child(this.screen(t)));
+  }
+
+  screen(t) {
     const v = this.view;
-    if (!v) return root.child(this.message(t, spinner(t), this.status));
-    if (v.screen === "setup") return root.child(this.setup(t, v));
-    if (v.screen === "no_search_dirs") return root.child(this.noSearchDirs(t, v));
-    return root.child(this.picker(t, v));
+    if (!v) return this.message(t, spinner(t), this.status);
+    if (v.screen === "setup") return this.setup(t, v);
+    if (v.screen === "no_search_dirs") return this.noSearchDirs(t, v);
+    return this.picker(t, v);
   }
 
   // A panel with one centred line of news, such as the picker starting.

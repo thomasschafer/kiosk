@@ -59,7 +59,8 @@ wrong.
   tab says so and offers the current diff.
 - The `Backend` trait stays: its generics are mostly contained in `spawn.rs`, the worktree
   backend and the pickers, the test mock relies on it, and the new tabs mostly talk to git.
-  `NativeWorktrees` has no implementation left and can go as a small cleanup.
+  `NativeWorktrees` has no production implementation left and can go as a small cleanup,
+  along with the mock backend's implementation and the tests of native worktree operations.
 
 ## Phases
 

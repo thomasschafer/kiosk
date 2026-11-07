@@ -29,3 +29,6 @@ Examples: `nix develop -c cargo test`, `nix develop -c cargo run`, `nix develop 
 
 ## Running kiosk in the app
 `scripts/app-sandbox` runs the released Herdr app headless in Docker and drives kiosk there; see its README. Prefer it to the person's own app, whose mods and config it leaves alone.
+
+## Plan
+`docs/dev/plan.md` is the working plan for kiosk's tabs, diff viewer and explain view: read it before working on them, tick off what a PR does, and change it when it's wrong.

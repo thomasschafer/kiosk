@@ -291,7 +291,7 @@ fn route(state: &AppState) -> Result<NewBranchRoute, &'static str> {
     let Mode::BranchSelect(context) = &state.mode else {
         return Err("New branches can only be created from the branch view");
     };
-    if state.branch_view.loading {
+    if state.branch_view.is_loading() {
         return Err("Branches are still loading");
     }
     let name = state.branch_view.list.input.text.clone();
@@ -306,7 +306,7 @@ fn route(state: &AppState) -> Result<NewBranchRoute, &'static str> {
     {
         return Ok(NewBranchRoute::Existing(branch.clone()));
     }
-    let remotes_pending = state.branch_view.fetching_remote_repo.is_some();
+    let remotes_pending = state.branch_view.is_fetching_remotes();
     if let Some(prompt) =
         RemoteBranchPrompt::new(name.clone(), remote_matches(state, &name), remotes_pending)
     {
@@ -338,7 +338,7 @@ pub(crate) fn refresh_remote_prompt(state: &mut AppState) {
         return;
     };
     let matches = remote_matches(state, prompt.name());
-    let pending = state.branch_view.fetching_remote_repo.is_some();
+    let pending = state.branch_view.is_fetching_remotes();
     if let Mode::ConfirmRemoteBranch { prompt, .. } = &mut state.mode {
         prompt.refresh(matches, pending);
     }

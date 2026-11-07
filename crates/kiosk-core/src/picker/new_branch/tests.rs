@@ -18,8 +18,8 @@ use crate::{
     product::TEST_PRODUCT,
     spawn::EventSender,
     state::{
-        AppState, BranchCheckout, BranchContext, BranchEntry, Mode, OpenCheckoutLoadState,
-        RemoteBranchChoice, SearchableList,
+        AppState, BranchCheckout, BranchContext, BranchEntry, BranchLoad, Mode, RemoteBranchChoice,
+        SearchableList,
     },
 };
 
@@ -52,10 +52,6 @@ fn state_with_branch(has_worktree: bool) -> AppState {
         remote: None,
     }];
     state.branch_view.list = SearchableList::new(1);
-    state.branch_view.open_checkout_load_state = OpenCheckoutLoadState::Loaded {
-        repo_path: "/repo".into(),
-        generation: state.branch_view.generation,
-    };
     state
 }
 
@@ -215,12 +211,15 @@ fn new_branch_before_local_load_stays_in_branch_view_then_works_after_load() {
     state.branch_view.list = SearchableList::new(0);
     state.branch_view.list.input.text = "feat/new".into();
     state.branch_view.list.input.cursor = "feat/new".len();
-    state.branch_view.loading = true;
+    state.branch_view.set_load(
+        state.branch_view.generation(),
+        BranchLoad::Loading { reselect: None },
+    );
 
     start::<MockBackend>(&mut state, &git, None, &sender);
 
     assert!(matches!(state.mode, Mode::BranchSelect(_)));
-    assert!(state.branch_view.loading);
+    assert!(state.branch_view.is_loading());
     assert!(
         state
             .toasts
@@ -231,7 +230,12 @@ fn new_branch_before_local_load_stays_in_branch_view_then_works_after_load() {
     );
     assert!(rx.try_recv().is_err());
 
-    state.branch_view.loading = false;
+    state.branch_view.set_load(
+        state.branch_view.generation(),
+        BranchLoad::Ready {
+            fetching_remotes: false,
+        },
+    );
     start::<MockBackend>(&mut state, &git, None, &sender);
 
     assert!(matches!(state.mode, Mode::ValidatingNewBranch { .. }));
@@ -421,7 +425,12 @@ fn pending_remotes_without_a_match_ask_before_creating() {
     let (sender, rx) = sender();
     let worker = FilterWorker::spawn(sender.clone());
     let mut state = state_with_remote_branches("feat/x", &[]);
-    state.branch_view.fetching_remote_repo = Some("/repo".into());
+    state.branch_view.set_load(
+        state.branch_view.generation(),
+        BranchLoad::Ready {
+            fetching_remotes: true,
+        },
+    );
 
     start::<MockBackend>(&mut state, &git, None, &sender);
 
@@ -455,7 +464,12 @@ fn pending_remotes_with_a_match_offer_tracking_and_note_the_pending_fetch() {
     let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
     let (sender, _rx) = sender();
     let mut state = state_with_remote_branches("feat/x", &["origin"]);
-    state.branch_view.fetching_remote_repo = Some("/repo".into());
+    state.branch_view.set_load(
+        state.branch_view.generation(),
+        BranchLoad::Ready {
+            fetching_remotes: true,
+        },
+    );
 
     start::<MockBackend>(&mut state, &git, None, &sender);
 
@@ -470,7 +484,12 @@ fn pending_remotes_with_a_match_offer_tracking_and_note_the_pending_fetch() {
 fn existing_local_branch_opens_even_while_remotes_are_loading() {
     let mut state = state_with_branch(false);
     state.branch_view.list.input.text = "feature".into();
-    state.branch_view.fetching_remote_repo = Some("/repo".into());
+    state.branch_view.set_load(
+        state.branch_view.generation(),
+        BranchLoad::Ready {
+            fetching_remotes: true,
+        },
+    );
 
     assert!(matches!(
         route(&state),
@@ -595,17 +614,29 @@ fn remote_prompt_rejects_branches_with_a_different_name() {
     );
 }
 
-fn fetch_completed(state: &mut AppState, remote: &str, branches: Vec<BranchEntry>, is_final: bool) {
-    let generation = state.branch_view.generation;
+fn fetch_completed(state: &mut AppState, remote: &str, branches: Vec<BranchEntry>) {
+    let generation = state.branch_view.generation();
     process_app_event(
         AppEvent::GitFetchCompleted {
-            remote: Some(remote.into()),
+            remote: remote.into(),
             branches,
             repo_path: "/repo".into(),
             generation,
             error: None,
-            is_final,
             skipped_unsupported_refs: false,
+        },
+        state,
+        &mut TickChanges::default(),
+    );
+}
+
+fn fetches_finished(state: &mut AppState) {
+    let generation = state.branch_view.generation();
+    process_app_event(
+        AppEvent::GitFetchesFinished {
+            repo_path: "/repo".into(),
+            generation,
+            error: None,
         },
         state,
         &mut TickChanges::default(),
@@ -617,12 +648,16 @@ fn an_open_remote_prompt_takes_in_branches_that_arrive_and_keeps_its_selection()
     let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
     let (sender, _rx) = sender();
     let mut state = state_with_remote_branches("feat/x", &[]);
-    state.branch_view.fetching_remote_repo = Some("/repo".into());
+    state.branch_view.set_load(
+        state.branch_view.generation(),
+        BranchLoad::Ready {
+            fetching_remotes: true,
+        },
+    );
     fetch_completed(
         &mut state,
         "origin-a",
         vec![remote_branch("feat/x", "origin-a")],
-        false,
     );
     start::<MockBackend>(&mut state, &git, None, &sender);
     assert_eq!(prompt_labels(&state), ["origin-a/feat/x", "<create>"]);
@@ -632,8 +667,8 @@ fn an_open_remote_prompt_takes_in_branches_that_arrive_and_keeps_its_selection()
         &mut state,
         "origin-b",
         vec![remote_branch("feat/x", "origin-b")],
-        true,
     );
+    fetches_finished(&mut state);
 
     assert_eq!(
         prompt_labels(&state),
@@ -654,10 +689,16 @@ fn a_remote_prompt_opened_while_loading_stops_waiting_when_nothing_matches() {
     let git: Arc<dyn GitProvider> = Arc::new(MockGitProvider::default());
     let (sender, _rx) = sender();
     let mut state = state_with_remote_branches("feat/x", &[]);
-    state.branch_view.fetching_remote_repo = Some("/repo".into());
+    state.branch_view.set_load(
+        state.branch_view.generation(),
+        BranchLoad::Ready {
+            fetching_remotes: true,
+        },
+    );
     start::<MockBackend>(&mut state, &git, None, &sender);
 
-    fetch_completed(&mut state, "origin", Vec::new(), true);
+    fetch_completed(&mut state, "origin", Vec::new());
+    fetches_finished(&mut state);
 
     assert_eq!(prompt_labels(&state), ["<create>"]);
     let Mode::ConfirmRemoteBranch { prompt, .. } = &state.mode else {

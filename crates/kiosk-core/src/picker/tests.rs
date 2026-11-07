@@ -4,9 +4,7 @@ use crate::{
     backend::mock::MockBackend,
     git::{Repo, mock::MockGitProvider},
     product::TEST_PRODUCT,
-    state::{
-        BranchCheckout, BranchContext, BranchEntry, BranchId, OpenCheckoutLoadState, RepoEntry,
-    },
+    state::{BranchCheckout, BranchContext, BranchEntry, BranchId, OpenCheckouts, RepoEntry},
 };
 
 use super::*;
@@ -256,10 +254,9 @@ fn state_with_branch(has_worktree: bool) -> AppState {
         remote: None,
     }];
     state.branch_view.list = SearchableList::new(1);
-    state.branch_view.open_checkout_load_state = OpenCheckoutLoadState::Loaded {
-        repo_path: "/repo".into(),
-        generation: state.branch_view.generation,
-    };
+    state
+        .branch_view
+        .set_open_checkouts(OpenCheckouts::Loaded(Vec::new()));
     state
 }
 

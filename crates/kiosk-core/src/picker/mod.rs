@@ -24,6 +24,7 @@ use crate::{
     event::{AppEvent, FilterKey, FilterTarget},
     git::{GitProvider, Repo},
     keyboard::Action,
+    product::Product,
     spawn::{
         EventSender, FetchDeduplicator, spawn_annotation_poller, spawn_current_repo_resolution,
         spawn_git_fetch, spawn_open_folders, spawn_open_repos, spawn_remote_branch_loading,
@@ -58,6 +59,7 @@ pub struct Picker<B: Backend> {
     receiver: mpsc::Receiver<AppEvent>,
     filter_worker: FilterWorker,
     fetch_deduplicator: FetchDeduplicator,
+    product: &'static Product,
 }
 
 /// What one [`Picker::tick`] did.
@@ -98,6 +100,7 @@ impl<B: Backend> Picker<B> {
             receiver,
             filter_worker,
             fetch_deduplicator: FetchDeduplicator::default(),
+            product: state.product,
         }
     }
 
@@ -154,7 +157,7 @@ impl<B: Backend> Picker<B> {
             );
         }
         if let Some(repo) = changes.refresh_branch.take() {
-            branch::refresh(state, &self.git, self.backend.as_ref(), &self.sender, repo);
+            branch::load(state, &self.git, self.backend.as_ref(), &self.sender, repo);
         }
         if changes.resume_pending_deletes {
             delete::resume(state, &self.git, self.backend.as_ref(), &self.sender);
@@ -231,12 +234,22 @@ impl<B: Backend> Picker<B> {
 impl<B: Backend> Drop for Picker<B> {
     /// Stops lookups, and waits for operations under way so the picker never stops halfway
     /// through opening or removing something.
+    ///
+    /// Removals still hand their saved records back while it waits, as a removal waits on
+    /// the [`crate::event::CloseGate`] it sends, and a record left behind would resume the
+    /// removal on a later checkout of the same branch at that path.
     fn drop(&mut self) {
         self.sender.cancel();
-        // A removal waits on the `CloseGate` it sent here; dropping the events still queued
-        // drops their gates, and with the receiver gone later sends fail and drop theirs.
-        drop(std::mem::replace(&mut self.receiver, mpsc::channel().1));
-        self.sender.operations().wait();
+        let operations = self.sender.operations();
+        while !operations.is_idle() {
+            if let Ok(event) = self.receiver.recv_timeout(Duration::from_millis(10)) {
+                delete::settle_after_stop(event, self.product);
+            }
+        }
+        for event in self.receiver.try_iter() {
+            delete::settle_after_stop(event, self.product);
+        }
+        operations.wait();
     }
 }
 
@@ -519,7 +532,12 @@ pub(crate) fn process_action<B: Backend>(
         Action::ConfirmDeleteWorktree => {
             delete::confirm(state, git, backend, sender);
         }
-        Action::CancelOverlay => cancel_overlay(state),
+        Action::CancelOverlay => {
+            cancel_overlay(state);
+            // Saved removals are only resumed from the branch list itself, so any that
+            // became ready while a dialog was open are resumed on returning to it.
+            delete::resume(state, git, backend, sender);
+        }
         Action::BackToRepos => {
             branch::leave(state);
             repo::queue_filter(state, filter_worker, true);

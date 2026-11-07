@@ -6,7 +6,8 @@
 //! come back on a pipe, prints them as one JSON line and exits, so the frontend's run
 //! finishes at once. The frontend then connects and presents the secret within
 //! [`ACCEPT_TIMEOUT`]. The background copy takes exactly one connection: once a client has
-//! presented the secret it stops listening, and it exits when that client goes.
+//! presented the secret it stops listening, and it exits when that client goes. If none
+//! does in time, as when the frontend closed before it connected, it exits quietly.
 
 use std::{
     ffi::OsString,
@@ -20,7 +21,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::protocol::{ClientMessage, PROTOCOL_VERSION};
@@ -212,19 +213,19 @@ impl Listening {
 
     /// Waits until `timeout` for a client that presents the secret, refusing any that does
     /// not, and stops listening once one has. Returns the client's connection and the
-    /// protocol it speaks.
-    pub fn accept(self, timeout: Duration) -> Result<Accepted> {
+    /// protocol it speaks, or `None` if no client presented the secret in time.
+    pub fn accept(self, timeout: Duration) -> Result<Option<Accepted>> {
         let deadline = Instant::now() + timeout;
         self.listener.set_nonblocking(true)?;
         loop {
             if Instant::now() >= deadline {
-                bail!("no client connected within {} s", timeout.as_secs());
+                return Ok(None);
             }
             match self.listener.accept() {
                 Ok((stream, _)) => {
                     let hello_deadline = deadline.min(Instant::now() + HELLO_TIMEOUT);
                     if let Some(accepted) = self.verify(stream, hello_deadline) {
-                        return Ok(accepted);
+                        return Ok(Some(accepted));
                     }
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -354,7 +355,7 @@ mod tests {
             client.write_all(hello(&token).as_bytes()).unwrap();
             client
         });
-        let accepted = listening.accept(Duration::from_secs(5)).unwrap();
+        let accepted = listening.accept(Duration::from_secs(5)).unwrap().unwrap();
         let client = clients.join().unwrap();
         assert_eq!(
             accepted.stream.peer_addr().unwrap(),
@@ -381,8 +382,12 @@ mod tests {
             }
         });
         let started = Instant::now();
-        let error = listening.accept(Duration::from_millis(300)).unwrap_err();
-        assert!(error.to_string().contains("no client connected"), "{error}");
+        assert!(
+            listening
+                .accept(Duration::from_millis(300))
+                .unwrap()
+                .is_none()
+        );
         assert!(
             started.elapsed() < Duration::from_millis(1500),
             "gave up after {:?}",
@@ -394,8 +399,14 @@ mod tests {
     #[test]
     fn waiting_for_a_client_gives_up() {
         let listening = listen().unwrap();
-        let error = listening.accept(Duration::from_millis(50)).unwrap_err();
-        assert!(error.to_string().contains("no client connected"), "{error}");
+        let started = Instant::now();
+        assert!(
+            listening
+                .accept(Duration::from_millis(50))
+                .unwrap()
+                .is_none()
+        );
+        assert!(started.elapsed() >= Duration::from_millis(50));
     }
 
     #[test]

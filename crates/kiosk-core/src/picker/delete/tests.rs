@@ -21,7 +21,7 @@ use crate::{
     product::TEST_PRODUCT,
     spawn::EventSender,
     state::{
-        AppState, BranchCheckout, BranchContext, BranchEntry, Mode, OpenCheckoutLoadState,
+        AppState, BranchCheckout, BranchContext, BranchEntry, BranchLoad, Mode, OpenCheckouts,
         RepoEntry, SearchableList,
     },
 };
@@ -51,10 +51,9 @@ fn state_with_branch(has_worktree: bool) -> AppState {
         ..BranchEntry::local("feature")
     }];
     state.branch_view.list = SearchableList::new(1);
-    state.branch_view.open_checkout_load_state = OpenCheckoutLoadState::Loaded {
-        repo_path: "/repo".into(),
-        generation: state.branch_view.generation,
-    };
+    state
+        .branch_view
+        .set_open_checkouts(OpenCheckouts::Loaded(Vec::new()));
     state
 }
 
@@ -123,7 +122,7 @@ fn delete_before_open_state_load_is_refused() {
     let git_mock = Arc::new(MockGitProvider::default());
     let backend = MockBackend::native();
     let mut state = state_with_branch(true);
-    state.branch_view.open_checkout_load_state = OpenCheckoutLoadState::Unknown;
+    state.branch_view.set_open_checkouts(OpenCheckouts::Loading);
 
     begin(&mut state);
 
@@ -141,10 +140,7 @@ fn delete_before_open_state_load_is_refused() {
 #[test]
 fn delete_after_open_state_failure_is_refused() {
     let mut state = state_with_branch(true);
-    state.branch_view.open_checkout_load_state = OpenCheckoutLoadState::Failed {
-        repo_path: "/repo".into(),
-        generation: state.branch_view.generation,
-    };
+    state.branch_view.set_open_checkouts(OpenCheckouts::Failed);
 
     begin(&mut state);
 
@@ -405,11 +401,10 @@ fn managed_delete_of_an_open_checkout_removes_it_with_git_then_closes_its_sessio
 }
 
 #[test]
-fn a_managed_removal_still_closes_the_session_when_the_picker_stops_first() {
+fn a_managed_session_stays_open_when_its_gate_is_dropped_undecided() {
     let git = git_provider();
     let backend = Arc::new(MockBackend::managed(std::env::temp_dir()));
     queue_checkouts(&backend, Some("s_1"), 1);
-    backend.close_results.lock().unwrap().push_back(Ok(()));
     let (sender, rx) = sender();
     let mut state = state_with_branch(true);
 
@@ -419,18 +414,21 @@ fn a_managed_removal_still_closes_the_session_when_the_picker_stops_first() {
     drop(removed);
 
     let finished = rx.recv_timeout(Duration::from_secs(1)).unwrap();
-    assert!(matches!(
-        finished,
-        AppEvent::WorktreeRemovalFinished {
-            outcome: WorktreeRemovalOutcome::Removed { warning: None },
-            ..
-        }
-    ));
-    assert_eq!(
-        backend.calls().last(),
-        Some(&BackendCall::Close {
-            session: "s_1".into()
-        })
+    let AppEvent::WorktreeRemovalFinished {
+        outcome: WorktreeRemovalOutcome::Removed {
+            warning: Some(warning),
+        },
+        ..
+    } = &finished
+    else {
+        panic!("expected a removal with a warning, got {finished:?}");
+    };
+    assert!(warning.contains("left open"), "{warning}");
+    assert!(
+        !backend
+            .calls()
+            .iter()
+            .any(|call| matches!(call, BackendCall::Close { .. }))
     );
 }
 
@@ -457,15 +455,11 @@ fn dropping_the_picker_while_a_removal_waits_at_its_gate_lets_it_finish() {
     }
     // Long enough for the removal to queue its gate and wait on it.
     std::thread::sleep(Duration::from_millis(100));
-    let (dropped, on_drop) = mpsc::channel();
-    std::thread::spawn(move || {
-        drop(picker);
-        dropped.send(()).unwrap();
-    });
 
-    on_drop
-        .recv_timeout(Duration::from_secs(5))
-        .expect("dropping the picker returns");
+    assert_eq!(
+        drop_on_another_thread(picker, &state.delete.pending),
+        vec![]
+    );
     assert_eq!(
         backend.calls().last(),
         Some(&BackendCall::Close {
@@ -512,11 +506,9 @@ fn a_managed_session_stays_open_when_the_cleared_record_cannot_be_saved() {
 }
 
 #[test]
-fn post_deletion_refresh_rejects_old_final_fetch_without_clearing_spinner() {
-    let git = git_provider();
-    let (sender, _rx) = sender();
+fn post_deletion_refresh_rejects_old_finished_fetches_without_clearing_spinner() {
     let mut state = state_with_branch(true);
-    let old_generation = state.branch_view.generation;
+    let old_generation = state.branch_view.generation();
     begin(&mut state);
     if let Mode::ConfirmWorktreeDelete(flow) = &mut state.mode {
         flow.target.in_progress = true;
@@ -533,29 +525,26 @@ fn post_deletion_refresh_rejects_old_final_fetch_without_clearing_spinner() {
         &mut state,
         &mut changes,
     );
-    let repo = changes.refresh_branch.take().expect("branch refresh");
-    crate::picker::branch::refresh::<MockBackend>(&mut state, &git, None, &sender, repo);
-    assert_eq!(state.branch_view.generation, old_generation + 1);
-    state.branch_view.fetching_remote_repo = Some("/repo".into());
+    assert!(changes.refresh_branch.is_some());
+    assert_eq!(state.branch_view.generation(), old_generation + 1);
+    state.branch_view.set_load(
+        state.branch_view.generation(),
+        BranchLoad::Ready {
+            fetching_remotes: true,
+        },
+    );
 
     process_app_event(
-        AppEvent::GitFetchCompleted {
-            remote: Some("origin".into()),
-            branches: Vec::new(),
+        AppEvent::GitFetchesFinished {
             repo_path: "/repo".into(),
             generation: old_generation,
             error: None,
-            is_final: true,
-            skipped_unsupported_refs: false,
         },
         &mut state,
         &mut TickChanges::default(),
     );
 
-    assert_eq!(
-        state.branch_view.fetching_remote_repo.as_deref(),
-        Some(Path::new("/repo"))
-    );
+    assert!(state.branch_view.is_fetching_remotes());
 }
 
 #[test]
@@ -591,8 +580,11 @@ fn late_recovered_delete_completion_does_not_change_a_newer_mode() {
 }
 
 fn branches_loaded_with_checkout_of(state: &mut AppState, branch: &str) {
-    let generation = state.branch_view.generation;
-    state.branch_view.loading = true;
+    let generation = state.branch_view.generation();
+    state.branch_view.set_load(
+        state.branch_view.generation(),
+        BranchLoad::Loading { reselect: None },
+    );
     process_app_event(
         AppEvent::BranchesLoaded {
             repo_path: "/repo".into(),
@@ -686,4 +678,108 @@ fn resuming_picks_up_a_deletion_another_picker_saved() {
 
     assert_eq!(state.delete.pending.len(), 1);
     assert!(state.delete.in_flight.contains(Path::new("/repo-feature")));
+}
+
+/// Drops `picker` on another thread whose saved deletions start as `saved`, as this one's
+/// do, and returns them once it has dropped.
+fn drop_on_another_thread(
+    picker: Picker<MockBackend>,
+    saved: &[PendingWorktreeDelete],
+) -> Vec<PendingWorktreeDelete> {
+    let saved = saved.to_vec();
+    let (dropped, on_drop) = mpsc::channel();
+    std::thread::spawn(move || {
+        SAVED.set(saved);
+        drop(picker);
+        dropped.send(SAVED.take()).unwrap();
+    });
+    on_drop
+        .recv_timeout(Duration::from_secs(5))
+        .expect("dropping the picker returns")
+}
+
+#[test]
+fn dropping_the_picker_forgets_a_removal_it_never_heard_finish() {
+    let git_mock = Arc::new(MockGitProvider::default());
+    let git: Arc<dyn GitProvider> = git_mock.clone();
+    let backend = Arc::new(MockBackend::managed(std::env::temp_dir()));
+    queue_checkouts(&backend, None, 1);
+    let mut state = state_with_branch(true);
+    let picker = Picker::start(
+        Arc::clone(&git),
+        Some(Arc::clone(&backend)),
+        KeysConfig::default(),
+        Vec::new(),
+        &state,
+    );
+
+    begin(&mut state);
+    confirm(&mut state, &git, Some(&backend), &picker.sender);
+    assert_eq!(state.delete.pending.len(), 1);
+    while git_mock.remove_calls.lock().unwrap().is_empty() {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+
+    assert_eq!(
+        drop_on_another_thread(picker, &state.delete.pending),
+        vec![]
+    );
+}
+
+#[test]
+fn dropping_the_picker_keeps_a_removal_refused_for_uncommitted_changes() {
+    let git_mock = Arc::new(MockGitProvider {
+        dirty_remove_once: AtomicBool::new(true),
+        ..MockGitProvider::default()
+    });
+    let git: Arc<dyn GitProvider> = git_mock.clone();
+    let backend = Arc::new(MockBackend::managed(std::env::temp_dir()));
+    queue_checkouts(&backend, None, 1);
+    let mut state = state_with_branch(true);
+    let picker = Picker::start(
+        Arc::clone(&git),
+        Some(Arc::clone(&backend)),
+        KeysConfig::default(),
+        Vec::new(),
+        &state,
+    );
+
+    begin(&mut state);
+    confirm(&mut state, &git, Some(&backend), &picker.sender);
+    while git_mock.remove_calls.lock().unwrap().is_empty() {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+
+    let pending = state.delete.pending.clone();
+    assert_eq!(drop_on_another_thread(picker, &pending), pending);
+}
+
+#[test]
+fn cancelling_a_dialog_resumes_deletions_that_became_ready_behind_it() {
+    let git = git_provider();
+    let backend = Arc::new(MockBackend::native());
+    let (sender, _rx) = sender();
+    let worker = crate::picker::FilterWorker::spawn(sender.clone());
+    let mut state = state_with_branch(true);
+    begin(&mut state);
+    SAVED.with_borrow_mut(|saved| {
+        saved.push(PendingWorktreeDelete::new(
+            "/repo".into(),
+            "other".into(),
+            "/repo-other".into(),
+        ));
+    });
+
+    crate::picker::process_action(
+        crate::keyboard::Action::CancelOverlay,
+        &mut state,
+        &git,
+        Some(&backend),
+        &sender,
+        &worker,
+        &KeysConfig::default(),
+    );
+
+    assert!(matches!(state.mode, Mode::BranchSelect(_)));
+    assert!(state.delete.in_flight.contains(Path::new("/repo-other")));
 }

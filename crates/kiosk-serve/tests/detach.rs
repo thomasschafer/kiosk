@@ -26,7 +26,10 @@ fn main() -> ExitCode {
             listening
                 .announce(&mut std::io::stdout().lock())
                 .expect("announcing");
-            listening.accept(Duration::from_secs(20)).expect("a client");
+            listening
+                .accept(Duration::from_secs(20))
+                .expect("listening")
+                .expect("a client");
             launch::remove_log();
             ExitCode::SUCCESS
         }

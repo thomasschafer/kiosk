@@ -93,7 +93,9 @@ fn connect(
     let listening = launch::listen().unwrap();
     let Handshake { port, token, .. } = listening.handshake().clone();
     let session = thread::spawn(move || {
-        let accepted = listening.accept(Duration::from_secs(5))?;
+        let accepted = listening
+            .accept(Duration::from_secs(5))?
+            .ok_or_else(|| anyhow::anyhow!("no client connected"))?;
         let connection = Connection::new(accepted.stream)?;
         let result = session::run(&connection, &TEST_PRODUCT, start());
         if let Err(error) = &result {

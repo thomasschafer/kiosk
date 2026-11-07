@@ -1,5 +1,5 @@
 use std::{
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -60,10 +60,9 @@ fn state_with_branch(has_worktree: bool) -> AppState {
         ..BranchEntry::local("feature")
     }];
     state.branch_view.list = SearchableList::new(1);
-    state.branch_view.open_checkout_load_state = OpenCheckoutLoadState::Loaded {
-        repo_path: "/repo".into(),
-        generation: state.branch_view.generation,
-    };
+    state
+        .branch_view
+        .set_open_checkouts(OpenCheckouts::Loaded(Vec::new()));
     state
 }
 
@@ -397,10 +396,9 @@ fn tracking_success_then_create_failure_reconciles_to_selected_local_branch() {
         Some(BranchId::Local("feature".into()))
     );
 
+    assert!(state.branch_view.is_loading());
     let repo = changes.refresh_branch.take().expect("branch refresh");
-    let previous_generation = state.branch_view.generation;
-    refresh::<MockBackend>(&mut state, &git, None, &sender, repo);
-    assert_eq!(state.branch_view.generation, previous_generation + 1);
+    load::<MockBackend>(&state, &git, None, &sender, repo);
     let refreshed = rx.recv_timeout(Duration::from_secs(1)).unwrap();
     let mut refreshed_changes = TickChanges::default();
     process_app_event(refreshed, &mut state, &mut refreshed_changes);
@@ -469,21 +467,25 @@ fn remote_merge_reapplies_filter_and_preserves_selection() {
     state.branch_view.list.input.cursor = 7;
     state.branch_view.list.filtered = vec![(0, 0), (1, 0)];
     state.branch_view.list.selected = Some(1);
-    state.branch_view.fetching_remote_repo = Some("/repo".into());
+    state.branch_view.set_load(
+        state.branch_view.generation(),
+        BranchLoad::Ready {
+            fetching_remotes: true,
+        },
+    );
     let mut changes = TickChanges::default();
 
     process_app_event(
         AppEvent::GitFetchCompleted {
-            remote: Some("origin".into()),
+            remote: "origin".into(),
             branches: BranchEntry::build_remote(
                 "origin",
                 &["a-feature".into()],
                 &["feature".into()],
             ),
             repo_path: "/repo".into(),
-            generation: state.branch_view.generation,
+            generation: state.branch_view.generation(),
             error: None,
-            is_final: false,
             skipped_unsupported_refs: false,
         },
         &mut state,
@@ -532,7 +534,7 @@ fn streamed_remote_update_preserves_same_named_remote_selection_by_identity() {
     process_app_event(
         AppEvent::RemoteBranchesLoaded {
             repo_path: "/repo".into(),
-            generation: state.branch_view.generation,
+            generation: state.branch_view.generation(),
             remote: "origin".into(),
             branches: BranchEntry::build_remote(
                 "origin",
@@ -555,14 +557,19 @@ fn streamed_remote_update_preserves_same_named_remote_selection_by_identity() {
 #[test]
 fn stale_remote_and_fetch_events_are_dropped() {
     let mut state = state_with_branch(false);
-    state.branch_view.fetching_remote_repo = Some("/repo".into());
+    state.branch_view.set_load(
+        state.branch_view.generation(),
+        BranchLoad::Ready {
+            fetching_remotes: true,
+        },
+    );
     let mut changes = TickChanges::default();
     let remote_branch = BranchEntry::build_remote("origin", &["remote".into()], &[]);
 
     process_app_event(
         AppEvent::RemoteBranchesLoaded {
             repo_path: "/other".into(),
-            generation: state.branch_view.generation,
+            generation: state.branch_view.generation(),
             remote: "origin".into(),
             branches: remote_branch.clone(),
             skipped_unsupported_refs: false,
@@ -572,12 +579,11 @@ fn stale_remote_and_fetch_events_are_dropped() {
     );
     process_app_event(
         AppEvent::GitFetchCompleted {
-            remote: Some("origin".into()),
+            remote: "origin".into(),
             branches: remote_branch,
             repo_path: "/other".into(),
-            generation: state.branch_view.generation,
+            generation: state.branch_view.generation(),
             error: Some("boom".into()),
-            is_final: true,
             skipped_unsupported_refs: false,
         },
         &mut state,
@@ -585,10 +591,7 @@ fn stale_remote_and_fetch_events_are_dropped() {
     );
 
     assert_eq!(state.branch_view.entries.len(), 1);
-    assert_eq!(
-        state.branch_view.fetching_remote_repo.as_deref(),
-        Some(Path::new("/repo"))
-    );
+    assert!(state.branch_view.is_fetching_remotes());
     assert!(state.toasts.is_empty());
     assert!(!changes.branches_changed);
 }
@@ -596,7 +599,7 @@ fn stale_remote_and_fetch_events_are_dropped() {
 #[test]
 fn unsupported_ref_warning_is_emitted_once_without_blanking_valid_branches() {
     let mut state = state_with_branch(false);
-    let generation = state.branch_view.generation;
+    let generation = state.branch_view.generation();
     let mut changes = TickChanges::default();
     let valid = state.branch_view.entries.clone();
 
@@ -637,12 +640,18 @@ fn unsupported_ref_warning_is_emitted_once_without_blanking_valid_branches() {
 #[test]
 fn same_repo_reentry_drops_every_prior_visit_load_result() {
     let mut state = state_with_branch(false);
-    state.branch_view.generation = 2;
-    state.branch_view.open_checkout_load_state = OpenCheckoutLoadState::Loaded {
-        repo_path: "/repo".into(),
-        generation: 2,
-    };
-    state.branch_view.fetching_remote_repo = Some("/repo".into());
+    state
+        .branch_view
+        .set_load(2, state.branch_view.load().clone());
+    state
+        .branch_view
+        .set_open_checkouts(OpenCheckouts::Loaded(Vec::new()));
+    state.branch_view.set_load(
+        state.branch_view.generation(),
+        BranchLoad::Ready {
+            fetching_remotes: true,
+        },
+    );
     let stale_branch = BranchEntry {
         name: "stale".into(),
         checkout: Some(BranchCheckout::closed("/repo-stale".into())),
@@ -669,12 +678,11 @@ fn same_repo_reentry_drops_every_prior_visit_load_result() {
             skipped_unsupported_refs: false,
         },
         AppEvent::GitFetchCompleted {
-            remote: Some("origin".into()),
+            remote: "origin".into(),
             branches: stale_remote,
             repo_path: "/repo".into(),
             generation: 1,
             error: Some("stale fetch".into()),
-            is_final: true,
             skipped_unsupported_refs: false,
         },
         AppEvent::OpenCheckoutsLoaded {
@@ -697,10 +705,7 @@ fn same_repo_reentry_drops_every_prior_visit_load_result() {
     );
     assert!(!state.branch_view.entries[0].is_open());
     assert!(state.branch_view.remote_snapshots_are_empty());
-    assert_eq!(
-        state.branch_view.fetching_remote_repo.as_deref(),
-        Some(Path::new("/repo"))
-    );
+    assert!(state.branch_view.is_fetching_remotes());
     assert!(state.toasts.is_empty());
     assert!(!changes.branches_changed);
     assert!(changes.start_remote_loading.is_none());
@@ -709,16 +714,20 @@ fn same_repo_reentry_drops_every_prior_visit_load_result() {
 #[test]
 fn fetch_failure_toasts_are_deduplicated_per_remote() {
     let mut state = state_with_branch(false);
-    state.branch_view.fetching_remote_repo = Some("/repo".into());
+    state.branch_view.set_load(
+        state.branch_view.generation(),
+        BranchLoad::Ready {
+            fetching_remotes: true,
+        },
+    );
     for message in ["first failure", "second failure"] {
         process_app_event(
             AppEvent::GitFetchCompleted {
-                remote: Some("origin".into()),
+                remote: "origin".into(),
                 branches: Vec::new(),
                 repo_path: "/repo".into(),
-                generation: state.branch_view.generation,
+                generation: state.branch_view.generation(),
                 error: Some(message.into()),
-                is_final: false,
                 skipped_unsupported_refs: false,
             },
             &mut state,
@@ -731,25 +740,26 @@ fn fetch_failure_toasts_are_deduplicated_per_remote() {
 }
 
 #[test]
-fn final_fetch_for_current_repo_clears_indicator() {
+fn finished_fetches_for_current_repo_clear_indicator() {
     let mut state = state_with_branch(false);
-    state.branch_view.fetching_remote_repo = Some("/repo".into());
+    state.branch_view.set_load(
+        state.branch_view.generation(),
+        BranchLoad::Ready {
+            fetching_remotes: true,
+        },
+    );
 
     process_app_event(
-        AppEvent::GitFetchCompleted {
-            remote: None,
-            branches: Vec::new(),
+        AppEvent::GitFetchesFinished {
             repo_path: "/repo".into(),
-            generation: state.branch_view.generation,
+            generation: state.branch_view.generation(),
             error: None,
-            is_final: true,
-            skipped_unsupported_refs: false,
         },
         &mut state,
         &mut TickChanges::default(),
     );
 
-    assert!(state.branch_view.fetching_remote_repo.is_none());
+    assert!(!state.branch_view.is_fetching_remotes());
 }
 
 #[test]
@@ -759,7 +769,7 @@ fn branch_git_failure_returns_to_repo_but_indicator_failure_does_not() {
     process_app_event(
         AppEvent::OpenCheckoutsFailed {
             repo_path: "/repo".into(),
-            generation: state.branch_view.generation,
+            generation: state.branch_view.generation(),
             message: "indicator unavailable".into(),
         },
         &mut state,
@@ -771,7 +781,7 @@ fn branch_git_failure_returns_to_repo_but_indicator_failure_does_not() {
     process_app_event(
         AppEvent::BranchLoadFailed {
             repo_path: "/repo".into(),
-            generation: state.branch_view.generation,
+            generation: state.branch_view.generation(),
             message: "git unavailable".into(),
         },
         &mut state,
@@ -938,4 +948,89 @@ fn navigation_after_typing_wins_over_the_pending_filter_selection() {
         &mut TickChanges::default(),
     );
     assert_eq!(state.selected_branch().unwrap().name, "beta");
+}
+
+fn branches_loaded(state: &mut AppState, names: &[&str]) -> TickChanges {
+    let mut changes = TickChanges::default();
+    process_app_event(
+        AppEvent::BranchesLoaded {
+            repo_path: "/repo".into(),
+            generation: state.branch_view.generation(),
+            branches: names.iter().copied().map(BranchEntry::local).collect(),
+            worktrees: Vec::new(),
+            skipped_unsupported_refs: false,
+        },
+        state,
+        &mut changes,
+    );
+    changes
+}
+
+#[test]
+fn a_listing_that_arrives_behind_a_dialog_still_finishes_loading() {
+    let mut state = state_with_branch(true);
+    state.branch_view.begin_load(None);
+    state
+        .branch_view
+        .set_open_checkouts(OpenCheckouts::Loaded(Vec::new()));
+    crate::picker::delete::begin(&mut state);
+    assert!(matches!(state.mode, Mode::ConfirmWorktreeDelete(_)));
+
+    branches_loaded(&mut state, &["feature", "main"]);
+    assert!(crate::picker::delete::cancel(&mut state));
+
+    assert!(matches!(state.mode, Mode::BranchSelect(_)));
+    assert!(!state.branch_view.is_loading());
+    assert_eq!(state.branch_view.entries.len(), 2);
+}
+
+#[test]
+fn a_branch_waiting_to_be_reselected_is_not_selected_in_the_next_listing() {
+    let git = git_provider();
+    let (sender, _rx) = sender();
+    let mut state = state_with_branch(false);
+    state
+        .branch_view
+        .begin_load(Some(BranchId::Local("feature".into())));
+
+    leave(&mut state);
+    enter::<MockBackend>(&mut state, &git, None, &sender);
+    let changes = branches_loaded(&mut state, &["feature", "main"]);
+
+    assert_eq!(changes.pinned_branch_selection, None);
+}
+
+#[test]
+fn open_markers_are_cleared_when_open_checkouts_fail_to_load() {
+    let mut state = state_with_branch(true);
+    state
+        .branch_view
+        .set_open_checkouts(OpenCheckouts::Loaded(vec!["/repo-feature".into()]));
+    assert!(state.branch_view.entries[0].is_open());
+
+    process_app_event(
+        AppEvent::OpenCheckoutsFailed {
+            repo_path: "/repo".into(),
+            generation: state.branch_view.generation(),
+            message: "backend went away".into(),
+        },
+        &mut state,
+        &mut TickChanges::default(),
+    );
+
+    assert!(!state.branch_view.entries[0].is_open());
+    assert_eq!(state.branch_view.open_checkouts(), &OpenCheckouts::Failed);
+}
+
+#[test]
+fn a_new_listing_forgets_the_open_checkouts_of_the_last() {
+    let mut state = state_with_branch(true);
+    state
+        .branch_view
+        .set_open_checkouts(OpenCheckouts::Loaded(vec!["/repo-feature".into()]));
+
+    state.branch_view.begin_load(None);
+
+    assert_eq!(state.branch_view.open_checkouts(), &OpenCheckouts::Loading);
+    assert!(crate::picker::delete::selected_target(&state).is_err());
 }

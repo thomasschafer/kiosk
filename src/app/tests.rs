@@ -566,8 +566,9 @@ impl Fixture {
         });
         let mut event = next(&events);
         if let AppEvent::CheckoutRemoved { gate, .. } = event {
-            // Dropping the gate lets the removal go on to close the space.
-            drop(gate);
+            // There is no saved record to forget here, so the removal can go on to close the
+            // space.
+            gate.open_for_test();
             event = next(&events);
         }
         let AppEvent::WorktreeRemovalFinished { outcome, .. } = event else {

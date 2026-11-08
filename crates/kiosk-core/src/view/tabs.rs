@@ -85,14 +85,13 @@ pub fn tabs(tabs: Tabs, body: TabBody, keys: &KeysConfig) -> TabsView {
 /// The diff tab for the checkout or folder in `cwd`, where kiosk was opened.
 pub fn diff(cwd: Option<&Path>, keys: &KeysConfig) -> DiffView {
     let hints = [
-        (KeyLayer::Tabs, Command::NextTab, "next tab"),
-        (KeyLayer::Diff, Command::Quit, "quit"),
+        keys.layer_key(KeyLayer::Tabs, Command::NextTab)
+            .map(|key| Hint::for_key(key, "next tab")),
+        keys.diff_key(Command::Quit)
+            .map(|key| Hint::for_key(key, "quit")),
     ]
     .into_iter()
-    .filter_map(|(layer, command, label)| {
-        keys.layer_key(layer, command)
-            .map(|key| Hint::for_key(key, label))
-    })
+    .flatten()
     .collect();
     DiffView {
         message: "The diff viewer is coming soon".into(),

@@ -787,6 +787,21 @@ impl KeysConfig {
             .copied()
     }
 
+    /// The key to show for `wanted` in the diff tab: one that runs it there, rather than a
+    /// tab key or a diff key taking it first, preferring keys as [`Self::preferred_key`] does.
+    pub fn diff_key(&self, wanted: Command) -> Option<KeyChord> {
+        self.diff
+            .iter()
+            .chain(&self.general)
+            .filter(|(chord, command)| {
+                **command == wanted
+                    && self.tab_binding(**chord).is_none()
+                    && self.diff_command(**chord) == Some(wanted)
+            })
+            .map(|(chord, _)| *chord)
+            .min_by_key(|chord| (key_preference(chord), chord.to_string()))
+    }
+
     /// Every chord bound to a command in any layer, so a frontend can claim them before
     /// its host's own shortcuts do.
     pub fn all_chords(&self) -> Vec<KeyChord> {
@@ -1298,6 +1313,25 @@ mod tests {
             keys.diff_command("ctrl+h".parse().unwrap()),
             Some(Command::Help)
         );
+    }
+
+    #[test]
+    fn the_diff_tab_shows_a_quit_key_that_quits_there() {
+        let default = KeysConfig::default();
+        assert_eq!(
+            default.diff_key(Command::Quit),
+            Some("esc".parse().unwrap())
+        );
+        let taken = KeysConfig::from_toml("[tabs]\n\"esc\" = \"picker_tab\"\n").unwrap();
+        assert_eq!(
+            taken.diff_key(Command::Quit),
+            Some("ctrl+c".parse().unwrap())
+        );
+        let none = KeysConfig::from_toml(
+            "[tabs]\n\"esc\" = \"picker_tab\"\n[general]\n\"ctrl+c\" = \"noop\"\n",
+        )
+        .unwrap();
+        assert_eq!(none.diff_key(Command::Quit), None);
     }
 
     #[test]

@@ -452,6 +452,12 @@ impl KeyLayer {
         }
     }
 
+    /// Whether the README documents this section. The tab sections stay out of it while
+    /// tabs are behind `experimental_tabs`.
+    pub const fn documented(self) -> bool {
+        !matches!(self, Self::Tabs | Self::Diff)
+    }
+
     /// The commands a binding in this section may name.
     pub fn allowed(self) -> &'static [Command] {
         match self {
@@ -568,10 +574,14 @@ fn map(entries: &[(&str, Command)]) -> HashMap<KeyChord, Command> {
         .collect()
 }
 
-/// `keys`' bindings as a TOML block for the config reference.
+/// `keys`' bindings in the documented sections as a TOML block for the config reference.
 pub fn default_keys_toml(keys: &KeysConfig) -> String {
     let mut output = String::from("```toml\n");
-    for (layer, bindings) in keys.layers() {
+    for (layer, bindings) in keys
+        .layers()
+        .into_iter()
+        .filter(|(layer, _)| layer.documented())
+    {
         let _ = writeln!(output, "[keys.{}]", layer.name());
         let mut bindings = bindings.iter().collect::<Vec<_>>();
         bindings.sort_by(|(left_key, left_command), (right_key, right_command)| {

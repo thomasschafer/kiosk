@@ -126,14 +126,6 @@ entries can override this value with their own `include_non_git` setting.
 
 Default: `false`
 
-#### `experimental_tabs`
-
-Show kiosk's tabs, with the diff tab beside the picker. The diff tab is unfinished
-and may change; without this, kiosk shows only the picker and leaves the
-`[keys.tabs]` keys to the app.
-
-Default: `false`
-
 ### `[on_open]`
 
 Configure command panes created after opening a new workspace.
@@ -179,8 +171,6 @@ Each section accepts these actions:
 - `[keys.modal]`: `noop`, `open`, `back`
 - `[keys.repo_select]`: `noop`, `open`, `branches_view`, `quit`
 - `[keys.branch_select]`: `noop`, `open`, `back`, `new_branch`, `delete`, `backspace`, `backspace_or_back`
-- `[keys.tabs]`: `noop`, `next_tab`, `previous_tab`, `picker_tab`, `diff_tab`
-- `[keys.diff]`: `noop`, `quit`
 
 What each action does:
 
@@ -209,10 +199,6 @@ What each action does:
 - `new_branch` — Create a new branch
 - `delete` — Delete the selected checkout
 - `backspace_or_back` — Delete the previous character, or go back when the search is empty
-- `next_tab` — Show the next tab
-- `previous_tab` — Show the previous tab
-- `picker_tab` — Show the Repositories tab
-- `diff_tab` — Show the Diff tab
 
 Defaults:
 
@@ -269,17 +255,6 @@ Defaults:
 "ctrl+x" = "delete"
 "enter" = "open"
 "esc" = "back"
-
-[keys.tabs]
-"ctrl+1" = "picker_tab"
-"ctrl+2" = "diff_tab"
-"ctrl+pagedown" = "next_tab"
-"ctrl+pageup" = "previous_tab"
-"ctrl+shift+tab" = "previous_tab"
-"ctrl+tab" = "next_tab"
-
-[keys.diff]
-"esc" = "quit"
 
 ```
 

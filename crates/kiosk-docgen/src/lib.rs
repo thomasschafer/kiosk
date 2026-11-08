@@ -105,7 +105,10 @@ pub fn config_reference<E: ConfigExtension>(docs: &ProductDocs<'_>) -> Result<St
 
     let mut fields: HashMap<String, &Field> = HashMap::new();
     for root in [core, extension] {
-        for field in named_fields(root)? {
+        for field in named_fields(root)?
+            .iter()
+            .filter(|field| !is_doc_hidden(&field.attrs))
+        {
             if fields.insert(field_name(field)?, field).is_some() {
                 bail!(
                     "{} redeclares the core section `{}`",
@@ -292,7 +295,7 @@ fn render_keys(docs: &mut String, keys: &KeysConfig) -> Result<()> {
     );
     docs.push_str("Each section accepts these actions:\n\n");
     let mut actions: Vec<Command> = Vec::new();
-    for layer in KeyLayer::ALL {
+    for layer in KeyLayer::ALL.into_iter().filter(|layer| layer.documented()) {
         let names = layer
             .allowed()
             .iter()
@@ -401,6 +404,14 @@ fn collection_element_name(ty: &Type) -> Option<String> {
         .segments
         .last()
         .map(|segment| segment.ident.to_string())
+}
+
+/// Whether `#[doc(hidden)]` keeps the item out of the reference.
+fn is_doc_hidden(attrs: &[Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        attr.path().is_ident("doc")
+            && matches!(&attr.meta, Meta::List(list) if list.tokens.to_string() == "hidden")
+    })
 }
 
 fn extract_doc(attrs: &[Attribute]) -> String {
@@ -600,14 +611,7 @@ pub struct TestExtension {
         }
     }
 
-    const ORDER: &[&str] = &[
-        "search_dirs",
-        "include_non_git",
-        "experimental_tabs",
-        "extra",
-        "theme",
-        "keys",
-    ];
+    const ORDER: &[&str] = &["search_dirs", "include_non_git", "extra", "theme", "keys"];
 
     #[test]
     fn the_reference_follows_the_given_order_with_product_examples() {
@@ -618,6 +622,18 @@ pub struct TestExtension {
         assert!(position("#### `extra`") < position("### `[theme]`"));
         assert!(position("### `[theme]`") < position("### `[keys]`"));
         assert!(reference.contains("```toml\nextra = [\"a\"]\n```"));
+    }
+
+    #[test]
+    fn hidden_settings_and_undocumented_key_sections_stay_out() {
+        let reference = config_reference::<TestExtension>(&docs(ORDER)).unwrap();
+        for hidden in ["experimental_tabs", "[keys.tabs]", "[keys.diff]", "next_tab"] {
+            assert!(!reference.contains(hidden), "{hidden} is documented");
+        }
+        let mut order = ORDER.to_vec();
+        order.push("experimental_tabs");
+        let error = config_reference::<TestExtension>(&docs(&order)).unwrap_err();
+        assert!(error.to_string().contains("unknown section"), "{error}");
     }
 
     #[test]
@@ -637,12 +653,7 @@ pub struct TestExtension {
             product: &TEST_PRODUCT,
             sources,
             extension: "NoExtension",
-            order: &[
-                "search_dirs",
-                "include_non_git",
-                "experimental_tabs",
-                "keys",
-            ],
+            order: &["search_dirs", "include_non_git", "keys"],
             examples: &[],
             wording: &[],
         })
@@ -678,13 +689,7 @@ pub struct OnOpenExtension {
             product: &TEST_PRODUCT,
             sources: &[ON_OPEN_EXTENSION],
             extension: "OnOpenExtension",
-            order: &[
-                "search_dirs",
-                "include_non_git",
-                "experimental_tabs",
-                "on_open",
-                "keys",
-            ],
+            order: &["search_dirs", "include_non_git", "on_open", "keys"],
             examples: &[],
             wording,
         })

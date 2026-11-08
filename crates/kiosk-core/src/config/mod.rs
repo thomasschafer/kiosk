@@ -164,7 +164,8 @@ pub struct CoreConfig {
     pub include_non_git: bool,
     /// Show kiosk's tabs, with the diff tab beside the picker. The diff tab is unfinished
     /// and may change; without this, kiosk shows only the picker and leaves the
-    /// `[keys.tabs]` keys to the app.
+    /// `[keys.tabs]` keys to the app. Left out of the README until the tabs are ready.
+    #[doc(hidden)]
     #[serde(default)]
     pub experimental_tabs: bool,
     /// Customize key bindings grouped by where they are active.

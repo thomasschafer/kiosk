@@ -74,10 +74,6 @@ its checkout after asking (the branch stays). `esc` goes back and closes
 from the repository list, and `ctrl+u` clears the search. `ctrl+h` lists every key: they can be modified via the
 [`[keys]`](#keys) config.
 
-Kiosk has tabs: the repositories, and a diff of the checkout you opened it from, which is
-still being built. `ctrl+1` and `ctrl+2` show each one, and `ctrl+tab` or `ctrl+pagedown`
-moves to the next.
-
 The first time kiosk opens, a setup wizard asks which folders to search and writes the
 config.
 
@@ -127,6 +123,14 @@ Accepted forms:
 
 Include plain folders in search results globally. Rich search-directory
 entries can override this value with their own `include_non_git` setting.
+
+Default: `false`
+
+#### `experimental_tabs`
+
+Show kiosk's tabs, with the diff tab beside the picker. The diff tab is unfinished
+and may change; without this, kiosk shows only the picker and leaves the
+`[keys.tabs]` keys to the app.
 
 Default: `false`
 

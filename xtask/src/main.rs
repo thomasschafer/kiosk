@@ -11,7 +11,13 @@ const DOCS: ProductDocs<'static> = ProductDocs {
     product: &PRODUCT,
     sources: &[SOURCE],
     extension: "Config",
-    order: &["search_dirs", "include_non_git", "on_open", "keys"],
+    order: &[
+        "search_dirs",
+        "include_non_git",
+        "experimental_tabs",
+        "on_open",
+        "keys",
+    ],
     examples: &[(
         "on_open",
         "[on_open]\npanes = [\n  { command = \"hx\", direction = \"right\" },\n]",

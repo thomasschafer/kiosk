@@ -125,8 +125,9 @@ Throwaway work that answers a question; record the answer under decisions.
 ### 2. Tab framework
 
 - [x] Tabs in kiosk-core, with the picker as the first, and protocol v4 carrying the tab bar.
-      The diff tab says what it will show until phase 3 fills it in, so don't release
-      before then.
+      The diff tab says what it will show until phase 3 fills it in. Tabs are behind
+      `experimental_tabs = true` in the config: without it kiosk shows only the picker and
+      leaves the tab keys to the app. Drop the setting once the diff tab is ready for users.
 - [x] Keys to jump to a tab and to move between tabs, configurable in `[keys]`.
 - [x] Panel size per tab.
 - [x] Kiosk's side of launching: `serve --tab`, the shared state above, and `launch` on the

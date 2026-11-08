@@ -715,6 +715,14 @@ impl KeysConfig {
         }
     }
 
+    /// These bindings with no tab keys, for when kiosk shows only the picker, so the keys
+    /// stay the app's.
+    #[must_use]
+    pub fn without_tabs(mut self) -> Self {
+        self.tabs.clear();
+        self
+    }
+
     /// The chords the text-editing bindings act on.
     pub fn text_edit_chords(&self) -> impl Iterator<Item = KeyChord> + '_ {
         self.text_edit

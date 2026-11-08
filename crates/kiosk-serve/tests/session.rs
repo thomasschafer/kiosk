@@ -131,6 +131,7 @@ fn loaded(search_dir: &Path) -> LoadedConfig<NoExtension> {
     LoadedConfig {
         core: CoreConfig {
             search_dirs: vec![SearchDirEntry::Simple(search_dir.display().to_string())],
+            experimental_tabs: true,
             ..CoreConfig::for_product(&TEST_PRODUCT).unwrap()
         },
         extension: NoExtension {},
@@ -577,6 +578,28 @@ fn a_session_opens_on_the_tab_asked_for_and_launching_it_again_closes() {
     client.send(&json!({ "t": "launch", "tab": "picker" }));
     client.view_until(|view| picker_list(view).is_some());
     client.send(&json!({ "t": "launch", "tab": "picker" }));
+    assert_eq!(client.end(), json!({ "t": "exit", "outcome": "quit" }));
+    session.join().unwrap().unwrap();
+}
+
+#[test]
+fn without_experimental_tabs_kiosk_is_only_the_picker_and_leaves_the_tab_keys() {
+    let root = tempfile::tempdir().unwrap();
+    let search_dir = root.path().to_path_buf();
+    let (mut client, session, hello) = connect(move || {
+        let mut start = two_repo_start(&search_dir, mock_backend());
+        start.loaded.core.experimental_tabs = false;
+        start.tab = TabId::Diff;
+        start
+    });
+    let chords = hello["chords"].as_array().unwrap();
+    for chord in ["ctrl-1", "ctrl-2", "ctrl-tab", "ctrl-pagedown"] {
+        assert!(!chords.contains(&json!(chord)), "{chord} claimed: {hello}");
+    }
+    let view = client.view_until(|view| picker_list(view).is_some());
+    assert_eq!(view["bar"], json!([]));
+    client.send(&json!({ "t": "show_tab", "tab": "diff" }));
+    client.send(&json!({ "t": "launch", "tab": "diff" }));
     assert_eq!(client.end(), json!({ "t": "exit", "outcome": "quit" }));
     session.join().unwrap().unwrap();
 }

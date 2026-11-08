@@ -7,7 +7,7 @@ use serde::Serialize;
 use crate::{
     config::keys::{Command, KeyLayer, KeysConfig},
     path::display,
-    tabs::TabId,
+    tabs::{TabId, Tabs},
 };
 
 use super::{Hint, PickerView};
@@ -15,6 +15,7 @@ use super::{Hint, PickerView};
 /// Kiosk's tabs and the one that shows.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TabsView {
+    /// Empty while kiosk shows only one tab.
     pub bar: Vec<TabEntry>,
     pub body: TabBody,
 }
@@ -58,10 +59,16 @@ pub struct DiffView {
     pub hints: Vec<Hint>,
 }
 
-/// The tab bar over `body`.
-pub fn tabs(body: TabBody, keys: &KeysConfig) -> TabsView {
-    let active = body.tab();
-    let bar = TabId::ALL
+/// The tab bar of `tabs` over `body`, the tab that shows.
+pub fn tabs(tabs: Tabs, body: TabBody, keys: &KeysConfig) -> TabsView {
+    assert_eq!(body.tab(), tabs.active(), "the body is the active tab's");
+    let active = tabs.active();
+    let shown = if tabs.available().len() > 1 {
+        tabs.available()
+    } else {
+        &[]
+    };
+    let bar = shown
         .iter()
         .map(|&id| TabEntry {
             id,
@@ -102,7 +109,11 @@ mod tests {
     #[test]
     fn the_bar_lists_every_tab_with_its_key_and_marks_the_one_showing() {
         let keys = KeysConfig::default();
-        let view = tabs(TabBody::Diff(diff(None, &keys)), &keys);
+        let view = tabs(
+            Tabs::new(true, TabId::Diff),
+            TabBody::Diff(diff(None, &keys)),
+            &keys,
+        );
         let bar = view
             .bar
             .iter()
@@ -115,14 +126,33 @@ mod tests {
                 (TabId::Diff, Some("ctrl+2"), true),
             ]
         );
-        let picker = tabs(TabBody::Picker(empty_picker_view()), &keys);
+        let picker = tabs(
+            Tabs::new(true, TabId::Picker),
+            TabBody::Picker(empty_picker_view()),
+            &keys,
+        );
         assert!(picker.bar[0].active && !picker.bar[1].active);
+    }
+
+    #[test]
+    fn a_lone_tab_has_no_bar() {
+        let keys = KeysConfig::default();
+        let view = tabs(
+            Tabs::new(false, TabId::Picker),
+            TabBody::Picker(empty_picker_view()),
+            &keys,
+        );
+        assert_eq!(view.bar, []);
     }
 
     #[test]
     fn an_unbound_tab_has_no_key_in_the_bar() {
         let keys = KeysConfig::from_toml("[tabs]\n\"ctrl+2\" = \"noop\"\n").unwrap();
-        let view = tabs(TabBody::Diff(diff(None, &keys)), &keys);
+        let view = tabs(
+            Tabs::new(true, TabId::Diff),
+            TabBody::Diff(diff(None, &keys)),
+            &keys,
+        );
         assert_eq!(view.bar[1].key, None);
     }
 

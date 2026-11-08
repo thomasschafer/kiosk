@@ -162,6 +162,11 @@ pub struct CoreConfig {
     /// entries can override this value with their own `include_non_git` setting.
     #[serde(default)]
     pub include_non_git: bool,
+    /// Show kiosk's tabs, with the diff tab beside the picker. The diff tab is unfinished
+    /// and may change; without this, kiosk shows only the picker and leaves the
+    /// `[keys.tabs]` keys to the app.
+    #[serde(default)]
+    pub experimental_tabs: bool,
     /// Customize key bindings grouped by where they are active.
     pub keys: KeysConfig,
 }
@@ -173,6 +178,7 @@ pub struct CoreConfig {
 struct RawCoreConfig {
     search_dirs: Vec<SearchDirEntry>,
     include_non_git: bool,
+    experimental_tabs: bool,
     keys: keys::RawKeysConfig,
 }
 
@@ -181,6 +187,7 @@ impl RawCoreConfig {
         Ok(CoreConfig {
             search_dirs: self.search_dirs,
             include_non_git: self.include_non_git,
+            experimental_tabs: self.experimental_tabs,
             keys: KeysConfig::from_raw(self.keys, product).map_err(anyhow::Error::msg)?,
         })
     }

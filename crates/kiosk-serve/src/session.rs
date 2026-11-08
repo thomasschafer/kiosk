@@ -71,6 +71,10 @@ pub fn run<B: Backend, E>(
         current_cwd,
         tab,
     } = start;
+    let tabs = Tabs::new(loaded.core.experimental_tabs, tab);
+    if !loaded.core.experimental_tabs {
+        loaded.core.keys = loaded.core.keys.without_tabs();
+    }
     connection.send(&ServerMessage::Hello {
         protocol: PROTOCOL_VERSION,
         product: product.name,
@@ -95,7 +99,7 @@ pub fn run<B: Backend, E>(
         return session.finish(Outcome::Quit);
     }
     let start = kiosk_core::start::prepare(product, loaded, current_cwd.as_deref())?;
-    let outcome = session.tabs(start, git, backend, Tabs::new(tab), current_cwd.as_deref())?;
+    let outcome = session.tabs(start, git, backend, tabs, current_cwd.as_deref())?;
     session.finish(outcome)
 }
 
@@ -311,7 +315,7 @@ fn tabs_view(
         TabId::Picker => TabBody::Picker(view::picker(state, keys, viewports)),
         TabId::Diff => TabBody::Diff(view::tabs::diff(current_cwd, keys)),
     };
-    view::tabs::tabs(body, keys)
+    view::tabs::tabs(tabs, body, keys)
 }
 
 /// Applies `message`: what every tab shares first, such as changing tab, then what the tab

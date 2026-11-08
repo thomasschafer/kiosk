@@ -61,21 +61,6 @@ impl TabId {
             .copied()
             .find(|tab| tab.command_name() == name)
     }
-
-    fn position(self) -> usize {
-        Self::ALL
-            .iter()
-            .position(|tab| *tab == self)
-            .expect("every tab is in ALL")
-    }
-
-    /// The tab `offset` places along the tab bar, wrapping around at either end.
-    #[must_use]
-    pub fn step(self, offset: isize) -> Self {
-        let count = Self::ALL.len().cast_signed();
-        let position = (self.position().cast_signed() + offset).rem_euclid(count);
-        Self::ALL[position.cast_unsigned()]
-    }
 }
 
 impl fmt::Display for TabId {
@@ -121,37 +106,73 @@ pub enum Launched {
     Close,
 }
 
-/// Which tab shows.
+/// The tabs kiosk shows, and which of them shows now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Tabs {
+    /// The tabs in the tab bar, in its order; never empty.
+    available: &'static [TabId],
+    /// One of `available`.
     active: TabId,
 }
 
-impl Default for Tabs {
-    /// The first tab, the picker.
-    fn default() -> Self {
-        Self::new(TabId::ALL[0])
-    }
-}
-
 impl Tabs {
-    pub const fn new(active: TabId) -> Self {
-        Self { active }
+    /// Every tab, or with `experimental` off only the picker, opening on `active` if it is
+    /// one of them and on the first otherwise.
+    pub fn new(experimental: bool, active: TabId) -> Self {
+        let available = if experimental {
+            TabId::ALL
+        } else {
+            &[TabId::Picker]
+        };
+        let mut tabs = Self {
+            available,
+            active: available[0],
+        };
+        tabs.active = tabs.or_first(active);
+        tabs
     }
 
     pub const fn active(self) -> TabId {
         self.active
     }
 
+    pub const fn available(self) -> &'static [TabId] {
+        self.available
+    }
+
+    /// `tab`, if kiosk shows it, or else the first tab.
+    fn or_first(self, tab: TabId) -> TabId {
+        if self.available.contains(&tab) {
+            tab
+        } else {
+            self.available[0]
+        }
+    }
+
+    /// The tab `offset` places along the tab bar from the one showing, wrapping around.
+    fn step(self, offset: isize) -> TabId {
+        let position = self
+            .available
+            .iter()
+            .position(|tab| *tab == self.active)
+            .expect("the active tab is available");
+        let count = self.available.len().cast_signed();
+        self.available[(position.cast_signed() + offset)
+            .rem_euclid(count)
+            .cast_unsigned()]
+    }
+
     pub fn apply(&mut self, command: TabCommand) {
         self.active = match command {
-            TabCommand::Next => self.active.step(1),
-            TabCommand::Previous => self.active.step(-1),
-            TabCommand::Show(tab) => tab,
+            TabCommand::Next => self.step(1),
+            TabCommand::Previous => self.step(-1),
+            TabCommand::Show(tab) => self.or_first(tab),
         };
     }
 
+    /// A tab kiosk doesn't show launches the first, so its key still toggles kiosk.
     pub fn launch(&mut self, tab: TabId) -> Launched {
+        let tab = self.or_first(tab);
         if self.active == tab {
             return Launched::Close;
         }
@@ -185,7 +206,7 @@ mod tests {
 
     #[test]
     fn next_and_previous_wrap_around() {
-        let mut tabs = Tabs::default();
+        let mut tabs = Tabs::new(true, TabId::Picker);
         tabs.apply(TabCommand::Previous);
         assert_eq!(tabs.active(), TabId::ALL[TabId::ALL.len() - 1]);
         tabs.apply(TabCommand::Next);
@@ -198,10 +219,26 @@ mod tests {
 
     #[test]
     fn launching_the_tab_already_showing_closes() {
-        let mut tabs = Tabs::new(TabId::Picker);
+        let mut tabs = Tabs::new(true, TabId::Picker);
         assert_eq!(tabs.launch(TabId::Diff), Launched::Shown);
         assert_eq!(tabs.active(), TabId::Diff);
         assert_eq!(tabs.launch(TabId::Diff), Launched::Close);
         assert_eq!(tabs.active(), TabId::Diff);
+    }
+
+    #[test]
+    fn without_experimental_tabs_only_the_picker_shows() {
+        let mut tabs = Tabs::new(false, TabId::Diff);
+        assert_eq!(tabs.available(), [TabId::Picker]);
+        assert_eq!(tabs.active(), TabId::Picker);
+        for command in [
+            TabCommand::Next,
+            TabCommand::Previous,
+            TabCommand::Show(TabId::Diff),
+        ] {
+            tabs.apply(command);
+            assert_eq!(tabs.active(), TabId::Picker, "{command:?}");
+        }
+        assert_eq!(tabs.launch(TabId::Diff), Launched::Close);
     }
 }

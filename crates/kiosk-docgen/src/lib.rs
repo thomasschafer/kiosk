@@ -600,7 +600,14 @@ pub struct TestExtension {
         }
     }
 
-    const ORDER: &[&str] = &["search_dirs", "include_non_git", "extra", "theme", "keys"];
+    const ORDER: &[&str] = &[
+        "search_dirs",
+        "include_non_git",
+        "experimental_tabs",
+        "extra",
+        "theme",
+        "keys",
+    ];
 
     #[test]
     fn the_reference_follows_the_given_order_with_product_examples() {
@@ -630,7 +637,12 @@ pub struct TestExtension {
             product: &TEST_PRODUCT,
             sources,
             extension: "NoExtension",
-            order: &["search_dirs", "include_non_git", "keys"],
+            order: &[
+                "search_dirs",
+                "include_non_git",
+                "experimental_tabs",
+                "keys",
+            ],
             examples: &[],
             wording: &[],
         })
@@ -666,7 +678,13 @@ pub struct OnOpenExtension {
             product: &TEST_PRODUCT,
             sources: &[ON_OPEN_EXTENSION],
             extension: "OnOpenExtension",
-            order: &["search_dirs", "include_non_git", "on_open", "keys"],
+            order: &[
+                "search_dirs",
+                "include_non_git",
+                "experimental_tabs",
+                "on_open",
+                "keys",
+            ],
             examples: &[],
             wording,
         })

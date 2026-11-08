@@ -72,7 +72,20 @@ wait_view '.main.state == "list" and (.main.total == 23)'
 [[ $(last_view | jq -r "$rows | .[0:3] | join(\",\")") == "api,cli,design-system" ]] || fail "unexpected order"
 sb shot "$shots/repos.png" >/dev/null
 
-check "tab keys and the tab bar move between tabs, and the picker keeps its search"
+check "without experimental_tabs there is no tab bar, and the tab keys are left to the app"
+wait_view '.bar == []'
+hello=$(grep '^< {"t":"hello"' "$trace" | tail -1 | cut -c3-)
+[[ $(jq '[.chords[] | select(. == "ctrl-2" or . == "ctrl-tab")] | length' <<<"$hello") == 0 ]] ||
+  fail "kiosk claimed tab keys: $hello"
+
+check "with experimental_tabs, tab keys and the tab bar move between tabs, and the picker keeps its search"
+config=$HOME/.config/herdr-app-kiosk/config.toml
+sb key Escape
+wait_closed
+printf 'search_dirs = ["~/code"]\nexperimental_tabs = true\n' >"$config"
+open_kiosk
+wait_view '.main.state == "list" and (.bar | length) == 2'
+sb shot "$shots/tabs.png" >/dev/null
 sb type infr
 wait_view ".main.query.before == \"infr\""
 sb key ctrl+2
@@ -82,10 +95,15 @@ sb key ctrl+Tab
 wait_view '.screen == "picker" and .main.query.before == "infr"'
 sb key ctrl+Next
 wait_view '.screen == "diff"'
-sb click 580 99
+sb click 580 105
 wait_view '.screen == "picker"'
 sb key ctrl+u
 wait_view '.main.query.before == ""'
+sb key Escape
+wait_closed
+printf 'search_dirs = ["~/code"]\n' >"$config"
+open_kiosk
+wait_view '.main.state == "list" and .main.total == 23'
 
 check "typing filters, alt+backspace (a picker chord) clears the word"
 sb type infr
@@ -132,7 +150,7 @@ wait_view '.main.kind == "branches" and .main.title == "api — select branch"'
 wait_view '[.main.rows[] | select(.name.text == "feat/auth") | .actions.delete] == [true]'
 wait_view '[.main.rows[] | select(.name.text == "main") | .actions.delete] == [false]'
 sb shot "$shots/branches.png" >/dev/null
-sb click 355 150
+sb click 355 108
 wait_view '.main.kind == "repos" and .main.query.before == "api"'
 sb key ctrl+u
 wait_view '.main.query.before == ""'
@@ -200,7 +218,7 @@ open_kiosk
 wait_view '.main.total == 23'
 sb type cli
 wait_view "$rows == [\"cli\"]"
-sb click 500 203
+sb click 500 161
 wait_closed
 space_folders | grep -qx "$HOME/code/cli" || fail "no space for cli"
 for _ in $(seq 100); do [[ -s $marker ]] && break; sleep 0.1; done

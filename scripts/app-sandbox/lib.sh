@@ -15,7 +15,12 @@ fail() {
   exit 1
 }
 
-last_view() { grep '^< {"t":"view"' "$trace" 2>/dev/null | tail -1 | cut -c3- | jq -c .view; }
+# The latest view kiosk sent. A tab's body is lifted to the top, its tab as its `screen` and
+# the tab bar beside it as `bar`, so checks read the picker's view the same in any tab.
+last_view() {
+  grep '^< {"t":"view"' "$trace" 2>/dev/null | tail -1 | cut -c3- |
+    jq -c '.view | if .screen == "tabs" then .body + {screen: .body.tab, bar} else . end'
+}
 
 # Waits until the latest view satisfies the jq filter `$1`.
 wait_view() {

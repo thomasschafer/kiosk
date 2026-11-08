@@ -17,4 +17,5 @@ pub mod setup;
 pub mod spawn;
 pub mod start;
 pub mod state;
+pub mod tabs;
 pub mod view;

@@ -9,14 +9,15 @@
 
 use std::time::Duration;
 
-use kiosk_core::view::{
-    PickerView, setup::FolderModeName, setup::NoSearchDirsView, setup::SetupView,
+use kiosk_core::{
+    tabs::TabId,
+    view::{setup::FolderModeName, setup::NoSearchDirsView, setup::SetupView, tabs::TabsView},
 };
 use serde::{Deserialize, Serialize};
 
 /// Bumped whenever a message changes shape, so a frontend and a picker from different
 /// versions refuse each other rather than misread each other.
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// Refuses a client that speaks another version of the protocol, saying which to update.
 pub fn check_client(protocol: u32) -> anyhow::Result<()> {
@@ -41,7 +42,7 @@ pub const HEARTBEAT: Duration = Duration::from_secs(10);
 pub enum Screen {
     Setup(SetupView),
     NoSearchDirs(NoSearchDirsView),
-    Picker(PickerView),
+    Tabs(TabsView),
 }
 
 #[derive(Debug, Serialize)]
@@ -143,6 +144,15 @@ pub enum ClientMessage {
     /// A click on a setup wizard path completion.
     Completion {
         index: usize,
+    },
+    /// A click on a tab in the tab bar.
+    ShowTab {
+        tab: TabId,
+    },
+    /// A key bound in the frontend's host asks for `tab`: it shows, or kiosk closes if it
+    /// already shows, as pressing the key that opened kiosk again does.
+    Launch {
+        tab: TabId,
     },
     /// The frontend is closing, as if the user had quit.
     Close,
@@ -262,6 +272,14 @@ mod tests {
                 command: ButtonCommand::Repositories
             }
         );
+        assert_eq!(
+            parse(r#"{"t":"show_tab","tab":"diff"}"#),
+            ClientMessage::ShowTab { tab: TabId::Diff }
+        );
+        assert_eq!(
+            parse(r#"{"t":"launch","tab":"picker"}"#),
+            ClientMessage::Launch { tab: TabId::Picker }
+        );
         assert_eq!(parse(r#"{"t":"dismiss"}"#), ClientMessage::Dismiss);
         assert_eq!(parse(r#"{"t":"close"}"#), ClientMessage::Close);
     }
@@ -300,6 +318,7 @@ mod tests {
     fn unknown_client_messages_are_refused() {
         assert!(serde_json::from_str::<ClientMessage>(r#"{"t":"launch_missiles"}"#).is_err());
         assert!(serde_json::from_str::<ClientMessage>(r#"{"t":"scroll"}"#).is_err());
+        assert!(serde_json::from_str::<ClientMessage>(r#"{"t":"launch","tab":"logs"}"#).is_err());
     }
 
     #[test]

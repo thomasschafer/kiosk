@@ -74,6 +74,10 @@ its checkout after asking (the branch stays). `esc` goes back and closes
 from the repository list, and `ctrl+u` clears the search. `ctrl+h` lists every key: they can be modified via the
 [`[keys]`](#keys) config.
 
+Kiosk has tabs: the repositories, and a diff of the checkout you opened it from, which is
+still being built. `ctrl+1` and `ctrl+2` show each one, and `ctrl+tab` or `ctrl+pagedown`
+moves to the next.
+
 The first time kiosk opens, a setup wizard asks which folders to search and writes the
 config.
 
@@ -171,6 +175,8 @@ Each section accepts these actions:
 - `[keys.modal]`: `noop`, `open`, `back`
 - `[keys.repo_select]`: `noop`, `open`, `branches_view`, `quit`
 - `[keys.branch_select]`: `noop`, `open`, `back`, `new_branch`, `delete`, `backspace`, `backspace_or_back`
+- `[keys.tabs]`: `noop`, `next_tab`, `previous_tab`, `picker_tab`, `diff_tab`
+- `[keys.diff]`: `noop`, `quit`
 
 What each action does:
 
@@ -199,6 +205,10 @@ What each action does:
 - `new_branch` — Create a new branch
 - `delete` — Delete the selected checkout
 - `backspace_or_back` — Delete the previous character, or go back when the search is empty
+- `next_tab` — Show the next tab
+- `previous_tab` — Show the previous tab
+- `picker_tab` — Show the Repositories tab
+- `diff_tab` — Show the Diff tab
 
 Defaults:
 
@@ -255,6 +265,17 @@ Defaults:
 "ctrl+x" = "delete"
 "enter" = "open"
 "esc" = "back"
+
+[keys.tabs]
+"ctrl+1" = "picker_tab"
+"ctrl+2" = "diff_tab"
+"ctrl+pagedown" = "next_tab"
+"ctrl+pageup" = "previous_tab"
+"ctrl+shift+tab" = "previous_tab"
+"ctrl+tab" = "next_tab"
+
+[keys.diff]
+"esc" = "quit"
 
 ```
 

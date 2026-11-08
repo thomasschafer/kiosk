@@ -72,6 +72,21 @@ wait_view '.main.state == "list" and (.main.total == 23)'
 [[ $(last_view | jq -r "$rows | .[0:3] | join(\",\")") == "api,cli,design-system" ]] || fail "unexpected order"
 sb shot "$shots/repos.png" >/dev/null
 
+check "tab keys and the tab bar move between tabs, and the picker keeps its search"
+sb type infr
+wait_view ".main.query.before == \"infr\""
+sb key ctrl+2
+wait_view '.screen == "diff" and ([.bar[] | select(.active) | .id] == ["diff"])'
+sb shot "$shots/diff-tab.png" >/dev/null
+sb key ctrl+Tab
+wait_view '.screen == "picker" and .main.query.before == "infr"'
+sb key ctrl+Next
+wait_view '.screen == "diff"'
+sb click 580 99
+wait_view '.screen == "picker"'
+sb key ctrl+u
+wait_view '.main.query.before == ""'
+
 check "typing filters, alt+backspace (a picker chord) clears the word"
 sb type infr
 wait_view ".main.query.before == \"infr\" and ($rows == [\"infra\"])"
@@ -117,7 +132,7 @@ wait_view '.main.kind == "branches" and .main.title == "api — select branch"'
 wait_view '[.main.rows[] | select(.name.text == "feat/auth") | .actions.delete] == [true]'
 wait_view '[.main.rows[] | select(.name.text == "main") | .actions.delete] == [false]'
 sb shot "$shots/branches.png" >/dev/null
-sb click 355 108
+sb click 355 150
 wait_view '.main.kind == "repos" and .main.query.before == "api"'
 sb key ctrl+u
 wait_view '.main.query.before == ""'
@@ -185,7 +200,7 @@ open_kiosk
 wait_view '.main.total == 23'
 sb type cli
 wait_view "$rows == [\"cli\"]"
-sb click 500 161
+sb click 500 203
 wait_closed
 space_folders | grep -qx "$HOME/code/cli" || fail "no space for cli"
 for _ in $(seq 100); do [[ -s $marker ]] && break; sleep 0.1; done

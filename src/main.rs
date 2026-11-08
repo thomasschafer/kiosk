@@ -84,6 +84,7 @@ fn prepare(
     }
     Ok(kiosk_serve::Start {
         current_cwd: args.context.current_cwd().map(ToOwned::to_owned),
+        tab: args.tab.unwrap_or(kiosk_core::tabs::TabId::Picker),
         loaded,
         git,
         backend: Some(Arc::new(backend)),

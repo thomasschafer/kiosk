@@ -140,7 +140,7 @@ fn serve_runs_the_picker_in_the_background_for_the_mod() {
     let rows = loop {
         let message = client.receive();
         assert_eq!(message["t"], "view", "{message}");
-        let rows = &message["view"]["main"]["rows"];
+        let rows = &message["view"]["body"]["main"]["rows"];
         if rows.as_array().is_some_and(|rows| !rows.is_empty()) {
             break rows.clone();
         }

@@ -22,7 +22,11 @@ use kiosk_core::{
     product::Product,
     setup::{self, SetupOutcome, SetupState},
     state::{AppState, Mode, Overlay},
-    view::{self, Viewports},
+    tabs::{Launched, TabId, Tabs},
+    view::{
+        self, Viewports,
+        tabs::{TabBody, TabsView},
+    },
 };
 
 use crate::{
@@ -47,6 +51,8 @@ pub struct Start<B: Backend, E> {
     pub backend: Option<Arc<B>>,
     /// Where the user is, for preselecting the repository and branch they are in.
     pub current_cwd: Option<PathBuf>,
+    /// The tab kiosk opens on.
+    pub tab: TabId,
 }
 
 /// Runs the session to the end and tells the frontend how it ended.
@@ -63,11 +69,17 @@ pub fn run<B: Backend, E>(
         git,
         backend,
         current_cwd,
+        tab,
     } = start;
+    let mut tabs = Tabs::new(loaded.core.experimental_tabs, tab);
+    if !loaded.core.experimental_tabs {
+        loaded.core.keys = loaded.core.keys.without_tabs();
+    }
     connection.send(&ServerMessage::Hello {
         protocol: PROTOCOL_VERSION,
         product: product.name,
         chords: claimed_chords(&loaded.core.keys),
+        tabs: TabId::ALL,
     })?;
     let mut session = Session {
         connection,
@@ -76,7 +88,7 @@ pub fn run<B: Backend, E>(
     if !loaded.exists
         && let Some(path) = loaded.path.clone()
     {
-        let Some(search_dirs) = session.setup(product, &path)? else {
+        let Some(search_dirs) = session.setup(product, &path, &mut tabs)? else {
             return session.finish(Outcome::Quit);
         };
         loaded.core.search_dirs = search_dirs;
@@ -88,7 +100,7 @@ pub fn run<B: Backend, E>(
         return session.finish(Outcome::Quit);
     }
     let start = kiosk_core::start::prepare(product, loaded, current_cwd.as_deref())?;
-    let outcome = session.picker(start, git, backend)?;
+    let outcome = session.tabs(start, git, backend, tabs, current_cwd.as_deref())?;
     session.finish(outcome)
 }
 
@@ -153,11 +165,13 @@ impl Session<'_> {
     }
 
     /// Runs the setup wizard. Returns the search directories written to `config_path`, or
-    /// `None` if the user left without saving.
+    /// `None` if the user left without saving. A tab launched meanwhile is the one `tabs`
+    /// opens on afterwards.
     fn setup(
         &mut self,
         product: &'static Product,
         config_path: &Path,
+        tabs: &mut Tabs,
     ) -> Result<Option<Vec<kiosk_core::config::SearchDirEntry>>> {
         let home = kiosk_core::path::home_dir();
         let shown_path = kiosk_core::path::display(config_path);
@@ -194,11 +208,16 @@ impl Session<'_> {
                     SetupOutcome::Continue
                 }
                 ClientMessage::Close => SetupOutcome::Quit,
+                ClientMessage::Launch { tab } => match tabs.launch(tab) {
+                    Launched::Shown => SetupOutcome::Continue,
+                    Launched::Close => SetupOutcome::Quit,
+                },
                 ClientMessage::Viewport { .. }
                 | ClientMessage::Activate { .. }
                 | ClientMessage::Command { .. }
                 | ClientMessage::Dismiss
-                | ClientMessage::Scroll { .. } => SetupOutcome::Continue,
+                | ClientMessage::Scroll { .. }
+                | ClientMessage::ShowTab { .. } => SetupOutcome::Continue,
                 ClientMessage::Hello { .. } => unreachable!("next refuses a second hello"),
             };
             match outcome {
@@ -237,11 +256,13 @@ impl Session<'_> {
         }
     }
 
-    fn picker<B: Backend>(
+    fn tabs<B: Backend>(
         &mut self,
         start: kiosk_core::start::PickerStart,
         git: Arc<dyn GitProvider>,
         backend: Option<Arc<B>>,
+        mut tabs: Tabs,
+        current_cwd: Option<&Path>,
     ) -> Result<Outcome> {
         let kiosk_core::start::PickerStart {
             mut state,
@@ -264,7 +285,9 @@ impl Session<'_> {
             changed |= tick.changed;
             changed |= state.tick_toasts(Instant::now(), TOAST_AUTO_DISMISS);
             if std::mem::take(&mut changed) {
-                self.show(Screen::Picker(view::picker(
+                self.show(Screen::Tabs(tabs_view(
+                    tabs,
+                    current_cwd,
                     &mut state,
                     picker.keys(),
                     viewports,
@@ -276,7 +299,7 @@ impl Session<'_> {
                     break;
                 };
                 changed = true;
-                let step = handle_message(message, &picker, &mut state, &mut viewports);
+                let step = handle_message(message, &picker, &mut state, &mut viewports, &mut tabs);
                 if let Step::Finish(outcome) = step {
                     return Ok(outcome);
                 }
@@ -286,28 +309,42 @@ impl Session<'_> {
     }
 }
 
+/// The tab bar over whichever tab shows.
+fn tabs_view(
+    tabs: Tabs,
+    current_cwd: Option<&Path>,
+    state: &mut AppState,
+    keys: &KeysConfig,
+    viewports: Viewports,
+) -> TabsView {
+    let body = match tabs.active() {
+        TabId::Picker => TabBody::Picker(view::picker(state, keys, viewports)),
+        TabId::Diff => TabBody::Diff(view::tabs::diff(current_cwd, keys)),
+    };
+    view::tabs::tabs(tabs, body, keys)
+}
+
+/// Applies `message`: what every tab shares first, such as changing tab, then what the tab
+/// that shows does with it.
 fn handle_message<B: Backend>(
     message: ClientMessage,
     picker: &Picker<B>,
     state: &mut AppState,
     viewports: &mut Viewports,
+    tabs: &mut Tabs,
 ) -> Step {
-    if acts_on_selection(&message)
-        && let Some(outcome) = picker.settle_filters(state, SETTLE)
-    {
-        return Step::Finish(outcome.into());
-    }
-    let outcome = match message {
-        ClientMessage::Key {
-            keystroke,
-            key_char,
-        } => keystroke::parse(&keystroke, key_char.as_deref(), Platform::current())
-            .and_then(|input| keymap::resolve_input(input, state, picker.keys()))
-            .and_then(|action| picker.handle_action(state, action)),
-        ClientMessage::Paste { text } => text
-            .chars()
-            .filter(|character| !character.is_control())
-            .find_map(|character| picker.handle_action(state, Action::Insert(character))),
+    match message {
+        ClientMessage::Close => return Step::Finish(Outcome::Quit),
+        ClientMessage::ShowTab { tab } => {
+            tabs.apply(kiosk_core::tabs::TabCommand::Show(tab));
+            return Step::Continue;
+        }
+        ClientMessage::Launch { tab } => {
+            return match tabs.launch(tab) {
+                Launched::Shown => Step::Continue,
+                Launched::Close => Step::Finish(Outcome::Quit),
+            };
+        }
         ClientMessage::Viewport {
             list,
             bases,
@@ -320,8 +357,55 @@ fn handle_message<B: Backend>(
                 help: help.max(1),
                 scan_warnings: scan_warnings.max(1),
             };
-            None
+            return Step::Continue;
         }
+        _ => {}
+    }
+    let input = match &message {
+        ClientMessage::Key {
+            keystroke,
+            key_char,
+        } => keystroke::parse(keystroke, key_char.as_deref(), Platform::current()),
+        _ => None,
+    };
+    if let Some(command) = input.and_then(|input| picker.keys().tab_command(input.chord)) {
+        tabs.apply(command);
+        return Step::Continue;
+    }
+    match tabs.active() {
+        TabId::Picker => handle_picker_message(message, input, picker, state, *viewports),
+        TabId::Diff => handle_diff_input(input, picker.keys()),
+    }
+}
+
+/// What a key does in the diff tab; the diff tab has nothing to click yet.
+fn handle_diff_input(input: Option<KeyInput>, keys: &KeysConfig) -> Step {
+    match input.and_then(|input| keys.diff_command(input.chord)) {
+        Some(kiosk_core::config::keys::Command::Quit) => Step::Finish(Outcome::Quit),
+        _ => Step::Continue,
+    }
+}
+
+fn handle_picker_message<B: Backend>(
+    message: ClientMessage,
+    input: Option<KeyInput>,
+    picker: &Picker<B>,
+    state: &mut AppState,
+    viewports: Viewports,
+) -> Step {
+    if acts_on_selection(&message)
+        && let Some(outcome) = picker.settle_filters(state, SETTLE)
+    {
+        return Step::Finish(outcome.into());
+    }
+    let outcome = match message {
+        ClientMessage::Key { .. } => input
+            .and_then(|input| keymap::resolve_input(input, state, picker.keys()))
+            .and_then(|action| picker.handle_action(state, action)),
+        ClientMessage::Paste { text } => text
+            .chars()
+            .filter(|character| !character.is_control())
+            .find_map(|character| picker.handle_action(state, Action::Insert(character))),
         ClientMessage::Activate {
             position,
             id,
@@ -337,11 +421,14 @@ fn handle_message<B: Backend>(
             state,
             Action::Scroll {
                 delta,
-                viewport_rows: viewport_in_front(state, *viewports),
+                viewport_rows: viewport_in_front(state, viewports),
             },
         ),
-        ClientMessage::Close => Some(RunOutcome::Quit),
         ClientMessage::FolderMode { .. } | ClientMessage::Completion { .. } => None,
+        ClientMessage::Viewport { .. }
+        | ClientMessage::ShowTab { .. }
+        | ClientMessage::Launch { .. }
+        | ClientMessage::Close => unreachable!("handled for every tab"),
         ClientMessage::Hello { .. } => unreachable!("next refuses a second hello"),
     };
     outcome.map_or(Step::Continue, |outcome| Step::Finish(outcome.into()))
@@ -362,6 +449,8 @@ fn acts_on_selection(message: &ClientMessage) -> bool {
         | ClientMessage::Viewport { .. }
         | ClientMessage::FolderMode { .. }
         | ClientMessage::Completion { .. }
+        | ClientMessage::ShowTab { .. }
+        | ClientMessage::Launch { .. }
         | ClientMessage::Close
         | ClientMessage::Hello { .. } => false,
     }

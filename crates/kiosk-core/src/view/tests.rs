@@ -29,6 +29,15 @@ const VIEWPORTS: Viewports = Viewports {
     scan_warnings: 2,
 };
 
+/// What the picker shows before it has found anything.
+pub(super) fn empty_picker_view() -> PickerView {
+    picker(
+        &mut AppState::new(&TEST_PRODUCT, None),
+        &KeysConfig::default(),
+        VIEWPORTS,
+    )
+}
+
 fn repo(name: &str, is_git: bool) -> Repo {
     Repo {
         name: name.into(),

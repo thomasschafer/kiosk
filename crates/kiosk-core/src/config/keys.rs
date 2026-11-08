@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     product::Product,
     state::{Mode, TextEdit},
+    tabs::{TabCommand, TabId},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -201,6 +202,9 @@ pub enum Command {
     CursorWordRight,
     CursorStart,
     CursorEnd,
+    NextTab,
+    PreviousTab,
+    ShowTab(TabId),
 }
 
 impl Command {
@@ -231,6 +235,9 @@ impl Command {
             Self::CursorWordRight => "cursor_word_right",
             Self::CursorStart => "cursor_start",
             Self::CursorEnd => "cursor_end",
+            Self::NextTab => "next_tab",
+            Self::PreviousTab => "previous_tab",
+            Self::ShowTab(tab) => tab.command_name(),
         }
     }
 
@@ -263,6 +270,9 @@ impl Command {
             Self::CursorWordRight => "Move the cursor forward a word",
             Self::CursorStart => "Move the cursor to the start",
             Self::CursorEnd => "Move the cursor to the end",
+            Self::NextTab => "Show the next tab",
+            Self::PreviousTab => "Show the previous tab",
+            Self::ShowTab(tab) => tab.command_description(),
         }
     }
 
@@ -293,7 +303,10 @@ impl Command {
             | Self::BranchesView
             | Self::Back
             | Self::NewBranch
-            | Self::Delete => return None,
+            | Self::Delete
+            | Self::NextTab
+            | Self::PreviousTab
+            | Self::ShowTab(_) => return None,
         })
     }
 }
@@ -328,7 +341,11 @@ impl FromStr for Command {
             "cursor_word_right" => Ok(Self::CursorWordRight),
             "cursor_start" => Ok(Self::CursorStart),
             "cursor_end" => Ok(Self::CursorEnd),
-            _ => Err(format!("unknown key action '{value}'")),
+            "next_tab" => Ok(Self::NextTab),
+            "previous_tab" => Ok(Self::PreviousTab),
+            _ => TabId::from_command_name(value)
+                .map(Self::ShowTab)
+                .ok_or_else(|| format!("unknown key action '{value}'")),
         }
     }
 }
@@ -360,6 +377,12 @@ pub struct KeysConfig {
     /// `backspace_or_back` deletes like `backspace` but goes back to the repositories
     /// when the search is empty; bind the key to `backspace` instead to only delete.
     branch_select: HashMap<KeyChord, Command>,
+    /// Bindings that change tab, active in every tab and ahead of every other section.
+    /// Accepted actions are `next_tab`, `previous_tab`, one `<tab>_tab` per tab, such as
+    /// `diff_tab`, and `noop`.
+    tabs: HashMap<KeyChord, Command>,
+    /// Bindings specific to the diff tab. Accepted actions are `quit` and `noop`.
+    diff: HashMap<KeyChord, Command>,
 }
 
 /// The `[keys]` section as written, before it is layered over the defaults.
@@ -372,10 +395,12 @@ pub(crate) struct RawKeysConfig {
     modal: HashMap<String, String>,
     repo_select: HashMap<String, String>,
     branch_select: HashMap<String, String>,
+    tabs: HashMap<String, String>,
+    diff: HashMap<String, String>,
 }
 
 impl RawKeysConfig {
-    fn into_layers(self) -> [(KeyLayer, HashMap<String, String>); 6] {
+    fn into_layers(self) -> [(KeyLayer, HashMap<String, String>); KeyLayer::ALL.len()] {
         [
             (KeyLayer::General, self.general),
             (KeyLayer::TextEdit, self.text_edit),
@@ -383,6 +408,8 @@ impl RawKeysConfig {
             (KeyLayer::Modal, self.modal),
             (KeyLayer::RepoSelect, self.repo_select),
             (KeyLayer::BranchSelect, self.branch_select),
+            (KeyLayer::Tabs, self.tabs),
+            (KeyLayer::Diff, self.diff),
         ]
     }
 }
@@ -396,16 +423,20 @@ pub enum KeyLayer {
     Modal,
     RepoSelect,
     BranchSelect,
+    Tabs,
+    Diff,
 }
 
 impl KeyLayer {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 8] = [
         Self::General,
         Self::TextEdit,
         Self::ListNavigation,
         Self::Modal,
         Self::RepoSelect,
         Self::BranchSelect,
+        Self::Tabs,
+        Self::Diff,
     ];
 
     pub const fn name(self) -> &'static str {
@@ -416,11 +447,19 @@ impl KeyLayer {
             Self::Modal => "modal",
             Self::RepoSelect => "repo_select",
             Self::BranchSelect => "branch_select",
+            Self::Tabs => "tabs",
+            Self::Diff => "diff",
         }
     }
 
+    /// Whether the README documents this section. The tab sections stay out of it while
+    /// tabs are behind `experimental_tabs`.
+    pub const fn documented(self) -> bool {
+        !matches!(self, Self::Tabs | Self::Diff)
+    }
+
     /// The commands a binding in this section may name.
-    pub const fn allowed(self) -> &'static [Command] {
+    pub fn allowed(self) -> &'static [Command] {
         match self {
             Self::General => GENERAL,
             Self::TextEdit => TEXT_EDIT,
@@ -428,6 +467,8 @@ impl KeyLayer {
             Self::Modal => MODAL,
             Self::RepoSelect => REPO_SELECT,
             Self::BranchSelect => BRANCH_SELECT,
+            Self::Tabs => &TABS,
+            Self::Diff => DIFF,
         }
     }
 }
@@ -503,8 +544,27 @@ impl Default for KeysConfig {
                 ("C-o", Command::NewBranch),
                 ("C-x", Command::Delete),
             ]),
+            tabs: default_tab_keys(),
+            diff: map(&[("esc", Command::Quit)]),
         }
     }
+}
+
+/// Moving between tabs, then `ctrl+<n>` for the tab at position `n` of the tab bar.
+fn default_tab_keys() -> HashMap<KeyChord, Command> {
+    let mut keys = map(&[
+        ("C-pagedown", Command::NextTab),
+        ("C-tab", Command::NextTab),
+        ("C-pageup", Command::PreviousTab),
+        ("C-S-tab", Command::PreviousTab),
+    ]);
+    for (position, tab) in TabId::ALL.iter().enumerate().take(9) {
+        let chord = format!("C-{}", position + 1)
+            .parse()
+            .expect("valid default chord");
+        keys.insert(chord, Command::ShowTab(*tab));
+    }
+    keys
 }
 
 fn map(entries: &[(&str, Command)]) -> HashMap<KeyChord, Command> {
@@ -514,10 +574,14 @@ fn map(entries: &[(&str, Command)]) -> HashMap<KeyChord, Command> {
         .collect()
 }
 
-/// `keys`' bindings as a TOML block for the config reference.
+/// `keys`' bindings in the documented sections as a TOML block for the config reference.
 pub fn default_keys_toml(keys: &KeysConfig) -> String {
     let mut output = String::from("```toml\n");
-    for (layer, bindings) in keys.layers() {
+    for (layer, bindings) in keys
+        .layers()
+        .into_iter()
+        .filter(|(layer, _)| layer.documented())
+    {
         let _ = writeln!(output, "[keys.{}]", layer.name());
         let mut bindings = bindings.iter().collect::<Vec<_>>();
         bindings.sort_by(|(left_key, left_command), (right_key, right_command)| {
@@ -624,7 +688,7 @@ impl KeysConfig {
         Ok(())
     }
 
-    fn layers(&self) -> [(KeyLayer, &HashMap<KeyChord, Command>); 6] {
+    fn layers(&self) -> [(KeyLayer, &HashMap<KeyChord, Command>); KeyLayer::ALL.len()] {
         KeyLayer::ALL.map(|layer| (layer, self.layer(layer)))
     }
 
@@ -636,6 +700,8 @@ impl KeysConfig {
             KeyLayer::Modal => &self.modal,
             KeyLayer::RepoSelect => &self.repo_select,
             KeyLayer::BranchSelect => &self.branch_select,
+            KeyLayer::Tabs => &self.tabs,
+            KeyLayer::Diff => &self.diff,
         }
     }
 
@@ -654,7 +720,17 @@ impl KeysConfig {
             KeyLayer::Modal => &mut self.modal,
             KeyLayer::RepoSelect => &mut self.repo_select,
             KeyLayer::BranchSelect => &mut self.branch_select,
+            KeyLayer::Tabs => &mut self.tabs,
+            KeyLayer::Diff => &mut self.diff,
         }
+    }
+
+    /// These bindings with no tab keys, for when kiosk shows only the picker, so the keys
+    /// stay the app's.
+    #[must_use]
+    pub fn without_tabs(mut self) -> Self {
+        self.tabs.clear();
+        self
     }
 
     /// The chords the text-editing bindings act on.
@@ -691,7 +767,49 @@ impl KeysConfig {
                 self.modal.get(&chord).copied().or(command)
             }
         };
-        command
+        self.tab_binding(chord).or(command)
+    }
+
+    /// The tab-changing command bound to `chord`. It wins over every other section, in
+    /// every tab, and `noop` there only unbinds the tab key.
+    fn tab_binding(&self, chord: KeyChord) -> Option<Command> {
+        self.tabs
+            .get(&chord)
+            .copied()
+            .filter(|command| *command != Command::Noop)
+    }
+
+    /// The change of tab `chord` asks for, if any.
+    pub fn tab_command(&self, chord: KeyChord) -> Option<TabCommand> {
+        match self.tab_binding(chord)? {
+            Command::NextTab => Some(TabCommand::Next),
+            Command::PreviousTab => Some(TabCommand::Previous),
+            Command::ShowTab(tab) => Some(TabCommand::Show(tab)),
+            command => unreachable!("[keys.tabs] does not allow '{}'", command.name()),
+        }
+    }
+
+    /// What `chord` does in the diff tab, short of changing tab.
+    pub fn diff_command(&self, chord: KeyChord) -> Option<Command> {
+        self.diff
+            .get(&chord)
+            .or_else(|| self.general.get(&chord))
+            .copied()
+    }
+
+    /// The key to show for `wanted` in the diff tab: one that runs it there, rather than a
+    /// tab key or a diff key taking it first, preferring keys as [`Self::preferred_key`] does.
+    pub fn diff_key(&self, wanted: Command) -> Option<KeyChord> {
+        self.diff
+            .iter()
+            .chain(&self.general)
+            .filter(|(chord, command)| {
+                **command == wanted
+                    && self.tab_binding(**chord).is_none()
+                    && self.diff_command(**chord) == Some(wanted)
+            })
+            .map(|(chord, _)| *chord)
+            .min_by_key(|chord| (key_preference(chord), chord.to_string()))
     }
 
     /// Every chord bound to a command in any layer, so a frontend can claim them before
@@ -722,7 +840,12 @@ impl KeysConfig {
     }
 
     fn general_key(&self, wanted: Command) -> Option<KeyChord> {
-        self.general
+        self.layer_key(KeyLayer::General, wanted)
+    }
+
+    /// The key bound to `wanted` in `layer`, the first by name if there are several.
+    pub fn layer_key(&self, layer: KeyLayer, wanted: Command) -> Option<KeyChord> {
+        self.layer(layer)
             .iter()
             .filter_map(|(key, command)| (*command == wanted).then_some(*key))
             .min_by_key(ToString::to_string)
@@ -769,26 +892,34 @@ impl KeysConfig {
                 ("repository", &self.repo_select),
                 ("navigation", &self.list_navigation),
                 ("search", &self.text_edit),
+                ("tabs", &self.tabs),
                 ("general", &self.general),
             ],
             BindingMode::Branch => vec![
                 ("branches", &self.branch_select),
                 ("navigation", &self.list_navigation),
                 ("search", &self.text_edit),
+                ("tabs", &self.tabs),
                 ("general", &self.general),
             ],
             BindingMode::BaseBranch => vec![
                 ("base branch", &self.modal),
                 ("navigation", &self.list_navigation),
                 ("search", &self.text_edit),
+                ("tabs", &self.tabs),
                 ("general", &self.general),
             ],
             BindingMode::Choice => vec![
                 ("dialog", &self.modal),
                 ("navigation", &self.list_navigation),
+                ("tabs", &self.tabs),
                 ("general", &self.general),
             ],
-            BindingMode::Modal => vec![("dialog", &self.modal), ("general", &self.general)],
+            BindingMode::Modal => vec![
+                ("dialog", &self.modal),
+                ("tabs", &self.tabs),
+                ("general", &self.general),
+            ],
         };
         for (name, layer) in layers {
             let mut bindings = layer
@@ -844,6 +975,13 @@ const TEXT_EDIT: &[Command] = &[
     Command::CursorStart,
     Command::CursorEnd,
 ];
+static TABS: std::sync::LazyLock<Vec<Command>> = std::sync::LazyLock::new(|| {
+    [Command::Noop, Command::NextTab, Command::PreviousTab]
+        .into_iter()
+        .chain(TabId::ALL.iter().copied().map(Command::ShowTab))
+        .collect()
+});
+const DIFF: &[Command] = &[Command::Noop, Command::Quit];
 const LIST_NAVIGATION: &[Command] = &[Command::Noop, Command::MoveUp, Command::MoveDown];
 const MODAL: &[Command] = &[Command::Noop, Command::Open, Command::Back];
 const REPO_SELECT: &[Command] = &[
@@ -890,11 +1028,14 @@ const fn command_rank(command: Command) -> u8 {
         Command::CursorWordRight => 17,
         Command::CursorStart => 18,
         Command::CursorEnd => 19,
-        Command::Help => 20,
-        Command::DismissToast => 21,
-        Command::ScanWarnings => 22,
-        Command::Quit => 23,
-        Command::Noop => 24,
+        Command::NextTab => 20,
+        Command::PreviousTab => 21,
+        Command::ShowTab(_) => 22,
+        Command::Help => 23,
+        Command::DismissToast => 24,
+        Command::ScanWarnings => 25,
+        Command::Quit => 26,
+        Command::Noop => 27,
     }
 }
 
@@ -1099,5 +1240,130 @@ mod tests {
             keys.command_for(BindingMode::Modal, "down".parse().unwrap()),
             None
         );
+    }
+
+    #[test]
+    fn tab_keys_move_between_tabs_and_show_each_one() {
+        let keys = KeysConfig::default();
+        let tab = |chord: &str| keys.tab_command(chord.parse().unwrap());
+        assert_eq!(tab("ctrl+pagedown"), Some(TabCommand::Next));
+        assert_eq!(tab("ctrl+tab"), Some(TabCommand::Next));
+        assert_eq!(tab("ctrl+pageup"), Some(TabCommand::Previous));
+        assert_eq!(tab("ctrl+shift+tab"), Some(TabCommand::Previous));
+        for (position, id) in TabId::ALL.iter().enumerate() {
+            assert_eq!(
+                tab(&format!("ctrl+{}", position + 1)),
+                Some(TabCommand::Show(*id))
+            );
+        }
+        assert_eq!(tab("tab"), None);
+    }
+
+    #[test]
+    fn tab_keys_win_over_every_other_section() {
+        let keys = KeysConfig::from_toml(
+            "[repo_select]\n\"ctrl+1\" = \"branches_view\"\n[tabs]\n\"ctrl+o\" = \"diff_tab\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            keys.command_for(BindingMode::Repo, "ctrl+1".parse().unwrap()),
+            Some(Command::ShowTab(TabId::Picker))
+        );
+        assert_eq!(
+            keys.command_for(BindingMode::Branch, "ctrl+o".parse().unwrap()),
+            Some(Command::ShowTab(TabId::Diff))
+        );
+    }
+
+    #[test]
+    fn unbinding_a_tab_key_leaves_the_key_to_the_other_sections() {
+        let keys = KeysConfig::from_toml(
+            "[tabs]\n\"ctrl+tab\" = \"noop\"\n[repo_select]\n\"ctrl+tab\" = \"branches_view\"\n",
+        )
+        .unwrap();
+        let chord = "ctrl+tab".parse().unwrap();
+        assert_eq!(keys.tab_command(chord), None);
+        assert_eq!(
+            keys.command_for(BindingMode::Repo, chord),
+            Some(Command::BranchesView)
+        );
+    }
+
+    #[test]
+    fn tab_actions_are_named_after_their_tabs_and_allowed_only_in_tabs() {
+        assert_eq!(
+            "diff_tab".parse::<Command>(),
+            Ok(Command::ShowTab(TabId::Diff))
+        );
+        assert_eq!(Command::ShowTab(TabId::Picker).name(), "picker_tab");
+        assert!(
+            KeysConfig::from_toml("[general]\n\"ctrl+g\" = \"diff_tab\"\n")
+                .unwrap_err()
+                .contains("not allowed in [keys.general]")
+        );
+        assert!(
+            KeysConfig::from_toml("[tabs]\n\"ctrl+g\" = \"logs_tab\"\n")
+                .unwrap_err()
+                .contains("unknown key action 'logs_tab'")
+        );
+    }
+
+    #[test]
+    fn the_diff_tab_takes_its_own_keys_over_the_general_ones() {
+        let keys = KeysConfig::from_toml("[diff]\n\"ctrl+c\" = \"noop\"\n").unwrap();
+        assert_eq!(
+            keys.diff_command("esc".parse().unwrap()),
+            Some(Command::Quit)
+        );
+        assert_eq!(
+            keys.diff_command("ctrl+c".parse().unwrap()),
+            Some(Command::Noop)
+        );
+        assert_eq!(
+            keys.diff_command("ctrl+h".parse().unwrap()),
+            Some(Command::Help)
+        );
+    }
+
+    #[test]
+    fn the_diff_tab_shows_a_quit_key_that_quits_there() {
+        let default = KeysConfig::default();
+        assert_eq!(
+            default.diff_key(Command::Quit),
+            Some("esc".parse().unwrap())
+        );
+        let taken = KeysConfig::from_toml("[tabs]\n\"esc\" = \"picker_tab\"\n").unwrap();
+        assert_eq!(
+            taken.diff_key(Command::Quit),
+            Some("ctrl+c".parse().unwrap())
+        );
+        let none = KeysConfig::from_toml(
+            "[tabs]\n\"esc\" = \"picker_tab\"\n[general]\n\"ctrl+c\" = \"noop\"\n",
+        )
+        .unwrap();
+        assert_eq!(none.diff_key(Command::Quit), None);
+    }
+
+    #[test]
+    fn help_lists_the_tab_keys_in_every_mode() {
+        let keys = KeysConfig::default();
+        for mode in [
+            BindingMode::Repo,
+            BindingMode::Branch,
+            BindingMode::BaseBranch,
+            BindingMode::Choice,
+            BindingMode::Modal,
+        ] {
+            let tabs = keys
+                .sections(mode)
+                .into_iter()
+                .find(|section| section.name == "tabs")
+                .unwrap_or_else(|| panic!("no tabs section in {mode:?}"));
+            assert!(
+                tabs.bindings
+                    .contains(&("ctrl+2".parse().unwrap(), Command::ShowTab(TabId::Diff))),
+                "{mode:?}: {tabs:?}"
+            );
+        }
     }
 }

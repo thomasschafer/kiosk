@@ -12,7 +12,7 @@
 
 import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { appHome, closeOverlay, exec, focused, notify, panes, props, readTextFile, settings, spaces, theme, window, writeTextFile } from "herdr";
+import { appHome, closeOverlay, exec, focused, nextCommand, notify, panes, props, readTextFile, setShared, settings, shared, spaces, theme, window, writeTextFile } from "herdr";
 import { Buffer } from "buffer";
 import net from "net";
 
@@ -23,7 +23,7 @@ const TITLE = "Kiosk";
 const VERSION = "0.8.0";
 const REPOSITORY = "github.com/thomasschafer/kiosk";
 // The protocol this mod speaks; the picker refuses a different one.
-const PROTOCOL = 3;
+const PROTOCOL = 4;
 
 // The dialog's share of the window, as mod.json opens it. Kiosk draws its own panel inside
 // it (mod.json's frame is none): hung from the top, and as tall as what it shows, so a short
@@ -57,6 +57,10 @@ const FOOTER = 40;
 // A footer with buttons in it, which are taller than its hints.
 const BUTTON_FOOTER = 52;
 const TOAST = 36;
+// The tab bar along the panel's top, and the space round its tabs.
+const TAB_BAR = 46;
+const TAB_INSET = 3;
+const TAB = 30;
 const EDGE = 20;
 const ICONS = "mods/workspace-chrome";
 const CONTEXT = "KioskPicker";
@@ -65,6 +69,14 @@ const MAX_PASTE = 128 * 1024;
 // The longest snapshot of the spaces the mod passes the picker, well inside the 32,767
 // characters Windows allows a whole command line. The picker asks the app itself without one.
 const MAX_SNAPSHOT = 8 * 1024;
+// Shared state between kiosk and the launcher mods (such as kiosk-diff) that open it on a
+// tab. A launcher sets LAUNCH to the tab and opens kiosk, which takes it and clears it; while
+// kiosk is open, OPEN names its overlay, and a launcher instead sends it `kiosk.tab:<tab>:<nonce>`,
+// which kiosk acknowledges by setting ACK to the nonce. A launcher that hears nothing takes OPEN
+// as left over from a crash. `kiosk.focus` gives kiosk the keyboard back once a launcher has gone.
+const LAUNCH = "kiosk.launch";
+const OPEN = "kiosk.open";
+const ACK = "kiosk.ack";
 // Where the picker saves notices it couldn't show because its popup had closed, one JSON
 // object per line, below the app's home.
 const SAVED_NOTICES = "data/kiosk/notices.jsonl";
@@ -139,8 +151,9 @@ async function showSavedNotices() {
   }
 }
 
-// Runs `herdr-app-kiosk serve` from the first place it can, returning where the picker listens.
-async function launch() {
+// Runs `herdr-app-kiosk serve` from the first place it can, opening on `tab` (the picker's
+// first when null), returning where the picker listens.
+async function launch(tab) {
   const spacesSnapshot = snapshot();
   const args = [
     "serve",
@@ -149,6 +162,7 @@ async function launch() {
     "--context",
     JSON.stringify(context()),
     ...(spacesSnapshot === null ? [] : ["--spaces", spacesSnapshot]),
+    ...(tab === null ? [] : ["--tab", tab]),
   ];
   const missing = [];
   for (const program of binaries()) {
@@ -169,8 +183,8 @@ async function launch() {
   throw new KioskError("Kiosk isn't installed", `Its program herdr-app-kiosk ${VERSION} isn't in ${MOD_DIR}/bin or on PATH; ${REPOSITORY} says how to install it. Tried ${missing.join("; ")}.`);
 }
 
-async function start() {
-  const { program, handshake } = await launch();
+async function start(tab) {
+  const { program, handshake } = await launch(tab);
   if (handshake.protocol !== PROTOCOL) {
     throw new KioskError("Kiosk needs updating", `This mod (herdr-app-kiosk ${VERSION}) speaks protocol ${PROTOCOL} and ${program} speaks ${handshake.protocol}. Install the binary of release v${VERSION} from ${REPOSITORY}.`);
   }
@@ -203,10 +217,11 @@ class Lines {
 
 // How many rows each list shows in a dialog `height` px tall: what the panel's search bar,
 // title and footer leave, up to a list's most.
-function viewportFor(height, toast) {
+// `tabbed` when the panel has a tab bar along its top.
+function viewportFor(height, toast, tabbed) {
   const fit = (space, row, least, most) => Math.max(least, Math.min(most, Math.floor(space / row)));
   const panel = height - 2 * BORDER;
-  const list = panel - BAR - BORDER - 2 * PAD - BORDER - FOOTER - (toast ? TOAST + PAD : 0);
+  const list = panel - (tabbed ? TAB_BAR : 0) - BAR - BORDER - 2 * PAD - BORDER - FOOTER - (toast ? TOAST + PAD : 0);
   return {
     list: fit(list, ROW, 1, MAX_ROWS),
     bases: fit(panel - TALL_TITLE_BAR - BORDER - BAR - BORDER - 2 * PAD - BORDER - BUTTON_FOOTER, ROW, 3, 8),
@@ -404,8 +419,21 @@ export default class Kiosk extends View {
     /** @type {Link} */
     this.link = { state: "starting" };
     this.wheel = 0;
+    // Every tab name the picker understands, once it has said hello.
+    this.tabNames = [];
+    // Launchers' tabs that came while the picker started, in order, sent once it has said hello.
+    this.pendingLaunches = [];
     // `herdr-app check` loads the mod with no overlay; only a shown copy starts the picker.
     if (!props()?.overlay) return;
+    const tab = shared(LAUNCH) ?? null;
+    if (tab !== null) setShared(LAUNCH, null);
+    setShared(OPEN, { overlay: props().overlay });
+    cx.spawn(async (cx) => {
+      for (;;) {
+        this.command(await nextCommand());
+        cx.notify();
+      }
+    });
     cx.spawn(async () => {
       try {
         await showSavedNotices();
@@ -415,7 +443,7 @@ export default class Kiosk extends View {
     });
     cx.spawn(async (cx) => {
       try {
-        const { socket, token } = await start();
+        const { socket, token } = await start(tab);
         if (this.link.state === "closed") {
           socket.close();
           return;
@@ -459,7 +487,10 @@ export default class Kiosk extends View {
       case "hello":
         this.chords = message.chords;
         cx.bind_keys(this.chords.map((keystroke) => ({ keystroke, action: `kiosk.key:${keystroke}`, context: CONTEXT })));
+        this.tabNames = message.tabs;
         this.ready = true;
+        for (const tab of this.pendingLaunches) this.launchTab(tab);
+        this.pendingLaunches = [];
         return false;
       case "view":
         this.view = message.view;
@@ -494,17 +525,52 @@ export default class Kiosk extends View {
     });
   }
 
+  // A command a launcher mod sent: `tab:<tab>[:<nonce>]` asks for a tab, and `focus` gives
+  // kiosk the keyboard back.
+  command(command) {
+    if (command === "focus") {
+      this.handle.focus();
+      return;
+    }
+    const [name, tab, nonce] = command.split(":");
+    if (name !== "tab" || !tab) {
+      notify({ title: "Kiosk got a command it doesn't know", body: command, level: "warning" });
+      return;
+    }
+    // Acknowledged even for a tab kiosk lacks, so the launcher doesn't take kiosk for gone.
+    if (nonce) setShared(ACK, nonce);
+    if (this.ready) this.launchTab(tab);
+    else this.pendingLaunches.push(tab);
+  }
+
+  // Asks the picker for `tab`, or says kiosk has no such tab rather than send one the picker
+  // would refuse.
+  launchTab(tab) {
+    if (this.tabNames.includes(tab)) {
+      this.send({ t: "launch", tab });
+      return;
+    }
+    notify({ title: "Kiosk has no such tab", body: `A launcher asked for "${tab}"; kiosk's tabs are ${this.tabNames.join(", ")}.`, level: "warning" });
+  }
+
+  // Says kiosk is no longer open, unless another copy has said it is since.
+  forget() {
+    if (shared(OPEN)?.overlay === props()?.overlay) setShared(OPEN, null);
+  }
+
   finish() {
     const link = this.link;
     if (link.state === "closed") return;
     this.link = { state: "closed" };
     if (link.state === "connected") link.socket.close();
+    this.forget();
     closeOverlay(props().overlay);
   }
 
   // A popup closed while still starting has no picker to tell, as its startup ends with
   // it; a picker no one connects to gives up on its own.
   async close() {
+    this.forget();
     const link = this.link;
     if (link.state === "closed") return;
     this.link = { state: "closed" };
@@ -553,7 +619,8 @@ export default class Kiosk extends View {
     const zoom = settings().zoom;
     if (!(zoom > 0)) throw new Error(`the app's zoom is ${zoom}`);
     const height = (globalThis.window.viewport_size().height * SHARE) / zoom;
-    const viewport = viewportFor(height, !!this.view?.toast);
+    const view = this.view?.screen === "tabs" ? this.view.body : this.view;
+    const viewport = viewportFor(height, !!view?.toast, this.view?.bar?.length > 0);
     if (JSON.stringify(viewport) === JSON.stringify(this.viewport)) return;
     this.viewport = viewport;
     this.send({ t: "viewport", ...viewport });
@@ -582,7 +649,49 @@ export default class Kiosk extends View {
     if (!v) return this.message(t, spinner(t), "Starting…");
     if (v.screen === "setup") return this.setup(t, v);
     if (v.screen === "no_search_dirs") return this.noSearchDirs(t, v);
-    return this.picker(t, v);
+    if (v.screen === "tabs") return this.tabs(t, v);
+    throw new Error(`the picker sent a screen this mod doesn't know: ${v.screen}`);
+  }
+
+  // The tab that shows, with the tab bar along its panel's top.
+  tabs(t, v) {
+    const body = v.body;
+    switch (body.tab) {
+      case "picker":
+        return this.picker(t, body, v.bar);
+      case "diff":
+        return this.diff(t, body, v.bar);
+      default:
+        throw new Error(`the picker sent a tab this mod doesn't know: ${body.tab}`);
+    }
+  }
+
+  // Each tab with the key that shows it, centred so the tabs stay put as the panel changes
+  // width between tabs. Nothing while kiosk shows one tab.
+  tabBar(t, bar) {
+    if (!bar.length) return null;
+    return h_flex().id("kiosk-tabs").h(TAB_BAR).flex_none().justify_center().items_center().border_b_1().border_color(t.border)
+      .child(h_flex().p(TAB_INSET).gap(2).items_center().rounded(9).bg(tint(t.foreground, 0.05))
+        .children(bar.map((tab) =>
+          h_flex().id(`kiosk-tab-${tab.id}`).h(TAB).px(10).gap(8).items_center().rounded(6).cursor_pointer().text_size(12.5).font_medium()
+            .when(tab.active, (el) => el.bg(t.popover).text_color(t.foreground).shadow_sm())
+            .when(!tab.active, (el) => el.text_color(t.muted).hover((s) => s.text_color(t.foreground)))
+            .on_click((_e, cx) => { cx.stop_propagation(); this.send({ t: "show_tab", tab: tab.id }); })
+            .child(tab.title)
+            .when(!!tab.key, (el) => el.child(keycap(t, tab.key))))));
+  }
+
+  // The diff tab: the whole dialog, as a diff needs the room.
+  diff(t, d, bar) {
+    const tabs = this.tabBar(t, bar);
+    return v_flex().id("kiosk-diff").size_full().min_h(0)
+      .on_click((_e, cx) => cx.stop_propagation())
+      .rounded(RADIUS).bg(t.popover).border_1().border_color(t.border).shadow_2xl()
+      .child(tabs ?? this.titleBar(t, "Diff"))
+      .child(v_flex().flex_1().items_center().justify_center().gap(6)
+        .child(div().text_size(14).text_color(t.foreground).child(d.message))
+        .when(!!d.detail, (el) => el.child(div().text_size(12.5).text_color(t.muted).child(d.detail))))
+      .child(this.footer(t, d.hints));
   }
 
   // A panel with one centred line of news, such as the picker starting.
@@ -661,8 +770,9 @@ export default class Kiosk extends View {
       .child(div().text_size(13).font_medium().text_color(t.foreground).child(list.subject ?? "Repository"));
   }
 
-  // The picker, or the dialog over it in its place.
-  picker(t, v) {
+  // The picker, or the dialog over it in its place. `bar` is the tab bar's tabs, which go along
+  // the picker's top but not a dialog's.
+  picker(t, v, bar) {
     const main = v.main;
     const dismiss = () => this.send({ t: "dismiss" });
     if (v.dialog) return this.layer(this.dialog(t, v.dialog, v.hints), dismiss);
@@ -670,6 +780,7 @@ export default class Kiosk extends View {
     if (v.overlay?.kind === "scan_warnings") return this.layer(this.scanWarnings(t, v.overlay), dismiss);
     if (main.state === "loading") return this.message(t, spinner(t, t.accent, 14), main.message, main.hint);
     return panel(t)
+      .when(bar.length > 0, (el) => el.child(this.tabBar(t, bar)))
       .child(this.searchBar(t, main.query, main.placeholder, true, this.scope(t, main), this.summary(t, main)))
       .child(divider(t))
       .child(div().p(PAD).child(this.list(t, main, "list", (row, selected) => this.row(t, row, selected))))

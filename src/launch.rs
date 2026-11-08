@@ -9,13 +9,15 @@ use std::{
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, de::DeserializeOwned};
 
+use kiosk_core::tabs::TabId;
+
 use crate::app::Space;
 
 /// The command the mod runs.
 pub const SERVE_COMMAND: &str = "serve";
 
 const USAGE: &str = "usage: herdr-app-kiosk serve [--app-home <folder>] [--context <json>] \
-     [--spaces <json>] | --version";
+     [--spaces <json>] [--tab <tab>] | --version";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Invocation {
@@ -34,6 +36,8 @@ pub struct ServeArgs {
     pub context: AppContext,
     /// The app's spaces when the mod started kiosk, if it passed them.
     pub spaces: Option<Vec<Space>>,
+    /// The tab to open on, if not the first.
+    pub tab: Option<TabId>,
 }
 
 /// Where the person is in the app when they open kiosk.
@@ -84,6 +88,16 @@ pub fn invocation_with(args: impl IntoIterator<Item = OsString>) -> Result<Invoc
             }
             Some("--context") => serve.context = json_value("--context", &value("--context")?)?,
             Some("--spaces") => serve.spaces = Some(json_value("--spaces", &value("--spaces")?)?),
+            Some("--tab") => {
+                let tab = value("--tab")?;
+                let Some(tab) = tab.to_str() else {
+                    bail!("--tab is not valid UTF-8");
+                };
+                serve.tab = Some(
+                    tab.parse()
+                        .map_err(|error| anyhow::anyhow!("--tab: {error}"))?,
+                );
+            }
             _ => bail!("unknown option {}; {USAGE}", flag.to_string_lossy()),
         }
     }
@@ -213,6 +227,15 @@ mod tests {
     }
 
     #[test]
+    fn serve_reads_the_tab_to_open_on() {
+        let invocation = invoke(&[SERVE_COMMAND, "--tab", "diff"]).unwrap();
+        let Invocation::Serve(serve) = invocation else {
+            panic!("{invocation:?}");
+        };
+        assert_eq!(serve.tab, Some(TabId::Diff));
+    }
+
+    #[test]
     fn version_is_asked_for_with_a_flag() {
         assert_eq!(invoke(&["--version"]).unwrap(), Invocation::Version);
         assert_eq!(invoke(&["-V"]).unwrap(), Invocation::Version);
@@ -232,6 +255,8 @@ mod tests {
                 "--spaces",
             ),
             (&[SERVE_COMMAND, "--spaces"], "needs a value"),
+            (&[SERVE_COMMAND, "--tab"], "needs a value"),
+            (&[SERVE_COMMAND, "--tab", "logs"], "unknown tab 'logs'"),
         ] {
             let error = invoke(args).unwrap_err().to_string();
             assert!(error.contains(expected), "{args:?}: {error}");

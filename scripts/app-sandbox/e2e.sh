@@ -72,6 +72,39 @@ wait_view '.main.state == "list" and (.main.total == 23)'
 [[ $(last_view | jq -r "$rows | .[0:3] | join(\",\")") == "api,cli,design-system" ]] || fail "unexpected order"
 sb shot "$shots/repos.png" >/dev/null
 
+check "without experimental_tabs there is no tab bar, and the tab keys are left to the app"
+wait_view '.bar == []'
+hello=$(grep '^< {"t":"hello"' "$trace" | tail -1 | cut -c3-)
+[[ $(jq '[.chords[] | select(. == "ctrl-2" or . == "ctrl-tab")] | length' <<<"$hello") == 0 ]] ||
+  fail "kiosk claimed tab keys: $hello"
+
+check "with experimental_tabs, tab keys and the tab bar move between tabs, and the picker keeps its search"
+config=$HOME/.config/herdr-app-kiosk/config.toml
+sb key Escape
+wait_closed
+printf 'search_dirs = ["~/code"]\nexperimental_tabs = true\n' >"$config"
+open_kiosk
+wait_view '.main.state == "list" and (.bar | length) == 2'
+sb shot "$shots/tabs.png" >/dev/null
+sb type infr
+wait_view ".main.query.before == \"infr\""
+sb key ctrl+2
+wait_view '.screen == "diff" and ([.bar[] | select(.active) | .id] == ["diff"])'
+sb shot "$shots/diff-tab.png" >/dev/null
+sb key ctrl+Tab
+wait_view '.screen == "picker" and .main.query.before == "infr"'
+sb key ctrl+Next
+wait_view '.screen == "diff"'
+sb click 580 105
+wait_view '.screen == "picker"'
+sb key ctrl+u
+wait_view '.main.query.before == ""'
+sb key Escape
+wait_closed
+printf 'search_dirs = ["~/code"]\n' >"$config"
+open_kiosk
+wait_view '.main.state == "list" and .main.total == 23'
+
 check "typing filters, alt+backspace (a picker chord) clears the word"
 sb type infr
 wait_view ".main.query.before == \"infr\" and ($rows == [\"infra\"])"

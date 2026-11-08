@@ -22,6 +22,7 @@ use crate::{
 };
 
 pub mod setup;
+pub mod tabs;
 
 /// What a piece of text means, for the frontend's theme to colour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

@@ -202,7 +202,8 @@ fn help_command_to_action(command: Command) -> Option<Action> {
 
 pub fn command_to_action(command: Command, state: &AppState) -> Option<Action> {
     match command {
-        Command::Noop => None,
+        // Tabs are changed before a key reaches the picker; see `KeysConfig::tab_command`.
+        Command::Noop | Command::NextTab | Command::PreviousTab | Command::ShowTab(_) => None,
         Command::Quit => Some(Action::Quit),
         Command::Help => Some(Action::ShowHelp),
         Command::DismissToast => (!state.toasts.is_empty()).then_some(Action::DismissToast),

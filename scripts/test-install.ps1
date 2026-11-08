@@ -143,12 +143,14 @@ open(port_file, "w").write(str(server.server_port))
 server.serve_forever()
 '@
     $server = Start-Process -FilePath $python -ArgumentList @($serverScript, $releases, $version, $portFile) -PassThru -NoNewWindow
-    for ($i = 0; $i -lt 100 -and -not (Test-Path -LiteralPath $portFile); $i++) {
+    # The server creates the file before it writes the port, so wait for the port itself.
+    $port = $null
+    for ($i = 0; $i -lt 100 -and -not $port; $i++) {
         Start-Sleep -Milliseconds 50
+        if (Test-Path -LiteralPath $portFile) { $port = (Get-Content -LiteralPath $portFile -Raw)?.Trim() }
     }
-    Start-Sleep -Milliseconds 100
-    Assert-True (Test-Path -LiteralPath $portFile) "the fake release server did not start"
-    $env:KIOSK_RELEASES = "http://127.0.0.1:$((Get-Content -LiteralPath $portFile -Raw).Trim())"
+    Assert-True ([bool]$port) "the fake release server did not start"
+    $env:KIOSK_RELEASES = "http://127.0.0.1:$port"
 
     Write-Output "test: installs the latest release, verified"
     $home1 = Join-Path $testRoot "home"

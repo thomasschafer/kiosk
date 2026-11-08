@@ -71,7 +71,7 @@ pub fn run<B: Backend, E>(
         current_cwd,
         tab,
     } = start;
-    let tabs = Tabs::new(loaded.core.experimental_tabs, tab);
+    let mut tabs = Tabs::new(loaded.core.experimental_tabs, tab);
     if !loaded.core.experimental_tabs {
         loaded.core.keys = loaded.core.keys.without_tabs();
     }
@@ -79,6 +79,7 @@ pub fn run<B: Backend, E>(
         protocol: PROTOCOL_VERSION,
         product: product.name,
         chords: claimed_chords(&loaded.core.keys),
+        tabs: TabId::ALL,
     })?;
     let mut session = Session {
         connection,
@@ -87,7 +88,7 @@ pub fn run<B: Backend, E>(
     if !loaded.exists
         && let Some(path) = loaded.path.clone()
     {
-        let Some(search_dirs) = session.setup(product, &path)? else {
+        let Some(search_dirs) = session.setup(product, &path, &mut tabs)? else {
             return session.finish(Outcome::Quit);
         };
         loaded.core.search_dirs = search_dirs;
@@ -164,11 +165,13 @@ impl Session<'_> {
     }
 
     /// Runs the setup wizard. Returns the search directories written to `config_path`, or
-    /// `None` if the user left without saving.
+    /// `None` if the user left without saving. A tab launched meanwhile is the one `tabs`
+    /// opens on afterwards.
     fn setup(
         &mut self,
         product: &'static Product,
         config_path: &Path,
+        tabs: &mut Tabs,
     ) -> Result<Option<Vec<kiosk_core::config::SearchDirEntry>>> {
         let home = kiosk_core::path::home_dir();
         let shown_path = kiosk_core::path::display(config_path);
@@ -205,13 +208,16 @@ impl Session<'_> {
                     SetupOutcome::Continue
                 }
                 ClientMessage::Close => SetupOutcome::Quit,
+                ClientMessage::Launch { tab } => match tabs.launch(tab) {
+                    Launched::Shown => SetupOutcome::Continue,
+                    Launched::Close => SetupOutcome::Quit,
+                },
                 ClientMessage::Viewport { .. }
                 | ClientMessage::Activate { .. }
                 | ClientMessage::Command { .. }
                 | ClientMessage::Dismiss
                 | ClientMessage::Scroll { .. }
-                | ClientMessage::ShowTab { .. }
-                | ClientMessage::Launch { .. } => SetupOutcome::Continue,
+                | ClientMessage::ShowTab { .. } => SetupOutcome::Continue,
                 ClientMessage::Hello { .. } => unreachable!("next refuses a second hello"),
             };
             match outcome {

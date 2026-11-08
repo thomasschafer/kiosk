@@ -146,6 +146,9 @@ Throwaway work that answers a question; record the answer under decisions.
 - [ ] Unified view with syntax highlighting.
 - [ ] Empty states: not a repository, a remote machine's space, the default branch itself,
       detached HEAD, a branch without a checkout.
+- [ ] Open the diff tab without search directories: today a missing config's setup wizard,
+      or a config with no search directories, comes before any tab.
+- [ ] Help in the diff tab: `ctrl+h` does nothing there yet, as help is the picker's.
 
 ### 4. Diff tab: complete
 

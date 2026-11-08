@@ -419,8 +419,10 @@ export default class Kiosk extends View {
     /** @type {Link} */
     this.link = { state: "starting" };
     this.wheel = 0;
-    // A launcher's tab, sent once the picker has said hello, for one that came while it started.
-    this.pendingLaunch = null;
+    // Every tab name the picker understands, once it has said hello.
+    this.tabNames = [];
+    // Launchers' tabs that came while the picker started, in order, sent once it has said hello.
+    this.pendingLaunches = [];
     // `herdr-app check` loads the mod with no overlay; only a shown copy starts the picker.
     if (!props()?.overlay) return;
     const tab = shared(LAUNCH) ?? null;
@@ -485,9 +487,10 @@ export default class Kiosk extends View {
       case "hello":
         this.chords = message.chords;
         cx.bind_keys(this.chords.map((keystroke) => ({ keystroke, action: `kiosk.key:${keystroke}`, context: CONTEXT })));
+        this.tabNames = message.tabs;
         this.ready = true;
-        if (this.pendingLaunch !== null) this.send({ t: "launch", tab: this.pendingLaunch });
-        this.pendingLaunch = null;
+        for (const tab of this.pendingLaunches) this.launchTab(tab);
+        this.pendingLaunches = [];
         return false;
       case "view":
         this.view = message.view;
@@ -534,9 +537,20 @@ export default class Kiosk extends View {
       notify({ title: "Kiosk got a command it doesn't know", body: command, level: "warning" });
       return;
     }
+    // Acknowledged even for a tab kiosk lacks, so the launcher doesn't take kiosk for gone.
     if (nonce) setShared(ACK, nonce);
-    if (this.ready) this.send({ t: "launch", tab });
-    else this.pendingLaunch = tab;
+    if (this.ready) this.launchTab(tab);
+    else this.pendingLaunches.push(tab);
+  }
+
+  // Asks the picker for `tab`, or says kiosk has no such tab rather than send one the picker
+  // would refuse.
+  launchTab(tab) {
+    if (this.tabNames.includes(tab)) {
+      this.send({ t: "launch", tab });
+      return;
+    }
+    notify({ title: "Kiosk has no such tab", body: `A launcher asked for "${tab}"; kiosk's tabs are ${this.tabNames.join(", ")}.`, level: "warning" });
   }
 
   // Says kiosk is no longer open, unless another copy has said it is since.

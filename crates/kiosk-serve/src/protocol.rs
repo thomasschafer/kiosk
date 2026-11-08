@@ -54,6 +54,9 @@ pub enum ServerMessage<'a> {
         /// Every chord the picker acts on besides typed characters, spelled as GPUI does
         /// (`ctrl-h`, `escape`), for the frontend to claim before its host's shortcuts.
         chords: Vec<String>,
+        /// Every tab the picker knows, whether or not it shows it, so the frontend can refuse
+        /// a request for a tab with no name the picker understands.
+        tabs: &'a [TabId],
     },
     View {
         view: &'a Screen,

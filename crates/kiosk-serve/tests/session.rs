@@ -539,23 +539,26 @@ fn tab_keys_and_clicks_move_between_tabs_and_esc_leaves_the_diff_tab() {
 }
 
 #[test]
-fn the_picker_keeps_its_search_while_another_tab_shows() {
+fn the_picker_keeps_its_search_and_selection_while_another_tab_shows() {
     let root = tempfile::tempdir().unwrap();
     let search_dir = root.path().to_path_buf();
     let (mut client, session, _) = connect(move || two_repo_start(&search_dir, mock_backend()));
-    client.view_until(|view| {
+    client.type_text("a");
+    let view = client.view_until(|view| {
         picker_list(view).is_some_and(|list| list["rows"].as_array().unwrap().len() == 2)
     });
-    client.type_text("bet");
-    client.view_until(|view| picker_list(view).is_some_and(|list| row_names(list) == ["beta"]));
+    let second = row_names(picker_list(&view).unwrap())[1].clone();
+    client.key("down", None);
+    client.view_until(|view| picker_list(view).is_some_and(|list| list["selected"] == 1));
     client.key("ctrl-2", None);
     client.view_until(|view| tab_body(view, "diff").is_some());
     client.type_text("x");
     client.key("ctrl-1", None);
     let view = client.view_until(|view| picker_list(view).is_some());
     let list = picker_list(&view).unwrap();
-    assert_eq!(list["query"]["before"], "bet");
-    assert_eq!(row_names(list), ["beta"]);
+    assert_eq!(list["query"]["before"], "a");
+    assert_eq!(list["selected"], 1);
+    assert_eq!(row_names(list)[1], second);
     client.send(&json!({ "t": "close" }));
     assert_eq!(client.end()["outcome"], "quit");
     session.join().unwrap().unwrap();
@@ -596,10 +599,41 @@ fn without_experimental_tabs_kiosk_is_only_the_picker_and_leaves_the_tab_keys() 
     for chord in ["ctrl-1", "ctrl-2", "ctrl-tab", "ctrl-pagedown"] {
         assert!(!chords.contains(&json!(chord)), "{chord} claimed: {hello}");
     }
+    assert_eq!(hello["tabs"], json!(["picker", "diff"]));
     let view = client.view_until(|view| picker_list(view).is_some());
     assert_eq!(view["bar"], json!([]));
     client.send(&json!({ "t": "show_tab", "tab": "diff" }));
     client.send(&json!({ "t": "launch", "tab": "diff" }));
     assert_eq!(client.end(), json!({ "t": "exit", "outcome": "quit" }));
     session.join().unwrap().unwrap();
+}
+
+#[test]
+fn hello_lists_the_tabs_and_a_launch_during_setup_counts() {
+    let root = tempfile::tempdir().unwrap();
+    let config_path = root.path().join("config.toml");
+    let start_config = config_path.clone();
+    let (mut client, session, hello) = connect(move || Start {
+        loaded: LoadedConfig {
+            core: CoreConfig {
+                experimental_tabs: true,
+                ..CoreConfig::for_product(&TEST_PRODUCT).unwrap()
+            },
+            extension: NoExtension {},
+            path: Some(start_config),
+            exists: false,
+            warnings: Vec::new(),
+        },
+        git: Arc::new(MockGitProvider::default()) as Arc<dyn GitProvider>,
+        backend: None,
+        current_cwd: None,
+        tab: TabId::Picker,
+    });
+    assert_eq!(hello["tabs"], json!(["picker", "diff"]));
+    client.view_until(|view| view["step"] == "welcome");
+    client.send(&json!({ "t": "launch", "tab": "diff" }));
+    client.send(&json!({ "t": "launch", "tab": "diff" }));
+    assert_eq!(client.end(), json!({ "t": "exit", "outcome": "quit" }));
+    session.join().unwrap().unwrap();
+    assert!(!config_path.exists());
 }

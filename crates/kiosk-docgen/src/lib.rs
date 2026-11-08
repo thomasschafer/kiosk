@@ -627,7 +627,12 @@ pub struct TestExtension {
     #[test]
     fn hidden_settings_and_undocumented_key_sections_stay_out() {
         let reference = config_reference::<TestExtension>(&docs(ORDER)).unwrap();
-        for hidden in ["experimental_tabs", "[keys.tabs]", "[keys.diff]", "next_tab"] {
+        for hidden in [
+            "experimental_tabs",
+            "[keys.tabs]",
+            "[keys.diff]",
+            "next_tab",
+        ] {
             assert!(!reference.contains(hidden), "{hidden} is documented");
         }
         let mut order = ORDER.to_vec();

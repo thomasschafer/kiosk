@@ -333,3 +333,55 @@ fn help_opens_filters_as_typed_and_closes() {
     tab.help_action(Action::CloseOverlay);
     assert!(tab.help.is_none());
 }
+
+#[test]
+fn switching_layout_keeps_the_line_at_the_top_of_the_screen() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path();
+    init_test_repo(dir);
+    let original = (1..=40)
+        .map(|n| format!("line {n}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    commit(dir, "long.txt", &original);
+    let edited = original
+        .replace("line 30\n", "line thirty\n")
+        .replace("line 5\n", "line five\n");
+    fs::write(dir.join("long.txt"), edited).unwrap();
+    let mut tab = DiffTab::new(Some(dir.to_path_buf()), DiffLayout::Unified);
+    tab.set_viewport(4);
+    tab.start();
+    wait(&mut tab, highlighted);
+    tab.act(DiffAction::SelectRange(1));
+    wait(&mut tab, highlighted);
+    let top_text = |tab: &DiffTab| {
+        let shown = tab.shown().unwrap();
+        let FileContent::Text { hunks } = &shown.files[0].diff.content else {
+            panic!("binary");
+        };
+        match shown.rows[shown.offset] {
+            Row::Line { hunk, line, .. } => hunks[hunk].lines[line].text.clone(),
+            Row::Pair { hunk, old, new, .. } => {
+                hunks[hunk].lines[old.or(new).unwrap()].text.clone()
+            }
+            other => format!("{other:?}"),
+        }
+    };
+    // Scroll into the second hunk, onto a context line before the change.
+    let target = tab
+        .shown()
+        .unwrap()
+        .rows
+        .iter()
+        .position(|row| matches!(row, Row::Hunk { hunk: 1, .. }))
+        .unwrap();
+    tab.act(DiffAction::Scroll((target + 1).cast_signed()));
+    let before = top_text(&tab);
+    assert!(before.starts_with("line 2"), "{before}");
+    tab.toggle_layout();
+    assert_eq!(tab.shown().unwrap().layout, DiffLayout::SideBySide);
+    assert_eq!(top_text(&tab), before);
+    tab.toggle_layout();
+    assert_eq!(top_text(&tab), before);
+}

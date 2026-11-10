@@ -73,6 +73,16 @@ impl Client {
         }
     }
 
+    /// Messages until one satisfies `wanted`, skipping the others.
+    fn receive_until(&mut self, wanted: impl Fn(&Value) -> bool) -> Value {
+        loop {
+            let message = self.receive();
+            if wanted(&message) {
+                return message;
+            }
+        }
+    }
+
     /// Views until one satisfies `wanted`, failing on any message that is not a view.
     fn view_until(&mut self, wanted: impl Fn(&Value) -> bool) -> Value {
         loop {
@@ -229,9 +239,11 @@ fn typing_filters_and_enter_opens_the_selection() {
     assert_eq!(row_names(picker_list(&view).unwrap()), ["alpha", "beta"]);
 
     client.type_text("bet");
-    let view =
-        client.view_until(|view| picker_list(view).is_some_and(|list| row_names(list) == ["beta"]));
-    assert_eq!(picker_list(&view).unwrap()["query"]["before"], "bet");
+    // After "b" alone only beta matches, so wait for the whole query too.
+    client.view_until(|view| {
+        picker_list(view)
+            .is_some_and(|list| row_names(list) == ["beta"] && list["query"]["before"] == "bet")
+    });
 
     client.key("enter", None);
     assert_eq!(client.end(), json!({ "t": "exit", "outcome": "opened" }));
@@ -833,4 +845,28 @@ fn s_switches_the_diff_tab_to_side_by_side_where_it_fits_and_remembers_it() {
     client.send(&json!({ "t": "close" }));
     assert_eq!(client.end()["outcome"], "quit");
     session.join().unwrap().unwrap();
+}
+
+#[test]
+fn preferences_kiosk_cant_read_are_reported_and_never_saved_over() {
+    let root = tempfile::tempdir().unwrap();
+    let search_dir = root.path().to_path_buf();
+    let preferences = root.path().join("preferences.toml");
+    std::fs::write(&preferences, "diff_layout = \"sideways\"\n").unwrap();
+    let start_preferences = preferences.clone();
+    let (mut client, session, _) = connect(move || Start {
+        tab: TabId::Diff,
+        preferences: Some(start_preferences),
+        ..two_repo_start(&search_dir, mock_backend())
+    });
+    let notice = client.receive_until(|message| message["t"] == "notify");
+    assert_eq!(notice["title"], "Kiosk couldn't read its preferences");
+    client.key("s", Some("s"));
+    client.send(&json!({ "t": "close" }));
+    assert_eq!(client.end()["outcome"], "quit");
+    session.join().unwrap().unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&preferences).unwrap(),
+        "diff_layout = \"sideways\"\n"
+    );
 }

@@ -303,10 +303,14 @@ impl Session<'_> {
             keys,
         } = start;
         let picker = Picker::start(git, backend, keys, search_dirs, &state);
+        let mut preferences_file = preferences_file;
         let layout = match preferences_file.map(preferences::load).transpose() {
             Ok(preferences) => preferences.unwrap_or_default().diff_layout,
             Err(error) => {
                 self.warn("Kiosk couldn't read its preferences", &error)?;
+                // Saving would replace a file that holds something kiosk doesn't understand,
+                // so this session remembers nothing.
+                preferences_file = None;
                 DiffLayout::default()
             }
         };

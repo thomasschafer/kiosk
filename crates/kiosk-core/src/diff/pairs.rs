@@ -39,21 +39,6 @@ pub fn side_by_side(hunk: &Hunk) -> Vec<(Option<usize>, Option<usize>)> {
     rows
 }
 
-/// Each line's partner on the other side, by index into the hunk's lines: a removed line's
-/// replacement and an added line's original, or `None`.
-pub fn partners(hunk: &Hunk) -> Vec<Option<usize>> {
-    let mut partners = vec![None; hunk.lines.len()];
-    for (old, new) in side_by_side(hunk) {
-        if let (Some(old), Some(new)) = (old, new)
-            && old != new
-        {
-            partners[old] = Some(new);
-            partners[new] = Some(old);
-        }
-    }
-    partners
-}
-
 /// The run of removed lines starting at `start`, if any, and the run of added lines after it.
 fn block(hunk: &Hunk, start: usize) -> (Range<usize>, Range<usize>) {
     let run = |from: usize, kind: LineKind| {
@@ -74,6 +59,22 @@ fn block(hunk: &Hunk, start: usize) -> (Range<usize>, Range<usize>) {
         removed.end..removed.end
     };
     (removed, added)
+}
+
+/// Each line's words that changed from its partner (see [`changed_words`]), by index into
+/// the hunk's lines: `None` for a line with no partner or one rewritten too much to mark.
+pub fn changed_lines(hunk: &Hunk) -> Vec<Option<Vec<Range<usize>>>> {
+    let mut changed = vec![None; hunk.lines.len()];
+    for (old, new) in side_by_side(hunk) {
+        if let (Some(old), Some(new)) = (old, new)
+            && old != new
+            && let Some(words) = changed_words(&hunk.lines[old].text, &hunk.lines[new].text)
+        {
+            changed[old] = Some(words.old);
+            changed[new] = Some(words.new);
+        }
+    }
+    changed
 }
 
 /// The characters of a pair of lines, by index rather than byte, that differ between them.
@@ -125,6 +126,10 @@ pub fn changed_words(old: &str, new: &str) -> Option<ChangedWords> {
 
 /// Adds the characters of `words[range]` to `spans`, joined to the last span if they touch.
 fn push_span(spans: &mut Vec<Range<usize>>, words: &[(usize, &str)], range: Range<usize>) {
+    // An insertion has nothing on the old side, and a deletion nothing on the new.
+    if range.is_empty() {
+        return;
+    }
     let Some(first) = words.get(range.start) else {
         return;
     };
@@ -223,10 +228,6 @@ mod tests {
                 (None, Some(7)),
             ]
         );
-        assert_eq!(
-            partners(&hunk),
-            [None, Some(3), Some(4), Some(1), Some(2), None, None, None]
-        );
     }
 
     #[test]
@@ -235,7 +236,10 @@ mod tests {
             side_by_side(&hunk("--")),
             [(Some(0), None), (Some(1), None)]
         );
-        assert_eq!(partners(&hunk("-+-")), [Some(1), Some(0), None]);
+        assert_eq!(
+            side_by_side(&hunk("-+-")),
+            [(Some(0), Some(1)), (Some(2), None)]
+        );
     }
 
     #[test]
@@ -244,6 +248,17 @@ mod tests {
             changed_words("let total = count + 1;", "let total = count + step;").unwrap();
         assert_eq!(old, [20..21]);
         assert_eq!(new, [20..24]);
+    }
+
+    #[test]
+    fn words_added_before_the_rest_mark_only_the_new_side() {
+        let ChangedWords { old, new } =
+            changed_words("fn greet() {}", "pub fn greet() {}").unwrap();
+        assert_eq!(old, Vec::<Range<usize>>::new());
+        assert_eq!(new, [0..4]);
+        let ChangedWords { old, new } =
+            changed_words("pub fn greet() {}", "fn greet() {}").unwrap();
+        assert_eq!((old, new), (vec![0..4], vec![]));
     }
 
     #[test]

@@ -103,9 +103,13 @@ pub struct ShownFile {
     pub removed: usize,
     /// Why the file starts collapsed, if it does.
     pub collapse_reason: Option<CollapseReason>,
-    /// For each hunk, each line's partner on the other side (see [`pairs::partners`]).
-    pub partners: Vec<Vec<Option<usize>>>,
+    /// For each hunk, each line's words changed from its partner, once the worker has
+    /// compared them alongside highlighting.
+    pub changes: Option<LineChanges>,
 }
+
+/// For each hunk of a file, each line's changed words (see [`pairs::changed_lines`]).
+pub type LineChanges = Vec<Vec<Option<Vec<std::ops::Range<usize>>>>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CollapseReason {
@@ -139,6 +143,37 @@ pub enum Row {
 }
 
 impl Row {
+    /// Whether this row shows what `other` showed, in either layout: a line of a hunk,
+    /// whether alone or paired, or the same header or note.
+    fn shows(self, other: Self) -> bool {
+        let line = |row: Self| match row {
+            Self::Line { file, hunk, line } => Some((file, hunk, line, line)),
+            Self::Pair {
+                file,
+                hunk,
+                old,
+                new,
+            } => {
+                let first = old.or(new)?;
+                Some((file, hunk, first, new.unwrap_or(first)))
+            }
+            _ => None,
+        };
+        match (line(self), line(other)) {
+            (
+                Some((file, hunk, old, new)),
+                Some((other_file, other_hunk, other_old, other_new)),
+            ) => {
+                (file, hunk) == (other_file, other_hunk)
+                    && [old, new]
+                        .iter()
+                        .any(|line| [other_old, other_new].contains(line))
+            }
+            (None, None) => self == other,
+            _ => false,
+        }
+    }
+
     /// The file the row belongs to.
     pub const fn file(self) -> usize {
         match self {
@@ -203,7 +238,8 @@ enum Event {
     },
     NoTarget(String),
     Diffed(Vec<FileDiff>),
-    Highlighted(usize, Highlighted),
+    /// A file's highlighting and the words changed in each line of each of its hunks.
+    Highlighted(usize, Highlighted, LineChanges),
     Failed(String),
 }
 
@@ -286,7 +322,11 @@ impl Worker {
             for (index, file) in to_highlight.iter().enumerate() {
                 // A file that can't be highlighted shows plain; the diff itself is fine.
                 let highlighted = target.highlight(file).unwrap_or_default();
-                if !send(Event::Highlighted(index, highlighted)) {
+                let changes = match &file.content {
+                    FileContent::Text { hunks } => hunks.iter().map(pairs::changed_lines).collect(),
+                    FileContent::Binary => Vec::new(),
+                };
+                if !send(Event::Highlighted(index, highlighted, changes)) {
                     return;
                 }
             }
@@ -491,10 +531,11 @@ impl DiffTab {
                 shown.lay_out();
                 ready.content = RangeContent::Shown(shown);
             }
-            Event::Highlighted(index, highlighted) => {
+            Event::Highlighted(index, highlighted, changes) => {
                 if let Some(shown) = self.shown_mut() {
                     if let Some(file) = shown.files.get_mut(index) {
                         file.highlighted = Some(highlighted);
+                        file.changes = Some(changes);
                     }
                     if index + 1 == shown.files.len() {
                         shown.worker = None;
@@ -598,10 +639,6 @@ impl ShownFile {
         } else {
             None
         };
-        let partners = match &diff.content {
-            FileContent::Text { hunks } => hunks.iter().map(pairs::partners).collect(),
-            FileContent::Binary => Vec::new(),
-        };
         Self {
             collapsed: collapse_reason.is_some(),
             collapse_reason,
@@ -609,15 +646,16 @@ impl ShownFile {
             highlighted: None,
             added,
             removed,
-            partners,
+            changes: None,
         }
     }
 }
 
 impl Shown {
-    /// Lays the files out as rows, keeping the file at the top of the screen there.
+    /// Lays the files out as rows, keeping what was at the top of the screen there: the same
+    /// line, whichever layout it is now in, or else the same hunk or file.
     fn lay_out(&mut self) {
-        let top_file = self.file_at(self.offset);
+        let anchor = self.rows.get(self.offset).copied();
         self.rows.clear();
         self.widest = 0;
         for (index, file) in self.files.iter().enumerate() {
@@ -678,8 +716,13 @@ impl Shown {
                 }
             }
         }
-        if let Some(file) = top_file {
-            self.offset = self.file_row(file).unwrap_or(0);
+        if let Some(anchor) = anchor {
+            self.offset = self
+                .rows
+                .iter()
+                .position(|row| row.shows(anchor))
+                .or_else(|| self.file_row(anchor.file()))
+                .unwrap_or(0);
         }
     }
 

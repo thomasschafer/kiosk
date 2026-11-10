@@ -16,7 +16,6 @@ use crate::{
     diff::{
         Change, FileContent, Range,
         highlight::{Run, SyntaxTone},
-        pairs,
         tab::{CollapseReason, DiffState, DiffTab, Note, RangeContent, Ready, Row, ShownFile},
     },
     display::{code_chars, sanitize},
@@ -395,20 +394,11 @@ fn shown_line(file: &ShownFile, hunk: usize, line: usize, column: usize) -> Show
         .highlighted
         .as_ref()
         .and_then(|highlighted| highlighted.runs(text));
-    let partner = file.partners[hunk][line].map(|partner| text_line(file, hunk, partner));
-    let changed = partner.and_then(|partner| {
-        let (old, new) = match text.kind {
-            crate::diff::LineKind::Removed => (text, partner),
-            crate::diff::LineKind::Added | crate::diff::LineKind::Context => (partner, text),
-        };
-        let changed = pairs::changed_words(&old.text, &new.text)?;
-        Some(if text.kind == crate::diff::LineKind::Removed {
-            changed.old
-        } else {
-            changed.new
-        })
-    });
-    let (shown_text, runs, changed) = code_line(&text.text, runs, changed.as_deref(), column);
+    let changed = file
+        .changes
+        .as_ref()
+        .and_then(|changes| changes[hunk][line].as_deref());
+    let (shown_text, runs, changed) = code_line(&text.text, runs, changed, column);
     ShownLine {
         kind: match text.kind {
             crate::diff::LineKind::Added => "+",

@@ -82,11 +82,11 @@ mod tests {
 
     #[test]
     fn preferences_live_in_the_products_state_directory() {
-        let env = |name: &str| (name == "KIOSK_TEST_STATE_DIR").then(|| "/state".to_owned());
-        assert_eq!(
-            file_with(&TEST_PRODUCT, &env),
-            Some(PathBuf::from("/state").join(FILE_NAME))
-        );
+        let temp = tempfile::tempdir().unwrap();
+        let state = temp.path().to_path_buf();
+        let env =
+            |name: &str| (name == "KIOSK_TEST_STATE_DIR").then(|| state.display().to_string());
+        assert_eq!(file_with(&TEST_PRODUCT, &env), Some(state.join(FILE_NAME)));
     }
 
     #[test]

@@ -324,6 +324,27 @@ function toneColor(t, tone) {
   }
 }
 
+// `spans` ([text, tone] pairs) split where the changed words `changed` ([start, length, ...]
+// in characters) begin and end, each piece with whether it is changed.
+function markChanged(spans, changed) {
+  const isChanged = (at) => {
+    for (let k = 0; k < changed.length; k += 2) if (at >= changed[k] && at < changed[k] + changed[k + 1]) return true;
+    return false;
+  };
+  const pieces = [];
+  let at = 0;
+  for (const [text, tone] of spans) {
+    for (const character of Array.from(text)) {
+      const mark = isChanged(at);
+      const last = pieces[pieces.length - 1];
+      if (last && last[1] === tone && last[2] === mark) last[0] += character;
+      else pieces.push([character, tone, mark]);
+      at += 1;
+    }
+  }
+  return pieces;
+}
+
 // How a file's change reads in the diff tab's colours.
 function changeColor(t, change) {
   switch (change) {
@@ -928,10 +949,13 @@ export default class Kiosk extends View {
       if (!line) return;
       const color = line.kind === "+" ? t.ansi2 : t.ansi1;
       if (line.kind !== " ") boxes.push(row(i).bg(tint(color, dark ? 0.14 : 0.12)));
-      if (line.changed && this.column) {
+      const mark = tint(color, dark ? 0.32 : 0.28);
+      // A wide line's characters aren't a column each, so its changed words are marked in
+      // its own text below rather than by position.
+      if (line.changed && this.column && !line.wide) {
         for (let k = 0; k < line.changed.length; k += 2) {
           boxes.push(div().absolute().top(i * DIFF_ROW).h(DIFF_ROW).left(code + line.changed[k] * this.column)
-            .w(line.changed[k + 1] * this.column).rounded(2).bg(tint(color, dark ? 0.32 : 0.28)));
+            .w(line.changed[k + 1] * this.column).rounded(2).bg(mark));
         }
       }
       const spans = [];
@@ -947,7 +971,8 @@ export default class Kiosk extends View {
       }
       if (line.wide) {
         wideRows.push(row(i).pl(code).flex().whitespace_nowrap().overflow_hidden()
-          .children(spans.map(([span, tone]) => div().flex_none().text_color(syntaxColor(t, tone)).child(span))));
+          .children(markChanged(spans, line.changed ?? []).map(([span, tone, changed]) =>
+            div().flex_none().text_color(syntaxColor(t, tone)).when(changed, (el) => el.bg(mark).rounded(2)).child(span))));
         return;
       }
       let column = 0;

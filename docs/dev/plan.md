@@ -207,6 +207,18 @@ Throwaway work that answers a question; record the answer under decisions.
 - [ ] Opens as a window by default.
 - [ ] Update the explain-diff skill (in the dotfiles repository) to write for it.
 
+### Shipping tabs
+
+Once the diff tab is finished and polished:
+
+- [ ] Drop `experimental_tabs`, document the tab and diff keys in the README, and ship the
+      launcher mods (phase 2's last item).
+- [ ] Record the README preview again (`scripts/app-sandbox/run.sh record`): the
+      repository and branch pickers, then the diff tab. Show the whole window scaled up, as
+      on a smaller screen, rather than cropped, so it reads on small displays; and record once
+      the repositories have been scanned and highlighting loaded, so it doesn't sit on
+      loading.
+
 ### Later
 
 - [ ] A merge preview: `git merge-tree --write-tree` against the base, with conflicts.

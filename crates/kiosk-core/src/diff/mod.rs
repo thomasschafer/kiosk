@@ -101,6 +101,20 @@ pub enum FileContent {
     Binary,
 }
 
+impl FileContent {
+    /// Both contents as one, for a file git patches in two parts: binary if either is.
+    #[must_use]
+    pub fn join(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Text { mut hunks }, Self::Text { hunks: more }) => {
+                hunks.extend(more);
+                Self::Text { hunks }
+            }
+            _ => Self::Binary,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hunk {
     pub old_start: u32,

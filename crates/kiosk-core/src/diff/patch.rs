@@ -1,7 +1,9 @@
 //! Parsing `git diff --raw -z --patch --no-abbrev` output into [`FileDiff`]s.
 //!
 //! The raw records come first, NUL-separated, then an empty record, then the patch. Each
-//! raw record has one `diff --git` section in the patch, in the same order. Paths, modes,
+//! raw record has one `diff --git` section in the patch, in the same order, except a change
+//! of type (such as a file becoming a symlink), which has two: the old file's deletion and
+//! the new one's addition. Paths, modes,
 //! object ids and the kind of change come from the raw records, which git writes exactly
 //! (no quoting) with `-z`; only the hunks, and whether the file is binary, come from the
 //! patch.
@@ -20,26 +22,32 @@ pub fn parse(output: &[u8]) -> Result<Vec<FileDiff>> {
     let (raw, patch) = split_raw(output)?;
     let records = parse_raw(raw)?;
     let sections = split_sections(patch);
+    let expected = records.iter().map(|record| record.sections).sum::<usize>();
     ensure!(
-        records.len() == sections.len(),
-        "git diff described {} files but patched {}",
+        expected == sections.len(),
+        "git diff described {} files in {expected} patches but wrote {}",
         records.len(),
         sections.len()
     );
+    let mut sections = sections.into_iter();
     records
         .into_iter()
-        .zip(sections)
-        .map(|(record, section)| {
-            let content = parse_section(section).with_context(|| {
-                format!(
-                    "reading the patch of {}",
-                    record
-                        .new
-                        .as_ref()
-                        .or(record.old.as_ref())
-                        .map_or_else(|| "a file".into(), |side| side.path.display().to_string())
+        .map(|record| {
+            let content = (0..record.sections)
+                .map(|_| parse_section(sections.next().expect("counted above")))
+                .try_fold(
+                    FileContent::Text { hunks: Vec::new() },
+                    |joined, content| Ok::<_, anyhow::Error>(joined.join(content?)),
                 )
-            })?;
+                .with_context(|| {
+                    format!(
+                        "reading the patch of {}",
+                        record.new.as_ref().or(record.old.as_ref()).map_or_else(
+                            || "a file".into(),
+                            |side| side.path.display().to_string()
+                        )
+                    )
+                })?;
             Ok(FileDiff {
                 change: record.change,
                 old: record.old,
@@ -72,6 +80,8 @@ struct RawRecord {
     change: Change,
     old: Option<Side>,
     new: Option<Side>,
+    /// How many `diff --git` sections the patch has for it.
+    sections: usize,
 }
 
 fn parse_raw(raw: &[u8]) -> Result<Vec<RawRecord>> {
@@ -135,6 +145,7 @@ fn parse_raw(raw: &[u8]) -> Result<Vec<RawRecord>> {
             change,
             old: side(old_mode, old_id, old_path)?,
             new: side(new_mode, new_id, new_path)?,
+            sections: if kind == 'T' { 2 } else { 1 },
         });
     }
     Ok(records)
@@ -176,7 +187,8 @@ fn parse_section(section: &[u8]) -> Result<FileContent> {
         let (mut old_left, mut new_left) = (hunk.old_len, hunk.new_len);
         while old_left > 0 || new_left > 0 {
             let line = lines.next().context("a hunk ends before its counts")?;
-            let (kind, text) = line.split_first().context("a hunk has an empty line")?;
+            // With `diff.suppressBlankEmpty`, a blank context line has no leading space.
+            let (kind, text) = line.split_first().unwrap_or((&b' ', &[]));
             let (kind, old_number, new_number) = match kind {
                 b' ' => (LineKind::Context, Some(old), Some(new)),
                 b'-' => (LineKind::Removed, Some(old), None),
@@ -388,6 +400,34 @@ mod tests {
     }
 
     #[test]
+    fn a_type_change_joins_its_two_patches() {
+        let out = output(
+            &[(&format!(":100644 120000 {ID_A} {ID_B} T"), &["link"])],
+            "diff --git a/link b/link\ndeleted file mode 100644\n--- a/link\n+++ /dev/null\n@@ -1 +0,0 @@\n-file\n\
+             diff --git a/link b/link\nnew file mode 120000\n--- /dev/null\n+++ b/link\n@@ -0,0 +1 @@\n+target\n\\ No newline at end of file\n",
+        );
+        let files = parse(&out).unwrap();
+        assert_eq!(files.len(), 1);
+        let kinds = hunks(&files[0])
+            .iter()
+            .flat_map(|hunk| &hunk.lines)
+            .map(|line| line.kind)
+            .collect::<Vec<_>>();
+        assert_eq!(kinds, [LineKind::Removed, LineKind::Added]);
+    }
+
+    #[test]
+    fn a_blank_context_line_without_its_space_is_context() {
+        let out = output(
+            &[(&format!(":100644 100644 {ID_A} {ID_B} M"), &["a"])],
+            "diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1,2 +1,2 @@\n\n-x\n+y\n",
+        );
+        let files = parse(&out).unwrap();
+        let first = &hunks(&files[0])[0].lines[0];
+        assert_eq!((first.kind, first.text.as_str()), (LineKind::Context, ""));
+    }
+
+    #[test]
     fn binary_files_have_no_hunks() {
         let out = output(
             &[(&format!(":100644 100644 {ID_A} {ID_B} M"), &["logo.png"])],
@@ -427,7 +467,7 @@ mod tests {
             parse(&out)
                 .unwrap_err()
                 .to_string()
-                .contains("described 1 files but patched 0")
+                .contains("described 1 files in 1 patches but wrote 0")
         );
         let short = output(
             &[(&format!(":100644 100644 {ID_A} {ID_B} M"), &["a"])],

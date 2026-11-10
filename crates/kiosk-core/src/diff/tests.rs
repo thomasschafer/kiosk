@@ -265,3 +265,79 @@ fn a_root_commit_is_diffed_against_nothing() {
     assert_eq!(paths(&files), ["README.md"]);
     assert_eq!(files[0].change, Change::Added);
 }
+
+#[cfg(unix)]
+#[test]
+fn a_file_turned_into_a_symlink_is_one_change_with_both_contents() {
+    let (_temp, dir) = repo();
+    commit_file(&dir, "link", "was a file\n", "file");
+    fs::remove_file(dir.join("link")).unwrap();
+    std::os::unix::fs::symlink("target", dir.join("link")).unwrap();
+    let target = Target::checkout(&dir).unwrap().unwrap();
+    let files = target.diff(&Range::Uncommitted).unwrap();
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].change, Change::Modified);
+    assert_eq!(files[0].new.as_ref().unwrap().mode, 0o120_000);
+    let FileContent::Text { hunks } = &files[0].content else {
+        panic!("binary");
+    };
+    let lines = hunks
+        .iter()
+        .flat_map(|hunk| &hunk.lines)
+        .map(|line| (line.kind, line.text.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        lines,
+        [
+            (LineKind::Removed, "was a file"),
+            (LineKind::Added, "target")
+        ]
+    );
+}
+
+#[test]
+fn blank_context_lines_parse_whatever_diff_suppress_blank_empty_says() {
+    let (_temp, dir) = repo();
+    run_test_git(&dir, &["config", "diff.suppressBlankEmpty", "true"]);
+    commit_file(&dir, "a.txt", "one\n\nthree\n", "a");
+    fs::write(dir.join("a.txt"), "one\n\nTHREE\n").unwrap();
+    let target = Target::checkout(&dir).unwrap().unwrap();
+    let files = target.diff(&Range::Uncommitted).unwrap();
+    assert_eq!(added_lines(&files[0]), ["THREE"]);
+}
+
+#[test]
+fn commit_summaries_may_hold_any_characters_but_nul() {
+    let (_temp, dir) = repo();
+    run_test_git(&dir, &["checkout", "-q", "-b", "feat"]);
+    fs::write(dir.join("a.txt"), "a\n").unwrap();
+    run_test_git(&dir, &["add", "a.txt"]);
+    run_test_git(
+        &dir,
+        &["commit", "-q", "-m", "odd \u{1f}field\u{1e}record\ttab"],
+    );
+    let target = Target::checkout(&dir).unwrap().unwrap();
+    let commits = target.commits().unwrap();
+    assert_eq!(commits.len(), 1);
+    assert_eq!(commits[0].summary, "odd \u{1f}field\u{1e}record\ttab");
+    assert_eq!(commits[0].author, "Test");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_checkout_whose_folder_ends_in_a_newline_is_found_exactly() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().join("repo\n");
+    fs::create_dir(&dir).unwrap();
+    init_test_repo(&dir);
+    fs::write(dir.join("new.txt"), "new\n").unwrap();
+    let target = Target::checkout(&dir).unwrap().unwrap();
+    assert_eq!(
+        target.root().canonicalize().unwrap(),
+        dir.canonicalize().unwrap()
+    );
+    assert_eq!(
+        paths(&target.diff(&Range::Uncommitted).unwrap()),
+        ["new.txt"]
+    );
+}

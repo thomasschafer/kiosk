@@ -65,8 +65,11 @@ pub enum Endpoint {
 }
 
 /// The arguments every diff is read with. Git's config can't change what kiosk parses:
-/// colour, external diff tools and text conversion are off, and object ids are written whole.
-const DIFF_ARGS: [&str; 9] = [
+/// colour, external diff tools and text conversion are off, object ids are written whole and
+/// blank context lines keep their leading space.
+const DIFF_ARGS: [&str; 11] = [
+    "-c",
+    "diff.suppressBlankEmpty=false",
     "diff",
     "--raw",
     "-z",
@@ -102,14 +105,16 @@ pub fn toplevel(path: &Path) -> Result<Option<PathBuf>> {
     if !output.status.success() {
         return Ok(None);
     }
-    let mut stdout = output.stdout;
-    while stdout
-        .last()
-        .is_some_and(|byte| *byte == b'\n' || *byte == b'\r')
-    {
-        stdout.pop();
+    output_path(output.stdout).map(Some)
+}
+
+/// The path git printed on a line of its own, with its bytes as they are: the path itself
+/// may end in a newline, so only git's own is removed.
+fn output_path(mut stdout: Vec<u8>) -> Result<PathBuf> {
+    if stdout.pop() != Some(b'\n') {
+        bail!("git printed a path without a newline after it");
     }
-    path_from_bytes(stdout).map(Some)
+    path_from_bytes(stdout)
 }
 
 /// The commit `rev` names, if it names one.
@@ -183,23 +188,35 @@ pub fn base(root: &Path, head: &ObjectId) -> Result<Option<Base>> {
 
 /// The commits after `from` up to `to`, newest first.
 pub fn commits(root: &Path, from: &ObjectId, to: &ObjectId) -> Result<Vec<Commit>> {
-    const FIELD: char = '\u{1f}';
-    const RECORD: char = '\u{1e}';
+    // Git ends each record with a NUL (`-z`) and kiosk separates the fields with one, as
+    // commit text can't hold a NUL.
+    const FIELDS: usize = 4;
     let range = format!("{from}..{to}");
-    let output = run_git(root, ["log", "--format=%H%x1f%s%x1f%an%x1f%at%x1e", &range])?;
-    String::from_utf8_lossy(&output.stdout)
-        .split(RECORD)
-        .map(str::trim)
-        .filter(|record| !record.is_empty())
+    let output = run_git(
+        root,
+        ["log", "-z", "--format=%H%x00%s%x00%an%x00%at", &range],
+    )?;
+    let output = String::from_utf8_lossy(&output.stdout);
+    let fields = output
+        .strip_suffix('\0')
+        .map(|records| records.split('\0').collect::<Vec<_>>())
+        .unwrap_or_default();
+    if !fields.len().is_multiple_of(FIELDS) {
+        bail!(
+            "git log wrote {} fields, not a whole number of commits",
+            fields.len()
+        );
+    }
+    fields
+        .chunks(FIELDS)
         .map(|record| {
-            let fields = record.split(FIELD).collect::<Vec<_>>();
-            let [id, summary, author, time] = fields[..] else {
-                bail!("git log wrote {record:?}");
+            let [id, summary, author, time] = record else {
+                unreachable!("chunks of {FIELDS}");
             };
             Ok(Commit {
                 id: ObjectId::parse(id)?,
-                summary: summary.to_owned(),
-                author: author.to_owned(),
+                summary: (*summary).to_owned(),
+                author: (*author).to_owned(),
                 time: time
                     .parse()
                     .with_context(|| format!("git log wrote the time {time:?}"))?,
@@ -255,12 +272,8 @@ impl WorkingTreeIndex {
         let dir = tempfile::tempdir().context("making a directory for a copy of the index")?;
         let path = dir.path().join("index");
         // Relative to the checkout's top when git gives a relative path.
-        let own = run_git(root, ["rev-parse", "--git-path", "index"])?;
-        let own = root.join(path_from_bytes(
-            String::from_utf8_lossy(&own.stdout)
-                .trim()
-                .as_bytes()
-                .to_vec(),
+        let own = root.join(output_path(
+            run_git(root, ["rev-parse", "--git-path", "index"])?.stdout,
         )?);
         // Starting from the checkout's index keeps git's record of unchanged files, so it
         // doesn't read them all again. A new repository has none yet.

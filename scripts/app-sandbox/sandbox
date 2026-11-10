@@ -3,7 +3,8 @@
 # Herdr app on its own home and core, and this checkout's kiosk mod.
 #
 #   sandbox up | down              start or stop the display, the core and the window
-#   sandbox install                build kiosk and install the mod into the sandbox app
+#   sandbox install                build kiosk and install the mod and its launcher mods
+#                                  (kiosk-<tab>) into the sandbox app
 #                                  (KIOSK_MOD: another folder's main.js and mod.json)
 #   sandbox fixtures               make demo repositories in ~/code
 #   sandbox open                   open the kiosk mod
@@ -110,6 +111,13 @@ install() {
   local from=${KIOSK_MOD:-$src/mods/kiosk}
   cp "$from/main.js" "$from/mod.json" "$mod/"
   herdr-app check "$mod"
+  local launcher
+  for launcher in "$src"/mods/kiosk-*/; do
+    launcher=${launcher%/}
+    mkdir -p "$HERDR_APP_HOME/mods/${launcher##*/}"
+    cp "$launcher/main.js" "$launcher/mod.json" "$HERDR_APP_HOME/mods/${launcher##*/}/"
+    herdr-app check "$HERDR_APP_HOME/mods/${launcher##*/}"
+  done
 }
 
 fixtures() {

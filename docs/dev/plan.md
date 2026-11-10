@@ -33,8 +33,13 @@ wrong.
     launcher therefore sends `kiosk.tab:<tab>:<nonce>`, kiosk acknowledges in
     `shared("kiosk.ack")`, and a launcher that hears nothing in 150 ms clears the stale value
     and opens kiosk. Mod command arguments are dropped, so everything goes in the string.
-  - The launcher's popup takes the keyboard from an open kiosk, so it closes itself and then
-    runs `kiosk.focus`; commands are handled in order (seen, not documented).
+  - The launcher's popup takes the keyboard from an open kiosk, and when it closes the
+    keyboard goes nowhere. The spike's `kiosk.focus` command, run after the launcher closes,
+    was refused as unknown in the 0.1.13 sandbox, so instead kiosk takes the keyboard back
+    whenever it loses it in the second after a launcher's request.
+  - After the app crashes with kiosk open, a launcher's first request goes nowhere and the
+    app shows an "unknown command" toast before the launcher opens kiosk. Only #726 can
+    remove that.
   - Launching the tab that already shows closes kiosk, as pressing `mod.open`'s key again
     does; launching another switches to it. The picker decides, as it knows the tab.
   - Upstream: <https://github.com/herdrdev/herdr-app/issues/164> (`mod.open` props) and
@@ -134,7 +139,14 @@ Throwaway work that answers a question; record the answer under decisions.
 - [x] Panel size per tab.
 - [x] Kiosk's side of launching: `serve --tab`, the shared state above, and `launch` on the
       wire.
-- [ ] Launcher mods, installed by the install scripts and the recipe.
+- [x] Launcher mods: `mods/kiosk-<tab>`, one file each with its own `TAB`, which a test
+      keeps in step with each other, with `TabId` and with kiosk's shared state. The
+      sandbox installs them and the end-to-end suite drives them. To try one locally, link
+      it as the README links `mods/kiosk`, and bind `mod.open:kiosk-diff` in `keys.json`.
+- [ ] Release, install scripts and recipe ship the launchers. Held back until tabs leave
+      `experimental_tabs`, so users don't get a mod for an unfinished tab. The installers
+      swap `mods/kiosk` in whole and roll back on failure; that needs to cover every
+      launcher folder too.
 - [x] Upstream requests, linked under decisions.
 
 ### 3. Diff tab: core

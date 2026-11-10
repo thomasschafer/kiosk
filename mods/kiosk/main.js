@@ -73,10 +73,14 @@ const MAX_SNAPSHOT = 8 * 1024;
 // tab. A launcher sets LAUNCH to the tab and opens kiosk, which takes it and clears it; while
 // kiosk is open, OPEN names its overlay, and a launcher instead sends it `kiosk.tab:<tab>:<nonce>`,
 // which kiosk acknowledges by setting ACK to the nonce. A launcher that hears nothing takes OPEN
-// as left over from a crash. `kiosk.focus` gives kiosk the keyboard back once a launcher has gone.
+// as left over from a crash. The launcher's popup takes the keyboard, so kiosk takes it back.
 const LAUNCH = "kiosk.launch";
 const OPEN = "kiosk.open";
 const ACK = "kiosk.ack";
+// How long kiosk keeps taking the keyboard back after a launcher's request, which covers the
+// launcher waiting for the acknowledgement and closing.
+const REFOCUS_MS = 1000;
+const REFOCUS_EVERY_MS = 20;
 // Where the picker saves notices it couldn't show because its popup had closed, one JSON
 // object per line, below the app's home.
 const SAVED_NOTICES = "data/kiosk/notices.jsonl";
@@ -430,7 +434,7 @@ export default class Kiosk extends View {
     setShared(OPEN, { overlay: props().overlay });
     cx.spawn(async (cx) => {
       for (;;) {
-        this.command(await nextCommand());
+        this.command(await nextCommand(), cx);
         cx.notify();
       }
     });
@@ -525,13 +529,8 @@ export default class Kiosk extends View {
     });
   }
 
-  // A command a launcher mod sent: `tab:<tab>[:<nonce>]` asks for a tab, and `focus` gives
-  // kiosk the keyboard back.
-  command(command) {
-    if (command === "focus") {
-      this.handle.focus();
-      return;
-    }
+  // A command a launcher mod sent: `tab:<tab>[:<nonce>]` asks for a tab.
+  command(command, cx) {
     const [name, tab, nonce] = command.split(":");
     if (name !== "tab" || !tab) {
       notify({ title: "Kiosk got a command it doesn't know", body: command, level: "warning" });
@@ -539,8 +538,19 @@ export default class Kiosk extends View {
     }
     // Acknowledged even for a tab kiosk lacks, so the launcher doesn't take kiosk for gone.
     if (nonce) setShared(ACK, nonce);
+    this.refocus(cx);
     if (this.ready) this.launchTab(tab);
     else this.pendingLaunches.push(tab);
+  }
+
+  // Takes the keyboard back whenever it has gone in the next REFOCUS_MS: the launcher's popup
+  // has it, and when the popup closes it goes nowhere.
+  refocus(cx) {
+    const until = Date.now() + REFOCUS_MS;
+    const watch = cx.timer.every(REFOCUS_EVERY_MS, () => {
+      if (!this.handle.is_focused()) this.handle.focus();
+      if (Date.now() >= until) watch.cancel();
+    });
   }
 
   // Asks the picker for `tab`, or says kiosk has no such tab rather than send one the picker

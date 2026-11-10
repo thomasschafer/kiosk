@@ -4,6 +4,7 @@
 
 pub mod backend;
 pub mod config;
+pub mod diff;
 pub mod display;
 pub mod event;
 pub mod git;

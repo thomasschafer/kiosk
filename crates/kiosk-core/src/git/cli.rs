@@ -370,34 +370,10 @@ impl GitProvider for CliGitProvider {
         repo_path: &Path,
         local_branches: &[String],
     ) -> Result<Option<String>> {
-        let remotes = Command::new("git")
-            .arg("remote")
-            .current_dir(repo_path)
-            .output()
-            .with_context(|| format!("failed to run git in {}", repo_path.display()))?;
-        if remotes.status.success() {
-            let mut remotes = lines(&remotes.stdout);
-            if let Some(origin) = remotes.iter().position(|remote| remote == "origin") {
-                remotes.swap(0, origin);
-            }
-            for remote in remotes {
-                let remote_head = format!("refs/remotes/{remote}/HEAD");
-                let output = Command::new("git")
-                    .args(["symbolic-ref", &remote_head])
-                    .current_dir(repo_path)
-                    .output()
-                    .with_context(|| format!("failed to run git in {}", repo_path.display()))?;
-                if output.status.success() {
-                    let prefix = format!("refs/remotes/{remote}/");
-                    let refname = String::from_utf8_lossy(&output.stdout);
-                    if let Some(branch) = refname.trim().strip_prefix(&prefix) {
-                        return Ok(Some(branch.to_string()));
-                    }
-                }
-            }
+        if let Some(remote_default) = remote_default_branch(repo_path)? {
+            return Ok(Some(remote_default.branch));
         }
-
-        Ok(["main", "master"]
+        Ok(LOCAL_DEFAULT_BRANCHES
             .into_iter()
             .find(|candidate| local_branches.iter().any(|branch| branch == candidate))
             .map(str::to_string))
@@ -582,10 +558,67 @@ fn resolve_main_repo_from_linked_worktree(path: &Path) -> Option<PathBuf> {
     Some(main_git_dir.parent()?.to_path_buf())
 }
 
-fn run_git<'a>(repo_path: &Path, args: impl IntoIterator<Item = &'a str>) -> Result<Output> {
+/// The names a repository's default branch has when no remote says what it is.
+pub(crate) const LOCAL_DEFAULT_BRANCHES: [&str; 2] = ["main", "master"];
+
+/// The branch a remote's `HEAD` points at.
+pub(crate) struct RemoteDefault {
+    pub remote: String,
+    pub branch: String,
+}
+
+/// The default branch a remote names, asking `origin` first and then the others.
+pub(crate) fn remote_default_branch(repo_path: &Path) -> Result<Option<RemoteDefault>> {
+    let remotes = Command::new("git")
+        .arg("remote")
+        .current_dir(repo_path)
+        .output()
+        .with_context(|| format!("failed to run git in {}", repo_path.display()))?;
+    if !remotes.status.success() {
+        return Ok(None);
+    }
+    let mut remotes = lines(&remotes.stdout);
+    if let Some(origin) = remotes.iter().position(|remote| remote == "origin") {
+        remotes.swap(0, origin);
+    }
+    for remote in remotes {
+        let remote_head = format!("refs/remotes/{remote}/HEAD");
+        let output = Command::new("git")
+            .args(["symbolic-ref", &remote_head])
+            .current_dir(repo_path)
+            .output()
+            .with_context(|| format!("failed to run git in {}", repo_path.display()))?;
+        if output.status.success() {
+            let prefix = format!("refs/remotes/{remote}/");
+            let refname = String::from_utf8_lossy(&output.stdout);
+            if let Some(branch) = refname.trim().strip_prefix(&prefix) {
+                return Ok(Some(RemoteDefault {
+                    branch: branch.to_string(),
+                    remote,
+                }));
+            }
+        }
+    }
+    Ok(None)
+}
+
+pub(crate) fn run_git<'a>(
+    repo_path: &Path,
+    args: impl IntoIterator<Item = &'a str>,
+) -> Result<Output> {
+    run_git_with_env(repo_path, args, &[])
+}
+
+/// [`run_git`] with `env` set for git.
+pub(crate) fn run_git_with_env<'a>(
+    repo_path: &Path,
+    args: impl IntoIterator<Item = &'a str>,
+    env: &[(&str, &std::ffi::OsStr)],
+) -> Result<Output> {
     let args: Vec<_> = args.into_iter().collect();
     let output = Command::new("git")
         .args(&args)
+        .envs(env.iter().copied())
         .current_dir(repo_path)
         .output()
         .with_context(|| format!("failed to run git in {}", repo_path.display()))?;

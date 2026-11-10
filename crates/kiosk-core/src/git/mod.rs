@@ -7,6 +7,7 @@ mod repo;
 pub mod test_fixtures;
 
 pub use cli::{CliGitProvider, StopFetchesOnDrop};
+pub(crate) use cli::{LOCAL_DEFAULT_BRANCHES, remote_default_branch, run_git, run_git_with_env};
 pub use provider::{
     DirtyWorktreeRequiresForce, GitProvider, LocalBranchAlreadyExists,
     is_dirty_worktree_requires_force, is_local_branch_already_exists,

@@ -8,6 +8,7 @@
 
 mod git;
 pub mod highlight;
+pub mod pairs;
 mod patch;
 pub mod tab;
 

@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 
 /// Bumped whenever a message changes shape, so a frontend and a picker from different
 /// versions refuse each other rather than misread each other.
-pub const PROTOCOL_VERSION: u32 = 5;
+pub const PROTOCOL_VERSION: u32 = 6;
 
 /// Refuses a client that speaks another version of the protocol, saying which to update.
 pub fn check_client(protocol: u32) -> anyhow::Result<()> {
@@ -120,6 +120,8 @@ pub enum ClientMessage {
         help: usize,
         scan_warnings: usize,
         diff: usize,
+        /// Whether the diff tab has room for side by side.
+        side_by_side: bool,
     },
     /// A click on the row at `position` of the list in front, or on one of its buttons.
     /// `id` is the item the row showed, so a click on a row that has since moved does

@@ -227,7 +227,7 @@ fn save_to(path: &Path, entries: &[PendingWorktreeDelete]) -> Result<()> {
     Ok(())
 }
 
-fn write_atomic(path: &Path, contents: &[u8]) -> io::Result<()> {
+pub(crate) fn write_atomic(path: &Path, contents: &[u8]) -> io::Result<()> {
     write_atomic_with(path, contents, replace_file_atomic)
 }
 

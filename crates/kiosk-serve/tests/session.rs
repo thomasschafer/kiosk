@@ -172,6 +172,7 @@ fn two_repo_start(root: &Path, backend: Arc<MockBackend>) -> Start<MockBackend, 
         backend: Some(backend),
         current_cwd: None,
         tab: TabId::Picker,
+        preferences: None,
     }
 }
 
@@ -221,7 +222,7 @@ fn typing_filters_and_enter_opens_the_selection() {
     );
 
     client
-        .send(&json!({ "t": "viewport", "list": 10, "bases": 5, "help": 10, "scan_warnings": 5, "diff": 20 }));
+        .send(&json!({ "t": "viewport", "list": 10, "bases": 5, "help": 10, "scan_warnings": 5, "diff": 20, "side_by_side": true }));
     let view = client.view_until(|view| {
         picker_list(view).is_some_and(|list| list["rows"].as_array().unwrap().len() == 2)
     });
@@ -424,6 +425,7 @@ fn the_setup_wizard_writes_the_config_then_the_picker_starts() {
             backend: Some(mock_backend()),
             current_cwd: None,
             tab: TabId::Picker,
+            preferences: None,
         }
     });
     let step = |view: &Value| view["step"].as_str().map(str::to_owned);
@@ -479,6 +481,7 @@ fn leaving_the_setup_wizard_quits_without_writing() {
         backend: None,
         current_cwd: None,
         tab: TabId::Picker,
+        preferences: None,
     });
     client.view_until(|view| view["step"] == "welcome");
     client.key("escape", None);
@@ -501,6 +504,7 @@ fn a_config_without_search_directories_says_so_until_the_user_leaves() {
         backend: None,
         current_cwd: None,
         tab: TabId::Picker,
+        preferences: None,
     });
     let view = client.view_until(|view| view["screen"] == "no_search_dirs");
     assert_eq!(view["title"], "No search directories configured");
@@ -571,6 +575,7 @@ fn a_session_opens_on_the_tab_asked_for_and_launching_it_again_closes() {
     let (mut client, session, _) = connect(move || Start {
         current_cwd: Some("/work/repo".into()),
         tab: TabId::Diff,
+        preferences: None,
         ..two_repo_start(&search_dir, mock_backend())
     });
     let view = client.view_until(|view| tab_body(view, "diff").is_some());
@@ -629,6 +634,7 @@ fn hello_lists_the_tabs_and_a_launch_during_setup_counts() {
         backend: None,
         current_cwd: None,
         tab: TabId::Picker,
+        preferences: None,
     });
     assert_eq!(hello["tabs"], json!(["picker", "diff"]));
     client.view_until(|view| view["step"] == "welcome");
@@ -651,6 +657,7 @@ fn the_diff_tab_shows_a_checkouts_changes_and_moves_through_them() {
     let (mut client, session, hello) = connect(move || Start {
         current_cwd: Some(repo),
         tab: TabId::Diff,
+        preferences: None,
         ..two_repo_start(&search_dir, mock_backend())
     });
     for chord in ["ctrl-d", "ctrl-u", "pagedown"] {
@@ -659,7 +666,7 @@ fn the_diff_tab_shows_a_checkouts_changes_and_moves_through_them() {
             "{chord} unclaimed: {hello}"
         );
     }
-    client.send(&json!({ "t": "viewport", "list": 10, "bases": 5, "help": 10, "scan_warnings": 5, "diff": 3 }));
+    client.send(&json!({ "t": "viewport", "list": 10, "bases": 5, "help": 10, "scan_warnings": 5, "diff": 3, "side_by_side": true }));
     let view = client.view_until(|view| {
         tab_body(view, "diff").is_some_and(|body| body["body"]["rows"].is_array())
     });
@@ -702,6 +709,7 @@ fn help_in_the_diff_tab_lists_its_keys_filters_and_closes() {
     let search_dir = root.path().to_path_buf();
     let (mut client, session, _) = connect(move || Start {
         tab: TabId::Diff,
+        preferences: None,
         ..two_repo_start(&search_dir, mock_backend())
     });
     client.view_until(|view| tab_body(view, "diff").is_some());
@@ -756,6 +764,7 @@ fn opening_on_the_diff_tab_needs_no_search_directories() {
         backend: None,
         current_cwd: Some(cwd),
         tab: TabId::Diff,
+        preferences: None,
     });
     let view = client.view_until(|view| {
         tab_body(view, "diff").is_some_and(|body| {
@@ -767,6 +776,60 @@ fn opening_on_the_diff_tab_needs_no_search_directories() {
     assert_eq!(view["body"]["files"][0]["path"], "new.txt");
     client.key("ctrl-1", None);
     client.view_until(|view| tab_body(view, "picker").is_some());
+    client.send(&json!({ "t": "close" }));
+    assert_eq!(client.end()["outcome"], "quit");
+    session.join().unwrap().unwrap();
+}
+
+#[test]
+fn s_switches_the_diff_tab_to_side_by_side_where_it_fits_and_remembers_it() {
+    let root = tempfile::tempdir().unwrap();
+    let search_dir = root.path().to_path_buf();
+    let repo = root.path().join("work");
+    std::fs::create_dir(&repo).unwrap();
+    kiosk_core::git::test_fixtures::init_test_repo(&repo);
+    std::fs::write(repo.join("README.md"), "# changed\n").unwrap();
+    let preferences = root.path().join("state/preferences.toml");
+    let start_preferences = preferences.clone();
+    let (mut client, session, _) = connect(move || Start {
+        current_cwd: Some(repo),
+        tab: TabId::Diff,
+        preferences: Some(start_preferences),
+        ..two_repo_start(&search_dir, mock_backend())
+    });
+    let viewport = |side_by_side| json!({ "t": "viewport", "list": 10, "bases": 5, "help": 10, "scan_warnings": 5, "diff": 20, "side_by_side": side_by_side });
+    client.send(&viewport(true));
+    let has_row = |kind: &'static str| {
+        move |view: &Value| {
+            tab_body(view, "diff").is_some_and(|body| {
+                body["body"]["rows"]
+                    .as_array()
+                    .is_some_and(|rows| rows.iter().any(|row| row[0] == kind))
+            })
+        }
+    };
+    client.view_until(has_row("line"));
+    client.key("s", Some("s"));
+    let view = client.view_until(has_row("pair"));
+    let pair = view["body"]["body"]["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row[0] == "pair" && !row[1].is_null() && !row[2].is_null() && row[1][0] == "-")
+        .unwrap()
+        .clone();
+    assert_eq!(pair[1][2], "# test");
+    assert_eq!(pair[2][2], "# changed");
+    assert!(
+        std::fs::read_to_string(&preferences)
+            .unwrap()
+            .contains("side_by_side")
+    );
+    // Where side by side doesn't fit, the tab shows unified, keeping the choice.
+    client.send(&viewport(false));
+    client.view_until(has_row("line"));
+    client.send(&viewport(true));
+    client.view_until(has_row("pair"));
     client.send(&json!({ "t": "close" }));
     assert_eq!(client.end()["outcome"], "quit");
     session.join().unwrap().unwrap();

@@ -6,6 +6,7 @@ use std::{
 
 use super::*;
 use crate::git::test_fixtures::{init_test_repo, run_test_git};
+use crate::preferences::DiffLayout;
 
 fn commit(dir: &Path, name: &str, content: &str) {
     fs::write(dir.join(name), content).unwrap();
@@ -64,14 +65,14 @@ fn paths(tab: &DiffTab) -> Vec<String> {
 
 #[test]
 fn nothing_is_read_until_the_tab_starts() {
-    let tab = DiffTab::new(Some("/nowhere".into()));
+    let tab = DiffTab::new(Some("/nowhere".into()), DiffLayout::Unified);
     assert!(matches!(tab.state, DiffState::Unstarted));
 }
 
 #[test]
 fn a_folder_outside_git_or_no_folder_has_nothing_to_diff() {
     let temp = tempfile::tempdir().unwrap();
-    let mut tab = DiffTab::new(Some(temp.path().to_path_buf()));
+    let mut tab = DiffTab::new(Some(temp.path().to_path_buf()), DiffLayout::Unified);
     tab.start();
     wait(&mut tab, |tab| {
         !matches!(tab.state, DiffState::Resolving(_))
@@ -79,7 +80,7 @@ fn a_folder_outside_git_or_no_folder_has_nothing_to_diff() {
     assert!(
         matches!(&tab.state, DiffState::NoTarget(reason) if reason.contains("not in a git repository"))
     );
-    let mut tab = DiffTab::new(None);
+    let mut tab = DiffTab::new(None, DiffLayout::Unified);
     tab.start();
     assert!(matches!(tab.state, DiffState::NoTarget(_)));
 }
@@ -87,7 +88,7 @@ fn a_folder_outside_git_or_no_folder_has_nothing_to_diff() {
 #[test]
 fn the_tab_shows_everything_first_then_switches_range_on_request() {
     let temp = feature_repo();
-    let mut tab = DiffTab::new(Some(temp.path().to_path_buf()));
+    let mut tab = DiffTab::new(Some(temp.path().to_path_buf()), DiffLayout::Unified);
     tab.start();
     wait(&mut tab, highlighted);
     assert_eq!(ready(&tab).range, 0);
@@ -114,7 +115,7 @@ fn the_tab_shows_everything_first_then_switches_range_on_request() {
 fn files_lay_out_as_headers_hunks_and_lines_and_lockfiles_start_collapsed() {
     let temp = feature_repo();
     fs::write(temp.path().join("Cargo.lock"), "lock\n".repeat(10)).unwrap();
-    let mut tab = DiffTab::new(Some(temp.path().to_path_buf()));
+    let mut tab = DiffTab::new(Some(temp.path().to_path_buf()), DiffLayout::Unified);
     tab.start();
     wait(&mut tab, highlighted);
     let shown = tab.shown().unwrap();
@@ -152,7 +153,7 @@ fn files_lay_out_as_headers_hunks_and_lines_and_lockfiles_start_collapsed() {
 #[test]
 fn scrolling_stays_in_bounds_and_file_keys_move_between_headers() {
     let temp = feature_repo();
-    let mut tab = DiffTab::new(Some(temp.path().to_path_buf()));
+    let mut tab = DiffTab::new(Some(temp.path().to_path_buf()), DiffLayout::Unified);
     tab.set_viewport(3);
     tab.start();
     wait(&mut tab, highlighted);
@@ -183,7 +184,7 @@ fn scrolling_stays_in_bounds_and_file_keys_move_between_headers() {
 #[test]
 fn leaving_a_range_stops_its_worker() {
     let temp = feature_repo();
-    let mut tab = DiffTab::new(Some(temp.path().to_path_buf()));
+    let mut tab = DiffTab::new(Some(temp.path().to_path_buf()), DiffLayout::Unified);
     tab.start();
     wait(&mut tab, |tab| matches!(tab.state, DiffState::Ready(_)));
     let cancelled = match &ready(&tab).content {
@@ -201,7 +202,7 @@ fn leaving_a_range_stops_its_worker() {
 #[test]
 fn moving_between_files_that_all_fit_changes_the_current_file_without_scrolling() {
     let temp = feature_repo();
-    let mut tab = DiffTab::new(Some(temp.path().to_path_buf()));
+    let mut tab = DiffTab::new(Some(temp.path().to_path_buf()), DiffLayout::Unified);
     tab.set_viewport(100);
     tab.start();
     wait(&mut tab, highlighted);
@@ -224,7 +225,7 @@ fn moving_between_files_that_all_fit_changes_the_current_file_without_scrolling(
 fn a_missing_final_newline_gets_a_note_after_its_line() {
     let temp = feature_repo();
     fs::write(temp.path().join("b.rs"), "fn b() {}").unwrap();
-    let mut tab = DiffTab::new(Some(temp.path().to_path_buf()));
+    let mut tab = DiffTab::new(Some(temp.path().to_path_buf()), DiffLayout::Unified);
     tab.start();
     wait(&mut tab, highlighted);
     tab.act(DiffAction::SelectRange(1));
@@ -270,7 +271,7 @@ fn scrolling_sideways_stops_with_some_of_the_widest_line_still_shown() {
         format!("{}\n", "x".repeat(100)),
     )
     .unwrap();
-    let mut tab = DiffTab::new(Some(temp.path().to_path_buf()));
+    let mut tab = DiffTab::new(Some(temp.path().to_path_buf()), DiffLayout::Unified);
     tab.start();
     wait(&mut tab, highlighted);
     let column = |tab: &DiffTab| tab.shown().unwrap().column;
@@ -285,7 +286,7 @@ fn scrolling_sideways_stops_with_some_of_the_widest_line_still_shown() {
 #[test]
 fn switching_range_quickly_ends_on_the_last_one_asked_for() {
     let temp = feature_repo();
-    let mut tab = DiffTab::new(Some(temp.path().to_path_buf()));
+    let mut tab = DiffTab::new(Some(temp.path().to_path_buf()), DiffLayout::Unified);
     tab.start();
     wait(&mut tab, |tab| matches!(tab.state, DiffState::Ready(_)));
     for _ in 0..5 {
@@ -307,7 +308,7 @@ fn sideways_scrolling_reaches_the_end_of_a_line_whose_controls_show_as_escapes()
         format!("{}\n", "\u{1b}".repeat(30)),
     )
     .unwrap();
-    let mut tab = DiffTab::new(Some(temp.path().to_path_buf()));
+    let mut tab = DiffTab::new(Some(temp.path().to_path_buf()), DiffLayout::Unified);
     tab.start();
     wait(&mut tab, highlighted);
     tab.act(DiffAction::ScrollColumns(1000));
@@ -316,7 +317,7 @@ fn sideways_scrolling_reaches_the_end_of_a_line_whose_controls_show_as_escapes()
 
 #[test]
 fn help_opens_filters_as_typed_and_closes() {
-    let mut tab = DiffTab::new(None);
+    let mut tab = DiffTab::new(None, DiffLayout::Unified);
     let keys = KeysConfig::default();
     tab.show_help(&keys);
     let all = tab.help.as_ref().unwrap().list.filtered.len();

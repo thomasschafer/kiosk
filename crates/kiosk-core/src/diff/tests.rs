@@ -345,8 +345,10 @@ fn a_checkout_whose_folder_ends_in_a_newline_is_found_exactly() {
 #[test]
 fn each_line_is_highlighted_from_its_own_side_of_the_whole_file() {
     let (_temp, dir) = repo();
-    commit_file(&dir, "a.rs", "/* opened\nkept */\nfn old() {}\n", "a");
-    fs::write(dir.join("a.rs"), "/* opened\nkept */\nfn new() {}\n").unwrap();
+    // The comment opens further above the change than a hunk's three lines of context.
+    let before = "/* opened\none\ntwo\nthree\nfour\nkept */\n";
+    commit_file(&dir, "a.rs", &format!("{before}fn old() {{}}\n"), "a");
+    fs::write(dir.join("a.rs"), format!("{before}fn new() {{}}\n")).unwrap();
     let target = Target::checkout(&dir).unwrap().unwrap();
     let files = target.diff(&Range::Uncommitted).unwrap();
     let highlighted = target.highlight(&files[0]).unwrap();
@@ -360,7 +362,11 @@ fn each_line_is_highlighted_from_its_own_side_of_the_whole_file() {
             .find(|line| line.kind == kind && line.text == text)
             .unwrap()
     };
-    // The comment opened on an earlier line, which only highlighting the whole file knows.
+    assert!(
+        hunks[0].lines.iter().all(|line| line.text != "/* opened"),
+        "the opener is in the hunk, so this tests nothing"
+    );
+    // The comment opened outside the hunk, which only highlighting the whole file knows.
     let kept = highlighted
         .runs(line(LineKind::Context, "kept */"))
         .unwrap();
@@ -425,4 +431,38 @@ fn a_submodule_is_patched_like_a_file_whatever_diff_submodule_says() {
         added_lines(&files[0]),
         [format!("Subproject commit {pinned}")]
     );
+    assert_eq!(target.highlight(&files[0]).unwrap(), Highlighted::default());
+}
+
+/// Dates `path` at `time`, as a file written then would be.
+fn set_modified(path: &Path, time: std::time::SystemTime) {
+    fs::File::options()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(time)
+        .unwrap();
+}
+
+#[test]
+fn a_change_made_as_the_index_was_written_is_still_seen() {
+    let (_temp, dir) = repo();
+    // A file's change time can't be set, and git would notice it changed; without this, the
+    // race only shows where the clock has whole seconds, as on Linux.
+    run_test_git(&dir, &["config", "core.trustctime", "false"]);
+    // Written well before the commit, so the index records its size as it is.
+    let written = std::time::SystemTime::now() - std::time::Duration::from_secs(100);
+    fs::write(dir.join("a.txt"), "aaa\n").unwrap();
+    set_modified(&dir.join("a.txt"), written);
+    run_test_git(&dir, &["add", "a.txt"]);
+    run_test_git(&dir, &["commit", "-q", "-m", "a"]);
+    // Changed at the same size and time as the index records, with the index written at that
+    // time too: git can't trust its record, so it must read the file.
+    fs::write(dir.join("a.txt"), "bbb\n").unwrap();
+    set_modified(&dir.join("a.txt"), written);
+    set_modified(&dir.join(".git/index"), written);
+    let target = Target::checkout(&dir).unwrap().unwrap();
+    let files = target.diff(&Range::Uncommitted).unwrap();
+    assert_eq!(paths(&files), ["a.txt"]);
+    assert_eq!(added_lines(&files[0]), ["bbb"]);
 }

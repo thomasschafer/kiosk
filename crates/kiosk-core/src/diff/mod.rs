@@ -71,6 +71,18 @@ pub struct Side {
     pub id: ObjectId,
 }
 
+impl Side {
+    /// The type bits of a git mode, and those of a regular file.
+    const TYPE: u32 = 0o170_000;
+    const REGULAR_FILE: u32 = 0o100_000;
+
+    /// Whether the side is a regular file, executable or not, rather than a symlink or a
+    /// submodule.
+    pub const fn is_regular_file(&self) -> bool {
+        self.mode & Self::TYPE == Self::REGULAR_FILE
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileDiff {
     pub change: Change,
@@ -281,7 +293,9 @@ impl Target {
             return Ok(Highlighted::default());
         }
         let side = |side: &Option<Side>| -> Result<Option<Vec<Vec<highlight::Run>>>> {
-            let Some(side) = side else {
+            // Only a regular file's blob is code: a symlink's is its target, and a
+            // submodule's id names a commit, often only in the submodule.
+            let Some(side) = side.as_ref().filter(|side| side.is_regular_file()) else {
                 return Ok(None);
             };
             let Some(content) = git::blob(&self.root, &side.id, highlight::MAX_HIGHLIGHT_BYTES)?

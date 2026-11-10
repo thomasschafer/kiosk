@@ -154,8 +154,10 @@ pub fn diff(tab: &DiffTab, keys: &KeysConfig) -> DiffView {
 fn ready_view(ready: &Ready, viewport: usize, keys: &KeysConfig, hints: Vec<Hint>) -> DiffView {
     let target = &ready.target;
     let title = sanitize(&target.head().to_string()).into_owned();
+    // On the default branch itself, saying it's compared with itself says nothing.
     let subtitle = target
         .base()
+        .filter(|base| !matches!(target.head(), crate::diff::Head::Branch { name, .. } if *name == base.name))
         .map(|base| format!("compared with {}", sanitize(&base.name)));
     let ranges = ready
         .ranges
@@ -199,7 +201,7 @@ fn ready_view(ready: &Ready, viewport: usize, keys: &KeysConfig, hints: Vec<Hint
                 });
                 return view;
             }
-            view.current_file = shown.file_at(shown.offset);
+            view.current_file = Some(shown.current_file);
             let end = (shown.offset + viewport).min(shown.rows.len());
             view.body = Some(Body {
                 offset: shown.offset,

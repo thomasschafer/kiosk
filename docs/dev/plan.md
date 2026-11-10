@@ -157,15 +157,23 @@ Throwaway work that answers a question; record the answer under decisions.
       the repository, as `git add` does; git prunes them in time.
 - [x] Patch parsing, with renames, binary and mode changes. Paths, modes and object ids come
       from `--raw -z` records, so quoting never matters; only hunks come from the patch.
-- [ ] Lockfiles, binaries and huge files collapsed in the view.
+- [x] Lockfiles, binaries and huge files collapsed in the view (`e` or a click on the
+      header expands one).
 - [x] Syntax highlighting (`kiosk_core::diff::highlight`): whole files from each side's blob,
       as runs of `SyntaxTone`s per line. Scopes are matched against kiosk's own selector table
       rather than a TextMate theme, so the frontend's palette decides colours. Files over
       1 MiB, or with a line over 4 KiB (minified code), go plain, and so does any line whose
       runs don't cover it exactly.
-- [ ] Unified view.
-- [ ] Empty states: not a repository, a remote machine's space, the default branch itself,
-      detached HEAD, a branch without a checkout.
+- [x] Unified view (`kiosk_core::diff::tab` and `view::diff`): a sidebar of ranges and files,
+      and the body as compact rows the mod draws with tone layers. Scrolling is by whole rows,
+      owned by Rust as in the picker; the mod-owned smooth scrolling the rendering spike
+      recommends is phase 4's.
+- [x] Keys in `[keys.diff]`: scrolling, paging, top and bottom, next and previous file and
+      range, collapsing, and quitting. The current file is a cursor of its own, so moving
+      between files that all fit on screen still moves.
+- [x] Empty states: not a repository, no folder (as for a remote machine's space), the
+      default branch itself, detached HEAD, a range with no changes. A branch without a
+      checkout is phase 5's way in.
 - [ ] Open the diff tab without search directories: today a missing config's setup wizard,
       or a config with no search directories, comes before any tab.
 - [ ] Help in the diff tab: `ctrl+h` does nothing there yet, as help is the picker's.

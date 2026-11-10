@@ -331,6 +331,36 @@ wait_view '.main.rows[.main.selected].name.text == "service-09" and .main.offset
 sb key Escape
 wait_closed
 
+check "the diff tab shows the focused checkout's changes, highlighted, and moves through them"
+# The space in service-08 is still focused. Its fixture has one empty commit on main, so the
+# diff is what's uncommitted: a modified file, a new one and an untracked one.
+config=$HOME/.config/herdr-app-kiosk/config.toml
+printf 'search_dirs = ["~/code"]\nexperimental_tabs = true\n' >"$config"
+printf 'fn main() {\n    // a comment\n    let s = "text";\n}\n' >"$folder/main.rs"
+git -C "$folder" add main.rs
+git -C "$folder" commit -q -m "add main"
+printf 'fn main() {\n    // a comment\n    let s = "changed";\n}\n' >"$folder/main.rs"
+printf 'untracked\n' >"$folder/notes.txt"
+: >"$trace"
+sb "do" mod.open '{"name":"kiosk-diff"}' >/dev/null
+wait_view '.screen == "diff" and (.body.rows | length) > 0'
+[[ $(last_view | jq -c '[.files[].path]') == '["main.rs","notes.txt"]' ]] || fail "unexpected files"
+[[ $(last_view | jq -r '.ranges[0].label') == "All changes" ]] || fail "the first range isn't all changes"
+# The changed line is highlighted: its string is in the string tone.
+string=$(last_view | jq '.tones | index("string")')
+last_view | jq -e --argjson string "$string" \
+  '[.body.rows[] | select(.[0] == "line" and .[1] == "+") | .[5] | select(. != null) | [range(1; length; 2) as $i | .[$i]] | index($string)] | any(. != null)' \
+  >/dev/null || fail "the added line isn't highlighted"
+sleep 0.7
+sb shot "$shots/diff.png" >/dev/null
+sb key n
+wait_view '.current_file == 1'
+sb key bracketright
+wait_view '.range == 1 and .ranges[1].label == "Uncommitted"'
+sb key Escape
+wait_closed
+printf 'search_dirs = ["~/code"]\n' >"$config"
+
 check "without a config, the setup wizard writes one and the picker starts"
 rm "$HOME/.config/herdr-app-kiosk/config.toml"
 open_kiosk

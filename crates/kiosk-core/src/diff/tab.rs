@@ -74,6 +74,10 @@ pub struct Shown {
     pub rows: Vec<Row>,
     /// The first row on screen.
     pub offset: usize,
+    /// The file the person is on: the one they moved to, or the one at the top of the
+    /// screen once they scroll. Kept apart from `offset`, as moving to a file that is already
+    /// on screen doesn't scroll.
+    pub current_file: usize,
     /// Highlighting still runs on the range's worker until every file has it.
     worker: Option<Worker>,
 }
@@ -110,6 +114,18 @@ pub enum Row {
         hunk: usize,
         line: usize,
     },
+}
+
+impl Row {
+    /// The file the row belongs to.
+    pub const fn file(self) -> usize {
+        match self {
+            Self::File(file)
+            | Self::Note(file, _)
+            | Self::Hunk { file, .. }
+            | Self::Line { file, .. } => file,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -372,6 +388,7 @@ impl DiffTab {
                     files: files.into_iter().map(ShownFile::new).collect(),
                     rows: Vec::new(),
                     offset: 0,
+                    current_file: 0,
                 };
                 shown.lay_out();
                 ready.content = RangeContent::Shown(shown);
@@ -509,12 +526,7 @@ impl Shown {
 
     /// The file whose rows include row `row`.
     pub fn file_at(&self, row: usize) -> Option<usize> {
-        self.rows.get(row).map(|row| match *row {
-            Row::File(file)
-            | Row::Note(file, _)
-            | Row::Hunk { file, .. }
-            | Row::Line { file, .. } => file,
-        })
+        self.rows.get(row).map(|row| row.file())
     }
 
     fn file_row(&self, file: usize) -> Option<usize> {
@@ -523,39 +535,43 @@ impl Shown {
 
     fn act(&mut self, action: DiffAction, viewport: usize) {
         let last = max_offset(self.rows.len(), viewport);
-        let scroll = |offset: usize, by: isize| offset.saturating_add_signed(by).min(last);
+        let scroll_to = |shown: &mut Self, offset: usize| {
+            shown.offset = offset.min(last);
+            if let Some(file) = shown.file_at(shown.offset) {
+                shown.current_file = file;
+            }
+        };
         match action {
-            DiffAction::Scroll(by) => self.offset = scroll(self.offset, by),
+            DiffAction::Scroll(by) => scroll_to(self, self.offset.saturating_add_signed(by)),
             DiffAction::Page(pages) => {
                 let page = viewport.saturating_sub(1).max(1).cast_signed();
-                self.offset = scroll(self.offset, pages * page);
+                scroll_to(self, self.offset.saturating_add_signed(pages * page));
             }
-            DiffAction::Top => self.offset = 0,
-            DiffAction::Bottom => self.offset = last,
-            DiffAction::NextFile | DiffAction::PreviousFile => {
-                let Some(current) = self.file_at(self.offset) else {
-                    return;
+            DiffAction::Top => scroll_to(self, 0),
+            DiffAction::Bottom => {
+                scroll_to(self, last);
+                self.current_file = self.files.len().saturating_sub(1);
+            }
+            DiffAction::NextFile => {
+                self.show_file(
+                    (self.current_file + 1).min(self.files.len().saturating_sub(1)),
+                    viewport,
+                );
+            }
+            DiffAction::PreviousFile => {
+                // From below its header, back to the current file's header; from its header,
+                // to the file before.
+                let header = self.file_row(self.current_file);
+                let file = if header.is_some_and(|header| header < self.offset) {
+                    self.current_file
+                } else {
+                    self.current_file.saturating_sub(1)
                 };
-                let at_header = self.file_row(current) == Some(self.offset);
-                let target = match action {
-                    DiffAction::NextFile => current + 1,
-                    // From inside a file, back to its header; from its header, the one before.
-                    _ if at_header => current.saturating_sub(1),
-                    _ => current,
-                };
-                if let Some(row) = self.file_row(target.min(self.files.len().saturating_sub(1))) {
-                    self.offset = row.min(last);
-                }
+                self.show_file(file, viewport);
             }
-            DiffAction::ShowFile(file) => {
-                if let Some(row) = self.file_row(file) {
-                    self.offset = row.min(last);
-                }
-            }
+            DiffAction::ShowFile(file) => self.show_file(file, viewport),
             DiffAction::ToggleFile(file) => {
-                let Some(index) = file.or_else(|| self.file_at(self.offset)) else {
-                    return;
-                };
+                let index = file.unwrap_or(self.current_file);
                 let Some(file) = self.files.get_mut(index) else {
                     return;
                 };
@@ -563,13 +579,29 @@ impl Shown {
                     return;
                 }
                 file.collapsed = !file.collapsed;
-                self.offset = self.file_row(index).unwrap_or(self.offset);
                 self.lay_out();
-                self.offset = self.offset.min(max_offset(self.rows.len(), viewport));
+                self.show_file(index, viewport);
             }
             DiffAction::NextRange | DiffAction::PreviousRange | DiffAction::SelectRange(_) => {
                 unreachable!("the tab changes range")
             }
+        }
+    }
+
+    /// Makes `file` current, scrolling its header to the top unless all of it is on screen.
+    fn show_file(&mut self, file: usize, viewport: usize) {
+        let Some(header) = self.file_row(file) else {
+            return;
+        };
+        self.current_file = file;
+        let end = self
+            .rows
+            .iter()
+            .rposition(|row| row.file() == file)
+            .map_or(header, |last| last + 1);
+        let on_screen = header >= self.offset && end <= self.offset + viewport;
+        if !on_screen {
+            self.offset = header.min(max_offset(self.rows.len(), viewport));
         }
     }
 }

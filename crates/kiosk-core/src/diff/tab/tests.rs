@@ -197,3 +197,25 @@ fn leaving_a_range_stops_its_worker() {
     tab.act(DiffAction::NextRange);
     assert!(cancelled.load(Ordering::Relaxed));
 }
+
+#[test]
+fn moving_between_files_that_all_fit_changes_the_current_file_without_scrolling() {
+    let temp = feature_repo();
+    let mut tab = DiffTab::new(Some(temp.path().to_path_buf()));
+    tab.set_viewport(100);
+    tab.start();
+    wait(&mut tab, highlighted);
+    let at = |tab: &DiffTab| {
+        let shown = tab.shown().unwrap();
+        (shown.current_file, shown.offset)
+    };
+    assert_eq!(at(&tab), (0, 0));
+    tab.act(DiffAction::NextFile);
+    assert_eq!(at(&tab), (1, 0));
+    tab.act(DiffAction::NextFile);
+    assert_eq!(at(&tab), (1, 0), "the last file stays current");
+    tab.act(DiffAction::PreviousFile);
+    assert_eq!(at(&tab), (0, 0));
+    tab.act(DiffAction::ToggleFile(None));
+    assert!(tab.shown().unwrap().files[0].collapsed);
+}

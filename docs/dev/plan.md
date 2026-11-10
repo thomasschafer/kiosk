@@ -158,7 +158,12 @@ Throwaway work that answers a question; record the answer under decisions.
 - [x] Patch parsing, with renames, binary and mode changes. Paths, modes and object ids come
       from `--raw -z` records, so quoting never matters; only hunks come from the patch.
 - [ ] Lockfiles, binaries and huge files collapsed in the view.
-- [ ] Unified view with syntax highlighting.
+- [x] Syntax highlighting (`kiosk_core::diff::highlight`): whole files from each side's blob,
+      as runs of `SyntaxTone`s per line. Scopes are matched against kiosk's own selector table
+      rather than a TextMate theme, so the frontend's palette decides colours. Files over
+      1 MiB, or with a line over 4 KiB (minified code), go plain, and so does any line whose
+      runs don't cover it exactly.
+- [ ] Unified view.
 - [ ] Empty states: not a repository, a remote machine's space, the default branch itself,
       detached HEAD, a branch without a checkout.
 - [ ] Open the diff tab without search directories: today a missing config's setup wizard,

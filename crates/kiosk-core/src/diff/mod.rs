@@ -7,6 +7,7 @@
 //! its number on each side it is on, so a line can be pointed at by file, side and number.
 
 mod git;
+pub mod highlight;
 mod patch;
 
 use std::{fmt, path::PathBuf};
@@ -68,6 +69,18 @@ pub struct Side {
     pub mode: u32,
     /// The blob holding its content on this side.
     pub id: ObjectId,
+}
+
+impl Side {
+    /// The type bits of a git mode, and those of a regular file.
+    const TYPE: u32 = 0o170_000;
+    const REGULAR_FILE: u32 = 0o100_000;
+
+    /// Whether the side is a regular file, executable or not, rather than a symlink or a
+    /// submodule.
+    pub const fn is_regular_file(&self) -> bool {
+        self.mode & Self::TYPE == Self::REGULAR_FILE
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -144,6 +157,29 @@ pub struct Line {
     pub text: String,
     /// The file ends here without a newline.
     pub missing_newline: bool,
+}
+
+/// A file's lines highlighted on each side it is on.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Highlighted {
+    old: Option<Vec<Vec<highlight::Run>>>,
+    new: Option<Vec<Vec<highlight::Run>>>,
+}
+
+impl Highlighted {
+    /// `line`'s runs, from the side it is on (the new side for context), or `None` when that
+    /// side went unhighlighted or its runs don't cover the line's text exactly.
+    pub fn runs(&self, line: &Line) -> Option<&[highlight::Run]> {
+        let (side, number) = match line.kind {
+            LineKind::Removed => (&self.old, line.old?),
+            LineKind::Added | LineKind::Context => (&self.new, line.new?),
+        };
+        let runs = side
+            .as_ref()?
+            .get(usize::try_from(number).ok()?.checked_sub(1)?)?;
+        (runs.iter().map(|run| run.chars).sum::<usize>() == line.text.chars().count())
+            .then_some(runs.as_slice())
+    }
 }
 
 /// What the diff tab diffs.
@@ -249,6 +285,37 @@ impl Target {
                 .map(|commit| Range::Commit(commit.id.clone())),
         );
         ranges
+    }
+
+    /// `file`'s lines highlighted on each side, as far as they can be.
+    pub fn highlight(&self, file: &FileDiff) -> Result<Highlighted> {
+        // A binary file has no lines, and nor does a rename or mode change with no hunks:
+        // reading and parsing both sides would be for nothing.
+        let FileContent::Text { hunks } = &file.content else {
+            return Ok(Highlighted::default());
+        };
+        if hunks.iter().all(|hunk| hunk.lines.is_empty()) {
+            return Ok(Highlighted::default());
+        }
+        let side = |side: &Option<Side>| -> Result<Option<Vec<Vec<highlight::Run>>>> {
+            // Only a regular file's blob is code: a symlink's is its target, and a
+            // submodule's id names a commit, often only in the submodule.
+            let Some(side) = side.as_ref().filter(|side| side.is_regular_file()) else {
+                return Ok(None);
+            };
+            let Some(content) = git::blob(&self.root, &side.id, highlight::MAX_HIGHLIGHT_BYTES)?
+            else {
+                return Ok(None);
+            };
+            Ok(highlight::highlight(
+                &side.path,
+                &String::from_utf8_lossy(&content),
+            ))
+        };
+        Ok(Highlighted {
+            old: side(&file.old)?,
+            new: side(&file.new)?,
+        })
     }
 
     /// The files `range` changed.

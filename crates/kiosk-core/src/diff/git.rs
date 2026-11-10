@@ -282,6 +282,17 @@ impl WorkingTreeIndex {
         if own.exists() {
             fs::copy(&own, &path)
                 .with_context(|| format!("copying {} to {}", own.display(), path.display()))?;
+            // Git trusts an entry's recorded stat only if the file was last changed before the
+            // index was written, comparing with the index file's own time. A copy written now
+            // would make a file changed in the same second as the index look unchanged.
+            let modified = fs::metadata(&own)
+                .and_then(|metadata| metadata.modified())
+                .with_context(|| format!("reading when {} was written", own.display()))?;
+            fs::File::options()
+                .write(true)
+                .open(&path)
+                .and_then(|copy| copy.set_modified(modified))
+                .with_context(|| format!("dating {} as {}", path.display(), own.display()))?;
         }
         let index = Self { _dir: dir, path };
         run_git_with_env(root, ["add", "--all"], &index.env())?;
@@ -291,4 +302,19 @@ impl WorkingTreeIndex {
     fn env(&self) -> [(&str, &OsStr); 1] {
         [("GIT_INDEX_FILE", self.path.as_os_str())]
     }
+}
+
+/// The content of blob `id`, unless it is bigger than `limit` bytes.
+pub fn blob(root: &Path, id: &ObjectId, limit: usize) -> Result<Option<Vec<u8>>> {
+    let size = run_git(root, ["cat-file", "-s", id.as_str()])?;
+    let size: usize = String::from_utf8_lossy(&size.stdout)
+        .trim()
+        .parse()
+        .with_context(|| format!("git cat-file -s {id} printed no size"))?;
+    if size > limit {
+        return Ok(None);
+    }
+    Ok(Some(
+        run_git(root, ["cat-file", "blob", id.as_str()])?.stdout,
+    ))
 }

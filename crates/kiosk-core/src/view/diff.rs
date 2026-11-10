@@ -49,6 +49,9 @@ pub struct DiffView {
     pub title: String,
     /// What the target is compared with, such as `compared with origin/main`.
     pub subtitle: Option<String>,
+    /// Something the person should know about the tab as a whole, such as that it has stopped
+    /// following changes.
+    pub notice: Option<String>,
     /// Shown in the body's place while there is no diff to show.
     pub message: Option<Message>,
     pub ranges: Vec<RangeEntry>,
@@ -149,7 +152,9 @@ pub fn diff(tab: &mut DiffTab, keys: &KeysConfig, help_rows: usize) -> DiffView 
         .help
         .as_mut()
         .map(|help| OverlayView::Help(help_view(help, false, help_rows)));
+    let notice = tab.notice().map(|notice| sanitize(&notice).into_owned());
     DiffView {
+        notice,
         overlay,
         ..body(tab, keys)
     }
@@ -160,6 +165,7 @@ fn body(tab: &DiffTab, keys: &KeysConfig) -> DiffView {
     let message = |text: &str, detail: Option<String>, busy| DiffView {
         title: "Diff".into(),
         subtitle: None,
+        notice: None,
         message: Some(Message {
             text: text.into(),
             detail,
@@ -210,6 +216,7 @@ fn ready_view(ready: &Ready, viewport: usize, keys: &KeysConfig, hints: Vec<Hint
     let mut view = DiffView {
         title,
         subtitle,
+        notice: None,
         message: None,
         ranges,
         range: Some(ready.range),

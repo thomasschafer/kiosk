@@ -280,8 +280,10 @@ impl WorkingTreeIndex {
         // Starting from the checkout's index keeps git's record of unchanged files, so it
         // doesn't read them all again. A new repository has none yet.
         if own.exists() {
-            fs::copy(&own, &path)
-                .with_context(|| format!("copying {} to {}", own.display(), path.display()))?;
+            // Read and written rather than copied: on macOS a copy clones the file, which the
+            // file watcher reports as a change to the index, so each diff would set off another.
+            let contents = fs::read(&own).with_context(|| format!("reading {}", own.display()))?;
+            fs::write(&path, contents).with_context(|| format!("writing {}", path.display()))?;
             // Git trusts an entry's recorded stat only if the file was last changed before the
             // index was written, comparing with the index file's own time. A copy written now
             // would make a file changed in the same second as the index look unchanged.

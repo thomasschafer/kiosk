@@ -10,15 +10,29 @@ use std::{
         mpsc,
     },
     thread,
+    time::{Duration, Instant},
 };
 
-use super::{Commit, FileContent, FileDiff, Highlighted, LineKind, Range, Target, pairs};
+use anyhow::bail;
+
+use super::{
+    Commit, FileContent, FileDiff, Highlighted, LineKind, Range, Target, pairs,
+    watch::{Places, Watch},
+};
 use crate::{
     config::keys::{BindingMode, KeysConfig},
     keyboard::Action,
     preferences::DiffLayout,
     state::HelpOverlayState,
 };
+
+/// How long changes must settle before the diff is read again, so a burst of saves or a
+/// checkout is read once.
+const SETTLE: Duration = Duration::from_millis(300);
+/// The longest changes are waited on before the diff is read again anyway.
+const MAX_WAIT: Duration = Duration::from_secs(2);
+/// How long after watching fails it is tried again.
+const RETRY_WATCH: Duration = Duration::from_secs(5);
 
 /// Files changing more lines than this start collapsed: reading them is rarely the point.
 pub const COLLAPSE_LINES: usize = 1500;
@@ -232,6 +246,8 @@ impl Drop for Worker {
 
 #[derive(Debug)]
 enum Event {
+    /// The checkout's watch, started before anything is read from it.
+    Watching(anyhow::Result<Watch>),
     Resolved {
         target: Arc<Target>,
         commits: Vec<Commit>,
@@ -241,6 +257,17 @@ enum Event {
     /// A file's highlighting and the words changed in each line of each of its hunks.
     Highlighted(usize, Highlighted, LineChanges),
     Failed(String),
+    /// What the diff shows changed; the worker highlights the new files next.
+    Refreshed {
+        target: Arc<Target>,
+        commits: Vec<Commit>,
+        range: usize,
+        files: Vec<FileDiff>,
+    },
+    /// What changed doesn't change what the diff shows.
+    Unchanged,
+    /// The diff couldn't be read again; what shows stays.
+    RefreshFailed(String),
 }
 
 impl Worker {
@@ -276,6 +303,7 @@ impl Worker {
                 let Some(target) = target else {
                     return Ok(None);
                 };
+                send(Event::Watching(Watch::start(target.root())));
                 let commits = target.commits()?;
                 Ok(Some((target, commits)))
             });
@@ -316,21 +344,87 @@ impl Worker {
                 }
             };
             let to_highlight = files.clone();
-            if !send(Event::Diffed(files)) {
+            if send(Event::Diffed(files)) {
+                highlight_all(&target, &to_highlight, send);
+            }
+        })
+    }
+
+    /// Checks whether `paths` changed what the diff shows and, if they did, finds what to
+    /// diff from `cwd` again and loads the range like `wanted`, or the first if it has gone.
+    fn refresh(
+        cwd: PathBuf,
+        places: Places,
+        paths: Changed,
+        wanted: Range,
+        turns: Arc<Mutex<()>>,
+    ) -> Self {
+        Self::spawn(move |send, cancelled| {
+            let _turn = turns.lock().unwrap_or_else(PoisonError::into_inner);
+            if cancelled() {
                 return;
             }
-            for (index, file) in to_highlight.iter().enumerate() {
-                // A file that can't be highlighted shows plain; the diff itself is fine.
-                let highlighted = target.highlight(file).unwrap_or_default();
-                let changes = match &file.content {
-                    FileContent::Text { hunks } => hunks.iter().map(pairs::changed_lines).collect(),
-                    FileContent::Binary => Vec::new(),
+            let relevant = match &paths {
+                Changed::Paths(paths) => places.any_relevant(paths),
+                Changed::Anything => Ok(true),
+            };
+            let refreshed = relevant.and_then(|relevant| {
+                if !relevant {
+                    return Ok(None);
+                }
+                let Some(target) = Target::checkout(&cwd)? else {
+                    bail!(
+                        "{} is no longer in a git repository",
+                        crate::path::display(&cwd)
+                    );
                 };
-                if !send(Event::Highlighted(index, highlighted, changes)) {
-                    return;
+                let commits = target.commits()?;
+                let ranges = target.ranges(&commits);
+                let range = ranges
+                    .iter()
+                    .position(|range| *range == wanted)
+                    .unwrap_or(0);
+                let files = match ranges.get(range) {
+                    Some(range) => target.diff(range)?,
+                    None => Vec::new(),
+                };
+                Ok(Some((Arc::new(target), commits, range, files)))
+            });
+            match refreshed {
+                Ok(None) => {
+                    send(Event::Unchanged);
+                }
+                Ok(Some((target, commits, range, files))) => {
+                    let to_highlight = files.clone();
+                    if send(Event::Refreshed {
+                        target: Arc::clone(&target),
+                        commits,
+                        range,
+                        files,
+                    }) {
+                        highlight_all(&target, &to_highlight, send);
+                    }
+                }
+                Err(error) => {
+                    send(Event::RefreshFailed(format!("{error:#}")));
                 }
             }
         })
+    }
+}
+
+/// Highlights `files` one by one, sending each with its changed words, until no one listens.
+fn highlight_all(target: &Target, files: &[FileDiff], send: &dyn Fn(Event) -> bool) {
+    for (index, file) in files.iter().enumerate() {
+        // A file that can't be highlighted shows plain; the diff itself is fine.
+        let highlighted = target.highlight(file).unwrap_or_default();
+        let changes = match &file.content {
+            FileContent::Text { hunks } => hunks.iter().map(pairs::changed_lines).collect(),
+            FileContent::Binary => Vec::new(),
+        };
+        if !send(Event::Highlighted(index, highlighted, changes)) {
+            return;
+        }
     }
 }
 
@@ -349,6 +443,89 @@ pub struct DiffTab {
     layout: DiffLayout,
     /// Whether side by side fits on screen; when it doesn't, the tab shows unified.
     side_by_side_fits: bool,
+    /// Watching the checkout for changes, once the tab has one.
+    watch: Watching,
+    /// Why the tab can't follow changes just now, if it can't.
+    watch_error: Option<String>,
+    /// Why the last refresh failed, until one works.
+    refresh_error: Option<String>,
+    /// Paths changed since the last refresh began.
+    changes: Option<Changes>,
+    /// Reading the diff again after changes.
+    refresh: Option<Refresh>,
+}
+
+#[derive(Debug)]
+enum Watching {
+    /// Waiting for the worker finding what to diff, which starts the watch before the first
+    /// diff is read so no change slips between them.
+    Pending,
+    /// Starting again after failing, off the session thread, as it reads the working tree's
+    /// top level and runs git.
+    Starting(mpsc::Receiver<anyhow::Result<Watch>>),
+    On(Watch),
+    /// Failed; tried again from this time.
+    RetryAt(Instant),
+}
+
+#[derive(Debug)]
+struct Changes {
+    first: Instant,
+    last: Instant,
+    paths: Changed,
+}
+
+/// What has changed, as far as the tab knows.
+#[derive(Debug, Clone)]
+enum Changed {
+    Paths(Vec<PathBuf>),
+    /// Anything may have: the tab wasn't watching for a while.
+    Anything,
+}
+
+impl Changed {
+    fn extend(&mut self, more: Self) {
+        match (self, more) {
+            (Self::Paths(paths), Self::Paths(more)) => paths.extend(more),
+            (this, _) => *this = Self::Anything,
+        }
+    }
+}
+
+impl Changes {
+    fn new(paths: Changed) -> Self {
+        let now = Instant::now();
+        Self {
+            first: now,
+            last: now,
+            paths,
+        }
+    }
+
+    /// Adds `paths`, which changed just now.
+    fn add(changes: &mut Option<Self>, paths: Changed) {
+        match changes {
+            Some(changes) => {
+                changes.last = Instant::now();
+                changes.paths.extend(paths);
+            }
+            None => *changes = Some(Self::new(paths)),
+        }
+    }
+
+    /// Whether changes have stopped for [`SETTLE`], or have gone on for [`MAX_WAIT`], which
+    /// keeps a constant stream, such as a build writing ignored files, from holding off a
+    /// refresh for good.
+    fn settled(&self) -> bool {
+        self.last.elapsed() >= SETTLE || self.first.elapsed() >= MAX_WAIT
+    }
+}
+
+#[derive(Debug)]
+struct Refresh {
+    worker: Worker,
+    /// What the refresh is for, for another to take up if this one is abandoned.
+    paths: Changed,
 }
 
 impl DiffTab {
@@ -363,6 +540,11 @@ impl DiffTab {
             help: None,
             layout,
             side_by_side_fits: true,
+            watch: Watching::Pending,
+            watch_error: None,
+            refresh_error: None,
+            changes: None,
+            refresh: None,
         }
     }
 
@@ -451,21 +633,30 @@ impl DiffTab {
         }
     }
 
-    /// Applies what the workers have reported. Returns whether anything changed.
+    /// Applies what the workers have reported, and refreshes after changes. Returns whether
+    /// anything changed.
     pub fn tick(&mut self) -> bool {
-        let mut changed = false;
+        let mut changed = self.follow_changes();
         loop {
-            let event = match &self.state {
-                DiffState::Resolving(worker) => worker.events.try_recv().ok(),
-                DiffState::Ready(ready) => match &ready.content {
-                    RangeContent::Loading(worker)
-                    | RangeContent::Shown(Shown {
-                        worker: Some(worker),
-                        ..
-                    }) => worker.events.try_recv().ok(),
+            let event = if let Some(event) = self
+                .refresh
+                .as_ref()
+                .and_then(|refresh| refresh.worker.events.try_recv().ok())
+            {
+                Some(event)
+            } else {
+                match &self.state {
+                    DiffState::Resolving(worker) => worker.events.try_recv().ok(),
+                    DiffState::Ready(ready) => match &ready.content {
+                        RangeContent::Loading(worker)
+                        | RangeContent::Shown(Shown {
+                            worker: Some(worker),
+                            ..
+                        }) => worker.events.try_recv().ok(),
+                        _ => None,
+                    },
                     _ => None,
-                },
-                _ => None,
+                }
             };
             let Some(event) = event else {
                 return changed;
@@ -473,6 +664,102 @@ impl DiffTab {
             changed = true;
             self.apply(event);
         }
+    }
+
+    /// Takes up a watch that has started, or retries later if it failed. Returns whether the
+    /// tab's notice changed.
+    fn watch_started(&mut self, started: anyhow::Result<Watch>) -> bool {
+        match started {
+            Ok(watch) => {
+                self.watch = Watching::On(watch);
+                self.watch_error.take().is_some()
+            }
+            Err(error) => {
+                self.watch_error = Some(format!("{error:#}"));
+                self.watch = Watching::RetryAt(Instant::now() + RETRY_WATCH);
+                true
+            }
+        }
+    }
+
+    /// Why the tab isn't showing the latest changes, if it may not be.
+    pub fn notice(&self) -> Option<String> {
+        self.watch_error
+            .as_ref()
+            .map(|error| format!("Not following changes: {error}"))
+            .or_else(|| {
+                self.refresh_error
+                    .as_ref()
+                    .map(|error| format!("Couldn't read the latest changes: {error}"))
+            })
+    }
+
+    /// Watches the checkout once there is one, gathers what changed, and starts a refresh
+    /// once changes have settled and none is running. Returns whether the tab changed.
+    fn follow_changes(&mut self) -> bool {
+        let DiffState::Ready(ready) = &self.state else {
+            return false;
+        };
+        let mut changed = false;
+        match &mut self.watch {
+            Watching::Pending => {}
+            Watching::Starting(receiver) => match receiver.try_recv() {
+                Ok(started) => {
+                    changed = self.watch_started(started);
+                    // What changed while it wasn't watched isn't known, so read it all again.
+                    if matches!(self.watch, Watching::On(_)) {
+                        Changes::add(&mut self.changes, Changed::Anything);
+                    }
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    changed = self.watch_started(Err(anyhow::anyhow!(
+                        "the file watcher stopped as it started"
+                    )));
+                }
+            },
+            Watching::On(watch) => match watch.changed() {
+                Ok(paths) if !paths.is_empty() => {
+                    Changes::add(&mut self.changes, Changed::Paths(paths));
+                }
+                Ok(_) => {}
+                Err(error) => changed = self.watch_started(Err(error)),
+            },
+            Watching::RetryAt(at) => {
+                if Instant::now() >= *at {
+                    let root = ready.target.root().to_path_buf();
+                    let (sender, receiver) = mpsc::channel();
+                    thread::spawn(move || {
+                        let _ = sender.send(Watch::start(&root));
+                    });
+                    self.watch = Watching::Starting(receiver);
+                }
+            }
+        }
+        let DiffState::Ready(ready) = &self.state else {
+            return changed;
+        };
+        let settled = self.changes.as_ref().is_some_and(Changes::settled);
+        // A range still loading will show the files as they are now anyway.
+        let showing = matches!(ready.content, RangeContent::Shown(_));
+        let (Some(cwd), Watching::On(watch)) = (&self.cwd, &self.watch) else {
+            return changed;
+        };
+        if !settled || self.refresh.is_some() || !showing {
+            return changed;
+        }
+        let paths = self.changes.take().expect("settled changes").paths;
+        self.refresh = Some(Refresh {
+            worker: Worker::refresh(
+                cwd.clone(),
+                watch.places().clone(),
+                paths.clone(),
+                ready.ranges[ready.range].clone(),
+                Arc::clone(&self.turns),
+            ),
+            paths,
+        });
+        changed
     }
 
     fn apply(&mut self, event: Event) {
@@ -498,6 +785,24 @@ impl DiffTab {
                 }));
             }
             Event::NoTarget(reason) => self.state = DiffState::NoTarget(reason),
+            Event::Watching(started) => {
+                self.watch_started(started);
+            }
+            Event::Unchanged => {
+                self.refresh = None;
+                self.refresh_error = None;
+            }
+            // What shows stays, and the next change tries again.
+            Event::RefreshFailed(error) => {
+                self.refresh = None;
+                self.refresh_error = Some(error);
+            }
+            Event::Refreshed {
+                target,
+                commits,
+                range,
+                files,
+            } => self.show_refreshed(target, commits, range, files),
             Event::Failed(message) => match &mut self.state {
                 DiffState::Ready(ready) => ready.content = RangeContent::Failed(message),
                 _ => self.state = DiffState::Failed(message),
@@ -582,6 +887,105 @@ impl DiffTab {
         }
     }
 
+    /// Shows the diff read again after changes in place of the one showing, keeping the
+    /// person's place: the file they were on, the line at the top of the screen as near as
+    /// the new rows allow, the files they collapsed or expanded, and the column.
+    fn show_refreshed(
+        &mut self,
+        target: Arc<Target>,
+        commits: Vec<Commit>,
+        range: usize,
+        files: Vec<FileDiff>,
+    ) {
+        let layout = self.shown_layout();
+        let viewport = self.viewport;
+        let worker = self.refresh.take().map(|refresh| refresh.worker);
+        self.refresh_error = None;
+        let old = self.shown();
+        let path_of = |shown: &Shown, file: usize| {
+            shown
+                .files
+                .get(file)
+                .map(|file| file.diff.path().to_path_buf())
+        };
+        let collapsed = old
+            .map(|old| {
+                old.files
+                    .iter()
+                    .map(|file| (file.diff.path().to_path_buf(), file.collapsed))
+                    .collect::<std::collections::HashMap<_, _>>()
+            })
+            .unwrap_or_default();
+        let current = old.and_then(|old| path_of(old, old.current_file));
+        // The file at the top of the screen, the line there if it is one, and how far into
+        // the file's rows the screen starts.
+        let top = old.and_then(|old| {
+            let row = *old.rows.get(old.offset)?;
+            let file = row.file();
+            let header = old.file_row(file)?;
+            Some((
+                path_of(old, file)?,
+                old.line_number(row),
+                old.offset - header,
+            ))
+        });
+        let column = old.map_or(0, |old| old.column);
+        let mut shown = Shown {
+            worker: (!files.is_empty()).then_some(worker).flatten(),
+            files: files
+                .into_iter()
+                .map(|file| {
+                    let mut file = ShownFile::new(file);
+                    if let Some(collapsed) = collapsed.get(file.diff.path()) {
+                        file.collapsed = *collapsed;
+                    }
+                    file
+                })
+                .collect(),
+            rows: Vec::new(),
+            offset: 0,
+            current_file: 0,
+            column: 0,
+            widest: 0,
+            layout,
+        };
+        shown.lay_out();
+        let index_of = |path: &Path| shown.files.iter().position(|file| file.diff.path() == path);
+        shown.current_file = current.and_then(|path| index_of(&path)).unwrap_or(0);
+        if let Some((path, number, into)) = top
+            && let Some(file) = index_of(&path)
+            && let Some(header) = shown.file_row(file)
+        {
+            let end = shown
+                .rows
+                .iter()
+                .rposition(|row| row.file() == file)
+                .unwrap_or(header);
+            // The same line by its number, which earlier hunks changing doesn't move, or the
+            // first after it; else as far into the file as before.
+            let same_line = number.and_then(|number| {
+                (header..=end).find(|&row| {
+                    shown
+                        .line_number(shown.rows[row])
+                        .is_some_and(|found| found.0 == number.0 && found.1 >= number.1)
+                })
+            });
+            shown.offset = same_line
+                .unwrap_or(header + into)
+                .min(end)
+                .min(max_offset(shown.rows.len(), viewport));
+        }
+        shown.column = column.min(shown.widest.saturating_sub(MIN_COLUMNS_SHOWN));
+        let ranges = target.ranges(&commits);
+        self.state = DiffState::Ready(Box::new(Ready {
+            target,
+            commits,
+            ranges,
+            range,
+            content: RangeContent::Shown(shown),
+        }));
+    }
+
     fn step_range(&mut self, by: isize) {
         let DiffState::Ready(ready) = &self.state else {
             return;
@@ -599,6 +1003,11 @@ impl DiffTab {
             return;
         }
         ready.range = index;
+        // A refresh would load the range the person just left; what it was for is taken up
+        // again once the new range shows.
+        if let Some(refresh) = self.refresh.take() {
+            Changes::add(&mut self.changes, refresh.paths);
+        }
         // Replacing the content drops the range's worker, which stops it.
         ready.content = RangeContent::Loading(Worker::range(
             Arc::clone(&ready.target),
@@ -723,6 +1132,34 @@ impl Shown {
                 .position(|row| row.shows(anchor))
                 .or_else(|| self.file_row(anchor.file()))
                 .unwrap_or(0);
+        }
+    }
+
+    /// The line `row` shows by its number in the file: in the new file, or the old one for a
+    /// removed line. `true` with a number in the new file.
+    fn line_number(&self, row: Row) -> Option<(bool, u32)> {
+        let line = |file: usize, hunk: usize, line: usize| {
+            let FileContent::Text { hunks } = &self.files[file].diff.content else {
+                return None;
+            };
+            let line = &hunks[hunk].lines[line];
+            line.new
+                .map(|number| (true, number))
+                .or(line.old.map(|number| (false, number)))
+        };
+        match row {
+            Row::Line {
+                file,
+                hunk,
+                line: index,
+            } => line(file, hunk, index),
+            Row::Pair {
+                file,
+                hunk,
+                old,
+                new,
+            } => line(file, hunk, new.or(old)?),
+            Row::File(_) | Row::Note(..) | Row::Hunk { .. } => None,
         }
     }
 

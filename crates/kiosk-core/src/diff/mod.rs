@@ -11,6 +11,7 @@ pub mod highlight;
 pub mod pairs;
 mod patch;
 pub mod tab;
+pub mod watch;
 
 use std::{fmt, path::PathBuf};
 

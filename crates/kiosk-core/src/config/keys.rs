@@ -205,6 +205,17 @@ pub enum Command {
     NextTab,
     PreviousTab,
     ShowTab(TabId),
+    ScrollDown,
+    ScrollUp,
+    PageDown,
+    PageUp,
+    ScrollTop,
+    ScrollBottom,
+    NextFile,
+    PreviousFile,
+    NextRange,
+    PreviousRange,
+    ToggleFile,
 }
 
 impl Command {
@@ -238,6 +249,17 @@ impl Command {
             Self::NextTab => "next_tab",
             Self::PreviousTab => "previous_tab",
             Self::ShowTab(tab) => tab.command_name(),
+            Self::ScrollDown => "scroll_down",
+            Self::ScrollUp => "scroll_up",
+            Self::PageDown => "page_down",
+            Self::PageUp => "page_up",
+            Self::ScrollTop => "scroll_top",
+            Self::ScrollBottom => "scroll_bottom",
+            Self::NextFile => "next_file",
+            Self::PreviousFile => "previous_file",
+            Self::NextRange => "next_range",
+            Self::PreviousRange => "previous_range",
+            Self::ToggleFile => "toggle_file",
         }
     }
 
@@ -273,6 +295,17 @@ impl Command {
             Self::NextTab => "Show the next tab",
             Self::PreviousTab => "Show the previous tab",
             Self::ShowTab(tab) => tab.command_description(),
+            Self::ScrollDown => "Scroll down a line",
+            Self::ScrollUp => "Scroll up a line",
+            Self::PageDown => "Scroll down a screen",
+            Self::PageUp => "Scroll up a screen",
+            Self::ScrollTop => "Scroll to the top",
+            Self::ScrollBottom => "Scroll to the bottom",
+            Self::NextFile => "Show the next file",
+            Self::PreviousFile => "Show the previous file, or the top of this one",
+            Self::NextRange => "Show the next range of changes",
+            Self::PreviousRange => "Show the previous range of changes",
+            Self::ToggleFile => "Collapse or expand the file at the top",
         }
     }
 
@@ -306,7 +339,18 @@ impl Command {
             | Self::Delete
             | Self::NextTab
             | Self::PreviousTab
-            | Self::ShowTab(_) => return None,
+            | Self::ShowTab(_)
+            | Self::ScrollDown
+            | Self::ScrollUp
+            | Self::PageDown
+            | Self::PageUp
+            | Self::ScrollTop
+            | Self::ScrollBottom
+            | Self::NextFile
+            | Self::PreviousFile
+            | Self::NextRange
+            | Self::PreviousRange
+            | Self::ToggleFile => return None,
         })
     }
 }
@@ -342,6 +386,17 @@ impl FromStr for Command {
             "cursor_start" => Ok(Self::CursorStart),
             "cursor_end" => Ok(Self::CursorEnd),
             "next_tab" => Ok(Self::NextTab),
+            "scroll_down" => Ok(Self::ScrollDown),
+            "scroll_up" => Ok(Self::ScrollUp),
+            "page_down" => Ok(Self::PageDown),
+            "page_up" => Ok(Self::PageUp),
+            "scroll_top" => Ok(Self::ScrollTop),
+            "scroll_bottom" => Ok(Self::ScrollBottom),
+            "next_file" => Ok(Self::NextFile),
+            "previous_file" => Ok(Self::PreviousFile),
+            "next_range" => Ok(Self::NextRange),
+            "previous_range" => Ok(Self::PreviousRange),
+            "toggle_file" => Ok(Self::ToggleFile),
             "previous_tab" => Ok(Self::PreviousTab),
             _ => TabId::from_command_name(value)
                 .map(Self::ShowTab)
@@ -381,7 +436,8 @@ pub struct KeysConfig {
     /// Accepted actions are `next_tab`, `previous_tab`, one `<tab>_tab` per tab, such as
     /// `diff_tab`, and `noop`.
     tabs: HashMap<KeyChord, Command>,
-    /// Bindings specific to the diff tab. Accepted actions are `quit` and `noop`.
+    /// Bindings specific to the diff tab. Accepted actions are `quit`, `noop` and the
+    /// diff tab's own, such as `scroll_down`, `next_file` and `toggle_file`.
     diff: HashMap<KeyChord, Command>,
 }
 
@@ -545,7 +601,27 @@ impl Default for KeysConfig {
                 ("C-x", Command::Delete),
             ]),
             tabs: default_tab_keys(),
-            diff: map(&[("esc", Command::Quit)]),
+            diff: map(&[
+                ("esc", Command::Quit),
+                ("j", Command::ScrollDown),
+                ("down", Command::ScrollDown),
+                ("k", Command::ScrollUp),
+                ("up", Command::ScrollUp),
+                ("C-d", Command::PageDown),
+                ("pagedown", Command::PageDown),
+                ("space", Command::PageDown),
+                ("C-u", Command::PageUp),
+                ("pageup", Command::PageUp),
+                ("g", Command::ScrollTop),
+                ("home", Command::ScrollTop),
+                ("S-g", Command::ScrollBottom),
+                ("end", Command::ScrollBottom),
+                ("n", Command::NextFile),
+                ("p", Command::PreviousFile),
+                ("]", Command::NextRange),
+                ("[", Command::PreviousRange),
+                ("e", Command::ToggleFile),
+            ]),
         }
     }
 }
@@ -981,7 +1057,21 @@ static TABS: std::sync::LazyLock<Vec<Command>> = std::sync::LazyLock::new(|| {
         .chain(TabId::ALL.iter().copied().map(Command::ShowTab))
         .collect()
 });
-const DIFF: &[Command] = &[Command::Noop, Command::Quit];
+const DIFF: &[Command] = &[
+    Command::Noop,
+    Command::Quit,
+    Command::ScrollDown,
+    Command::ScrollUp,
+    Command::PageDown,
+    Command::PageUp,
+    Command::ScrollTop,
+    Command::ScrollBottom,
+    Command::NextFile,
+    Command::PreviousFile,
+    Command::NextRange,
+    Command::PreviousRange,
+    Command::ToggleFile,
+];
 const LIST_NAVIGATION: &[Command] = &[Command::Noop, Command::MoveUp, Command::MoveDown];
 const MODAL: &[Command] = &[Command::Noop, Command::Open, Command::Back];
 const REPO_SELECT: &[Command] = &[
@@ -1028,7 +1118,18 @@ const fn command_rank(command: Command) -> u8 {
         Command::CursorWordRight => 17,
         Command::CursorStart => 18,
         Command::CursorEnd => 19,
-        Command::NextTab => 20,
+        Command::ScrollDown
+        | Command::ScrollUp
+        | Command::PageDown
+        | Command::PageUp
+        | Command::ScrollTop
+        | Command::ScrollBottom
+        | Command::NextFile
+        | Command::PreviousFile
+        | Command::NextRange
+        | Command::PreviousRange
+        | Command::ToggleFile
+        | Command::NextTab => 20,
         Command::PreviousTab => 21,
         Command::ShowTab(_) => 22,
         Command::Help => 23,

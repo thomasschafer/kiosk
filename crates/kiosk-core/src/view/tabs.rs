@@ -1,16 +1,13 @@
 //! What the tab bar and the tabs beside the picker show.
 
-use std::path::Path;
-
 use serde::Serialize;
 
 use crate::{
     config::keys::{Command, KeyLayer, KeysConfig},
-    path::display,
     tabs::{TabId, Tabs},
 };
 
-use super::{Hint, PickerView};
+use super::{PickerView, diff::DiffView};
 
 /// Kiosk's tabs and the one that shows.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -51,14 +48,6 @@ impl TabBody {
     }
 }
 
-/// The diff tab, which shows what it will diff until it can.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct DiffView {
-    pub message: String,
-    pub detail: Option<String>,
-    pub hints: Vec<Hint>,
-}
-
 /// The tab bar of `tabs` over `body`, the tab that shows.
 pub fn tabs(tabs: Tabs, body: TabBody, keys: &KeysConfig) -> TabsView {
     assert_eq!(body.tab(), tabs.active(), "the body is the active tab's");
@@ -82,35 +71,20 @@ pub fn tabs(tabs: Tabs, body: TabBody, keys: &KeysConfig) -> TabsView {
     TabsView { bar, body }
 }
 
-/// The diff tab for the checkout or folder in `cwd`, where kiosk was opened.
-pub fn diff(cwd: Option<&Path>, keys: &KeysConfig) -> DiffView {
-    let hints = [
-        keys.layer_key(KeyLayer::Tabs, Command::NextTab)
-            .map(|key| Hint::for_key(key, "next tab")),
-        keys.diff_key(Command::Quit)
-            .map(|key| Hint::for_key(key, "quit")),
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
-    DiffView {
-        message: "The diff viewer is coming soon".into(),
-        detail: cwd.map(|cwd| format!("It will show the changes in {}", display(cwd))),
-        hints,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::view::tests::empty_picker_view;
+    use crate::{
+        diff::tab::DiffTab,
+        view::{diff::diff, tests::empty_picker_view},
+    };
 
     #[test]
     fn the_bar_lists_every_tab_with_its_key_and_marks_the_one_showing() {
         let keys = KeysConfig::default();
         let view = tabs(
             Tabs::new(true, TabId::Diff),
-            TabBody::Diff(diff(None, &keys)),
+            TabBody::Diff(diff(&DiffTab::new(None), &keys)),
             &keys,
         );
         let bar = view
@@ -149,25 +123,9 @@ mod tests {
         let keys = KeysConfig::from_toml("[tabs]\n\"ctrl+2\" = \"noop\"\n").unwrap();
         let view = tabs(
             Tabs::new(true, TabId::Diff),
-            TabBody::Diff(diff(None, &keys)),
+            TabBody::Diff(diff(&DiffTab::new(None), &keys)),
             &keys,
         );
         assert_eq!(view.bar[1].key, None);
-    }
-
-    #[test]
-    fn the_diff_tab_says_where_it_was_opened_and_how_to_leave() {
-        let keys = KeysConfig::default();
-        let view = diff(Some(Path::new("/work/repo")), &keys);
-        assert_eq!(
-            view.detail.as_deref(),
-            Some("It will show the changes in /work/repo")
-        );
-        let hints = view
-            .hints
-            .iter()
-            .map(|hint| (hint.key.as_str(), hint.label))
-            .collect::<Vec<_>>();
-        assert_eq!(hints, [("ctrl+pagedown", "next tab"), ("esc", "quit")]);
     }
 }

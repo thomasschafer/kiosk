@@ -21,6 +21,7 @@ use crate::{
     },
 };
 
+pub mod diff;
 pub mod setup;
 pub mod tabs;
 

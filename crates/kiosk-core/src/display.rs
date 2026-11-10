@@ -32,7 +32,7 @@ pub fn sanitized_positions(value: &str, positions: &[usize]) -> Vec<usize> {
 }
 
 /// How `sanitize` shows one character: a control character as its visible escape.
-fn shown(character: char) -> impl Iterator<Item = char> {
+pub(crate) fn shown(character: char) -> impl Iterator<Item = char> {
     let control = character.is_control();
     control
         .then(|| character.escape_default())

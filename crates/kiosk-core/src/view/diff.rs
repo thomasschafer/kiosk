@@ -401,11 +401,11 @@ fn shown_line(file: &ShownFile, hunk: usize, line: usize, column: usize) -> Show
             crate::diff::LineKind::Removed => (text, partner),
             crate::diff::LineKind::Added | crate::diff::LineKind::Context => (partner, text),
         };
-        let (old_changed, new_changed) = pairs::changed_words(&old.text, &new.text)?;
+        let changed = pairs::changed_words(&old.text, &new.text)?;
         Some(if text.kind == crate::diff::LineKind::Removed {
-            old_changed
+            changed.old
         } else {
-            new_changed
+            changed.new
         })
     });
     let (shown_text, runs, changed) = code_line(&text.text, runs, changed.as_deref(), column);
@@ -594,6 +594,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::single_range_in_vec_init,
+        reason = "the changed spans are ranges, and each line here has one"
+    )]
     fn changed_words_follow_tabs_escapes_and_the_scroll() {
         // A tab before the change pushes it right; scrolled past the tab, it starts at 0.
         let (_, _, changed) = code_line("\tab = 1", None, Some(&[6..7][..]), 0);

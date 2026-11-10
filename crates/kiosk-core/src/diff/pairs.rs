@@ -76,9 +76,16 @@ fn block(hunk: &Hunk, start: usize) -> (Range<usize>, Range<usize>) {
     (removed, added)
 }
 
-/// The characters (by index, not byte) of `old` and `new` that differ between them, word by
-/// word, or `None` when they differ too much for that to help.
-pub fn changed_words(old: &str, new: &str) -> Option<(Vec<Range<usize>>, Vec<Range<usize>>)> {
+/// The characters of a pair of lines, by index rather than byte, that differ between them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChangedWords {
+    pub old: Vec<Range<usize>>,
+    pub new: Vec<Range<usize>>,
+}
+
+/// What differs between `old` and `new`, word by word, or `None` when they differ too much
+/// for that to help.
+pub fn changed_words(old: &str, new: &str) -> Option<ChangedWords> {
     let old_words = words(old);
     let new_words = words(new);
     let old_text = old_words.iter().map(|word| word.1).collect::<Vec<_>>();
@@ -108,8 +115,12 @@ pub fn changed_words(old: &str, new: &str) -> Option<(Vec<Range<usize>>, Vec<Ran
         reason = "line lengths are far below 2^52"
     )]
     let share = unchanged as f64 / longer.max(1) as f64;
-    (share >= MIN_UNCHANGED_SHARE && !(old_changed.is_empty() && new_changed.is_empty()))
-        .then_some((old_changed, new_changed))
+    (share >= MIN_UNCHANGED_SHARE && !(old_changed.is_empty() && new_changed.is_empty())).then_some(
+        ChangedWords {
+            old: old_changed,
+            new: new_changed,
+        },
+    )
 }
 
 /// Adds the characters of `words[range]` to `spans`, joined to the last span if they touch.
@@ -165,6 +176,10 @@ fn words(text: &str) -> Vec<(usize, &str)> {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::single_range_in_vec_init,
+    reason = "the expected spans are ranges, and some are one span"
+)]
 mod tests {
     use super::*;
     use crate::diff::Line;
@@ -225,7 +240,7 @@ mod tests {
 
     #[test]
     fn an_edited_line_marks_only_the_words_that_changed() {
-        let (old, new) =
+        let ChangedWords { old, new } =
             changed_words("let total = count + 1;", "let total = count + step;").unwrap();
         assert_eq!(old, [20..21]);
         assert_eq!(new, [20..24]);
@@ -233,7 +248,7 @@ mod tests {
 
     #[test]
     fn character_positions_count_characters_not_bytes() {
-        let (old, new) = changed_words("née = 1", "née = 2").unwrap();
+        let ChangedWords { old, new } = changed_words("née = 1", "née = 2").unwrap();
         assert_eq!((old, new), (vec![6..7], vec![6..7]));
     }
 
@@ -245,10 +260,10 @@ mod tests {
 
     #[test]
     fn adjacent_changed_words_join_into_one_span() {
-        let (old, new) = changed_words("call(a, b)", "call(x, y)").unwrap();
+        let ChangedWords { old, new } = changed_words("call(a, b)", "call(x, y)").unwrap();
         assert_eq!(old, [5..6, 8..9]);
         assert_eq!(new, [5..6, 8..9]);
-        let (_, new) = changed_words("f(a)", "f(a.b.c)").unwrap();
+        let ChangedWords { new, .. } = changed_words("f(a)", "f(a.b.c)").unwrap();
         assert_eq!(new, [3..7]);
     }
 }

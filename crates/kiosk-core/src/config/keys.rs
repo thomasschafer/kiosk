@@ -175,8 +175,8 @@ impl Serialize for KeyChord {
 }
 
 /// Declares [`Command`] from one list: each unit variant with its `[keys]` name, any older
-/// spellings still accepted, and its description. Showing a tab is the one command with data,
-/// named after its tab, as `diff_tab`.
+/// spellings still accepted, and its description, in the order help lists them. Showing a tab
+/// is the one command with data, named after its tab, as `diff_tab`.
 macro_rules! commands {
     ($($variant:ident => $name:literal $(| $alias:literal)*, $description:literal;)+) => {
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
@@ -187,6 +187,10 @@ macro_rules! commands {
         }
 
         impl Command {
+            /// Every command but showing a tab, in the order they are declared, which is the
+            /// order help lists them in.
+            const DECLARED: &[Self] = &[$(Self::$variant,)+];
+
             pub const fn name(self) -> &'static str {
                 match self {
                     $(Self::$variant => $name,)+
@@ -218,18 +222,13 @@ macro_rules! commands {
 }
 
 commands! {
-    Noop => "noop" | "none" | "unbound", "Unbound";
-    Quit => "quit", "Quit the picker";
-    Help => "help" | "show_help", "Show active key bindings";
-    DismissToast => "dismiss_toast", "Dismiss the visible notification";
-    ScanWarnings => "scan_warnings", "Show directories that could not be scanned";
-    MoveUp => "move_up", "Move selection up";
-    MoveDown => "move_down", "Move selection down";
     Open => "open", "Open or confirm the selection";
     BranchesView => "branches_view" | "enter_repo", "Browse repository branches";
-    Back => "back" | "go_back", "Go back or cancel";
     NewBranch => "new_branch", "Create a new branch";
     Delete => "delete" | "delete_worktree", "Delete the selected checkout";
+    Back => "back" | "go_back", "Go back or cancel";
+    MoveUp => "move_up", "Move selection up";
+    MoveDown => "move_down", "Move selection down";
     Clear => "clear" | "clear_query", "Clear the search query";
     Backspace => "backspace", "Delete the previous character";
     BackspaceOrBack => "backspace_or_back", "Delete the previous character, or go back when the search is empty";
@@ -243,21 +242,26 @@ commands! {
     CursorWordRight => "cursor_word_right", "Move the cursor forward a word";
     CursorStart => "cursor_start", "Move the cursor to the start";
     CursorEnd => "cursor_end", "Move the cursor to the end";
-    NextTab => "next_tab", "Show the next tab";
-    PreviousTab => "previous_tab", "Show the previous tab";
     ScrollDown => "scroll_down", "Scroll down a line";
     ScrollUp => "scroll_up", "Scroll up a line";
-    ScrollLeft => "scroll_left", "Scroll long lines left";
-    ScrollRight => "scroll_right", "Scroll long lines right";
     PageDown => "page_down", "Scroll down a screen";
     PageUp => "page_up", "Scroll up a screen";
     ScrollTop => "scroll_top", "Scroll to the top";
     ScrollBottom => "scroll_bottom", "Scroll to the bottom";
+    ScrollLeft => "scroll_left", "Scroll long lines left";
+    ScrollRight => "scroll_right", "Scroll long lines right";
     NextFile => "next_file", "Show the next file";
     PreviousFile => "previous_file", "Show the previous file, or the top of this one";
+    ToggleFile => "toggle_file", "Collapse or expand the current file";
     NextRange => "next_range", "Show the next range of changes";
     PreviousRange => "previous_range", "Show the previous range of changes";
-    ToggleFile => "toggle_file", "Collapse or expand the current file";
+    NextTab => "next_tab", "Show the next tab";
+    PreviousTab => "previous_tab", "Show the previous tab";
+    Help => "help" | "show_help", "Show active key bindings";
+    DismissToast => "dismiss_toast", "Dismiss the visible notification";
+    ScanWarnings => "scan_warnings", "Show directories that could not be scanned";
+    Quit => "quit", "Quit the picker";
+    Noop => "noop" | "none" | "unbound", "Unbound";
 }
 
 impl Command {
@@ -444,6 +448,8 @@ pub enum BindingMode {
     BaseBranch,
     Choice,
     Modal,
+    /// The diff tab, which has no list to navigate or text to edit.
+    Diff,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -741,7 +747,7 @@ impl KeysConfig {
         ) {
             command = self.text_edit.get(&chord).copied().or(command);
         }
-        if !matches!(mode, BindingMode::Modal) {
+        if !matches!(mode, BindingMode::Modal | BindingMode::Diff) {
             command = self.list_navigation.get(&chord).copied().or(command);
         }
         command = match mode {
@@ -750,6 +756,7 @@ impl KeysConfig {
             BindingMode::BaseBranch | BindingMode::Choice | BindingMode::Modal => {
                 self.modal.get(&chord).copied().or(command)
             }
+            BindingMode::Diff => self.diff.get(&chord).copied().or(command),
         };
         self.tab_binding(chord).or(command)
     }
@@ -773,12 +780,10 @@ impl KeysConfig {
         }
     }
 
-    /// What `chord` does in the diff tab, short of changing tab.
+    /// What `chord` does in the diff tab. Tab keys are checked before it, so they never
+    /// reach it.
     pub fn diff_command(&self, chord: KeyChord) -> Option<Command> {
-        self.diff
-            .get(&chord)
-            .or_else(|| self.general.get(&chord))
-            .copied()
+        self.command_for(BindingMode::Diff, chord)
     }
 
     /// The key to show for `wanted` in the diff tab: one that runs it there, rather than a
@@ -904,13 +909,27 @@ impl KeysConfig {
                 ("tabs", &self.tabs),
                 ("general", &self.general),
             ],
+            BindingMode::Diff => vec![
+                ("diff", &self.diff),
+                ("tabs", &self.tabs),
+                ("general", &self.general),
+            ],
+        };
+        // Of the general keys, the diff tab acts only on these: it has no notifications or
+        // scan warnings of its own.
+        let applies = |command: Command| {
+            mode != BindingMode::Diff
+                || !GENERAL.contains(&command)
+                || matches!(command, Command::Quit | Command::Help)
         };
         for (name, layer) in layers {
             let mut bindings = layer
                 .iter()
                 .filter_map(|(key, command)| {
-                    (*command != Command::Noop && effective(*key) == Some(*command))
-                        .then_some((*key, *command))
+                    (*command != Command::Noop
+                        && applies(*command)
+                        && effective(*key) == Some(*command))
+                    .then_some((*key, *command))
                 })
                 .collect::<Vec<_>>();
             bindings.sort_by(|left, right| {
@@ -1006,49 +1025,18 @@ fn parse_chord(chord: &str) -> Result<KeyChord, String> {
         .map_err(|error| format!("invalid key chord '{chord}': {error}"))
 }
 
-const fn command_rank(command: Command) -> u8 {
+/// Where help lists `command` within its section: in declaration order, with showing a tab
+/// after moving between tabs.
+fn command_rank(command: Command) -> usize {
+    let declared = |command| {
+        Command::DECLARED
+            .iter()
+            .position(|declared| *declared == command)
+            .expect("every unit command is declared")
+    };
     match command {
-        Command::Open => 0,
-        Command::BranchesView => 1,
-        Command::NewBranch => 2,
-        Command::Delete => 3,
-        Command::Back => 4,
-        Command::MoveUp => 5,
-        Command::MoveDown => 6,
-        Command::Clear => 7,
-        Command::Backspace => 8,
-        Command::BackspaceOrBack => 9,
-        Command::DeleteForward => 10,
-        Command::DeleteWord => 11,
-        Command::DeleteWordForward => 12,
-        Command::DeleteToEnd => 13,
-        Command::CursorLeft => 14,
-        Command::CursorRight => 15,
-        Command::CursorWordLeft => 16,
-        Command::CursorWordRight => 17,
-        Command::CursorStart => 18,
-        Command::CursorEnd => 19,
-        Command::ScrollDown
-        | Command::ScrollUp
-        | Command::ScrollLeft
-        | Command::ScrollRight
-        | Command::PageDown
-        | Command::PageUp
-        | Command::ScrollTop
-        | Command::ScrollBottom
-        | Command::NextFile
-        | Command::PreviousFile
-        | Command::NextRange
-        | Command::PreviousRange
-        | Command::ToggleFile
-        | Command::NextTab => 20,
-        Command::PreviousTab => 21,
-        Command::ShowTab(_) => 22,
-        Command::Help => 23,
-        Command::DismissToast => 24,
-        Command::ScanWarnings => 25,
-        Command::Quit => 26,
-        Command::Noop => 27,
+        Command::ShowTab(_) => declared(Command::PreviousTab) * 2 + 1,
+        command => declared(command) * 2,
     }
 }
 
@@ -1368,6 +1356,31 @@ mod tests {
         )
         .unwrap();
         assert_eq!(none.diff_key(Command::Quit), None);
+    }
+
+    #[test]
+    fn diff_help_lists_its_own_keys_and_only_the_general_ones_it_acts_on() {
+        let keys = KeysConfig::default();
+        let sections = keys.sections(BindingMode::Diff);
+        let names = sections
+            .iter()
+            .map(|section| section.name)
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["diff", "tabs", "general"]);
+        let general = sections[2]
+            .bindings
+            .iter()
+            .map(|(_, command)| *command)
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(
+            general,
+            [Command::Help, Command::Quit].into_iter().collect()
+        );
+        assert!(
+            sections[0]
+                .bindings
+                .contains(&("n".parse().unwrap(), Command::NextFile))
+        );
     }
 
     #[test]

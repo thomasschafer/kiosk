@@ -22,7 +22,7 @@ use crate::{
     path::display,
 };
 
-use super::Hint;
+use super::{Hint, OverlayView, help_view};
 
 /// The tones a line's runs index, in order.
 pub const TONES: &[SyntaxTone] = &[
@@ -58,6 +58,8 @@ pub struct DiffView {
     pub body: Option<Body>,
     pub tones: &'static [SyntaxTone],
     pub hints: Vec<Hint>,
+    /// Help, over the tab.
+    pub overlay: Option<OverlayView>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -112,7 +114,19 @@ pub enum RowView {
     ),
 }
 
-pub fn diff(tab: &DiffTab, keys: &KeysConfig) -> DiffView {
+/// The diff tab, with help over it in `help_rows` rows if it shows.
+pub fn diff(tab: &mut DiffTab, keys: &KeysConfig, help_rows: usize) -> DiffView {
+    let overlay = tab
+        .help
+        .as_mut()
+        .map(|help| OverlayView::Help(help_view(help, false, help_rows)));
+    DiffView {
+        overlay,
+        ..body(tab, keys)
+    }
+}
+
+fn body(tab: &DiffTab, keys: &KeysConfig) -> DiffView {
     let hints = hints(keys);
     let message = |text: &str, detail: Option<String>, busy| DiffView {
         title: "Diff".into(),
@@ -129,6 +143,7 @@ pub fn diff(tab: &DiffTab, keys: &KeysConfig) -> DiffView {
         body: None,
         tones: TONES,
         hints: hints.clone(),
+        overlay: None,
     };
     match &tab.state {
         DiffState::Unstarted | DiffState::Resolving(_) => message(
@@ -174,6 +189,7 @@ fn ready_view(ready: &Ready, viewport: usize, keys: &KeysConfig, hints: Vec<Hint
         body: None,
         tones: TONES,
         hints,
+        overlay: None,
     };
     match &ready.content {
         RangeContent::Loading(_) => {
@@ -397,6 +413,8 @@ fn hints(keys: &KeysConfig) -> Vec<Hint> {
             .map(|key| Hint::for_key(key, "collapse")),
         keys.layer_key(KeyLayer::Tabs, Command::NextTab)
             .map(|key| Hint::for_key(key, "next tab")),
+        keys.diff_key(Command::Help)
+            .map(|key| Hint::for_key(key, "help")),
         keys.diff_key(Command::Quit)
             .map(|key| Hint::for_key(key, "quit")),
     ]
@@ -506,6 +524,7 @@ mod tests {
                 ("[/]".into(), "range"),
                 ("e".into(), "collapse"),
                 ("ctrl+pagedown".into(), "next tab"),
+                ("ctrl+h".into(), "help"),
                 ("esc".into(), "quit"),
             ]
         );

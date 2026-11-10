@@ -1349,7 +1349,7 @@ pub fn help_summary(matching: usize) -> String {
     format!("{matching} commands (esc: close)")
 }
 
-fn help_view(
+pub(crate) fn help_view(
     overlay: &mut HelpOverlayState,
     toast_visible: bool,
     viewport_rows: usize,

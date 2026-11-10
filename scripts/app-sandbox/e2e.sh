@@ -359,6 +359,11 @@ sb key n
 wait_view '.current_file == 1'
 sb key bracketright
 wait_view '.range == 1 and .ranges[1].label == "Uncommitted"'
+sb key ctrl+h
+wait_view '.overlay.kind == "help" and .overlay.entries[0].name == "diff"'
+sb shot "$shots/diff-help.png" >/dev/null
+sb key Escape
+wait_view '.overlay == null'
 sb key Escape
 wait_closed
 printf 'search_dirs = ["~/code"]\n' >"$config"

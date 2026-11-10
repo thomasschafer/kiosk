@@ -155,7 +155,7 @@ fn pointer_list_in_front(state: &AppState) -> bool {
 /// Help owns its own query, so typing filters it and `esc` always closes it.
 /// Help's search edits with the text-editing keys even over a dialog that has none, unless
 /// the dialog binds the chord itself.
-fn help_overlay_action(
+pub fn help_overlay_action(
     input: KeyInput,
     command: Option<Command>,
     keys: &KeysConfig,

@@ -2,7 +2,6 @@
 //! [`AppState`] and which work they start. Drawing is left to the UI.
 
 use std::{
-    collections::HashMap,
     path::PathBuf,
     sync::{
         Arc, Condvar, Mutex,
@@ -339,7 +338,7 @@ impl Drop for FilterWorker {
     }
 }
 
-fn fuzzy_filter(
+pub(crate) fn fuzzy_filter(
     query: &str,
     items: &[FilterItem],
     matcher: &SkimMatcherV2,
@@ -662,24 +661,14 @@ fn queue_help_filter(state: &mut AppState, worker: &FilterWorker, selected_index
         return;
     };
     if overlay.list.input.text.is_empty() {
-        overlay.list.filtered = (0..overlay.rows.len()).map(|index| (index, 0)).collect();
-        overlay.list.selected = (!overlay.rows.is_empty()).then_some(0);
-        overlay.list.scroll_offset = 0;
+        overlay.show_all();
         return;
     }
     worker.request(FilterRequest {
         target: FilterTarget::Help,
         generation: state.help_filter_generation,
         query: overlay.list.input.text.clone(),
-        items: overlay
-            .rows
-            .iter()
-            .enumerate()
-            .map(|(index, row)| FilterItem {
-                key: FilterKey::Help(index),
-                text: row.search_text(),
-            })
-            .collect(),
+        items: overlay.filter_items(),
         selected: selected_index.map(FilterKey::Help),
     });
 }
@@ -692,38 +681,11 @@ fn apply_help_filter_result(
     let Some(overlay) = state.overlay.as_mut().and_then(Overlay::as_help_mut) else {
         return;
     };
-    let current = overlay
-        .list
-        .selected
-        .and_then(|selected| overlay.list.filtered.get(selected))
-        .map(|(index, _)| *index);
-    let scores = matches
-        .iter()
-        .filter_map(|(key, score)| match key {
-            FilterKey::Help(index) if *index < overlay.rows.len() => Some((*index, *score)),
-            FilterKey::Repo(_) | FilterKey::Branch(_) | FilterKey::Base(_) | FilterKey::Help(_) => {
-                None
-            }
-        })
-        .collect::<HashMap<_, _>>();
-    overlay.list.filtered = (0..overlay.rows.len())
-        .filter_map(|index| scores.get(&index).map(|score| (index, *score)))
-        .collect();
     let requested = selected.and_then(|key| match key {
         FilterKey::Help(index) => Some(*index),
         FilterKey::Repo(_) | FilterKey::Branch(_) | FilterKey::Base(_) => None,
     });
-    overlay.list.selected = current
-        .or(requested)
-        .and_then(|selected| {
-            overlay
-                .list
-                .filtered
-                .iter()
-                .position(|(index, _)| *index == selected)
-        })
-        .or_else(|| (!overlay.list.filtered.is_empty()).then_some(0));
-    overlay.list.scroll_offset = 0;
+    overlay.apply_matches(matches, requested);
 }
 
 fn cancel_overlay(state: &mut AppState) {

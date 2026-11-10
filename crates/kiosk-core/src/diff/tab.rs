@@ -13,6 +13,11 @@ use std::{
 };
 
 use super::{Commit, FileContent, FileDiff, Highlighted, LineKind, Range, Target};
+use crate::{
+    config::keys::{BindingMode, KeysConfig},
+    keyboard::Action,
+    state::HelpOverlayState,
+};
 
 /// Files changing more lines than this start collapsed: reading them is rarely the point.
 pub const COLLAPSE_LINES: usize = 1500;
@@ -284,6 +289,8 @@ pub struct DiffTab {
     viewport: usize,
     /// Taken by each range's worker while it reads from git.
     turns: Arc<Mutex<()>>,
+    /// The key bindings, shown over the tab while open.
+    pub help: Option<HelpOverlayState>,
 }
 
 impl DiffTab {
@@ -294,6 +301,7 @@ impl DiffTab {
             state: DiffState::Unstarted,
             viewport: 20,
             turns: Arc::default(),
+            help: None,
         }
     }
 
@@ -433,6 +441,29 @@ impl DiffTab {
                     }
                 }
             }
+        }
+    }
+
+    /// Shows the diff tab's key bindings.
+    pub fn show_help(&mut self, keys: &KeysConfig) {
+        self.help = Some(HelpOverlayState::for_mode(keys, BindingMode::Diff));
+    }
+
+    /// Applies `action`, one of the help overlay's, while help shows.
+    pub fn help_action(&mut self, action: Action) {
+        let Some(help) = &mut self.help else {
+            return;
+        };
+        match action {
+            Action::CloseOverlay => self.help = None,
+            Action::MoveSelection(delta) => help.list.move_selection(delta),
+            Action::Select(position) => help.list.select(position),
+            Action::Insert(character) => {
+                help.list.input.insert_char(character);
+                help.filter_now();
+            }
+            Action::Edit(edit) if help.list.input.apply(edit) => help.filter_now(),
+            _ => {}
         }
     }
 

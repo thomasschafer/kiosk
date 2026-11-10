@@ -29,6 +29,10 @@ use crate::{
 /// How long changes must settle before the diff is read again, so a burst of saves or a
 /// checkout is read once.
 const SETTLE: Duration = Duration::from_millis(300);
+/// The longest changes are waited on before the diff is read again anyway.
+const MAX_WAIT: Duration = Duration::from_secs(2);
+/// How long after watching fails it is tried again.
+const RETRY_WATCH: Duration = Duration::from_secs(5);
 
 /// Files changing more lines than this start collapsed: reading them is rarely the point.
 pub const COLLAPSE_LINES: usize = 1500;
@@ -242,6 +246,8 @@ impl Drop for Worker {
 
 #[derive(Debug)]
 enum Event {
+    /// The checkout's watch, started before anything is read from it.
+    Watching(anyhow::Result<Watch>),
     Resolved {
         target: Arc<Target>,
         commits: Vec<Commit>,
@@ -297,6 +303,7 @@ impl Worker {
                 let Some(target) = target else {
                     return Ok(None);
                 };
+                send(Event::Watching(Watch::start(target.root())));
                 let commits = target.commits()?;
                 Ok(Some((target, commits)))
             });
@@ -348,7 +355,7 @@ impl Worker {
     fn refresh(
         cwd: PathBuf,
         places: Places,
-        paths: Vec<PathBuf>,
+        paths: Changed,
         wanted: Range,
         turns: Arc<Mutex<()>>,
     ) -> Self {
@@ -357,7 +364,11 @@ impl Worker {
             if cancelled() {
                 return;
             }
-            let refreshed = places.any_relevant(&paths).and_then(|relevant| {
+            let relevant = match &paths {
+                Changed::Paths(paths) => places.any_relevant(paths),
+                Changed::Anything => Ok(true),
+            };
+            let refreshed = relevant.and_then(|relevant| {
                 if !relevant {
                     return Ok(None);
                 }
@@ -432,14 +443,89 @@ pub struct DiffTab {
     layout: DiffLayout,
     /// Whether side by side fits on screen; when it doesn't, the tab shows unified.
     side_by_side_fits: bool,
-    /// The checkout watched for changes, once there is one to watch.
-    watch: Option<Watch>,
-    /// Why the tab doesn't follow changes, if it can't.
-    pub refresh_error: Option<String>,
-    /// Paths changed since the last refresh began, and when the first of them changed.
-    changes: Option<(Instant, Vec<PathBuf>)>,
+    /// Watching the checkout for changes, once the tab has one.
+    watch: Watching,
+    /// Why the tab can't follow changes just now, if it can't.
+    watch_error: Option<String>,
+    /// Why the last refresh failed, until one works.
+    refresh_error: Option<String>,
+    /// Paths changed since the last refresh began.
+    changes: Option<Changes>,
     /// Reading the diff again after changes.
-    refresh: Option<Worker>,
+    refresh: Option<Refresh>,
+}
+
+#[derive(Debug)]
+enum Watching {
+    /// Waiting for the worker finding what to diff, which starts the watch before the first
+    /// diff is read so no change slips between them.
+    Pending,
+    /// Starting again after failing, off the session thread, as it reads the working tree's
+    /// top level and runs git.
+    Starting(mpsc::Receiver<anyhow::Result<Watch>>),
+    On(Watch),
+    /// Failed; tried again from this time.
+    RetryAt(Instant),
+}
+
+#[derive(Debug)]
+struct Changes {
+    first: Instant,
+    last: Instant,
+    paths: Changed,
+}
+
+/// What has changed, as far as the tab knows.
+#[derive(Debug, Clone)]
+enum Changed {
+    Paths(Vec<PathBuf>),
+    /// Anything may have: the tab wasn't watching for a while.
+    Anything,
+}
+
+impl Changed {
+    fn extend(&mut self, more: Self) {
+        match (self, more) {
+            (Self::Paths(paths), Self::Paths(more)) => paths.extend(more),
+            (this, _) => *this = Self::Anything,
+        }
+    }
+}
+
+impl Changes {
+    fn new(paths: Changed) -> Self {
+        let now = Instant::now();
+        Self {
+            first: now,
+            last: now,
+            paths,
+        }
+    }
+
+    /// Adds `paths`, which changed just now.
+    fn add(changes: &mut Option<Self>, paths: Changed) {
+        match changes {
+            Some(changes) => {
+                changes.last = Instant::now();
+                changes.paths.extend(paths);
+            }
+            None => *changes = Some(Self::new(paths)),
+        }
+    }
+
+    /// Whether changes have stopped for [`SETTLE`], or have gone on for [`MAX_WAIT`], which
+    /// keeps a constant stream, such as a build writing ignored files, from holding off a
+    /// refresh for good.
+    fn settled(&self) -> bool {
+        self.last.elapsed() >= SETTLE || self.first.elapsed() >= MAX_WAIT
+    }
+}
+
+#[derive(Debug)]
+struct Refresh {
+    worker: Worker,
+    /// What the refresh is for, for another to take up if this one is abandoned.
+    paths: Changed,
 }
 
 impl DiffTab {
@@ -454,7 +540,8 @@ impl DiffTab {
             help: None,
             layout,
             side_by_side_fits: true,
-            watch: None,
+            watch: Watching::Pending,
+            watch_error: None,
             refresh_error: None,
             changes: None,
             refresh: None,
@@ -554,7 +641,7 @@ impl DiffTab {
             let event = if let Some(event) = self
                 .refresh
                 .as_ref()
-                .and_then(|worker| worker.events.try_recv().ok())
+                .and_then(|refresh| refresh.worker.events.try_recv().ok())
             {
                 Some(event)
             } else {
@@ -579,61 +666,100 @@ impl DiffTab {
         }
     }
 
+    /// Takes up a watch that has started, or retries later if it failed. Returns whether the
+    /// tab's notice changed.
+    fn watch_started(&mut self, started: anyhow::Result<Watch>) -> bool {
+        match started {
+            Ok(watch) => {
+                self.watch = Watching::On(watch);
+                self.watch_error.take().is_some()
+            }
+            Err(error) => {
+                self.watch_error = Some(format!("{error:#}"));
+                self.watch = Watching::RetryAt(Instant::now() + RETRY_WATCH);
+                true
+            }
+        }
+    }
+
+    /// Why the tab isn't showing the latest changes, if it may not be.
+    pub fn notice(&self) -> Option<String> {
+        self.watch_error
+            .as_ref()
+            .map(|error| format!("Not following changes: {error}"))
+            .or_else(|| {
+                self.refresh_error
+                    .as_ref()
+                    .map(|error| format!("Couldn't read the latest changes: {error}"))
+            })
+    }
+
     /// Watches the checkout once there is one, gathers what changed, and starts a refresh
-    /// once changes have settled for [`SETTLE`] and none is running. Returns whether the tab
-    /// changed.
+    /// once changes have settled and none is running. Returns whether the tab changed.
     fn follow_changes(&mut self) -> bool {
         let DiffState::Ready(ready) = &self.state else {
             return false;
         };
-        if self.refresh_error.is_some() {
-            return false;
-        }
-        let watch = match &self.watch {
-            Some(watch) => watch,
-            None => match Watch::start(ready.target.root()) {
-                Ok(watch) => self.watch.insert(watch),
-                Err(error) => {
-                    self.refresh_error = Some(format!("{error:#}"));
-                    return true;
+        let mut changed = false;
+        match &mut self.watch {
+            Watching::Pending => {}
+            Watching::Starting(receiver) => match receiver.try_recv() {
+                Ok(started) => {
+                    changed = self.watch_started(started);
+                    // What changed while it wasn't watched isn't known, so read it all again.
+                    if matches!(self.watch, Watching::On(_)) {
+                        Changes::add(&mut self.changes, Changed::Anything);
+                    }
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    changed = self.watch_started(Err(anyhow::anyhow!(
+                        "the file watcher stopped as it started"
+                    )));
                 }
             },
-        };
-        match watch.changed() {
-            Ok(paths) if !paths.is_empty() => {
-                self.changes
-                    .get_or_insert_with(|| (Instant::now(), Vec::new()))
-                    .1
-                    .extend(paths);
-            }
-            Ok(_) => {}
-            Err(error) => {
-                self.refresh_error = Some(format!("{error:#}"));
-                self.watch = None;
-                return true;
+            Watching::On(watch) => match watch.changed() {
+                Ok(paths) if !paths.is_empty() => {
+                    Changes::add(&mut self.changes, Changed::Paths(paths));
+                }
+                Ok(_) => {}
+                Err(error) => changed = self.watch_started(Err(error)),
+            },
+            Watching::RetryAt(at) => {
+                if Instant::now() >= *at {
+                    let root = ready.target.root().to_path_buf();
+                    let (sender, receiver) = mpsc::channel();
+                    thread::spawn(move || {
+                        let _ = sender.send(Watch::start(&root));
+                    });
+                    self.watch = Watching::Starting(receiver);
+                }
             }
         }
-        let settled = self
-            .changes
-            .as_ref()
-            .is_some_and(|(since, _)| since.elapsed() >= SETTLE);
+        let DiffState::Ready(ready) = &self.state else {
+            return changed;
+        };
+        let settled = self.changes.as_ref().is_some_and(Changes::settled);
         // A range still loading will show the files as they are now anyway.
         let showing = matches!(ready.content, RangeContent::Shown(_));
-        if !settled || self.refresh.is_some() || !showing {
-            return false;
-        }
-        let (Some(cwd), Some(watch)) = (&self.cwd, &self.watch) else {
-            return false;
+        let (Some(cwd), Watching::On(watch)) = (&self.cwd, &self.watch) else {
+            return changed;
         };
-        let (_, paths) = self.changes.take().expect("settled changes");
-        self.refresh = Some(Worker::refresh(
-            cwd.clone(),
-            watch.places().clone(),
+        if !settled || self.refresh.is_some() || !showing {
+            return changed;
+        }
+        let paths = self.changes.take().expect("settled changes").paths;
+        self.refresh = Some(Refresh {
+            worker: Worker::refresh(
+                cwd.clone(),
+                watch.places().clone(),
+                paths.clone(),
+                ready.ranges[ready.range].clone(),
+                Arc::clone(&self.turns),
+            ),
             paths,
-            ready.ranges[ready.range].clone(),
-            Arc::clone(&self.turns),
-        ));
-        false
+        });
+        changed
     }
 
     fn apply(&mut self, event: Event) {
@@ -659,7 +785,14 @@ impl DiffTab {
                 }));
             }
             Event::NoTarget(reason) => self.state = DiffState::NoTarget(reason),
-            Event::Unchanged => self.refresh = None,
+            Event::Watching(started) => {
+                self.watch_started(started);
+            }
+            Event::Unchanged => {
+                self.refresh = None;
+                self.refresh_error = None;
+            }
+            // What shows stays, and the next change tries again.
             Event::RefreshFailed(error) => {
                 self.refresh = None;
                 self.refresh_error = Some(error);
@@ -766,7 +899,8 @@ impl DiffTab {
     ) {
         let layout = self.shown_layout();
         let viewport = self.viewport;
-        let worker = self.refresh.take();
+        let worker = self.refresh.take().map(|refresh| refresh.worker);
+        self.refresh_error = None;
         let old = self.shown();
         let path_of = |shown: &Shown, file: usize| {
             shown
@@ -783,11 +917,17 @@ impl DiffTab {
             })
             .unwrap_or_default();
         let current = old.and_then(|old| path_of(old, old.current_file));
-        // The file at the top of the screen and how far into its rows the screen starts.
+        // The file at the top of the screen, the line there if it is one, and how far into
+        // the file's rows the screen starts.
         let top = old.and_then(|old| {
-            let file = old.file_at(old.offset)?;
+            let row = *old.rows.get(old.offset)?;
+            let file = row.file();
             let header = old.file_row(file)?;
-            Some((path_of(old, file)?, old.offset - header))
+            Some((
+                path_of(old, file)?,
+                old.line_number(row),
+                old.offset - header,
+            ))
         });
         let column = old.map_or(0, |old| old.column);
         let mut shown = Shown {
@@ -812,7 +952,7 @@ impl DiffTab {
         shown.lay_out();
         let index_of = |path: &Path| shown.files.iter().position(|file| file.diff.path() == path);
         shown.current_file = current.and_then(|path| index_of(&path)).unwrap_or(0);
-        if let Some((path, into)) = top
+        if let Some((path, number, into)) = top
             && let Some(file) = index_of(&path)
             && let Some(header) = shown.file_row(file)
         {
@@ -821,7 +961,17 @@ impl DiffTab {
                 .iter()
                 .rposition(|row| row.file() == file)
                 .unwrap_or(header);
-            shown.offset = (header + into)
+            // The same line by its number, which earlier hunks changing doesn't move, or the
+            // first after it; else as far into the file as before.
+            let same_line = number.and_then(|number| {
+                (header..=end).find(|&row| {
+                    shown
+                        .line_number(shown.rows[row])
+                        .is_some_and(|found| found.0 == number.0 && found.1 >= number.1)
+                })
+            });
+            shown.offset = same_line
+                .unwrap_or(header + into)
                 .min(end)
                 .min(max_offset(shown.rows.len(), viewport));
         }
@@ -853,8 +1003,11 @@ impl DiffTab {
             return;
         }
         ready.range = index;
-        // A refresh would load the range the person just left.
-        self.refresh = None;
+        // A refresh would load the range the person just left; what it was for is taken up
+        // again once the new range shows.
+        if let Some(refresh) = self.refresh.take() {
+            Changes::add(&mut self.changes, refresh.paths);
+        }
         // Replacing the content drops the range's worker, which stops it.
         ready.content = RangeContent::Loading(Worker::range(
             Arc::clone(&ready.target),
@@ -979,6 +1132,34 @@ impl Shown {
                 .position(|row| row.shows(anchor))
                 .or_else(|| self.file_row(anchor.file()))
                 .unwrap_or(0);
+        }
+    }
+
+    /// The line `row` shows by its number in the file: in the new file, or the old one for a
+    /// removed line. `true` with a number in the new file.
+    fn line_number(&self, row: Row) -> Option<(bool, u32)> {
+        let line = |file: usize, hunk: usize, line: usize| {
+            let FileContent::Text { hunks } = &self.files[file].diff.content else {
+                return None;
+            };
+            let line = &hunks[hunk].lines[line];
+            line.new
+                .map(|number| (true, number))
+                .or(line.old.map(|number| (false, number)))
+        };
+        match row {
+            Row::Line {
+                file,
+                hunk,
+                line: index,
+            } => line(file, hunk, index),
+            Row::Pair {
+                file,
+                hunk,
+                old,
+                new,
+            } => line(file, hunk, new.or(old)?),
+            Row::File(_) | Row::Note(..) | Row::Hunk { .. } => None,
         }
     }
 

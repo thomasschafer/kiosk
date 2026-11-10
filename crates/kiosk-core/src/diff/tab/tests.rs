@@ -441,3 +441,98 @@ fn a_commit_is_followed_with_the_range_showing_kept() {
     });
     assert_eq!(ready(&tab).ranges[ready(&tab).range], Range::All);
 }
+
+/// The text of the line at the top of the screen, or what row is there instead.
+fn top_text(tab: &DiffTab) -> String {
+    let shown = tab.shown().unwrap();
+    let row = shown.rows[shown.offset];
+    let FileContent::Text { hunks } = &shown.files[row.file()].diff.content else {
+        return format!("{row:?}");
+    };
+    match row {
+        Row::Line { hunk, line, .. } => hunks[hunk].lines[line].text.clone(),
+        Row::Pair { hunk, old, new, .. } => hunks[hunk].lines[new.or(old).unwrap()].text.clone(),
+        other => format!("{other:?}"),
+    }
+}
+
+#[test]
+fn a_refresh_keeps_the_line_at_the_top_when_an_earlier_hunk_appears() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path();
+    init_test_repo(dir);
+    let original = (1..=60)
+        .map(|n| format!("line {n}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    commit(dir, "long.txt", &original);
+    fs::write(
+        dir.join("long.txt"),
+        original.replace("line 50\n", "line fifty\n"),
+    )
+    .unwrap();
+    let mut tab = DiffTab::new(Some(dir.to_path_buf()), DiffLayout::Unified);
+    tab.set_viewport(3);
+    tab.start();
+    wait(&mut tab, highlighted);
+    tab.act(DiffAction::SelectRange(1));
+    wait(&mut tab, highlighted);
+    tab.act(DiffAction::Scroll(4));
+    let before = top_text(&tab);
+    assert!(before.starts_with("line 4"), "{before}");
+    // An edit far above adds a hunk before the one showing.
+    fs::write(
+        dir.join("long.txt"),
+        original
+            .replace("line 50\n", "line fifty\n")
+            .replace("line 3\n", "line three\n"),
+    )
+    .unwrap();
+    wait(&mut tab, |tab| {
+        matches!(&tab.state, DiffState::Ready(ready)
+            if matches!(&ready.content, RangeContent::Shown(shown)
+                if matches!(&shown.files[0].diff.content, FileContent::Text { hunks } if hunks.len() == 2)))
+    });
+    assert_eq!(top_text(&tab), before);
+}
+
+#[test]
+fn a_failed_refresh_is_reported_and_the_next_change_tries_again() {
+    let temp = feature_repo();
+    let mut tab = DiffTab::new(Some(temp.path().to_path_buf()), DiffLayout::Unified);
+    tab.start();
+    wait(&mut tab, highlighted);
+    tab.apply(Event::RefreshFailed("git was busy".into()));
+    assert_eq!(
+        tab.notice().as_deref(),
+        Some("Couldn't read the latest changes: git was busy")
+    );
+    fs::write(temp.path().join("c.rs"), "fn c() {}\n").unwrap();
+    wait(&mut tab, |tab| {
+        tab.notice().is_none() && tab.shown().is_some_and(|shown| shown.files.len() == 3)
+    });
+}
+
+#[test]
+fn switching_range_mid_refresh_keeps_what_the_refresh_was_for() {
+    let temp = feature_repo();
+    let mut tab = DiffTab::new(Some(temp.path().to_path_buf()), DiffLayout::Unified);
+    tab.start();
+    wait(&mut tab, highlighted);
+    let path = temp.path().join("a.rs");
+    tab.refresh = Some(Refresh {
+        worker: Worker::spawn(|_, _| {}),
+        paths: Changed::Paths(vec![path.clone()]),
+    });
+    tab.act(DiffAction::NextRange);
+    assert!(tab.refresh.is_none());
+    let Some(Changes {
+        paths: Changed::Paths(paths),
+        ..
+    }) = &tab.changes
+    else {
+        panic!("{:?}", tab.changes);
+    };
+    assert_eq!(paths, &[path]);
+}

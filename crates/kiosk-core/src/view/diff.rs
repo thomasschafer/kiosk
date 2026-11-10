@@ -152,10 +152,7 @@ pub fn diff(tab: &mut DiffTab, keys: &KeysConfig, help_rows: usize) -> DiffView 
         .help
         .as_mut()
         .map(|help| OverlayView::Help(help_view(help, false, help_rows)));
-    let notice = tab
-        .refresh_error
-        .as_deref()
-        .map(|error| format!("Not following changes: {}", sanitize(error)));
+    let notice = tab.notice().map(|notice| sanitize(&notice).into_owned());
     DiffView {
         notice,
         overlay,

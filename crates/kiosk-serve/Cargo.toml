@@ -14,7 +14,7 @@ categories = ["command-line-utilities"]
 [dependencies]
 anyhow.workspace = true
 crossterm.workspace = true
-getrandom = "0.3"
+getrandom = "0.4"
 kiosk-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -5,7 +5,7 @@
 use std::{
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, Mutex, PoisonError,
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
@@ -78,6 +78,10 @@ pub struct Shown {
     /// screen once they scroll. Kept apart from `offset`, as moving to a file that is already
     /// on screen doesn't scroll.
     pub current_file: usize,
+    /// The first column of code on screen, scrolled right past long lines.
+    pub column: usize,
+    /// The widest line, in columns, which bounds `column`.
+    widest: usize,
     /// Highlighting still runs on the range's worker until every file has it.
     worker: Option<Worker>,
 }
@@ -134,12 +138,16 @@ pub enum Note {
     Collapsed,
     /// Its name or mode changed, and nothing else.
     NoContentChange,
+    /// The line before has no newline after it: the end of its side of the file.
+    NoNewline,
 }
 
 /// What the person does in the diff tab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiffAction {
     Scroll(isize),
+    /// Columns to the right, or the left when negative.
+    ScrollColumns(isize),
     /// Whole screens.
     Page(isize),
     Top,
@@ -181,19 +189,27 @@ enum Event {
 }
 
 impl Worker {
-    fn spawn(work: impl FnOnce(&dyn Fn(Event) -> bool) + Send + 'static) -> Self {
+    /// Runs `work` on a thread, giving it a way to report, which answers whether anyone still
+    /// listens, and a way to ask whether it has been cancelled.
+    fn spawn(
+        work: impl FnOnce(&dyn Fn(Event) -> bool, &dyn Fn() -> bool) + Send + 'static,
+    ) -> Self {
         let (sender, events) = mpsc::channel();
         let cancelled = Arc::new(AtomicBool::new(false));
         let stop = Arc::clone(&cancelled);
         thread::spawn(move || {
-            work(&|event| !stop.load(Ordering::Relaxed) && sender.send(event).is_ok());
+            let cancelled = || stop.load(Ordering::Relaxed);
+            work(
+                &|event| !cancelled() && sender.send(event).is_ok(),
+                &cancelled,
+            );
         });
         Self { events, cancelled }
     }
 
     /// Finds what to diff from `cwd`, then loads its first range.
     fn resolve(cwd: PathBuf) -> Self {
-        Self::spawn(move |send| {
+        Self::spawn(move |send, _| {
             if !cwd.is_dir() {
                 send(Event::NoTarget(format!(
                     "{} is not a folder",
@@ -228,9 +244,15 @@ impl Worker {
         })
     }
 
-    /// Diffs `range`, then highlights its files one by one.
-    fn range(target: Arc<Target>, range: Range) -> Self {
-        Self::spawn(move |send| {
+    /// Diffs `range`, then highlights its files one by one. Ranges take `turns` one at a
+    /// time, so switching range quickly queues them rather than running git for each at once,
+    /// and one abandoned while it waits never runs.
+    fn range(target: Arc<Target>, range: Range, turns: Arc<Mutex<()>>) -> Self {
+        Self::spawn(move |send, cancelled| {
+            let _turn = turns.lock().unwrap_or_else(PoisonError::into_inner);
+            if cancelled() {
+                return;
+            }
             let files = match target.diff(&range) {
                 Ok(files) => files,
                 Err(error) => {
@@ -260,6 +282,8 @@ pub struct DiffTab {
     pub state: DiffState,
     /// How many body rows fit on screen.
     viewport: usize,
+    /// Taken by each range's worker while it reads from git.
+    turns: Arc<Mutex<()>>,
 }
 
 impl DiffTab {
@@ -269,6 +293,7 @@ impl DiffTab {
             cwd,
             state: DiffState::Unstarted,
             viewport: 20,
+            turns: Arc::default(),
         }
     }
 
@@ -353,8 +378,11 @@ impl DiffTab {
                         DiffState::NoTarget(format!("{} has nothing to diff", target.head()));
                     return;
                 }
-                let content =
-                    RangeContent::Loading(Worker::range(Arc::clone(&target), ranges[0].clone()));
+                let content = RangeContent::Loading(Worker::range(
+                    Arc::clone(&target),
+                    ranges[0].clone(),
+                    Arc::clone(&self.turns),
+                ));
                 self.state = DiffState::Ready(Box::new(Ready {
                     target,
                     commits,
@@ -389,6 +417,8 @@ impl DiffTab {
                     rows: Vec::new(),
                     offset: 0,
                     current_file: 0,
+                    column: 0,
+                    widest: 0,
                 };
                 shown.lay_out();
                 ready.content = RangeContent::Shown(shown);
@@ -441,8 +471,19 @@ impl DiffTab {
         ready.content = RangeContent::Loading(Worker::range(
             Arc::clone(&ready.target),
             ready.ranges[index].clone(),
+            Arc::clone(&self.turns),
         ));
     }
+}
+
+/// Scrolled right as far as it goes, the widest line still shows this many columns.
+const MIN_COLUMNS_SHOWN: usize = 20;
+
+/// How many columns `text` takes, roughly: each tab as a tab stop's worth.
+fn columns(text: &str) -> usize {
+    text.chars()
+        .map(|character| if character == '\t' { 4 } else { 1 })
+        .sum()
 }
 
 fn max_offset(rows: usize, viewport: usize) -> usize {
@@ -489,6 +530,7 @@ impl Shown {
     fn lay_out(&mut self) {
         let top_file = self.file_at(self.offset);
         self.rows.clear();
+        self.widest = 0;
         for (index, file) in self.files.iter().enumerate() {
             self.rows.push(Row::File(index));
             let hunks = match &file.diff.content {
@@ -511,12 +553,17 @@ impl Shown {
                     file: index,
                     hunk: hunk_index,
                 });
-                self.rows
-                    .extend((0..hunk.lines.len()).map(|line| Row::Line {
+                for (line_index, line) in hunk.lines.iter().enumerate() {
+                    self.rows.push(Row::Line {
                         file: index,
                         hunk: hunk_index,
-                        line,
-                    }));
+                        line: line_index,
+                    });
+                    if line.missing_newline {
+                        self.rows.push(Row::Note(index, Note::NoNewline));
+                    }
+                    self.widest = self.widest.max(columns(&line.text));
+                }
             }
         }
         if let Some(file) = top_file {
@@ -543,6 +590,11 @@ impl Shown {
         };
         match action {
             DiffAction::Scroll(by) => scroll_to(self, self.offset.saturating_add_signed(by)),
+            DiffAction::ScrollColumns(by) => {
+                // Some of the widest line stays in view.
+                let last = self.widest.saturating_sub(MIN_COLUMNS_SHOWN);
+                self.column = self.column.saturating_add_signed(by).min(last);
+            }
             DiffAction::Page(pages) => {
                 let page = viewport.saturating_sub(1).max(1).cast_signed();
                 scroll_to(self, self.offset.saturating_add_signed(pages * page));

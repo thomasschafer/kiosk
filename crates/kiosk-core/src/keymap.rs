@@ -210,6 +210,8 @@ pub fn command_to_action(command: Command, state: &AppState) -> Option<Action> {
         | Command::ShowTab(_)
         | Command::ScrollDown
         | Command::ScrollUp
+        | Command::ScrollLeft
+        | Command::ScrollRight
         | Command::PageDown
         | Command::PageUp
         | Command::ScrollTop

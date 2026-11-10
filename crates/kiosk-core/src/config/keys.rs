@@ -207,6 +207,8 @@ pub enum Command {
     ShowTab(TabId),
     ScrollDown,
     ScrollUp,
+    ScrollLeft,
+    ScrollRight,
     PageDown,
     PageUp,
     ScrollTop,
@@ -251,6 +253,8 @@ impl Command {
             Self::ShowTab(tab) => tab.command_name(),
             Self::ScrollDown => "scroll_down",
             Self::ScrollUp => "scroll_up",
+            Self::ScrollLeft => "scroll_left",
+            Self::ScrollRight => "scroll_right",
             Self::PageDown => "page_down",
             Self::PageUp => "page_up",
             Self::ScrollTop => "scroll_top",
@@ -297,6 +301,8 @@ impl Command {
             Self::ShowTab(tab) => tab.command_description(),
             Self::ScrollDown => "Scroll down a line",
             Self::ScrollUp => "Scroll up a line",
+            Self::ScrollLeft => "Scroll long lines left",
+            Self::ScrollRight => "Scroll long lines right",
             Self::PageDown => "Scroll down a screen",
             Self::PageUp => "Scroll up a screen",
             Self::ScrollTop => "Scroll to the top",
@@ -342,6 +348,8 @@ impl Command {
             | Self::ShowTab(_)
             | Self::ScrollDown
             | Self::ScrollUp
+            | Self::ScrollLeft
+            | Self::ScrollRight
             | Self::PageDown
             | Self::PageUp
             | Self::ScrollTop
@@ -388,6 +396,8 @@ impl FromStr for Command {
             "next_tab" => Ok(Self::NextTab),
             "scroll_down" => Ok(Self::ScrollDown),
             "scroll_up" => Ok(Self::ScrollUp),
+            "scroll_left" => Ok(Self::ScrollLeft),
+            "scroll_right" => Ok(Self::ScrollRight),
             "page_down" => Ok(Self::PageDown),
             "page_up" => Ok(Self::PageUp),
             "scroll_top" => Ok(Self::ScrollTop),
@@ -607,6 +617,10 @@ impl Default for KeysConfig {
                 ("down", Command::ScrollDown),
                 ("k", Command::ScrollUp),
                 ("up", Command::ScrollUp),
+                ("h", Command::ScrollLeft),
+                ("left", Command::ScrollLeft),
+                ("l", Command::ScrollRight),
+                ("right", Command::ScrollRight),
                 ("C-d", Command::PageDown),
                 ("pagedown", Command::PageDown),
                 ("space", Command::PageDown),
@@ -1062,6 +1076,8 @@ const DIFF: &[Command] = &[
     Command::Quit,
     Command::ScrollDown,
     Command::ScrollUp,
+    Command::ScrollLeft,
+    Command::ScrollRight,
     Command::PageDown,
     Command::PageUp,
     Command::ScrollTop,
@@ -1120,6 +1136,8 @@ const fn command_rank(command: Command) -> u8 {
         Command::CursorEnd => 19,
         Command::ScrollDown
         | Command::ScrollUp
+        | Command::ScrollLeft
+        | Command::ScrollRight
         | Command::PageDown
         | Command::PageUp
         | Command::ScrollTop

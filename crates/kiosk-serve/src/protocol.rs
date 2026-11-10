@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 
 /// Bumped whenever a message changes shape, so a frontend and a picker from different
 /// versions refuse each other rather than misread each other.
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// Refuses a client that speaks another version of the protocol, saying which to update.
 pub fn check_client(protocol: u32) -> anyhow::Result<()> {
@@ -137,9 +137,12 @@ pub enum ClientMessage {
     /// Closes the dialog or overlay in front without acting on it: a cancel button, or a
     /// click beside it.
     Dismiss,
-    /// A wheel or trackpad scroll over the list in front, in rows.
+    /// A wheel or trackpad scroll over the list in front, in rows, and over the diff tab's
+    /// code, in columns to the right.
     Scroll {
         delta: i32,
+        #[serde(default)]
+        columns: i32,
     },
     /// A click on a setup wizard folder mode.
     FolderMode {

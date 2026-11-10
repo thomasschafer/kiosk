@@ -219,3 +219,81 @@ fn moving_between_files_that_all_fit_changes_the_current_file_without_scrolling(
     tab.act(DiffAction::ToggleFile(None));
     assert!(tab.shown().unwrap().files[0].collapsed);
 }
+
+#[test]
+fn a_missing_final_newline_gets_a_note_after_its_line() {
+    let temp = feature_repo();
+    fs::write(temp.path().join("b.rs"), "fn b() {}").unwrap();
+    let mut tab = DiffTab::new(Some(temp.path().to_path_buf()));
+    tab.start();
+    wait(&mut tab, highlighted);
+    tab.act(DiffAction::SelectRange(1));
+    wait(&mut tab, highlighted);
+    let shown = tab.shown().unwrap();
+    let b = shown
+        .files
+        .iter()
+        .position(|file| file.diff.path() == Path::new("b.rs"))
+        .unwrap();
+    let rows = shown
+        .rows
+        .iter()
+        .filter(|row| row.file() == b)
+        .copied()
+        .collect::<Vec<_>>();
+    // The old line ended with a newline and the new one doesn't: only the new one says so.
+    assert_eq!(
+        rows,
+        [
+            Row::File(b),
+            Row::Hunk { file: b, hunk: 0 },
+            Row::Line {
+                file: b,
+                hunk: 0,
+                line: 0
+            },
+            Row::Line {
+                file: b,
+                hunk: 0,
+                line: 1
+            },
+            Row::Note(b, Note::NoNewline),
+        ]
+    );
+}
+
+#[test]
+fn scrolling_sideways_stops_with_some_of_the_widest_line_still_shown() {
+    let temp = feature_repo();
+    fs::write(
+        temp.path().join("wide.rs"),
+        format!("{}\n", "x".repeat(100)),
+    )
+    .unwrap();
+    let mut tab = DiffTab::new(Some(temp.path().to_path_buf()));
+    tab.start();
+    wait(&mut tab, highlighted);
+    let column = |tab: &DiffTab| tab.shown().unwrap().column;
+    tab.act(DiffAction::ScrollColumns(-8));
+    assert_eq!(column(&tab), 0);
+    tab.act(DiffAction::ScrollColumns(30));
+    assert_eq!(column(&tab), 30);
+    tab.act(DiffAction::ScrollColumns(1000));
+    assert_eq!(column(&tab), 100 - MIN_COLUMNS_SHOWN);
+}
+
+#[test]
+fn switching_range_quickly_ends_on_the_last_one_asked_for() {
+    let temp = feature_repo();
+    let mut tab = DiffTab::new(Some(temp.path().to_path_buf()));
+    tab.start();
+    wait(&mut tab, |tab| matches!(tab.state, DiffState::Ready(_)));
+    for _ in 0..5 {
+        tab.act(DiffAction::NextRange);
+        tab.act(DiffAction::PreviousRange);
+    }
+    tab.act(DiffAction::SelectRange(2));
+    wait(&mut tab, highlighted);
+    assert_eq!(ready(&tab).range, 2);
+    assert_eq!(paths(&tab), ["b.rs"]);
+}

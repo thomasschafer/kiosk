@@ -43,6 +43,8 @@ const TICK: Duration = Duration::from_millis(16);
 const TOAST_AUTO_DISMISS: Duration = Duration::from_secs(5);
 /// The most messages handled before background results and the view get a turn.
 const BATCH: usize = 64;
+/// How far the diff tab's scroll left and right keys move, in columns.
+const SCROLL_COLUMNS: isize = 8;
 /// How long a command waits for filtering of what was just typed.
 const SETTLE: Duration = Duration::from_secs(2);
 
@@ -406,7 +408,12 @@ fn handle_diff_message(
 ) -> Step {
     use kiosk_core::config::keys::Command;
     let action = match message {
-        ClientMessage::Scroll { delta } => {
+        ClientMessage::Scroll { delta, columns } => {
+            if *columns != 0 {
+                diff.act(DiffAction::ScrollColumns(
+                    isize::try_from(*columns).unwrap_or(0),
+                ));
+            }
             Some(DiffAction::Scroll(isize::try_from(*delta).unwrap_or(0)))
         }
         ClientMessage::Diff { click } => Some(match *click {
@@ -418,6 +425,8 @@ fn handle_diff_message(
             Some(Command::Quit) => return Step::Finish(Outcome::Quit),
             Some(Command::ScrollDown) => Some(DiffAction::Scroll(1)),
             Some(Command::ScrollUp) => Some(DiffAction::Scroll(-1)),
+            Some(Command::ScrollLeft) => Some(DiffAction::ScrollColumns(-SCROLL_COLUMNS)),
+            Some(Command::ScrollRight) => Some(DiffAction::ScrollColumns(SCROLL_COLUMNS)),
             Some(Command::PageDown) => Some(DiffAction::Page(1)),
             Some(Command::PageUp) => Some(DiffAction::Page(-1)),
             Some(Command::ScrollTop) => Some(DiffAction::Top),
@@ -467,7 +476,7 @@ fn handle_picker_message<B: Backend>(
         ClientMessage::Dismiss => {
             keymap::dismiss(state).and_then(|action| picker.handle_action(state, action))
         }
-        ClientMessage::Scroll { delta } => picker.handle_action(
+        ClientMessage::Scroll { delta, .. } => picker.handle_action(
             state,
             Action::Scroll {
                 delta,

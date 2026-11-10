@@ -23,7 +23,7 @@ const TITLE = "Kiosk";
 const VERSION = "0.8.0";
 const REPOSITORY = "github.com/thomasschafer/kiosk";
 // The protocol this mod speaks; the picker refuses a different one.
-const PROTOCOL = 4;
+const PROTOCOL = 5;
 
 // The dialog's share of the window, as mod.json opens it. Kiosk draws its own panel inside
 // it (mod.json's frame is none): hung from the top, and as tall as what it shows, so a short
@@ -64,6 +64,8 @@ const DIFF_HEADER = 52;
 const SIDEBAR = 280;
 const SIDE_ROW = 30;
 const GUTTER = 46;
+// Roughly a column of code, for turning sideways scrolling into columns.
+const COLUMN = 7.5;
 const SIGN = 16;
 // The tab bar along the panel's top, and the space round its tabs.
 const TAB_BAR = 46;
@@ -480,6 +482,8 @@ export default class Kiosk extends View {
     /** @type {Link} */
     this.link = { state: "starting" };
     this.wheel = 0;
+    // Horizontal scroll over the diff tab's code not yet sent, in columns.
+    this.wheelColumns = 0;
     // The timer taking the keyboard back after a launcher's request, while it runs.
     this.refocusWatch = null;
     // Every tab name the picker understands, once it has said hello.
@@ -679,6 +683,20 @@ export default class Kiosk extends View {
     // The platform key is the app's; the picker binds none.
     if (e.modifiers.platform) return;
     this.send({ t: "key", keystroke: e.keystroke, key_char: e.key_char ?? null });
+    cx.stop_propagation();
+  }
+
+  // Sends a scroll over the diff tab's code as whole rows and, sideways, whole columns.
+  diffScroll(e, cx) {
+    this.wheel -= (e.delta_lines?.y ?? e.delta.y / DIFF_ROW);
+    this.wheelColumns -= (e.delta_lines?.x ?? e.delta.x / COLUMN);
+    const rows = Math.trunc(this.wheel);
+    const columns = Math.trunc(this.wheelColumns);
+    if (rows !== 0 || columns !== 0) {
+      this.wheel -= rows;
+      this.wheelColumns -= columns;
+      this.send({ t: "scroll", delta: rows, columns });
+    }
     cx.stop_propagation();
   }
 
@@ -886,7 +904,7 @@ export default class Kiosk extends View {
         .when(right, (el) => el.text_right().pr(8)).child(lines.join("\n"));
     return div().id("kiosk-diff-body").relative().flex_1().h_full().min_w(0).overflow_hidden().py(PAD)
       .font_family(settings().font_family).text_size(12.5)
-      .on_scroll_wheel((e, cx) => this.scroll(e, cx, DIFF_ROW))
+      .on_scroll_wheel((e, cx) => this.diffScroll(e, cx))
       .child(div().relative().w_full().h(body.rows.length * DIFF_ROW)
         .children(rows)
         .child(column(oldNumbers, 0, GUTTER, t.dim, true))

@@ -92,6 +92,8 @@ pub struct FileEntry {
 pub struct Body {
     /// The first row shown, of `total`.
     pub offset: usize,
+    /// The first column of code shown, when scrolled right.
+    pub column: usize,
     pub total: usize,
     pub rows: Vec<RowView>,
 }
@@ -205,10 +207,11 @@ fn ready_view(ready: &Ready, viewport: usize, keys: &KeysConfig, hints: Vec<Hint
             let end = (shown.offset + viewport).min(shown.rows.len());
             view.body = Some(Body {
                 offset: shown.offset,
+                column: shown.column,
                 total: shown.rows.len(),
                 rows: shown.rows[shown.offset..end]
                     .iter()
-                    .map(|row| row_view(&shown.files, *row, keys))
+                    .map(|row| row_view(&shown.files, *row, shown.column, keys))
                     .collect(),
             });
         }
@@ -272,7 +275,7 @@ fn file_entry(file: &ShownFile) -> FileEntry {
     }
 }
 
-fn row_view(files: &[ShownFile], row: Row, keys: &KeysConfig) -> RowView {
+fn row_view(files: &[ShownFile], row: Row, column: usize, keys: &KeysConfig) -> RowView {
     match row {
         Row::File(file) => RowView::File("file", file),
         Row::Note(index, note) => {
@@ -289,7 +292,7 @@ fn row_view(files: &[ShownFile], row: Row, keys: &KeysConfig) -> RowView {
             );
             if !hunk.section.is_empty() {
                 header.push(' ');
-                header.push_str(&code_line(&hunk.section, None).0);
+                header.push_str(&code_line(&hunk.section, None, 0).0);
             }
             RowView::Hunk("hunk", header)
         }
@@ -303,7 +306,7 @@ fn row_view(files: &[ShownFile], row: Row, keys: &KeysConfig) -> RowView {
                 .highlighted
                 .as_ref()
                 .and_then(|highlighted| highlighted.runs(line));
-            let (text, runs) = code_line(&line.text, runs);
+            let (text, runs) = code_line(&line.text, runs, column);
             let wide = text.chars().any(|character| character.width() != Some(1));
             RowView::Line(
                 "line",
@@ -329,6 +332,7 @@ fn note_text(file: &ShownFile, note: Note, keys: &KeysConfig) -> String {
         .unwrap_or_default();
     match note {
         Note::Binary => "Binary file, not shown".into(),
+        Note::NoNewline => "No newline at end of file".into(),
         Note::Collapsed => match file.collapse_reason {
             Some(CollapseReason::Generated) => format!("A generated file, collapsed{expand}"),
             Some(CollapseReason::Large) | None => format!(
@@ -349,32 +353,36 @@ fn note_text(file: &ShownFile, note: Note, keys: &KeysConfig) -> String {
     }
 }
 
-/// `text` as shown in a column grid: tabs as spaces to the next tab stop, control characters
-/// as visible escapes and a final carriage return (a CRLF line ending) dropped, with `runs`
-/// stretched to match and flattened to `[chars, tone index, ...]`.
-fn code_line(text: &str, runs: Option<&[Run]>) -> (String, Option<Vec<u32>>) {
+/// `text` as shown in a column grid from column `from`: tabs as spaces to the next tab stop,
+/// control characters as visible escapes and a final carriage return (a CRLF line ending)
+/// dropped, with `runs` stretched to match and flattened to `[chars, tone index, ...]`.
+fn code_line(text: &str, runs: Option<&[Run]>, from: usize) -> (String, Option<Vec<u32>>) {
     let text = text.strip_suffix('\r').unwrap_or(text);
-    let mut shown_text = String::with_capacity(text.len());
+    let mut shown_chars: Vec<char> = Vec::with_capacity(text.len());
     // How many characters each of the line's characters became.
     let mut widths = Vec::with_capacity(text.len());
     for character in text.chars() {
-        let before = shown_text.chars().count();
+        let before = shown_chars.len();
         if character == '\t' {
-            let column = before;
-            shown_text.extend(std::iter::repeat_n(' ', TAB_WIDTH - column % TAB_WIDTH));
+            shown_chars.extend(std::iter::repeat_n(' ', TAB_WIDTH - before % TAB_WIDTH));
         } else {
-            shown_text.extend(shown(character));
+            shown_chars.extend(shown(character));
         }
-        widths.push(shown_text.chars().count() - before);
+        widths.push(shown_chars.len() - before);
     }
+    let visible: String = shown_chars.iter().skip(from).collect();
     let runs = runs.map(|runs| {
         let mut flat = Vec::with_capacity(runs.len() * 2);
-        let mut at = 0;
+        // Where the run starts, in the line's characters and in the shown ones.
+        let (mut at, mut column) = (0, 0);
         for run in runs {
             let end = (at + run.chars).min(widths.len());
             let chars: usize = widths[at.min(end)..end].iter().sum();
             at = end;
-            if chars == 0 {
+            // The part of the run right of `from`.
+            let shown = (column + chars).saturating_sub(from.max(column));
+            column += chars;
+            if shown == 0 {
                 continue;
             }
             let tone = TONES
@@ -382,13 +390,13 @@ fn code_line(text: &str, runs: Option<&[Run]>) -> (String, Option<Vec<u32>>) {
                 .position(|tone| *tone == run.tone)
                 .expect("every tone is in TONES");
             flat.extend([
-                u32::try_from(chars).unwrap_or(u32::MAX),
+                u32::try_from(shown).unwrap_or(u32::MAX),
                 u32::try_from(tone).expect("few tones"),
             ]);
         }
         flat
     });
-    (shown_text, runs)
+    (visible, runs)
 }
 
 fn hints(keys: &KeysConfig) -> Vec<Hint> {
@@ -428,7 +436,7 @@ mod tests {
             run(1, SyntaxTone::Keyword),
             run(2, SyntaxTone::String),
         ];
-        let (text, flat) = code_line("\tx\t\"", Some(&runs[..]));
+        let (text, flat) = code_line("\tx\t\"", Some(&runs[..]), 0);
         assert_eq!(text, "    x   \"");
         let index =
             |wanted| u32::try_from(TONES.iter().position(|tone| *tone == wanted).unwrap()).unwrap();
@@ -438,11 +446,44 @@ mod tests {
 
     #[test]
     fn controls_are_escaped_and_a_crlf_ending_is_dropped() {
-        let (text, flat) = code_line("a\u{1b}b\r", Some(&[run(4, SyntaxTone::Plain)][..]));
+        let (text, flat) = code_line("a\u{1b}b\r", Some(&[run(4, SyntaxTone::Plain)][..]), 0);
         assert_eq!(text, "a\\u{1b}b");
         // `\u{1b}` is six characters, and the carriage return is gone.
         assert_eq!(flat.unwrap(), [8, 0]);
-        assert_eq!(code_line("plain", None), ("plain".into(), None));
+        assert_eq!(code_line("plain", None, 0), ("plain".into(), None));
+    }
+
+    #[test]
+    fn scrolled_right_a_line_starts_at_the_column_with_its_runs_cut_to_match() {
+        let runs = [
+            run(3, SyntaxTone::Keyword),
+            run(3, SyntaxTone::Plain),
+            run(4, SyntaxTone::String),
+        ];
+        let (text, flat) = code_line("let x \"a\";", Some(&runs[..]), 4);
+        assert_eq!(text, "x \"a\";");
+        let string = u32::try_from(
+            TONES
+                .iter()
+                .position(|tone| *tone == SyntaxTone::String)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(flat.unwrap(), [2, 0, 4, string]);
+        assert_eq!(code_line("short", None, 10), (String::new(), None));
+    }
+
+    #[test]
+    fn a_very_long_line_is_converted_in_one_pass() {
+        let long = "x".repeat(200_000);
+        let started = std::time::Instant::now();
+        let (text, _) = code_line(&long, Some(&[run(200_000, SyntaxTone::Plain)][..]), 0);
+        assert_eq!(text.len(), 200_000);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "{:?}",
+            started.elapsed()
+        );
     }
 
     #[test]

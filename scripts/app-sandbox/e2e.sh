@@ -347,10 +347,10 @@ wait_view '.screen == "diff" and (.body.rows | length) > 0'
 [[ $(last_view | jq -c '[.files[].path]') == '["main.rs","notes.txt"]' ]] || fail "unexpected files"
 [[ $(last_view | jq -r '.ranges[0].label') == "All changes" ]] || fail "the first range isn't all changes"
 # The changed line is highlighted: its string is in the string tone.
-string=$(last_view | jq '.tones | index("string")')
-last_view | jq -e --argjson string "$string" \
-  '[.body.rows[] | select(.[0] == "line" and .[1] == "+") | .[5] | select(. != null) | [range(1; length; 2) as $i | .[$i]] | index($string)] | any(. != null)' \
-  >/dev/null || fail "the added line isn't highlighted"
+# Rows come before their highlighting, so wait for the string tone to arrive.
+wait_view '(.tones | index("string")) as $string |
+  [.body.rows[] | select(.[0] == "line" and .[1] == "+") | .[5] | select(. != null) |
+    [range(1; length; 2) as $i | .[$i]] | index($string)] | any(. != null)'
 sleep 0.7
 sb shot "$shots/diff.png" >/dev/null
 sb key n

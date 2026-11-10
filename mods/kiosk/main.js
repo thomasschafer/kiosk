@@ -423,6 +423,8 @@ export default class Kiosk extends View {
     /** @type {Link} */
     this.link = { state: "starting" };
     this.wheel = 0;
+    // The timer taking the keyboard back after a launcher's request, while it runs.
+    this.refocusWatch = null;
     // Every tab name the picker understands, once it has said hello.
     this.tabNames = [];
     // Launchers' tabs that came while the picker started, in order, sent once it has said hello.
@@ -545,12 +547,22 @@ export default class Kiosk extends View {
 
   // Takes the keyboard back whenever it has gone in the next REFOCUS_MS: the launcher's popup
   // has it, and when the popup closes it goes nowhere.
+  // One watch at a time; a newer request restarts it, and it stops once kiosk is closing.
   refocus(cx) {
+    this.stopRefocus();
     const until = Date.now() + REFOCUS_MS;
-    const watch = cx.timer.every(REFOCUS_EVERY_MS, () => {
+    this.refocusWatch = cx.timer.every(REFOCUS_EVERY_MS, () => {
+      if (this.link.state === "closed" || Date.now() >= until) {
+        this.stopRefocus();
+        return;
+      }
       if (!this.handle.is_focused()) this.handle.focus();
-      if (Date.now() >= until) watch.cancel();
     });
+  }
+
+  stopRefocus() {
+    this.refocusWatch?.cancel();
+    this.refocusWatch = null;
   }
 
   // Asks the picker for `tab`, or says kiosk has no such tab rather than send one the picker
@@ -573,6 +585,7 @@ export default class Kiosk extends View {
     if (link.state === "closed") return;
     this.link = { state: "closed" };
     if (link.state === "connected") link.socket.close();
+    this.stopRefocus();
     this.forget();
     closeOverlay(props().overlay);
   }
@@ -580,6 +593,7 @@ export default class Kiosk extends View {
   // A popup closed while still starting has no picker to tell, as its startup ends with
   // it; a picker no one connects to gives up on its own.
   async close() {
+    this.stopRefocus();
     this.forget();
     const link = this.link;
     if (link.state === "closed") return;

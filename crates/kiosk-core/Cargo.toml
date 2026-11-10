@@ -19,6 +19,7 @@ test-support = []
 anyhow.workspace = true
 crossterm.workspace = true
 fuzzy-matcher = "0.3"
+notify = "8"
 rayon = "1"
 serde.workspace = true
 serde_ignored = "0.1"

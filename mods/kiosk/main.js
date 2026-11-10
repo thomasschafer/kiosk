@@ -848,7 +848,9 @@ export default class Kiosk extends View {
     const header = h_flex().h(DIFF_HEADER).flex_none().px(EDGE).gap(10).items_center().border_b_1().border_color(t.border)
       .child(icon(t, "git-branch", t.muted, ICON))
       .child(div().min_w(0).truncate().text_size(14).font_semibold().child(d.title))
-      .when(!!d.subtitle, (el) => el.child(div().min_w(0).truncate().text_size(12.5).text_color(t.muted).child(d.subtitle)));
+      .when(!!d.subtitle, (el) => el.child(div().min_w(0).truncate().text_size(12.5).text_color(t.muted).child(d.subtitle)))
+      .when(!!d.notice, (el) => el.child(div().flex_1()).child(h_flex().min_w(0).gap(8).items_center().text_size(12.5).text_color(t.blocked)
+        .child(div().flex_none().size(7).rounded(4).bg(t.blocked)).child(div().min_w(0).truncate().child(d.notice))));
     const main = d.message
       ? v_flex().flex_1().h_full().items_center().justify_center().gap(6)
         .child(h_flex().gap(10).items_center().when(d.message.busy, (el) => el.child(spinner(t, t.accent, 14)))

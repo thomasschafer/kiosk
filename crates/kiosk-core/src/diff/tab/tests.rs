@@ -385,3 +385,59 @@ fn switching_layout_keeps_the_line_at_the_top_of_the_screen() {
     tab.toggle_layout();
     assert_eq!(top_text(&tab), before);
 }
+
+#[test]
+fn the_diff_follows_changes_and_keeps_the_persons_place() {
+    let temp = feature_repo();
+    fs::write(temp.path().join(".gitignore"), "target/\n").unwrap();
+    let mut tab = DiffTab::new(Some(temp.path().to_path_buf()), DiffLayout::Unified);
+    tab.start();
+    wait(&mut tab, highlighted);
+    assert_eq!(paths(&tab), [".gitignore", "a.rs", "b.rs"]);
+    tab.act(DiffAction::ToggleFile(Some(1)));
+    tab.act(DiffAction::ShowFile(2));
+    assert!(tab.shown().unwrap().files[1].collapsed);
+    assert_eq!(tab.shown().unwrap().current_file, 2);
+
+    // A new file appears, and the person stays on b.rs with a.rs still collapsed.
+    fs::write(temp.path().join("c.rs"), "fn c() {}\n").unwrap();
+    wait(&mut tab, |tab| {
+        tab.shown().is_some_and(|shown| shown.files.len() == 4) && highlighted(tab)
+    });
+    let shown = tab.shown().unwrap();
+    assert_eq!(paths(&tab), [".gitignore", "a.rs", "b.rs", "c.rs"]);
+    assert_eq!(shown.current_file, 2);
+    assert!(shown.files[1].collapsed);
+    assert_eq!(tab.refresh_error, None);
+}
+
+#[test]
+fn changes_git_ignores_dont_reload_the_diff() {
+    let temp = feature_repo();
+    fs::write(temp.path().join(".gitignore"), "target/\n").unwrap();
+    let mut tab = DiffTab::new(Some(temp.path().to_path_buf()), DiffLayout::Unified);
+    tab.start();
+    wait(&mut tab, highlighted);
+    fs::create_dir(temp.path().join("target")).unwrap();
+    fs::write(temp.path().join("target/out.o"), "build output").unwrap();
+    // The change is seen, checked, and found not to matter: the refresh ends unchanged.
+    wait(&mut tab, |tab| tab.refresh.is_some());
+    wait(&mut tab, |tab| {
+        tab.refresh.is_none() && tab.changes.is_none()
+    });
+    assert_eq!(paths(&tab), [".gitignore", "a.rs", "b.rs"]);
+}
+
+#[test]
+fn a_commit_is_followed_with_the_range_showing_kept() {
+    let temp = feature_repo();
+    let mut tab = DiffTab::new(Some(temp.path().to_path_buf()), DiffLayout::Unified);
+    tab.start();
+    wait(&mut tab, highlighted);
+    assert_eq!(ready(&tab).ranges.len(), 4);
+    run_test_git(temp.path(), &["commit", "-q", "-am", "more"]);
+    wait(&mut tab, |tab| {
+        matches!(&tab.state, DiffState::Ready(ready) if ready.ranges.len() == 5) && highlighted(tab)
+    });
+    assert_eq!(ready(&tab).ranges[ready(&tab).range], Range::All);
+}

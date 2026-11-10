@@ -355,6 +355,11 @@ wait_view '(.tones | index("string")) as $string |
     [range(1; length; 2) as $i | .[$i]] | index($string)] | any(. != null)'
 sleep 0.7
 sb shot "$shots/diff.png" >/dev/null
+# Editing a file while the tab shows brings the change in by itself.
+printf 'live\n' >"$folder/live.txt"
+wait_view '[.files[].path] | index("live.txt") != null'
+rm "$folder/live.txt"
+wait_view '[.files[].path] | index("live.txt") == null'
 sb key n
 wait_view '.current_file == 1'
 sb key bracketright

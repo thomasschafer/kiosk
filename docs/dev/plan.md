@@ -189,7 +189,13 @@ Throwaway work that answers a question; record the answer under decisions.
 - [x] Word-level highlighting within changed lines: removed lines pair with the added lines
       after them, and the words that differ between a pair are marked, unless less than 40%
       of the line is shared.
-- [ ] Live refresh.
+- [x] Live refresh (`kiosk_core::diff::watch`): `notify` watches the working tree, and a
+      linked worktree's git directories too; once changes settle for 300 ms a worker checks
+      them with `git check-ignore`, and only if one matters reads the diff again, keeping the
+      range, the file the person is on, the line at the top as near as the new rows allow,
+      collapsed files and the column. Changes in git's directories count when they move
+      `HEAD`, the index or refs, not objects, so kiosk's own diffs never trigger one. If
+      watching fails, the tab says it isn't following changes.
 - [ ] Open the file at the line in an editor, through a configurable command.
 - [ ] Search within the diff, and filter files.
 

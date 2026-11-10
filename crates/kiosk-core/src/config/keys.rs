@@ -253,6 +253,7 @@ commands! {
     NextFile => "next_file", "Show the next file";
     PreviousFile => "previous_file", "Show the previous file, or the top of this one";
     ToggleFile => "toggle_file", "Collapse or expand the current file";
+    ToggleLayout => "toggle_layout", "Switch between unified and side by side";
     NextRange => "next_range", "Show the next range of changes";
     PreviousRange => "previous_range", "Show the previous range of changes";
     NextTab => "next_tab", "Show the next tab";
@@ -308,7 +309,8 @@ impl Command {
             | Self::PreviousFile
             | Self::NextRange
             | Self::PreviousRange
-            | Self::ToggleFile => return None,
+            | Self::ToggleFile
+            | Self::ToggleLayout => return None,
         })
     }
 }
@@ -535,6 +537,7 @@ impl Default for KeysConfig {
                 ("]", Command::NextRange),
                 ("[", Command::PreviousRange),
                 ("e", Command::ToggleFile),
+                ("s", Command::ToggleLayout),
             ]),
         }
     }
@@ -1000,6 +1003,7 @@ const DIFF: &[Command] = &[
     Command::NextRange,
     Command::PreviousRange,
     Command::ToggleFile,
+    Command::ToggleLayout,
 ];
 const LIST_NAVIGATION: &[Command] = &[Command::Noop, Command::MoveUp, Command::MoveDown];
 const MODAL: &[Command] = &[Command::Noop, Command::Open, Command::Back];

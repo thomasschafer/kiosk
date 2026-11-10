@@ -23,7 +23,7 @@ const TITLE = "Kiosk";
 const VERSION = "0.8.0";
 const REPOSITORY = "github.com/thomasschafer/kiosk";
 // The protocol this mod speaks; the picker refuses a different one.
-const PROTOCOL = 5;
+const PROTOCOL = 6;
 
 // The dialog's share of the window, as mod.json opens it. Kiosk draws its own panel inside
 // it (mod.json's frame is none): hung from the top, and as tall as what it shows, so a short
@@ -66,6 +66,9 @@ const SIDE_ROW = 30;
 const GUTTER = 46;
 // Roughly a column of code, for turning sideways scrolling into columns.
 const COLUMN = 7.5;
+// The narrowest the diff tab's code can be and still show side by side: two panes of about
+// 40 columns each, which scroll sideways for longer lines.
+const SIDE_BY_SIDE = 720;
 const SIGN = 16;
 // The tab bar along the panel's top, and the space round its tabs.
 const TAB_BAR = 46;
@@ -246,6 +249,11 @@ function viewportFor(height, toast, tabbed) {
   };
 }
 
+// Whether the diff tab, `width` px wide, has room for two panes of code side by side.
+function sideBySideFits(width) {
+  return width - 2 * BORDER - SIDEBAR >= SIDE_BY_SIDE;
+}
+
 // What each syntax tone looks like in the app's theme, by the tone names the picker sends.
 function syntaxColor(t, tone) {
   switch (tone) {
@@ -314,6 +322,27 @@ function toneColor(t, tone) {
     default:
       return t.foreground;
   }
+}
+
+// `spans` ([text, tone] pairs) split where the changed words `changed` ([start, length, ...]
+// in characters) begin and end, each piece with whether it is changed.
+function markChanged(spans, changed) {
+  const isChanged = (at) => {
+    for (let k = 0; k < changed.length; k += 2) if (at >= changed[k] && at < changed[k] + changed[k + 1]) return true;
+    return false;
+  };
+  const pieces = [];
+  let at = 0;
+  for (const [text, tone] of spans) {
+    for (const character of Array.from(text)) {
+      const mark = isChanged(at);
+      const last = pieces[pieces.length - 1];
+      if (last && last[1] === tone && last[2] === mark) last[0] += character;
+      else pieces.push([character, tone, mark]);
+      at += 1;
+    }
+  }
+  return pieces;
 }
 
 // How a file's change reads in the diff tab's colours.
@@ -484,6 +513,8 @@ export default class Kiosk extends View {
     this.wheel = 0;
     // Horizontal scroll over the diff tab's code not yet sent, in columns.
     this.wheelColumns = 0;
+    // The width of a column of the diff tab's code, once measured.
+    this.column = null;
     // The timer taking the keyboard back after a launcher's request, while it runs.
     this.refocusWatch = null;
     // Every tab name the picker understands, once it has said hello.
@@ -718,9 +749,13 @@ export default class Kiosk extends View {
     // The app draws a mod's sizes at its zoom; the dialog's share of the window is not.
     const zoom = settings().zoom;
     if (!(zoom > 0)) throw new Error(`the app's zoom is ${zoom}`);
-    const height = (globalThis.window.viewport_size().height * SHARE) / zoom;
+    const size = globalThis.window.viewport_size();
+    const height = (size.height * SHARE) / zoom;
     const view = this.view?.screen === "tabs" ? this.view.body : this.view;
-    const viewport = viewportFor(height, !!view?.toast, this.view?.bar?.length > 0);
+    const viewport = {
+      ...viewportFor(height, !!view?.toast, this.view?.bar?.length > 0),
+      side_by_side: sideBySideFits((size.width * SHARE) / zoom),
+    };
     if (JSON.stringify(viewport) === JSON.stringify(this.viewport)) return;
     this.viewport = viewport;
     this.send({ t: "viewport", ...viewport });
@@ -829,26 +864,22 @@ export default class Kiosk extends View {
       .child(this.footer(t, d.hints));
   }
 
-  // The rows on screen. Code is drawn as one text per syntax tone, each holding only its own
-  // characters and spaces elsewhere, stacked so a monospace font lines them up: far fewer
-  // elements than one per run. Headers, notes, line backgrounds and lines with characters
-  // wider or narrower than a column are drawn row by row.
+  // The rows on screen: headers and notes across the whole width, and code in one pane, or
+  // two side by side.
   diffBody(t, d) {
     const body = d.body;
-    const code = GUTTER * 2 + SIGN;
-    const layers = new Map();
-    const layer = (tone) => layers.get(tone) ?? layers.set(tone, []).get(tone);
-    const oldNumbers = [];
-    const newNumbers = [];
-    const signs = [];
-    const rows = [];
+    const count = body.rows.length;
+    // One code line, as a pane draws it, from a `line` row or a side of a `pair` row.
+    const side = ([kind, oldNumber, newNumber, text, runs, wide, changed]) => ({ kind, oldNumber, newNumber, text, runs, wide, changed });
+    const left = new Array(count).fill(null);
+    const right = new Array(count).fill(null);
+    const across = [];
     const at = (i) => div().absolute().left(0).right(0).top(i * DIFF_ROW).h(DIFF_ROW);
     body.rows.forEach((row, i) => {
-      for (const lines of [oldNumbers, newNumbers, signs]) lines.push("");
       switch (row[0]) {
         case "file": {
           const file = d.files[row[1]];
-          rows.push(at(i).id(`kiosk-diff-file-${row[1]}`).px(10).flex().items_center().gap(10).cursor_pointer()
+          across.push(at(i).id(`kiosk-diff-file-${row[1]}`).px(10).flex().items_center().gap(10).cursor_pointer()
             .bg(tint(t.foreground, 0.05)).border_t_1().border_color(t.border)
             .on_click((_e, cx) => { cx.stop_propagation(); this.send({ t: "diff", click: { on: "toggle", index: row[1] } }); })
             .child(icon(t, file.collapsed ? "chevron-right" : "chevron-down", t.dim, 12))
@@ -860,61 +891,109 @@ export default class Kiosk extends View {
           break;
         }
         case "note":
-          rows.push(at(i).pl(code).flex().items_center().text_size(12).text_color(t.dim).child(row[2]));
+          across.push(at(i).pl(GUTTER * 2 + SIGN).flex().items_center().text_size(12).text_color(t.dim).child(row[2]));
           break;
         case "hunk":
-          rows.push(at(i).bg(tint(t.accent, 0.06)).pl(code).flex().items_center().whitespace_nowrap().overflow_hidden().text_color(t.muted).child(row[1]));
+          across.push(at(i).bg(tint(t.accent, 0.06)).pl(GUTTER * 2 + SIGN).flex().items_center().whitespace_nowrap().overflow_hidden().text_color(t.muted).child(row[1]));
           break;
-        case "line": {
-          const [, kind, oldNumber, newNumber, text, runs, wide] = row;
-          oldNumbers[i] = oldNumber === null ? "" : String(oldNumber);
-          newNumbers[i] = newNumber === null ? "" : String(newNumber);
-          signs[i] = kind === " " ? "" : kind;
-          if (kind !== " ") rows.push(at(i).bg(tint(kind === "+" ? t.ansi2 : t.ansi1, settings().dark ? 0.14 : 0.12)));
-          const spans = [];
-          if (runs === null) {
-            spans.push([text, "plain"]);
-          } else {
-            const characters = Array.from(text);
-            let from = 0;
-            for (let r = 0; r < runs.length; r += 2) {
-              spans.push([characters.slice(from, from + runs[r]).join(""), d.tones[runs[r + 1]]]);
-              from += runs[r];
-            }
-          }
-          if (wide) {
-            rows.push(at(i).pl(code).flex().whitespace_nowrap().overflow_hidden()
-              .children(spans.map(([span, tone]) => div().flex_none().text_color(syntaxColor(t, tone)).child(span))));
-            break;
-          }
-          let column = 0;
-          for (const [span, tone] of spans) {
-            const lines = layer(tone);
-            while (lines.length <= i) lines.push("");
-            lines[i] += " ".repeat(column - Array.from(lines[i]).length) + span;
-            column += Array.from(span).length;
-          }
+        case "line":
+          left[i] = side(row.slice(1));
           break;
-        }
+        case "pair":
+          left[i] = row[1] && side([row[1][0], row[1][1], null, ...row[1].slice(2)]);
+          right[i] = row[2] && side([row[2][0], null, row[2][1], ...row[2].slice(2)]);
+          break;
         default:
           throw new Error(`the picker sent a diff row this mod doesn't know: ${row[0]}`);
       }
     });
-    const column = (lines, left, width, color, right = false) =>
-      div().absolute().top(0).left(left).w(width).line_height(`${DIFF_ROW}px`).whitespace_nowrap().text_color(color)
-        .when(right, (el) => el.text_right().pr(8)).child(lines.join("\n"));
+    const height = count * DIFF_ROW;
+    // A probe a hundred columns wide, measuring a column for marking changed words.
+    const probe = div().id("kiosk-diff-probe").absolute().top(-1000).left(0).whitespace_nowrap().child("0".repeat(100))
+      .on_size_change((size, cx) => {
+        if (this.column !== size.width / 100) {
+          this.column = size.width / 100;
+          cx.notify();
+        }
+      });
+    const panes = body.side_by_side
+      ? h_flex().absolute().top(0).left(0).right(0).h(height).gap(1)
+        .child(this.codePane(t, d.tones, left, ["oldNumber"], height).border_r_1().border_color(t.border))
+        .child(this.codePane(t, d.tones, right, ["newNumber"], height))
+      : h_flex().absolute().top(0).left(0).right(0).h(height).child(this.codePane(t, d.tones, left, ["oldNumber", "newNumber"], height));
     return div().id("kiosk-diff-body").relative().flex_1().h_full().min_w(0).overflow_hidden().py(PAD)
       .font_family(settings().font_family).text_size(12.5)
       .on_scroll_wheel((e, cx) => this.diffScroll(e, cx))
-      .child(div().relative().w_full().h(body.rows.length * DIFF_ROW)
-        .children(rows)
-        .child(column(oldNumbers, 0, GUTTER, t.dim, true))
-        .child(column(newNumbers, GUTTER, GUTTER, t.dim, true))
-        .child(column(signs, GUTTER * 2, SIGN, t.muted))
-        .children([...layers].map(([tone, lines]) =>
-          div().absolute().top(0).left(code).right(0).overflow_hidden().line_height(`${DIFF_ROW}px`).whitespace_nowrap()
-            .text_color(syntaxColor(t, tone)).child(lines.join("\n")))))
-      .when(body.total > body.rows.length, (el) => el.child(this.thumb(t, body.offset, body.rows.length, body.total, body.rows.length * DIFF_ROW, PAD)));
+      .child(div().relative().w_full().h(height).child(probe).child(panes).children(across))
+      .when(body.total > count, (el) => el.child(this.thumb(t, body.offset, count, body.total, height, PAD)));
+  }
+
+  // One pane of code: the lines in `lines`, their runs' tones indexing `tones` (by row, null for none), their numbers in the
+  // `numbers` columns, and each drawn as one text per syntax tone, holding only its own
+  // characters and spaces elsewhere, stacked so a monospace font lines them up: far fewer
+  // elements than one per run. Lines with characters wider or narrower than a column are
+  // drawn on their own.
+  codePane(t, tones, lines, numbers, height) {
+    const code = numbers.length * GUTTER + SIGN;
+    const columns = numbers.map(() => []);
+    const signs = [];
+    const layers = new Map();
+    const layer = (tone) => layers.get(tone) ?? layers.set(tone, []).get(tone);
+    const boxes = [];
+    const wideRows = [];
+    const row = (i) => div().absolute().left(0).right(0).top(i * DIFF_ROW).h(DIFF_ROW);
+    const dark = settings().dark;
+    lines.forEach((line, i) => {
+      numbers.forEach((key, c) => columns[c].push(line?.[key] == null ? "" : String(line[key])));
+      signs.push(line && line.kind !== " " ? line.kind : "");
+      if (!line) return;
+      const color = line.kind === "+" ? t.ansi2 : t.ansi1;
+      if (line.kind !== " ") boxes.push(row(i).bg(tint(color, dark ? 0.14 : 0.12)));
+      const mark = tint(color, dark ? 0.32 : 0.28);
+      // A wide line's characters aren't a column each, so its changed words are marked in
+      // its own text below rather than by position.
+      if (line.changed && this.column && !line.wide) {
+        for (let k = 0; k < line.changed.length; k += 2) {
+          boxes.push(div().absolute().top(i * DIFF_ROW).h(DIFF_ROW).left(code + line.changed[k] * this.column)
+            .w(line.changed[k + 1] * this.column).rounded(2).bg(mark));
+        }
+      }
+      const spans = [];
+      if (line.runs === null) {
+        spans.push([line.text, "plain"]);
+      } else {
+        const characters = Array.from(line.text);
+        let from = 0;
+        for (let r = 0; r < line.runs.length; r += 2) {
+          spans.push([characters.slice(from, from + line.runs[r]).join(""), tones[line.runs[r + 1]]]);
+          from += line.runs[r];
+        }
+      }
+      if (line.wide) {
+        wideRows.push(row(i).pl(code).flex().whitespace_nowrap().overflow_hidden()
+          .children(markChanged(spans, line.changed ?? []).map(([span, tone, changed]) =>
+            div().flex_none().text_color(syntaxColor(t, tone)).when(changed, (el) => el.bg(mark).rounded(2)).child(span))));
+        return;
+      }
+      let column = 0;
+      for (const [span, tone] of spans) {
+        const rows = layer(tone);
+        while (rows.length <= i) rows.push("");
+        rows[i] += " ".repeat(column - Array.from(rows[i]).length) + span;
+        column += Array.from(span).length;
+      }
+    });
+    const text = (rows, left, width, color, right = false) =>
+      div().absolute().top(0).left(left).w(width).line_height(`${DIFF_ROW}px`).whitespace_nowrap().text_color(color)
+        .when(right, (el) => el.text_right().pr(8)).child(rows.join("\n"));
+    return div().relative().flex_1().min_w(0).h(height).overflow_hidden()
+      .children(boxes)
+      .children(columns.map((rows, c) => text(rows, c * GUTTER, GUTTER, t.dim, true)))
+      .child(text(signs, numbers.length * GUTTER, SIGN, t.muted))
+      .children([...layers].map(([tone, rows]) =>
+        div().absolute().top(0).left(code).right(0).overflow_hidden().line_height(`${DIFF_ROW}px`).whitespace_nowrap()
+          .text_color(syntaxColor(t, tone)).child(rows.join("\n"))))
+      .children(wideRows);
   }
 
   // A panel with one centred line of news, such as the picker starting.

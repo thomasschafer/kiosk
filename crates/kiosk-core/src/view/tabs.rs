@@ -84,7 +84,11 @@ mod tests {
         let keys = KeysConfig::default();
         let view = tabs(
             Tabs::new(true, TabId::Diff),
-            TabBody::Diff(diff(&mut DiffTab::new(None), &keys, 10)),
+            TabBody::Diff(diff(
+                &mut DiffTab::new(None, crate::preferences::DiffLayout::Unified),
+                &keys,
+                10,
+            )),
             &keys,
         );
         let bar = view
@@ -123,7 +127,11 @@ mod tests {
         let keys = KeysConfig::from_toml("[tabs]\n\"ctrl+2\" = \"noop\"\n").unwrap();
         let view = tabs(
             Tabs::new(true, TabId::Diff),
-            TabBody::Diff(diff(&mut DiffTab::new(None), &keys, 10)),
+            TabBody::Diff(diff(
+                &mut DiffTab::new(None, crate::preferences::DiffLayout::Unified),
+                &keys,
+                10,
+            )),
             &keys,
         );
         assert_eq!(view.bar[1].key, None);

@@ -13,6 +13,7 @@ pub mod keymap;
 pub mod path;
 pub mod pending_delete;
 pub mod picker;
+pub mod preferences;
 pub mod product;
 pub mod setup;
 pub mod spawn;

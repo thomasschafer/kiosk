@@ -20,6 +20,7 @@ use kiosk_core::{
     keyboard::Action,
     keymap::{self, KeyInput},
     picker::{Picker, RunOutcome},
+    preferences::{self, DiffLayout, Preferences},
     product::Product,
     setup::{self, SetupOutcome, SetupState},
     state::{AppState, Mode, Overlay},
@@ -34,7 +35,8 @@ use crate::{
     connection::{Connection, Incoming},
     keystroke::{self, Platform},
     protocol::{
-        ClientMessage, DiffClick, HEARTBEAT, Outcome, PROTOCOL_VERSION, Screen, ServerMessage,
+        ClientMessage, DiffClick, HEARTBEAT, NoticeLevel, Outcome, PROTOCOL_VERSION, Screen,
+        ServerMessage,
     },
 };
 
@@ -58,6 +60,9 @@ pub struct Start<B: Backend, E> {
     pub current_cwd: Option<PathBuf>,
     /// The tab kiosk opens on.
     pub tab: TabId,
+    /// Where kiosk remembers choices such as the diff layout; without one, it remembers
+    /// nothing.
+    pub preferences: Option<PathBuf>,
 }
 
 /// Runs the session to the end and tells the frontend how it ended.
@@ -75,6 +80,7 @@ pub fn run<B: Backend, E>(
         backend,
         current_cwd,
         tab,
+        preferences,
     } = start;
     let mut tabs = Tabs::new(loaded.core.experimental_tabs, tab);
     if !loaded.core.experimental_tabs {
@@ -109,7 +115,14 @@ pub fn run<B: Backend, E>(
         return session.finish(Outcome::Quit);
     }
     let start = kiosk_core::start::prepare(product, loaded, current_cwd.as_deref())?;
-    let outcome = session.tabs(start, git, backend, tabs, current_cwd.as_deref())?;
+    let outcome = session.tabs(
+        start,
+        git,
+        backend,
+        tabs,
+        current_cwd.as_deref(),
+        preferences.as_deref(),
+    )?;
     session.finish(outcome)
 }
 
@@ -138,6 +151,15 @@ enum Step {
 }
 
 impl Session<'_> {
+    /// Tells the person about `error`, which kiosk carries on past.
+    fn warn(&self, title: &str, error: &anyhow::Error) -> Result<()> {
+        self.connection.send(&ServerMessage::Notify {
+            title,
+            body: &format!("{error:#}"),
+            level: NoticeLevel::Warning,
+        })
+    }
+
     fn finish(&self, outcome: Outcome) -> Result<Outcome> {
         self.connection.send(&ServerMessage::Exit { outcome })?;
         Ok(outcome)
@@ -273,6 +295,7 @@ impl Session<'_> {
         backend: Option<Arc<B>>,
         mut tabs: Tabs,
         current_cwd: Option<&Path>,
+        preferences_file: Option<&Path>,
     ) -> Result<Outcome> {
         let kiosk_core::start::PickerStart {
             mut state,
@@ -280,7 +303,19 @@ impl Session<'_> {
             keys,
         } = start;
         let picker = Picker::start(git, backend, keys, search_dirs, &state);
-        let mut diff = DiffTab::new(current_cwd.map(Path::to_path_buf));
+        let mut preferences_file = preferences_file;
+        let layout = match preferences_file.map(preferences::load).transpose() {
+            Ok(preferences) => preferences.unwrap_or_default().diff_layout,
+            Err(error) => {
+                self.warn("Kiosk couldn't read its preferences", &error)?;
+                // Saving would replace a file that holds something kiosk doesn't understand,
+                // so this session remembers nothing.
+                preferences_file = None;
+                DiffLayout::default()
+            }
+        };
+        let mut saved_layout = layout;
+        let mut diff = DiffTab::new(current_cwd.map(Path::to_path_buf), layout);
         let mut viewports = Viewports {
             list: 20,
             bases: 10,
@@ -324,6 +359,17 @@ impl Session<'_> {
                 );
                 if let Step::Finish(outcome) = step {
                     return Ok(outcome);
+                }
+                if diff.layout() != saved_layout {
+                    saved_layout = diff.layout();
+                    let preferences = Preferences {
+                        diff_layout: saved_layout,
+                    };
+                    if let Some(file) = preferences_file
+                        && let Err(error) = preferences::save(file, preferences)
+                    {
+                        self.warn("Kiosk couldn't save the diff layout", &error)?;
+                    }
                 }
                 timeout = Duration::ZERO;
             }
@@ -374,6 +420,7 @@ fn handle_message<B: Backend>(
             help,
             scan_warnings,
             diff: diff_rows,
+            side_by_side,
         } => {
             *viewports = Viewports {
                 list: list.max(1),
@@ -382,6 +429,7 @@ fn handle_message<B: Backend>(
                 scan_warnings: scan_warnings.max(1),
             };
             diff.set_viewport(diff_rows);
+            diff.set_side_by_side_fits(side_by_side);
             return Step::Continue;
         }
         _ => {}
@@ -470,6 +518,10 @@ fn handle_diff_message(
             Some(Command::NextRange) => Some(DiffAction::NextRange),
             Some(Command::PreviousRange) => Some(DiffAction::PreviousRange),
             Some(Command::ToggleFile) => Some(DiffAction::ToggleFile(None)),
+            Some(Command::ToggleLayout) => {
+                diff.toggle_layout();
+                None
+            }
             _ => None,
         },
     };

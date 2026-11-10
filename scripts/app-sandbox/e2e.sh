@@ -359,6 +359,14 @@ sb key n
 wait_view '.current_file == 1'
 sb key bracketright
 wait_view '.range == 1 and .ranges[1].label == "Uncommitted"'
+sb key s
+wait_view '.body.side_by_side and ([.body.rows[] | select(.[0] == "pair")] | length) > 0'
+# The changed word in the edited line is marked on both sides.
+wait_view '[.body.rows[] | select(.[0] == "pair" and .[1] != null and .[2] != null and .[1][0] == "-")][0] | (.[1][5] | length) > 0 and (.[2][5] | length) > 0'
+sleep 0.5
+sb shot "$shots/diff-side-by-side.png" >/dev/null
+sb key s
+wait_view '.body.side_by_side == false'
 sb key ctrl+h
 wait_view '.overlay.kind == "help" and .overlay.entries[0].name == "diff"'
 sb shot "$shots/diff-help.png" >/dev/null

@@ -91,8 +91,10 @@ wrong.
 - Live refresh watches files from Rust, filtered by `.gitignore`, plus `.git`'s HEAD, refs
   and index, debounced, keeping the place on the same hunk. The mod's `watchFolder` sees
   ignored folders on macOS, so a build would refresh constantly.
-- The only remembered state is unified versus side-by-side, written by Rust to
-  `data/kiosk/state.json` under the app's home so the popup and a popped-out window agree.
+- The only remembered state is unified versus side-by-side, in `preferences.toml` in the
+  product's state directory beside the pending removals (rather than under the app's home,
+  as first planned: kiosk already keeps state there), so the popup and a popped-out window
+  agree. A preferences file kiosk can't read is reported, not overwritten.
 - Explanations reference hunks rather than quoting them, pinned to a snapshot so they can't
   drift from what they describe. `herdr-app-kiosk explain snapshot` records the base and
   head commits and, if there are uncommitted changes, a commit of the working tree
@@ -182,9 +184,11 @@ Throwaway work that answers a question; record the answer under decisions.
 
 ### 4. Diff tab: complete
 
-- [ ] Side-by-side, falling back to unified when narrow, with a key to toggle; the choice
-      remembered.
-- [ ] Word-level highlighting within changed lines.
+- [x] Side-by-side, falling back to unified when narrow (the mod says whether 720 px of code
+      fits), with `s` to toggle; the choice remembered.
+- [x] Word-level highlighting within changed lines: removed lines pair with the added lines
+      after them, and the words that differ between a pair are marked, unless less than 40%
+      of the line is shared.
 - [ ] Live refresh.
 - [ ] Open the file at the line in an editor, through a configurable command.
 - [ ] Search within the diff, and filter files.
@@ -202,6 +206,18 @@ Throwaway work that answers a question; record the answer under decisions.
       diff tab's renderer.
 - [ ] Opens as a window by default.
 - [ ] Update the explain-diff skill (in the dotfiles repository) to write for it.
+
+### Shipping tabs
+
+Once the diff tab is finished and polished:
+
+- [ ] Drop `experimental_tabs`, document the tab and diff keys in the README, and ship the
+      launcher mods (phase 2's last item).
+- [ ] Record the README preview again (`scripts/app-sandbox/run.sh record`): the
+      repository and branch pickers, then the diff tab. Show the whole window scaled up, as
+      on a smaller screen, rather than cropped, so it reads on small displays; and record once
+      the repositories have been scanned and highlighting loaded, so it doesn't sit on
+      loading.
 
 ### Later
 

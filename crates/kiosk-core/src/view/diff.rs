@@ -20,6 +20,7 @@ use crate::{
     },
     display::{code_chars, sanitize},
     path::display,
+    preferences::DiffLayout,
 };
 
 use super::{Hint, OverlayView, help_view};
@@ -93,6 +94,8 @@ pub struct Body {
     pub offset: usize,
     /// The first column of code shown, when scrolled right.
     pub column: usize,
+    /// Whether the rows are side by side, as `pair` rows, rather than unified.
+    pub side_by_side: bool,
     pub total: usize,
     pub rows: Vec<RowView>,
 }
@@ -103,6 +106,7 @@ pub enum RowView {
     File(&'static str, usize),
     Note(&'static str, usize, String),
     Hunk(&'static str, String),
+    /// `["line", kind, old, new, text, runs, wide, changed]`.
     Line(
         &'static str,
         &'static str,
@@ -111,7 +115,32 @@ pub enum RowView {
         String,
         Option<Vec<u32>>,
         bool,
+        Option<Vec<u32>>,
     ),
+    /// `["pair", old, new]`, each side `[kind, number, text, runs, wide, changed]` or null.
+    Pair(&'static str, Option<SideView>, Option<SideView>),
+}
+
+/// One side of a side-by-side row: `[kind, number, text, runs, wide, changed]`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SideView(
+    &'static str,
+    Option<u32>,
+    String,
+    Option<Vec<u32>>,
+    bool,
+    Option<Vec<u32>>,
+);
+
+/// A line of code as the frontend draws it.
+struct ShownLine {
+    kind: &'static str,
+    text: String,
+    runs: Option<Vec<u32>>,
+    wide: bool,
+    /// The words changed from its partner on the other side, as `[start, length, ...]` in
+    /// shown columns, or `None` when it has no partner or the whole line changed.
+    changed: Option<Vec<u32>>,
 }
 
 /// The diff tab, with help over it in `help_rows` rows if it shows.
@@ -221,6 +250,7 @@ fn ready_view(ready: &Ready, viewport: usize, keys: &KeysConfig, hints: Vec<Hint
             view.body = Some(Body {
                 offset: shown.offset,
                 column: shown.column,
+                side_by_side: shown.layout == DiffLayout::SideBySide,
                 total: shown.rows.len(),
                 rows: shown.rows[shown.offset..end]
                     .iter()
@@ -305,36 +335,82 @@ fn row_view(files: &[ShownFile], row: Row, column: usize, keys: &KeysConfig) -> 
             );
             if !hunk.section.is_empty() {
                 header.push(' ');
-                header.push_str(&code_line(&hunk.section, None, 0).0);
+                header.push_str(&code_line(&hunk.section, None, None, 0).0);
             }
             RowView::Hunk("hunk", header)
         }
         Row::Line { file, hunk, line } => {
-            let shown = &files[file];
-            let FileContent::Text { hunks } = &shown.diff.content else {
-                unreachable!("only a text file has lines");
-            };
-            let line = &hunks[hunk].lines[line];
-            let runs = shown
-                .highlighted
-                .as_ref()
-                .and_then(|highlighted| highlighted.runs(line));
-            let (text, runs) = code_line(&line.text, runs, column);
-            let wide = text.chars().any(|character| character.width() != Some(1));
+            let shown = shown_line(&files[file], hunk, line, column);
+            let line = text_line(&files[file], hunk, line);
             RowView::Line(
                 "line",
-                match line.kind {
-                    crate::diff::LineKind::Added => "+",
-                    crate::diff::LineKind::Removed => "-",
-                    crate::diff::LineKind::Context => " ",
-                },
+                shown.kind,
                 line.old,
                 line.new,
-                text,
-                runs,
-                wide,
+                shown.text,
+                shown.runs,
+                shown.wide,
+                shown.changed,
             )
         }
+        Row::Pair {
+            file,
+            hunk,
+            old,
+            new,
+        } => {
+            let side = |index: Option<usize>, old_side: bool| {
+                index.map(|index| {
+                    let line = text_line(&files[file], hunk, index);
+                    let shown = shown_line(&files[file], hunk, index, column);
+                    SideView(
+                        // A context line is on both sides, so each side shows it as context.
+                        shown.kind,
+                        if old_side { line.old } else { line.new },
+                        shown.text,
+                        shown.runs,
+                        shown.wide,
+                        shown.changed,
+                    )
+                })
+            };
+            RowView::Pair("pair", side(old, true), side(new, false))
+        }
+    }
+}
+
+fn text_line(file: &ShownFile, hunk: usize, line: usize) -> &crate::diff::Line {
+    let FileContent::Text { hunks } = &file.diff.content else {
+        unreachable!("only a text file has lines");
+    };
+    &hunks[hunk].lines[line]
+}
+
+/// Line `line` of hunk `hunk` of `file` as shown from column `column`, its words that
+/// changed from its partner marked.
+fn shown_line(file: &ShownFile, hunk: usize, line: usize, column: usize) -> ShownLine {
+    let text = text_line(file, hunk, line);
+    let runs = file
+        .highlighted
+        .as_ref()
+        .and_then(|highlighted| highlighted.runs(text));
+    let changed = file
+        .changes
+        .as_ref()
+        .and_then(|changes| changes[hunk][line].as_deref());
+    let (shown_text, runs, changed) = code_line(&text.text, runs, changed, column);
+    ShownLine {
+        kind: match text.kind {
+            crate::diff::LineKind::Added => "+",
+            crate::diff::LineKind::Removed => "-",
+            crate::diff::LineKind::Context => " ",
+        },
+        wide: shown_text
+            .chars()
+            .any(|character| character.width() != Some(1)),
+        text: shown_text,
+        runs,
+        changed,
     }
 }
 
@@ -368,20 +444,31 @@ fn note_text(file: &ShownFile, note: Note, keys: &KeysConfig) -> String {
 
 /// `text` as [`code_chars`] shows it, from column `from`, with `runs` stretched to match and
 /// flattened to `[chars, tone index, ...]`.
-fn code_line(text: &str, runs: Option<&[Run]>, from: usize) -> (String, Option<Vec<u32>>) {
+fn code_line(
+    text: &str,
+    runs: Option<&[Run]>,
+    changed: Option<&[std::ops::Range<usize>]>,
+    from: usize,
+) -> (String, Option<Vec<u32>>, Option<Vec<u32>>) {
     let (shown_chars, widths) = code_chars(text);
+    // Where each of the line's characters starts among the shown ones, then where it ends.
+    let mut starts = Vec::with_capacity(widths.len() + 1);
+    let mut at = 0;
+    for width in &widths {
+        starts.push(at);
+        at += width;
+    }
+    starts.push(at);
     let visible: String = shown_chars.iter().skip(from).collect();
+    let count = |chars: usize| u32::try_from(chars).unwrap_or(u32::MAX);
     let runs = runs.map(|runs| {
         let mut flat = Vec::with_capacity(runs.len() * 2);
-        // Where the run starts, in the line's characters and in the shown ones.
-        let (mut at, mut column) = (0, 0);
+        let mut start = 0;
         for run in runs {
-            let end = (at + run.chars).min(widths.len());
-            let chars: usize = widths[at.min(end)..end].iter().sum();
-            at = end;
+            let end = (start + run.chars).min(widths.len());
             // The part of the run right of `from`.
-            let shown = (column + chars).saturating_sub(from.max(column));
-            column += chars;
+            let shown = starts[end].saturating_sub(starts[start].max(from));
+            start = end;
             if shown == 0 {
                 continue;
             }
@@ -389,14 +476,22 @@ fn code_line(text: &str, runs: Option<&[Run]>, from: usize) -> (String, Option<V
                 .iter()
                 .position(|tone| *tone == run.tone)
                 .expect("every tone is in TONES");
-            flat.extend([
-                u32::try_from(shown).unwrap_or(u32::MAX),
-                u32::try_from(tone).expect("few tones"),
-            ]);
+            flat.extend([count(shown), u32::try_from(tone).expect("few tones")]);
         }
         flat
     });
-    (visible, runs)
+    let changed = changed.map(|spans| {
+        spans
+            .iter()
+            .filter_map(|span| {
+                let start = starts[span.start.min(widths.len())].max(from);
+                let end = starts[span.end.min(widths.len())];
+                (end > start).then(|| [count(start - from), count(end - start)])
+            })
+            .flatten()
+            .collect()
+    });
+    (visible, runs, changed)
 }
 
 fn hints(keys: &KeysConfig) -> Vec<Hint> {
@@ -411,6 +506,8 @@ fn hints(keys: &KeysConfig) -> Vec<Hint> {
         pair(Command::NextRange, Command::PreviousRange, "range"),
         keys.diff_key(Command::ToggleFile)
             .map(|key| Hint::for_key(key, "collapse")),
+        keys.diff_key(Command::ToggleLayout)
+            .map(|key| Hint::for_key(key, "layout")),
         keys.layer_key(KeyLayer::Tabs, Command::NextTab)
             .map(|key| Hint::for_key(key, "next tab")),
         keys.diff_key(Command::Help)
@@ -438,7 +535,7 @@ mod tests {
             run(1, SyntaxTone::Keyword),
             run(2, SyntaxTone::String),
         ];
-        let (text, flat) = code_line("\tx\t\"", Some(&runs[..]), 0);
+        let (text, flat, _) = code_line("\tx\t\"", Some(&runs[..]), None, 0);
         assert_eq!(text, "    x   \"");
         let index =
             |wanted| u32::try_from(TONES.iter().position(|tone| *tone == wanted).unwrap()).unwrap();
@@ -448,11 +545,19 @@ mod tests {
 
     #[test]
     fn controls_are_escaped_and_a_crlf_ending_is_dropped() {
-        let (text, flat) = code_line("a\u{1b}b\r", Some(&[run(4, SyntaxTone::Plain)][..]), 0);
+        let (text, flat, _) = code_line(
+            "a\u{1b}b\r",
+            Some(&[run(4, SyntaxTone::Plain)][..]),
+            None,
+            0,
+        );
         assert_eq!(text, "a\\u{1b}b");
         // `\u{1b}` is six characters, and the carriage return is gone.
         assert_eq!(flat.unwrap(), [8, 0]);
-        assert_eq!(code_line("plain", None, 0), ("plain".into(), None));
+        assert_eq!(
+            code_line("plain", None, None, 0),
+            ("plain".into(), None, None)
+        );
     }
 
     #[test]
@@ -462,7 +567,7 @@ mod tests {
             run(3, SyntaxTone::Plain),
             run(4, SyntaxTone::String),
         ];
-        let (text, flat) = code_line("let x \"a\";", Some(&runs[..]), 4);
+        let (text, flat, _) = code_line("let x \"a\";", Some(&runs[..]), None, 4);
         assert_eq!(text, "x \"a\";");
         let string = u32::try_from(
             TONES
@@ -472,14 +577,34 @@ mod tests {
         )
         .unwrap();
         assert_eq!(flat.unwrap(), [2, 0, 4, string]);
-        assert_eq!(code_line("short", None, 10), (String::new(), None));
+        assert_eq!(
+            code_line("short", None, None, 10),
+            (String::new(), None, None)
+        );
+    }
+
+    #[test]
+    #[expect(
+        clippy::single_range_in_vec_init,
+        reason = "the changed spans are ranges, and each line here has one"
+    )]
+    fn changed_words_follow_tabs_escapes_and_the_scroll() {
+        // A tab before the change pushes it right; scrolled past the tab, it starts at 0.
+        let (_, _, changed) = code_line("\tab = 1", None, Some(&[6..7][..]), 0);
+        assert_eq!(changed.unwrap(), [9, 1]);
+        let (_, _, changed) = code_line("\tab = 1", None, Some(&[6..7][..]), 9);
+        assert_eq!(changed.unwrap(), [0, 1]);
+        let (_, _, changed) = code_line("x\u{1b}y", None, Some(&[1..2][..]), 0);
+        assert_eq!(changed.unwrap(), [1, 6]);
+        let (_, _, changed) = code_line("abc", None, Some(&[0..1][..]), 2);
+        assert_eq!(changed.unwrap(), Vec::<u32>::new());
     }
 
     #[test]
     fn a_very_long_line_is_converted_in_one_pass() {
         let long = "x".repeat(200_000);
         let started = std::time::Instant::now();
-        let (text, _) = code_line(&long, Some(&[run(200_000, SyntaxTone::Plain)][..]), 0);
+        let (text, _, _) = code_line(&long, Some(&[run(200_000, SyntaxTone::Plain)][..]), None, 0);
         assert_eq!(text.len(), 200_000);
         assert!(
             started.elapsed() < std::time::Duration::from_secs(1),
@@ -498,10 +623,20 @@ mod tests {
             "x".into(),
             Some(vec![1, 2]),
             false,
+            Some(vec![0, 1]),
         );
         assert_eq!(
             serde_json::to_string(&line).unwrap(),
-            r#"["line","+",null,3,"x",[1,2],false]"#
+            r#"["line","+",null,3,"x",[1,2],false,[0,1]]"#
+        );
+        let pair = RowView::Pair(
+            "pair",
+            None,
+            Some(SideView("+", Some(3), "x".into(), None, false, None)),
+        );
+        assert_eq!(
+            serde_json::to_string(&pair).unwrap(),
+            r#"["pair",null,["+",3,"x",null,false,null]]"#
         );
         assert_eq!(
             serde_json::to_string(&RowView::File("file", 2)).unwrap(),
@@ -523,6 +658,7 @@ mod tests {
                 ("p/n".into(), "file"),
                 ("[/]".into(), "range"),
                 ("e".into(), "collapse"),
+                ("s".into(), "layout"),
                 ("ctrl+pagedown".into(), "next tab"),
                 ("ctrl+h".into(), "help"),
                 ("esc".into(), "quit"),

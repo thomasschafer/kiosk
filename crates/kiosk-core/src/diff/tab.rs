@@ -12,10 +12,11 @@ use std::{
     thread,
 };
 
-use super::{Commit, FileContent, FileDiff, Highlighted, LineKind, Range, Target};
+use super::{Commit, FileContent, FileDiff, Highlighted, LineKind, Range, Target, pairs};
 use crate::{
     config::keys::{BindingMode, KeysConfig},
     keyboard::Action,
+    preferences::DiffLayout,
     state::HelpOverlayState,
 };
 
@@ -87,6 +88,8 @@ pub struct Shown {
     pub column: usize,
     /// The widest line, in columns, which bounds `column`.
     widest: usize,
+    /// How the rows are laid out.
+    pub layout: DiffLayout,
     /// Highlighting still runs on the range's worker until every file has it.
     worker: Option<Worker>,
 }
@@ -100,7 +103,13 @@ pub struct ShownFile {
     pub removed: usize,
     /// Why the file starts collapsed, if it does.
     pub collapse_reason: Option<CollapseReason>,
+    /// For each hunk, each line's words changed from its partner, once the worker has
+    /// compared them alongside highlighting.
+    pub changes: Option<LineChanges>,
 }
+
+/// For each hunk of a file, each line's changed words (see [`pairs::changed_lines`]).
+pub type LineChanges = Vec<Vec<Option<Vec<std::ops::Range<usize>>>>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CollapseReason {
@@ -123,16 +132,56 @@ pub enum Row {
         hunk: usize,
         line: usize,
     },
+    /// Side by side: the old line on the left and the new on the right, by index into the
+    /// hunk's lines; a context line is on both.
+    Pair {
+        file: usize,
+        hunk: usize,
+        old: Option<usize>,
+        new: Option<usize>,
+    },
 }
 
 impl Row {
+    /// Whether this row shows what `other` showed, in either layout: a line of a hunk,
+    /// whether alone or paired, or the same header or note.
+    fn shows(self, other: Self) -> bool {
+        let line = |row: Self| match row {
+            Self::Line { file, hunk, line } => Some((file, hunk, line, line)),
+            Self::Pair {
+                file,
+                hunk,
+                old,
+                new,
+            } => {
+                let first = old.or(new)?;
+                Some((file, hunk, first, new.unwrap_or(first)))
+            }
+            _ => None,
+        };
+        match (line(self), line(other)) {
+            (
+                Some((file, hunk, old, new)),
+                Some((other_file, other_hunk, other_old, other_new)),
+            ) => {
+                (file, hunk) == (other_file, other_hunk)
+                    && [old, new]
+                        .iter()
+                        .any(|line| [other_old, other_new].contains(line))
+            }
+            (None, None) => self == other,
+            _ => false,
+        }
+    }
+
     /// The file the row belongs to.
     pub const fn file(self) -> usize {
         match self {
             Self::File(file)
             | Self::Note(file, _)
             | Self::Hunk { file, .. }
-            | Self::Line { file, .. } => file,
+            | Self::Line { file, .. }
+            | Self::Pair { file, .. } => file,
         }
     }
 }
@@ -189,7 +238,8 @@ enum Event {
     },
     NoTarget(String),
     Diffed(Vec<FileDiff>),
-    Highlighted(usize, Highlighted),
+    /// A file's highlighting and the words changed in each line of each of its hunks.
+    Highlighted(usize, Highlighted, LineChanges),
     Failed(String),
 }
 
@@ -272,7 +322,11 @@ impl Worker {
             for (index, file) in to_highlight.iter().enumerate() {
                 // A file that can't be highlighted shows plain; the diff itself is fine.
                 let highlighted = target.highlight(file).unwrap_or_default();
-                if !send(Event::Highlighted(index, highlighted)) {
+                let changes = match &file.content {
+                    FileContent::Text { hunks } => hunks.iter().map(pairs::changed_lines).collect(),
+                    FileContent::Binary => Vec::new(),
+                };
+                if !send(Event::Highlighted(index, highlighted, changes)) {
                     return;
                 }
             }
@@ -291,17 +345,61 @@ pub struct DiffTab {
     turns: Arc<Mutex<()>>,
     /// The key bindings, shown over the tab while open.
     pub help: Option<HelpOverlayState>,
+    /// The layout the person chose.
+    layout: DiffLayout,
+    /// Whether side by side fits on screen; when it doesn't, the tab shows unified.
+    side_by_side_fits: bool,
 }
 
 impl DiffTab {
-    /// A diff tab for the checkout `cwd` is in, which reads nothing until [`Self::start`].
-    pub fn new(cwd: Option<PathBuf>) -> Self {
+    /// A diff tab for the checkout `cwd` is in, laid out as `layout` where it fits, which
+    /// reads nothing until [`Self::start`].
+    pub fn new(cwd: Option<PathBuf>, layout: DiffLayout) -> Self {
         Self {
             cwd,
             state: DiffState::Unstarted,
             viewport: 20,
             turns: Arc::default(),
             help: None,
+            layout,
+            side_by_side_fits: true,
+        }
+    }
+
+    /// The layout the person chose, which may not fit.
+    pub const fn layout(&self) -> DiffLayout {
+        self.layout
+    }
+
+    /// The layout shown: the one chosen, or unified where side by side doesn't fit.
+    pub const fn shown_layout(&self) -> DiffLayout {
+        match self.layout {
+            DiffLayout::SideBySide if self.side_by_side_fits => DiffLayout::SideBySide,
+            DiffLayout::SideBySide | DiffLayout::Unified => DiffLayout::Unified,
+        }
+    }
+
+    /// Says whether side by side fits on screen, laying the rows out again if that changes
+    /// what shows.
+    pub fn set_side_by_side_fits(&mut self, fits: bool) {
+        self.side_by_side_fits = fits;
+        self.lay_out_again();
+    }
+
+    pub fn toggle_layout(&mut self) {
+        self.layout = self.layout.toggled();
+        self.lay_out_again();
+    }
+
+    fn lay_out_again(&mut self) {
+        let layout = self.shown_layout();
+        let viewport = self.viewport;
+        if let Some(shown) = self.shown_mut()
+            && shown.layout != layout
+        {
+            shown.layout = layout;
+            shown.lay_out();
+            shown.offset = shown.offset.min(max_offset(shown.rows.len(), viewport));
         }
     }
 
@@ -405,6 +503,7 @@ impl DiffTab {
                 _ => self.state = DiffState::Failed(message),
             },
             Event::Diffed(files) => {
+                let layout = self.shown_layout();
                 let DiffState::Ready(ready) = &mut self.state else {
                     return;
                 };
@@ -427,14 +526,16 @@ impl DiffTab {
                     current_file: 0,
                     column: 0,
                     widest: 0,
+                    layout,
                 };
                 shown.lay_out();
                 ready.content = RangeContent::Shown(shown);
             }
-            Event::Highlighted(index, highlighted) => {
+            Event::Highlighted(index, highlighted, changes) => {
                 if let Some(shown) = self.shown_mut() {
                     if let Some(file) = shown.files.get_mut(index) {
                         file.highlighted = Some(highlighted);
+                        file.changes = Some(changes);
                     }
                     if index + 1 == shown.files.len() {
                         shown.worker = None;
@@ -545,14 +646,16 @@ impl ShownFile {
             highlighted: None,
             added,
             removed,
+            changes: None,
         }
     }
 }
 
 impl Shown {
-    /// Lays the files out as rows, keeping the file at the top of the screen there.
+    /// Lays the files out as rows, keeping what was at the top of the screen there: the same
+    /// line, whichever layout it is now in, or else the same hunk or file.
     fn lay_out(&mut self) {
-        let top_file = self.file_at(self.offset);
+        let anchor = self.rows.get(self.offset).copied();
         self.rows.clear();
         self.widest = 0;
         for (index, file) in self.files.iter().enumerate() {
@@ -577,23 +680,49 @@ impl Shown {
                     file: index,
                     hunk: hunk_index,
                 });
-                for (line_index, line) in hunk.lines.iter().enumerate() {
-                    self.rows.push(Row::Line {
-                        file: index,
-                        hunk: hunk_index,
-                        line: line_index,
-                    });
-                    if line.missing_newline {
-                        self.rows.push(Row::Note(index, Note::NoNewline));
-                    }
+                for line in &hunk.lines {
                     self.widest = self
                         .widest
                         .max(crate::display::code_chars(&line.text).0.len());
                 }
+                let missing_newline =
+                    |line: Option<usize>| line.is_some_and(|line| hunk.lines[line].missing_newline);
+                match self.layout {
+                    DiffLayout::Unified => {
+                        for line in 0..hunk.lines.len() {
+                            self.rows.push(Row::Line {
+                                file: index,
+                                hunk: hunk_index,
+                                line,
+                            });
+                            if missing_newline(Some(line)) {
+                                self.rows.push(Row::Note(index, Note::NoNewline));
+                            }
+                        }
+                    }
+                    DiffLayout::SideBySide => {
+                        for (old, new) in pairs::side_by_side(hunk) {
+                            self.rows.push(Row::Pair {
+                                file: index,
+                                hunk: hunk_index,
+                                old,
+                                new,
+                            });
+                            if missing_newline(old) || missing_newline(new) {
+                                self.rows.push(Row::Note(index, Note::NoNewline));
+                            }
+                        }
+                    }
+                }
             }
         }
-        if let Some(file) = top_file {
-            self.offset = self.file_row(file).unwrap_or(0);
+        if let Some(anchor) = anchor {
+            self.offset = self
+                .rows
+                .iter()
+                .position(|row| row.shows(anchor))
+                .or_else(|| self.file_row(anchor.file()))
+                .unwrap_or(0);
         }
     }
 

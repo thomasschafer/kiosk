@@ -313,3 +313,22 @@ fn sideways_scrolling_reaches_the_end_of_a_line_whose_controls_show_as_escapes()
     tab.act(DiffAction::ScrollColumns(1000));
     assert_eq!(tab.shown().unwrap().column, 180 - MIN_COLUMNS_SHOWN);
 }
+
+#[test]
+fn help_opens_filters_as_typed_and_closes() {
+    let mut tab = DiffTab::new(None);
+    let keys = KeysConfig::default();
+    tab.show_help(&keys);
+    let all = tab.help.as_ref().unwrap().list.filtered.len();
+    for character in "next file".chars() {
+        tab.help_action(Action::Insert(character));
+    }
+    let help = tab.help.as_ref().unwrap();
+    assert!(help.list.filtered.len() < all);
+    let (first, _) = help.list.filtered[0];
+    assert_eq!(help.rows[first].command_name, "next_file");
+    tab.help_action(Action::Edit(crate::state::TextEdit::Clear));
+    assert_eq!(tab.help.as_ref().unwrap().list.filtered.len(), all);
+    tab.help_action(Action::CloseOverlay);
+    assert!(tab.help.is_none());
+}

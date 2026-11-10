@@ -349,6 +349,78 @@ impl HelpOverlayState {
         let list = SearchableList::new(rows.len());
         Self { rows, list }
     }
+
+    /// The rows to filter, as the picker's filter worker takes them.
+    pub(crate) fn filter_items(&self) -> Vec<crate::picker::FilterItem> {
+        self.rows
+            .iter()
+            .enumerate()
+            .map(|(index, row)| crate::picker::FilterItem {
+                key: crate::event::FilterKey::Help(index),
+                text: row.search_text(),
+            })
+            .collect()
+    }
+
+    /// Shows every row, for an empty query.
+    pub(crate) fn show_all(&mut self) {
+        self.list.filtered = (0..self.rows.len()).map(|index| (index, 0)).collect();
+        self.list.selected = (!self.rows.is_empty()).then_some(0);
+        self.list.scroll_offset = 0;
+    }
+
+    /// Shows the rows `matches` scores, keeping the selected row selected if it still
+    /// matches, else `requested`, else the first.
+    pub(crate) fn apply_matches(
+        &mut self,
+        matches: &[(crate::event::FilterKey, i64)],
+        requested: Option<usize>,
+    ) {
+        use crate::event::FilterKey;
+        let current = self
+            .list
+            .selected
+            .and_then(|selected| self.list.filtered.get(selected))
+            .map(|(index, _)| *index);
+        let scores = matches
+            .iter()
+            .filter_map(|(key, score)| match key {
+                FilterKey::Help(index) if *index < self.rows.len() => Some((*index, *score)),
+                FilterKey::Repo(_)
+                | FilterKey::Branch(_)
+                | FilterKey::Base(_)
+                | FilterKey::Help(_) => None,
+            })
+            .collect::<HashMap<_, _>>();
+        self.list.filtered = (0..self.rows.len())
+            .filter_map(|index| scores.get(&index).map(|score| (index, *score)))
+            .collect();
+        self.list.selected = current
+            .or(requested)
+            .and_then(|selected| {
+                self.list
+                    .filtered
+                    .iter()
+                    .position(|(index, _)| *index == selected)
+            })
+            .or_else(|| (!self.list.filtered.is_empty()).then_some(0));
+        self.list.scroll_offset = 0;
+    }
+
+    /// Filters by the query now rather than on the picker's filter worker, for a list too
+    /// short to need one.
+    pub fn filter_now(&mut self) {
+        if self.list.input.text.is_empty() {
+            self.show_all();
+            return;
+        }
+        let matches = crate::picker::fuzzy_filter(
+            &self.list.input.text,
+            &self.filter_items(),
+            &fuzzy_matcher::skim::SkimMatcherV2::default(),
+        );
+        self.apply_matches(&matches, None);
+    }
 }
 
 /// The scroll position of the scan warnings overlay. The warnings themselves live in

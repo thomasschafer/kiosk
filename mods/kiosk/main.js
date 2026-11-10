@@ -783,6 +783,7 @@ export default class Kiosk extends View {
 
   // The diff tab: the whole dialog, as a diff needs the room.
   diff(t, d, bar) {
+    if (d.overlay?.kind === "help") return this.layer(this.help(t, d.overlay), () => this.send({ t: "dismiss" }));
     const sideRow = (id, selected, onClick, ...children) =>
       h_flex().id(id).h(SIDE_ROW).flex_none().px(INSET).gap(8).items_center().rounded(6).cursor_pointer().text_size(12.5)
         .when(selected, (el) => el.bg(selectedFill(t)))

@@ -174,9 +174,11 @@ Throwaway work that answers a question; record the answer under decisions.
 - [x] Empty states: not a repository, no folder (as for a remote machine's space), the
       default branch itself, detached HEAD, a range with no changes. A branch without a
       checkout is phase 5's way in.
-- [ ] Open the diff tab without search directories: today a missing config's setup wizard,
-      or a config with no search directories, comes before any tab.
-- [ ] Help in the diff tab: `ctrl+h` does nothing there yet, as help is the picker's.
+- [x] Open the diff tab without search directories: opening on it skips the setup wizard
+      and the no-search-directories screen, and the picker beside it finds nothing until
+      they are set. (Without a config, `experimental_tabs` is off, so the wizard still runs.)
+- [x] Help in the diff tab, listing its own keys, the tab keys, and quitting and help. Help
+      lists commands in the order `commands!` declares them.
 
 ### 4. Diff tab: complete
 

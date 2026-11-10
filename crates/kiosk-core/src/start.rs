@@ -18,17 +18,13 @@ pub struct PickerStart {
     pub keys: KeysConfig,
 }
 
-/// Prepares the picker for `loaded`, which must list search directories. `current_cwd` is
-/// where the user is, for preselecting the repository and branch they are in.
+/// Prepares the picker for `loaded`. With no search directories, the picker finds nothing.
+/// `current_cwd` is where the user is, for preselecting the repository and branch they are in.
 pub fn prepare<E>(
     product: &'static Product,
     loaded: LoadedConfig<E>,
     current_cwd: Option<&Path>,
 ) -> Result<PickerStart> {
-    anyhow::ensure!(
-        !loaded.core.search_dirs.is_empty(),
-        "the config lists no search directories"
-    );
     let home = crate::path::home_dir();
     let resolved = loaded
         .core

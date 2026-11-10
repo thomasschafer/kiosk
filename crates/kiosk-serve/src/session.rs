@@ -90,7 +90,11 @@ pub fn run<B: Backend, E>(
         connection,
         last_view: None,
     };
-    if !loaded.exists
+    // The diff tab needs no search directories, so opening on it skips asking for them; the
+    // picker beside it finds nothing until they are set.
+    let needs_search_dirs = tabs.active() == TabId::Picker;
+    if needs_search_dirs
+        && !loaded.exists
         && let Some(path) = loaded.path.clone()
     {
         let Some(search_dirs) = session.setup(product, &path, &mut tabs)? else {
@@ -99,7 +103,7 @@ pub fn run<B: Backend, E>(
         loaded.core.search_dirs = search_dirs;
         loaded.exists = true;
     }
-    if loaded.core.search_dirs.is_empty() {
+    if needs_search_dirs && loaded.core.search_dirs.is_empty() {
         let path = loaded.path.clone();
         session.no_search_dirs(path.as_deref())?;
         return session.finish(Outcome::Quit);
@@ -298,7 +302,7 @@ impl Session<'_> {
             if std::mem::take(&mut changed) {
                 self.show(Screen::Tabs(tabs_view(
                     tabs,
-                    &diff,
+                    &mut diff,
                     &mut state,
                     picker.keys(),
                     viewports,
@@ -330,14 +334,14 @@ impl Session<'_> {
 /// The tab bar over whichever tab shows.
 fn tabs_view(
     tabs: Tabs,
-    diff: &DiffTab,
+    diff: &mut DiffTab,
     state: &mut AppState,
     keys: &KeysConfig,
     viewports: Viewports,
 ) -> TabsView {
     let body = match tabs.active() {
         TabId::Picker => TabBody::Picker(view::picker(state, keys, viewports)),
-        TabId::Diff => TabBody::Diff(view::diff::diff(diff, keys)),
+        TabId::Diff => TabBody::Diff(view::diff::diff(diff, keys, viewports.help)),
     };
     view::tabs::tabs(tabs, body, keys)
 }
@@ -406,7 +410,33 @@ fn handle_diff_message(
     keys: &KeysConfig,
     diff: &mut DiffTab,
 ) -> Step {
-    use kiosk_core::config::keys::Command;
+    use kiosk_core::config::keys::{BindingMode, Command};
+    if diff.help.is_some() {
+        let action = match message {
+            ClientMessage::Scroll { delta, .. } => Some(Action::MoveSelection(*delta)),
+            ClientMessage::Activate { position, .. } => Some(Action::Select(*position)),
+            ClientMessage::Dismiss => Some(Action::CloseOverlay),
+            ClientMessage::Paste { text } => {
+                for character in text.chars().filter(|character| !character.is_control()) {
+                    diff.help_action(Action::Insert(character));
+                }
+                None
+            }
+            // Help's search edits with the text-editing keys and moves with the navigation
+            // keys, as it does over the picker's dialogs.
+            _ => input.and_then(|input| {
+                keymap::help_overlay_action(
+                    input,
+                    keys.command_for(BindingMode::Choice, input.chord),
+                    keys,
+                )
+            }),
+        };
+        if let Some(action) = action {
+            diff.help_action(action);
+        }
+        return Step::Continue;
+    }
     let action = match message {
         ClientMessage::Scroll { delta, columns } => {
             if *columns != 0 {
@@ -423,6 +453,10 @@ fn handle_diff_message(
         }),
         _ => match input.and_then(|input| keys.diff_command(input.chord)) {
             Some(Command::Quit) => return Step::Finish(Outcome::Quit),
+            Some(Command::Help) => {
+                diff.show_help(keys);
+                None
+            }
             Some(Command::ScrollDown) => Some(DiffAction::Scroll(1)),
             Some(Command::ScrollUp) => Some(DiffAction::Scroll(-1)),
             Some(Command::ScrollLeft) => Some(DiffAction::ScrollColumns(-SCROLL_COLUMNS)),

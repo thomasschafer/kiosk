@@ -695,3 +695,79 @@ fn the_diff_tab_shows_a_checkouts_changes_and_moves_through_them() {
     assert_eq!(client.end(), json!({ "t": "exit", "outcome": "quit" }));
     session.join().unwrap().unwrap();
 }
+
+#[test]
+fn help_in_the_diff_tab_lists_its_keys_filters_and_closes() {
+    let root = tempfile::tempdir().unwrap();
+    let search_dir = root.path().to_path_buf();
+    let (mut client, session, _) = connect(move || Start {
+        tab: TabId::Diff,
+        ..two_repo_start(&search_dir, mock_backend())
+    });
+    client.view_until(|view| tab_body(view, "diff").is_some());
+    client.key("ctrl-h", None);
+    let view = client.view_until(|view| {
+        tab_body(view, "diff").is_some_and(|body| body["overlay"]["kind"] == "help")
+    });
+    let sections = view["body"]["overlay"]["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|entry| entry["kind"] == "section")
+        .map(|entry| entry["name"].as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(sections[0], "diff");
+    client.type_text("toggle");
+    let view = client.view_until(|view| {
+        tab_body(view, "diff").is_some_and(|body| body["overlay"]["query"]["before"] == "toggle")
+    });
+    let commands = view["body"]["overlay"]["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|entry| entry["command"].as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(commands[0], "toggle_file");
+    client.key("escape", None);
+    client.view_until(|view| tab_body(view, "diff").is_some_and(|body| body["overlay"].is_null()));
+    client.key("escape", None);
+    assert_eq!(client.end(), json!({ "t": "exit", "outcome": "quit" }));
+    session.join().unwrap().unwrap();
+}
+
+#[test]
+fn opening_on_the_diff_tab_needs_no_search_directories() {
+    let repo = tempfile::tempdir().unwrap();
+    kiosk_core::git::test_fixtures::init_test_repo(repo.path());
+    std::fs::write(repo.path().join("new.txt"), "new\n").unwrap();
+    let cwd = repo.path().to_path_buf();
+    let (mut client, session, _) = connect(move || Start {
+        loaded: LoadedConfig {
+            core: CoreConfig {
+                experimental_tabs: true,
+                ..CoreConfig::for_product(&TEST_PRODUCT).unwrap()
+            },
+            extension: NoExtension {},
+            path: Some("/config/kiosk.toml".into()),
+            exists: true,
+            warnings: Vec::new(),
+        },
+        git: Arc::new(MockGitProvider::default()) as Arc<dyn GitProvider>,
+        backend: None,
+        current_cwd: Some(cwd),
+        tab: TabId::Diff,
+    });
+    let view = client.view_until(|view| {
+        tab_body(view, "diff").is_some_and(|body| {
+            body["files"]
+                .as_array()
+                .is_some_and(|files| !files.is_empty())
+        })
+    });
+    assert_eq!(view["body"]["files"][0]["path"], "new.txt");
+    client.key("ctrl-1", None);
+    client.view_until(|view| tab_body(view, "picker").is_some());
+    client.send(&json!({ "t": "close" }));
+    assert_eq!(client.end()["outcome"], "quit");
+    session.join().unwrap().unwrap();
+}

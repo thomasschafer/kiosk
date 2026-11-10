@@ -101,6 +101,50 @@ sb key ctrl+u
 wait_view '.main.query.before == ""'
 sb key Escape
 wait_closed
+
+check "a launcher opens kiosk on its tab, and closes kiosk when that tab already shows"
+launch_diff() { sb "do" mod.open '{"name":"kiosk-diff"}' >/dev/null; }
+# The launcher closes once kiosk acknowledges it, just after kiosk shows the tab.
+# `ignore` names an overlay that may also be open, such as the app's toast.
+only_kiosk_open() {
+  local ignore=${1:-}
+  for _ in $(seq 50); do
+    [[ $(open_overlays | tr ' ' '\n' | grep -vx "${ignore:-^$}" | xargs) == kiosk ]] && return
+    sleep 0.05
+  done
+  fail "the launcher left overlays: $(open_overlays)"
+}
+: >"$trace"
+launch_diff
+wait_view '.screen == "diff"'
+only_kiosk_open
+sleep 0.7
+launch_diff
+wait_closed
+
+check "a launcher switches an open kiosk to its tab and gives the keyboard back"
+open_kiosk
+wait_view '.screen == "picker"'
+launch_diff
+wait_view '.screen == "diff"'
+only_kiosk_open
+sb key ctrl+1
+wait_view '.screen == "picker"'
+
+check "a launcher still opens kiosk after a crash left it marked open"
+pkill -9 -x herdr-app
+for _ in $(seq 100); do pgrep -x herdr-app >/dev/null || break; sleep 0.05; done
+! pgrep -x herdr-app >/dev/null || fail "the app outlived kill -9"
+pkill -x herdr-app-kiosk || true
+jq -e '."kiosk.open" != null' "$HOME/sb/home/shared.json" >/dev/null || fail "the crash left kiosk unmarked, so this tests nothing"
+sb up >/dev/null
+: >"$trace"
+launch_diff
+wait_view '.screen == "diff"'
+# The launcher's request went nowhere before it opened kiosk, and the app says so in a toast.
+only_kiosk_open toast
+sb key Escape
+wait_closed
 printf 'search_dirs = ["~/code"]\n' >"$config"
 open_kiosk
 wait_view '.main.state == "list" and .main.total == 23'

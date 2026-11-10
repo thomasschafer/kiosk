@@ -73,10 +73,14 @@ const MAX_SNAPSHOT = 8 * 1024;
 // tab. A launcher sets LAUNCH to the tab and opens kiosk, which takes it and clears it; while
 // kiosk is open, OPEN names its overlay, and a launcher instead sends it `kiosk.tab:<tab>:<nonce>`,
 // which kiosk acknowledges by setting ACK to the nonce. A launcher that hears nothing takes OPEN
-// as left over from a crash. `kiosk.focus` gives kiosk the keyboard back once a launcher has gone.
+// as left over from a crash. The launcher's popup takes the keyboard, so kiosk takes it back.
 const LAUNCH = "kiosk.launch";
 const OPEN = "kiosk.open";
 const ACK = "kiosk.ack";
+// How long kiosk keeps taking the keyboard back after a launcher's request, which covers the
+// launcher waiting for the acknowledgement and closing.
+const REFOCUS_MS = 1000;
+const REFOCUS_EVERY_MS = 20;
 // Where the picker saves notices it couldn't show because its popup had closed, one JSON
 // object per line, below the app's home.
 const SAVED_NOTICES = "data/kiosk/notices.jsonl";
@@ -419,6 +423,8 @@ export default class Kiosk extends View {
     /** @type {Link} */
     this.link = { state: "starting" };
     this.wheel = 0;
+    // The timer taking the keyboard back after a launcher's request, while it runs.
+    this.refocusWatch = null;
     // Every tab name the picker understands, once it has said hello.
     this.tabNames = [];
     // Launchers' tabs that came while the picker started, in order, sent once it has said hello.
@@ -430,7 +436,7 @@ export default class Kiosk extends View {
     setShared(OPEN, { overlay: props().overlay });
     cx.spawn(async (cx) => {
       for (;;) {
-        this.command(await nextCommand());
+        this.command(await nextCommand(), cx);
         cx.notify();
       }
     });
@@ -525,13 +531,8 @@ export default class Kiosk extends View {
     });
   }
 
-  // A command a launcher mod sent: `tab:<tab>[:<nonce>]` asks for a tab, and `focus` gives
-  // kiosk the keyboard back.
-  command(command) {
-    if (command === "focus") {
-      this.handle.focus();
-      return;
-    }
+  // A command a launcher mod sent: `tab:<tab>[:<nonce>]` asks for a tab.
+  command(command, cx) {
     const [name, tab, nonce] = command.split(":");
     if (name !== "tab" || !tab) {
       notify({ title: "Kiosk got a command it doesn't know", body: command, level: "warning" });
@@ -539,8 +540,29 @@ export default class Kiosk extends View {
     }
     // Acknowledged even for a tab kiosk lacks, so the launcher doesn't take kiosk for gone.
     if (nonce) setShared(ACK, nonce);
+    this.refocus(cx);
     if (this.ready) this.launchTab(tab);
     else this.pendingLaunches.push(tab);
+  }
+
+  // Takes the keyboard back whenever it has gone in the next REFOCUS_MS: the launcher's popup
+  // has it, and when the popup closes it goes nowhere.
+  // One watch at a time; a newer request restarts it, and it stops once kiosk is closing.
+  refocus(cx) {
+    this.stopRefocus();
+    const until = Date.now() + REFOCUS_MS;
+    this.refocusWatch = cx.timer.every(REFOCUS_EVERY_MS, () => {
+      if (this.link.state === "closed" || Date.now() >= until) {
+        this.stopRefocus();
+        return;
+      }
+      if (!this.handle.is_focused()) this.handle.focus();
+    });
+  }
+
+  stopRefocus() {
+    this.refocusWatch?.cancel();
+    this.refocusWatch = null;
   }
 
   // Asks the picker for `tab`, or says kiosk has no such tab rather than send one the picker
@@ -563,6 +585,7 @@ export default class Kiosk extends View {
     if (link.state === "closed") return;
     this.link = { state: "closed" };
     if (link.state === "connected") link.socket.close();
+    this.stopRefocus();
     this.forget();
     closeOverlay(props().overlay);
   }
@@ -570,6 +593,7 @@ export default class Kiosk extends View {
   // A popup closed while still starting has no picker to tell, as its startup ends with
   // it; a picker no one connects to gives up on its own.
   async close() {
+    this.stopRefocus();
     this.forget();
     const link = this.link;
     if (link.state === "closed") return;

@@ -41,7 +41,7 @@ jobs:
 
       - name: Check the mod's syntax
         shell: bash
-        run: node --check mods/kiosk/main.js
+        run: for mod in mods/*/main.js; do node --check "$mod"; done
 
       - name: Test the installer
         if: runner.os != 'Windows'
@@ -110,5 +110,6 @@ jobs:
           curl -fsSL https://releases.herdr.dev/app/install.sh | sh
           echo "$HOME/.local/bin" >>"$GITHUB_PATH"
 
-      - name: Check the mod
-        run: herdr-app check mods/kiosk
+      - name: Check the mods
+        shell: bash
+        run: for mod in mods/*/; do herdr-app check "$mod"; done

@@ -297,3 +297,19 @@ fn switching_range_quickly_ends_on_the_last_one_asked_for() {
     assert_eq!(ready(&tab).range, 2);
     assert_eq!(paths(&tab), ["b.rs"]);
 }
+
+#[test]
+fn sideways_scrolling_reaches_the_end_of_a_line_whose_controls_show_as_escapes() {
+    let temp = feature_repo();
+    // Each escape character shows as `\u{1b}`, six columns.
+    fs::write(
+        temp.path().join("escapes.txt"),
+        format!("{}\n", "\u{1b}".repeat(30)),
+    )
+    .unwrap();
+    let mut tab = DiffTab::new(Some(temp.path().to_path_buf()));
+    tab.start();
+    wait(&mut tab, highlighted);
+    tab.act(DiffAction::ScrollColumns(1000));
+    assert_eq!(tab.shown().unwrap().column, 180 - MIN_COLUMNS_SHOWN);
+}

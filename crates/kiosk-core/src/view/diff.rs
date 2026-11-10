@@ -18,7 +18,7 @@ use crate::{
         highlight::{Run, SyntaxTone},
         tab::{CollapseReason, DiffState, DiffTab, Note, RangeContent, Ready, Row, ShownFile},
     },
-    display::{sanitize, shown},
+    display::{code_chars, sanitize},
     path::display,
 };
 
@@ -41,9 +41,6 @@ pub const TONES: &[SyntaxTone] = &[
     SyntaxTone::Punctuation,
     SyntaxTone::Heading,
 ];
-
-/// Columns between tab stops when tabs are shown as spaces.
-const TAB_WIDTH: usize = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DiffView {
@@ -353,23 +350,10 @@ fn note_text(file: &ShownFile, note: Note, keys: &KeysConfig) -> String {
     }
 }
 
-/// `text` as shown in a column grid from column `from`: tabs as spaces to the next tab stop,
-/// control characters as visible escapes and a final carriage return (a CRLF line ending)
-/// dropped, with `runs` stretched to match and flattened to `[chars, tone index, ...]`.
+/// `text` as [`code_chars`] shows it, from column `from`, with `runs` stretched to match and
+/// flattened to `[chars, tone index, ...]`.
 fn code_line(text: &str, runs: Option<&[Run]>, from: usize) -> (String, Option<Vec<u32>>) {
-    let text = text.strip_suffix('\r').unwrap_or(text);
-    let mut shown_chars: Vec<char> = Vec::with_capacity(text.len());
-    // How many characters each of the line's characters became.
-    let mut widths = Vec::with_capacity(text.len());
-    for character in text.chars() {
-        let before = shown_chars.len();
-        if character == '\t' {
-            shown_chars.extend(std::iter::repeat_n(' ', TAB_WIDTH - before % TAB_WIDTH));
-        } else {
-            shown_chars.extend(shown(character));
-        }
-        widths.push(shown_chars.len() - before);
-    }
+    let (shown_chars, widths) = code_chars(text);
     let visible: String = shown_chars.iter().skip(from).collect();
     let runs = runs.map(|runs| {
         let mut flat = Vec::with_capacity(runs.len() * 2);

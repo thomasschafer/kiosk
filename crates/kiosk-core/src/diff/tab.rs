@@ -479,13 +479,6 @@ impl DiffTab {
 /// Scrolled right as far as it goes, the widest line still shows this many columns.
 const MIN_COLUMNS_SHOWN: usize = 20;
 
-/// How many columns `text` takes, roughly: each tab as a tab stop's worth.
-fn columns(text: &str) -> usize {
-    text.chars()
-        .map(|character| if character == '\t' { 4 } else { 1 })
-        .sum()
-}
-
 fn max_offset(rows: usize, viewport: usize) -> usize {
     rows.saturating_sub(viewport)
 }
@@ -562,7 +555,9 @@ impl Shown {
                     if line.missing_newline {
                         self.rows.push(Row::Note(index, Note::NoNewline));
                     }
-                    self.widest = self.widest.max(columns(&line.text));
+                    self.widest = self
+                        .widest
+                        .max(crate::display::code_chars(&line.text).0.len());
                 }
             }
         }

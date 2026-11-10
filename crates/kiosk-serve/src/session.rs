@@ -15,6 +15,7 @@ use kiosk_core::{
         LoadedConfig,
         keys::{KeyChord, KeysConfig},
     },
+    diff::tab::{DiffAction, DiffTab},
     git::GitProvider,
     keyboard::Action,
     keymap::{self, KeyInput},
@@ -32,7 +33,9 @@ use kiosk_core::{
 use crate::{
     connection::{Connection, Incoming},
     keystroke::{self, Platform},
-    protocol::{ClientMessage, HEARTBEAT, Outcome, PROTOCOL_VERSION, Screen, ServerMessage},
+    protocol::{
+        ClientMessage, DiffClick, HEARTBEAT, Outcome, PROTOCOL_VERSION, Screen, ServerMessage,
+    },
 };
 
 /// How often the picker looks for background results while nothing else wakes it.
@@ -40,6 +43,8 @@ const TICK: Duration = Duration::from_millis(16);
 const TOAST_AUTO_DISMISS: Duration = Duration::from_secs(5);
 /// The most messages handled before background results and the view get a turn.
 const BATCH: usize = 64;
+/// How far the diff tab's scroll left and right keys move, in columns.
+const SCROLL_COLUMNS: isize = 8;
 /// How long a command waits for filtering of what was just typed.
 const SETTLE: Duration = Duration::from_secs(2);
 
@@ -217,7 +222,8 @@ impl Session<'_> {
                 | ClientMessage::Command { .. }
                 | ClientMessage::Dismiss
                 | ClientMessage::Scroll { .. }
-                | ClientMessage::ShowTab { .. } => SetupOutcome::Continue,
+                | ClientMessage::ShowTab { .. }
+                | ClientMessage::Diff { .. } => SetupOutcome::Continue,
                 ClientMessage::Hello { .. } => unreachable!("next refuses a second hello"),
             };
             match outcome {
@@ -270,6 +276,7 @@ impl Session<'_> {
             keys,
         } = start;
         let picker = Picker::start(git, backend, keys, search_dirs, &state);
+        let mut diff = DiffTab::new(current_cwd.map(Path::to_path_buf));
         let mut viewports = Viewports {
             list: 20,
             bases: 10,
@@ -284,10 +291,14 @@ impl Session<'_> {
             }
             changed |= tick.changed;
             changed |= state.tick_toasts(Instant::now(), TOAST_AUTO_DISMISS);
+            if tabs.active() == TabId::Diff {
+                diff.start();
+            }
+            changed |= diff.tick();
             if std::mem::take(&mut changed) {
                 self.show(Screen::Tabs(tabs_view(
                     tabs,
-                    current_cwd,
+                    &diff,
                     &mut state,
                     picker.keys(),
                     viewports,
@@ -299,7 +310,14 @@ impl Session<'_> {
                     break;
                 };
                 changed = true;
-                let step = handle_message(message, &picker, &mut state, &mut viewports, &mut tabs);
+                let step = handle_message(
+                    message,
+                    &picker,
+                    &mut state,
+                    &mut viewports,
+                    &mut tabs,
+                    &mut diff,
+                );
                 if let Step::Finish(outcome) = step {
                     return Ok(outcome);
                 }
@@ -312,14 +330,14 @@ impl Session<'_> {
 /// The tab bar over whichever tab shows.
 fn tabs_view(
     tabs: Tabs,
-    current_cwd: Option<&Path>,
+    diff: &DiffTab,
     state: &mut AppState,
     keys: &KeysConfig,
     viewports: Viewports,
 ) -> TabsView {
     let body = match tabs.active() {
         TabId::Picker => TabBody::Picker(view::picker(state, keys, viewports)),
-        TabId::Diff => TabBody::Diff(view::tabs::diff(current_cwd, keys)),
+        TabId::Diff => TabBody::Diff(view::diff::diff(diff, keys)),
     };
     view::tabs::tabs(tabs, body, keys)
 }
@@ -332,6 +350,7 @@ fn handle_message<B: Backend>(
     state: &mut AppState,
     viewports: &mut Viewports,
     tabs: &mut Tabs,
+    diff: &mut DiffTab,
 ) -> Step {
     match message {
         ClientMessage::Close => return Step::Finish(Outcome::Quit),
@@ -350,6 +369,7 @@ fn handle_message<B: Backend>(
             bases,
             help,
             scan_warnings,
+            diff: diff_rows,
         } => {
             *viewports = Viewports {
                 list: list.max(1),
@@ -357,6 +377,7 @@ fn handle_message<B: Backend>(
                 help: help.max(1),
                 scan_warnings: scan_warnings.max(1),
             };
+            diff.set_viewport(diff_rows);
             return Step::Continue;
         }
         _ => {}
@@ -374,16 +395,54 @@ fn handle_message<B: Backend>(
     }
     match tabs.active() {
         TabId::Picker => handle_picker_message(message, input, picker, state, *viewports),
-        TabId::Diff => handle_diff_input(input, picker.keys()),
+        TabId::Diff => handle_diff_message(&message, input, picker.keys(), diff),
     }
 }
 
-/// What a key does in the diff tab; the diff tab has nothing to click yet.
-fn handle_diff_input(input: Option<KeyInput>, keys: &KeysConfig) -> Step {
-    match input.and_then(|input| keys.diff_command(input.chord)) {
-        Some(kiosk_core::config::keys::Command::Quit) => Step::Finish(Outcome::Quit),
-        _ => Step::Continue,
+/// What a key, click or scroll does in the diff tab.
+fn handle_diff_message(
+    message: &ClientMessage,
+    input: Option<KeyInput>,
+    keys: &KeysConfig,
+    diff: &mut DiffTab,
+) -> Step {
+    use kiosk_core::config::keys::Command;
+    let action = match message {
+        ClientMessage::Scroll { delta, columns } => {
+            if *columns != 0 {
+                diff.act(DiffAction::ScrollColumns(
+                    isize::try_from(*columns).unwrap_or(0),
+                ));
+            }
+            Some(DiffAction::Scroll(isize::try_from(*delta).unwrap_or(0)))
+        }
+        ClientMessage::Diff { click } => Some(match *click {
+            DiffClick::Range { index } => DiffAction::SelectRange(index),
+            DiffClick::File { index } => DiffAction::ShowFile(index),
+            DiffClick::Toggle { index } => DiffAction::ToggleFile(Some(index)),
+        }),
+        _ => match input.and_then(|input| keys.diff_command(input.chord)) {
+            Some(Command::Quit) => return Step::Finish(Outcome::Quit),
+            Some(Command::ScrollDown) => Some(DiffAction::Scroll(1)),
+            Some(Command::ScrollUp) => Some(DiffAction::Scroll(-1)),
+            Some(Command::ScrollLeft) => Some(DiffAction::ScrollColumns(-SCROLL_COLUMNS)),
+            Some(Command::ScrollRight) => Some(DiffAction::ScrollColumns(SCROLL_COLUMNS)),
+            Some(Command::PageDown) => Some(DiffAction::Page(1)),
+            Some(Command::PageUp) => Some(DiffAction::Page(-1)),
+            Some(Command::ScrollTop) => Some(DiffAction::Top),
+            Some(Command::ScrollBottom) => Some(DiffAction::Bottom),
+            Some(Command::NextFile) => Some(DiffAction::NextFile),
+            Some(Command::PreviousFile) => Some(DiffAction::PreviousFile),
+            Some(Command::NextRange) => Some(DiffAction::NextRange),
+            Some(Command::PreviousRange) => Some(DiffAction::PreviousRange),
+            Some(Command::ToggleFile) => Some(DiffAction::ToggleFile(None)),
+            _ => None,
+        },
+    };
+    if let Some(action) = action {
+        diff.act(action);
     }
+    Step::Continue
 }
 
 fn handle_picker_message<B: Backend>(
@@ -417,14 +476,16 @@ fn handle_picker_message<B: Backend>(
         ClientMessage::Dismiss => {
             keymap::dismiss(state).and_then(|action| picker.handle_action(state, action))
         }
-        ClientMessage::Scroll { delta } => picker.handle_action(
+        ClientMessage::Scroll { delta, .. } => picker.handle_action(
             state,
             Action::Scroll {
                 delta,
                 viewport_rows: viewport_in_front(state, viewports),
             },
         ),
-        ClientMessage::FolderMode { .. } | ClientMessage::Completion { .. } => None,
+        ClientMessage::FolderMode { .. }
+        | ClientMessage::Completion { .. }
+        | ClientMessage::Diff { .. } => None,
         ClientMessage::Viewport { .. }
         | ClientMessage::ShowTab { .. }
         | ClientMessage::Launch { .. }
@@ -451,6 +512,7 @@ fn acts_on_selection(message: &ClientMessage) -> bool {
         | ClientMessage::Completion { .. }
         | ClientMessage::ShowTab { .. }
         | ClientMessage::Launch { .. }
+        | ClientMessage::Diff { .. }
         | ClientMessage::Close
         | ClientMessage::Hello { .. } => false,
     }

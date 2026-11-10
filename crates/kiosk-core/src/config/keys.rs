@@ -174,108 +174,93 @@ impl Serialize for KeyChord {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Command {
-    Noop,
-    Quit,
-    Help,
-    DismissToast,
-    ScanWarnings,
-    MoveUp,
-    MoveDown,
-    Open,
-    BranchesView,
-    Back,
-    NewBranch,
-    Delete,
-    Clear,
-    Backspace,
-    BackspaceOrBack,
-    DeleteForward,
-    DeleteWord,
-    DeleteWordForward,
-    DeleteToEnd,
-    CursorLeft,
-    CursorRight,
-    CursorWordLeft,
-    CursorWordRight,
-    CursorStart,
-    CursorEnd,
-    NextTab,
-    PreviousTab,
-    ShowTab(TabId),
+/// Declares [`Command`] from one list: each unit variant with its `[keys]` name, any older
+/// spellings still accepted, and its description. Showing a tab is the one command with data,
+/// named after its tab, as `diff_tab`.
+macro_rules! commands {
+    ($($variant:ident => $name:literal $(| $alias:literal)*, $description:literal;)+) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+        #[serde(rename_all = "snake_case")]
+        pub enum Command {
+            $($variant,)+
+            ShowTab(TabId),
+        }
+
+        impl Command {
+            pub const fn name(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $name,)+
+                    Self::ShowTab(tab) => tab.command_name(),
+                }
+            }
+
+            pub const fn description(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $description,)+
+                    Self::ShowTab(tab) => tab.command_description(),
+                }
+            }
+        }
+
+        impl FromStr for Command {
+            type Err = String;
+
+            fn from_str(value: &str) -> Result<Self, Self::Err> {
+                match value {
+                    $($name $(| $alias)* => Ok(Self::$variant),)+
+                    _ => TabId::from_command_name(value)
+                        .map(Self::ShowTab)
+                        .ok_or_else(|| format!("unknown key action '{value}'")),
+                }
+            }
+        }
+    };
+}
+
+commands! {
+    Noop => "noop" | "none" | "unbound", "Unbound";
+    Quit => "quit", "Quit the picker";
+    Help => "help" | "show_help", "Show active key bindings";
+    DismissToast => "dismiss_toast", "Dismiss the visible notification";
+    ScanWarnings => "scan_warnings", "Show directories that could not be scanned";
+    MoveUp => "move_up", "Move selection up";
+    MoveDown => "move_down", "Move selection down";
+    Open => "open", "Open or confirm the selection";
+    BranchesView => "branches_view" | "enter_repo", "Browse repository branches";
+    Back => "back" | "go_back", "Go back or cancel";
+    NewBranch => "new_branch", "Create a new branch";
+    Delete => "delete" | "delete_worktree", "Delete the selected checkout";
+    Clear => "clear" | "clear_query", "Clear the search query";
+    Backspace => "backspace", "Delete the previous character";
+    BackspaceOrBack => "backspace_or_back", "Delete the previous character, or go back when the search is empty";
+    DeleteForward => "delete_forward", "Delete the next character";
+    DeleteWord => "delete_word", "Delete the previous word";
+    DeleteWordForward => "delete_word_forward", "Delete the next word";
+    DeleteToEnd => "delete_to_end", "Delete to the end";
+    CursorLeft => "cursor_left", "Move the cursor left";
+    CursorRight => "cursor_right", "Move the cursor right";
+    CursorWordLeft => "cursor_word_left", "Move the cursor back a word";
+    CursorWordRight => "cursor_word_right", "Move the cursor forward a word";
+    CursorStart => "cursor_start", "Move the cursor to the start";
+    CursorEnd => "cursor_end", "Move the cursor to the end";
+    NextTab => "next_tab", "Show the next tab";
+    PreviousTab => "previous_tab", "Show the previous tab";
+    ScrollDown => "scroll_down", "Scroll down a line";
+    ScrollUp => "scroll_up", "Scroll up a line";
+    ScrollLeft => "scroll_left", "Scroll long lines left";
+    ScrollRight => "scroll_right", "Scroll long lines right";
+    PageDown => "page_down", "Scroll down a screen";
+    PageUp => "page_up", "Scroll up a screen";
+    ScrollTop => "scroll_top", "Scroll to the top";
+    ScrollBottom => "scroll_bottom", "Scroll to the bottom";
+    NextFile => "next_file", "Show the next file";
+    PreviousFile => "previous_file", "Show the previous file, or the top of this one";
+    NextRange => "next_range", "Show the next range of changes";
+    PreviousRange => "previous_range", "Show the previous range of changes";
+    ToggleFile => "toggle_file", "Collapse or expand the current file";
 }
 
 impl Command {
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Noop => "noop",
-            Self::Quit => "quit",
-            Self::Help => "help",
-            Self::DismissToast => "dismiss_toast",
-            Self::ScanWarnings => "scan_warnings",
-            Self::MoveUp => "move_up",
-            Self::MoveDown => "move_down",
-            Self::Open => "open",
-            Self::BranchesView => "branches_view",
-            Self::Back => "back",
-            Self::NewBranch => "new_branch",
-            Self::Delete => "delete",
-            Self::Clear => "clear",
-            Self::Backspace => "backspace",
-            Self::BackspaceOrBack => "backspace_or_back",
-            Self::DeleteForward => "delete_forward",
-            Self::DeleteWord => "delete_word",
-            Self::DeleteWordForward => "delete_word_forward",
-            Self::DeleteToEnd => "delete_to_end",
-            Self::CursorLeft => "cursor_left",
-            Self::CursorRight => "cursor_right",
-            Self::CursorWordLeft => "cursor_word_left",
-            Self::CursorWordRight => "cursor_word_right",
-            Self::CursorStart => "cursor_start",
-            Self::CursorEnd => "cursor_end",
-            Self::NextTab => "next_tab",
-            Self::PreviousTab => "previous_tab",
-            Self::ShowTab(tab) => tab.command_name(),
-        }
-    }
-
-    pub const fn description(self) -> &'static str {
-        match self {
-            Self::Noop => "Unbound",
-            Self::Quit => "Quit the picker",
-            Self::Help => "Show active key bindings",
-            Self::DismissToast => "Dismiss the visible notification",
-            Self::ScanWarnings => "Show directories that could not be scanned",
-            Self::MoveUp => "Move selection up",
-            Self::MoveDown => "Move selection down",
-            Self::Open => "Open or confirm the selection",
-            Self::BranchesView => "Browse repository branches",
-            Self::Back => "Go back or cancel",
-            Self::NewBranch => "Create a new branch",
-            Self::Delete => "Delete the selected checkout",
-            Self::Clear => "Clear the search query",
-            Self::Backspace => "Delete the previous character",
-            Self::BackspaceOrBack => {
-                "Delete the previous character, or go back when the search is empty"
-            }
-            Self::DeleteForward => "Delete the next character",
-            Self::DeleteWord => "Delete the previous word",
-            Self::DeleteWordForward => "Delete the next word",
-            Self::DeleteToEnd => "Delete to the end",
-            Self::CursorLeft => "Move the cursor left",
-            Self::CursorRight => "Move the cursor right",
-            Self::CursorWordLeft => "Move the cursor back a word",
-            Self::CursorWordRight => "Move the cursor forward a word",
-            Self::CursorStart => "Move the cursor to the start",
-            Self::CursorEnd => "Move the cursor to the end",
-            Self::NextTab => "Show the next tab",
-            Self::PreviousTab => "Show the previous tab",
-            Self::ShowTab(tab) => tab.command_description(),
-        }
-    }
-
     /// The edit a text-editing command makes, or `None` for any other command. Where a
     /// key can only edit text, as in help's search, `backspace_or_back` only deletes.
     pub const fn text_edit(self) -> Option<TextEdit> {
@@ -306,47 +291,21 @@ impl Command {
             | Self::Delete
             | Self::NextTab
             | Self::PreviousTab
-            | Self::ShowTab(_) => return None,
+            | Self::ShowTab(_)
+            | Self::ScrollDown
+            | Self::ScrollUp
+            | Self::ScrollLeft
+            | Self::ScrollRight
+            | Self::PageDown
+            | Self::PageUp
+            | Self::ScrollTop
+            | Self::ScrollBottom
+            | Self::NextFile
+            | Self::PreviousFile
+            | Self::NextRange
+            | Self::PreviousRange
+            | Self::ToggleFile => return None,
         })
-    }
-}
-
-impl FromStr for Command {
-    type Err = String;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value {
-            "noop" | "none" | "unbound" => Ok(Self::Noop),
-            "quit" => Ok(Self::Quit),
-            "help" | "show_help" => Ok(Self::Help),
-            "dismiss_toast" => Ok(Self::DismissToast),
-            "scan_warnings" => Ok(Self::ScanWarnings),
-            "move_up" => Ok(Self::MoveUp),
-            "move_down" => Ok(Self::MoveDown),
-            "open" => Ok(Self::Open),
-            "branches_view" | "enter_repo" => Ok(Self::BranchesView),
-            "back" | "go_back" => Ok(Self::Back),
-            "new_branch" => Ok(Self::NewBranch),
-            "delete" | "delete_worktree" => Ok(Self::Delete),
-            "clear" | "clear_query" => Ok(Self::Clear),
-            "backspace" => Ok(Self::Backspace),
-            "backspace_or_back" => Ok(Self::BackspaceOrBack),
-            "delete_forward" => Ok(Self::DeleteForward),
-            "delete_word" => Ok(Self::DeleteWord),
-            "delete_word_forward" => Ok(Self::DeleteWordForward),
-            "delete_to_end" => Ok(Self::DeleteToEnd),
-            "cursor_left" => Ok(Self::CursorLeft),
-            "cursor_right" => Ok(Self::CursorRight),
-            "cursor_word_left" => Ok(Self::CursorWordLeft),
-            "cursor_word_right" => Ok(Self::CursorWordRight),
-            "cursor_start" => Ok(Self::CursorStart),
-            "cursor_end" => Ok(Self::CursorEnd),
-            "next_tab" => Ok(Self::NextTab),
-            "previous_tab" => Ok(Self::PreviousTab),
-            _ => TabId::from_command_name(value)
-                .map(Self::ShowTab)
-                .ok_or_else(|| format!("unknown key action '{value}'")),
-        }
     }
 }
 
@@ -381,7 +340,8 @@ pub struct KeysConfig {
     /// Accepted actions are `next_tab`, `previous_tab`, one `<tab>_tab` per tab, such as
     /// `diff_tab`, and `noop`.
     tabs: HashMap<KeyChord, Command>,
-    /// Bindings specific to the diff tab. Accepted actions are `quit` and `noop`.
+    /// Bindings specific to the diff tab. Accepted actions are `quit`, `noop` and the
+    /// diff tab's own, such as `scroll_down`, `next_file` and `toggle_file`.
     diff: HashMap<KeyChord, Command>,
 }
 
@@ -545,7 +505,31 @@ impl Default for KeysConfig {
                 ("C-x", Command::Delete),
             ]),
             tabs: default_tab_keys(),
-            diff: map(&[("esc", Command::Quit)]),
+            diff: map(&[
+                ("esc", Command::Quit),
+                ("j", Command::ScrollDown),
+                ("down", Command::ScrollDown),
+                ("k", Command::ScrollUp),
+                ("up", Command::ScrollUp),
+                ("h", Command::ScrollLeft),
+                ("left", Command::ScrollLeft),
+                ("l", Command::ScrollRight),
+                ("right", Command::ScrollRight),
+                ("C-d", Command::PageDown),
+                ("pagedown", Command::PageDown),
+                ("space", Command::PageDown),
+                ("C-u", Command::PageUp),
+                ("pageup", Command::PageUp),
+                ("g", Command::ScrollTop),
+                ("home", Command::ScrollTop),
+                ("S-g", Command::ScrollBottom),
+                ("end", Command::ScrollBottom),
+                ("n", Command::NextFile),
+                ("p", Command::PreviousFile),
+                ("]", Command::NextRange),
+                ("[", Command::PreviousRange),
+                ("e", Command::ToggleFile),
+            ]),
         }
     }
 }
@@ -981,7 +965,23 @@ static TABS: std::sync::LazyLock<Vec<Command>> = std::sync::LazyLock::new(|| {
         .chain(TabId::ALL.iter().copied().map(Command::ShowTab))
         .collect()
 });
-const DIFF: &[Command] = &[Command::Noop, Command::Quit];
+const DIFF: &[Command] = &[
+    Command::Noop,
+    Command::Quit,
+    Command::ScrollDown,
+    Command::ScrollUp,
+    Command::ScrollLeft,
+    Command::ScrollRight,
+    Command::PageDown,
+    Command::PageUp,
+    Command::ScrollTop,
+    Command::ScrollBottom,
+    Command::NextFile,
+    Command::PreviousFile,
+    Command::NextRange,
+    Command::PreviousRange,
+    Command::ToggleFile,
+];
 const LIST_NAVIGATION: &[Command] = &[Command::Noop, Command::MoveUp, Command::MoveDown];
 const MODAL: &[Command] = &[Command::Noop, Command::Open, Command::Back];
 const REPO_SELECT: &[Command] = &[
@@ -1028,7 +1028,20 @@ const fn command_rank(command: Command) -> u8 {
         Command::CursorWordRight => 17,
         Command::CursorStart => 18,
         Command::CursorEnd => 19,
-        Command::NextTab => 20,
+        Command::ScrollDown
+        | Command::ScrollUp
+        | Command::ScrollLeft
+        | Command::ScrollRight
+        | Command::PageDown
+        | Command::PageUp
+        | Command::ScrollTop
+        | Command::ScrollBottom
+        | Command::NextFile
+        | Command::PreviousFile
+        | Command::NextRange
+        | Command::PreviousRange
+        | Command::ToggleFile
+        | Command::NextTab => 20,
         Command::PreviousTab => 21,
         Command::ShowTab(_) => 22,
         Command::Help => 23,
@@ -1287,6 +1300,19 @@ mod tests {
             keys.command_for(BindingMode::Repo, chord),
             Some(Command::BranchesView)
         );
+    }
+
+    #[test]
+    fn every_action_parses_from_its_own_name() {
+        for layer in KeyLayer::ALL {
+            for command in layer.allowed() {
+                assert_eq!(
+                    command.name().parse::<Command>(),
+                    Ok(*command),
+                    "{command:?}"
+                );
+            }
+        }
     }
 
     #[test]

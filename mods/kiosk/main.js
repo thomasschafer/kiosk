@@ -23,7 +23,7 @@ const TITLE = "Kiosk";
 const VERSION = "0.8.0";
 const REPOSITORY = "github.com/thomasschafer/kiosk";
 // The protocol this mod speaks; the picker refuses a different one.
-const PROTOCOL = 4;
+const PROTOCOL = 5;
 
 // The dialog's share of the window, as mod.json opens it. Kiosk draws its own panel inside
 // it (mod.json's frame is none): hung from the top, and as tall as what it shows, so a short
@@ -57,6 +57,16 @@ const FOOTER = 40;
 // A footer with buttons in it, which are taller than its hints.
 const BUTTON_FOOTER = 52;
 const TOAST = 36;
+// The diff tab: a row of its body, its header under the tab bar, its sidebar of ranges and
+// files, and each line-number column.
+const DIFF_ROW = 20;
+const DIFF_HEADER = 52;
+const SIDEBAR = 280;
+const SIDE_ROW = 30;
+const GUTTER = 46;
+// Roughly a column of code, for turning sideways scrolling into columns.
+const COLUMN = 7.5;
+const SIGN = 16;
 // The tab bar along the panel's top, and the space round its tabs.
 const TAB_BAR = 46;
 const TAB_INSET = 3;
@@ -231,7 +241,41 @@ function viewportFor(height, toast, tabbed) {
     bases: fit(panel - TALL_TITLE_BAR - BORDER - BAR - BORDER - 2 * PAD - BORDER - BUTTON_FOOTER, ROW, 3, 8),
     help: fit(panel - TITLE_BAR - BORDER - BAR - BORDER - (toast ? NOTICE : 0) - 2 * PAD, HELP_ROW, 4, 18),
     scan_warnings: fit(panel - TITLE_BAR - BORDER - 2 * PAD - BORDER - FOOTER, WARNING_ROW, 2, 8),
+    // The diff tab fills the dialog: its tab bar, header and footer, then rows.
+    diff: fit(panel - TAB_BAR - DIFF_HEADER - BORDER - FOOTER - 2 * PAD, DIFF_ROW, 1, 500),
   };
+}
+
+// What each syntax tone looks like in the app's theme, by the tone names the picker sends.
+function syntaxColor(t, tone) {
+  switch (tone) {
+    case "comment":
+      return t.dim;
+    case "keyword":
+      return t.ansi5;
+    case "string":
+      return t.ansi2;
+    case "escape":
+    case "number":
+      return t.ansi6;
+    case "constant":
+      return t.ansi3;
+    case "function":
+      return t.ansi4;
+    case "type":
+      return t.ansi3;
+    case "tag":
+      return t.ansi1;
+    case "attribute":
+      return t.ansi5;
+    case "operator":
+    case "punctuation":
+      return t.muted;
+    case "heading":
+      return t.accent;
+    default:
+      return t.foreground;
+  }
 }
 
 // `color` (#rrggbb, or #rrggbbaa whose alpha this replaces) at `opacity`.
@@ -269,6 +313,21 @@ function toneColor(t, tone) {
       return t.working;
     default:
       return t.foreground;
+  }
+}
+
+// How a file's change reads in the diff tab's colours.
+function changeColor(t, change) {
+  switch (change) {
+    case "added":
+      return t.ansi2;
+    case "deleted":
+      return t.ansi1;
+    case "renamed":
+    case "copied":
+      return t.accent;
+    default:
+      return t.blocked;
   }
 }
 
@@ -423,6 +482,8 @@ export default class Kiosk extends View {
     /** @type {Link} */
     this.link = { state: "starting" };
     this.wheel = 0;
+    // Horizontal scroll over the diff tab's code not yet sent, in columns.
+    this.wheelColumns = 0;
     // The timer taking the keyboard back after a launcher's request, while it runs.
     this.refocusWatch = null;
     // Every tab name the picker understands, once it has said hello.
@@ -625,8 +686,23 @@ export default class Kiosk extends View {
     cx.stop_propagation();
   }
 
-  scroll(e, cx) {
-    this.wheel -= (e.delta_lines?.y ?? e.delta.y / ROW);
+  // Sends a scroll over the diff tab's code as whole rows and, sideways, whole columns.
+  diffScroll(e, cx) {
+    this.wheel -= (e.delta_lines?.y ?? e.delta.y / DIFF_ROW);
+    this.wheelColumns -= (e.delta_lines?.x ?? e.delta.x / COLUMN);
+    const rows = Math.trunc(this.wheel);
+    const columns = Math.trunc(this.wheelColumns);
+    if (rows !== 0 || columns !== 0) {
+      this.wheel -= rows;
+      this.wheelColumns -= columns;
+      this.send({ t: "scroll", delta: rows, columns });
+    }
+    cx.stop_propagation();
+  }
+
+  // Sends a wheel or trackpad scroll as whole rows of `row` pixels.
+  scroll(e, cx, row = ROW) {
+    this.wheel -= (e.delta_lines?.y ?? e.delta.y / row);
     const rows = Math.trunc(this.wheel);
     if (rows !== 0) {
       this.wheel -= rows;
@@ -707,15 +783,137 @@ export default class Kiosk extends View {
 
   // The diff tab: the whole dialog, as a diff needs the room.
   diff(t, d, bar) {
-    const tabs = this.tabBar(t, bar);
+    const sideRow = (id, selected, onClick, ...children) =>
+      h_flex().id(id).h(SIDE_ROW).flex_none().px(INSET).gap(8).items_center().rounded(6).cursor_pointer().text_size(12.5)
+        .when(selected, (el) => el.bg(selectedFill(t)))
+        .when(!selected, (el) => el.hover((s) => s.bg(t.hover)))
+        .on_click((_e, cx) => { cx.stop_propagation(); onClick(); })
+        .children(children);
+    const label = (text) => div().px(INSET).pt(10).pb(4).text_size(11).font_semibold().text_color(t.dim).child(text.toUpperCase());
+    const ranges = d.ranges.map((range, i) =>
+      sideRow(`kiosk-range-${i}`, i === d.range, () => this.send({ t: "diff", click: { on: "range", index: i } }),
+        v_flex().min_w(0).flex_1()
+          .child(div().truncate().text_color(t.foreground).child(range.label))
+          .child(div().truncate().text_size(11.5).text_color(t.dim).child(range.detail))).h(40));
+    const files = d.files.map((file, i) => {
+      const slash = file.path.lastIndexOf("/");
+      return sideRow(`kiosk-file-${i}`, i === d.current_file, () => this.send({ t: "diff", click: { on: "file", index: i } }),
+        div().flex_none().w(14).text_size(11).font_semibold().text_color(changeColor(t, file.change)).child(file.change.charAt(0).toUpperCase()),
+        h_flex().flex_1().min_w(0).overflow_hidden().whitespace_nowrap()
+          .child(div().flex_none().text_color(t.foreground).child(file.path.slice(slash + 1)))
+          .when(slash >= 0, (el) => el.child(div().pl(6).truncate().text_color(t.dim).child(file.path.slice(0, slash)))),
+        h_flex().flex_none().gap(4).text_size(11.5)
+          .when(file.added > 0, (el) => el.child(div().text_color(t.ansi2).child(`+${file.added}`)))
+          .when(file.removed > 0, (el) => el.child(div().text_color(t.ansi1).child(`-${file.removed}`))));
+    });
+    const sidebar = v_flex().id("kiosk-diff-sidebar").w(SIDEBAR).flex_none().h_full().min_h(0).p(PAD).border_r_1().border_color(t.border).overflow_y_scrollbar()
+      .when(ranges.length > 0, (el) => el.child(label("Ranges")).children(ranges))
+      .when(files.length > 0, (el) => el.child(label(`Files · ${files.length}`)).children(files));
+    const header = h_flex().h(DIFF_HEADER).flex_none().px(EDGE).gap(10).items_center().border_b_1().border_color(t.border)
+      .child(icon(t, "git-branch", t.muted, ICON))
+      .child(div().min_w(0).truncate().text_size(14).font_semibold().child(d.title))
+      .when(!!d.subtitle, (el) => el.child(div().min_w(0).truncate().text_size(12.5).text_color(t.muted).child(d.subtitle)));
+    const main = d.message
+      ? v_flex().flex_1().h_full().items_center().justify_center().gap(6)
+        .child(h_flex().gap(10).items_center().when(d.message.busy, (el) => el.child(spinner(t, t.accent, 14)))
+          .child(div().text_size(14).text_color(t.foreground).child(d.message.text)))
+        .when(!!d.message.detail, (el) => el.child(div().max_w(560).text_size(12.5).text_color(t.muted).child(d.message.detail)))
+      : this.diffBody(t, d);
     return v_flex().id("kiosk-diff").size_full().min_h(0)
       .on_click((_e, cx) => cx.stop_propagation())
-      .rounded(RADIUS).bg(t.popover).border_1().border_color(t.border).shadow_2xl()
-      .child(tabs ?? this.titleBar(t, "Diff"))
-      .child(v_flex().flex_1().items_center().justify_center().gap(6)
-        .child(div().text_size(14).text_color(t.foreground).child(d.message))
-        .when(!!d.detail, (el) => el.child(div().text_size(12.5).text_color(t.muted).child(d.detail))))
+      .rounded(RADIUS).bg(t.popover).border_1().border_color(t.border).shadow_2xl().overflow_hidden()
+      .child(this.tabBar(t, bar) ?? this.titleBar(t, "Diff"))
+      .child(header)
+      .child(h_flex().flex_1().min_h(0).when(d.ranges.length > 0 || d.files.length > 0, (el) => el.child(sidebar)).child(main))
       .child(this.footer(t, d.hints));
+  }
+
+  // The rows on screen. Code is drawn as one text per syntax tone, each holding only its own
+  // characters and spaces elsewhere, stacked so a monospace font lines them up: far fewer
+  // elements than one per run. Headers, notes, line backgrounds and lines with characters
+  // wider or narrower than a column are drawn row by row.
+  diffBody(t, d) {
+    const body = d.body;
+    const code = GUTTER * 2 + SIGN;
+    const layers = new Map();
+    const layer = (tone) => layers.get(tone) ?? layers.set(tone, []).get(tone);
+    const oldNumbers = [];
+    const newNumbers = [];
+    const signs = [];
+    const rows = [];
+    const at = (i) => div().absolute().left(0).right(0).top(i * DIFF_ROW).h(DIFF_ROW);
+    body.rows.forEach((row, i) => {
+      for (const lines of [oldNumbers, newNumbers, signs]) lines.push("");
+      switch (row[0]) {
+        case "file": {
+          const file = d.files[row[1]];
+          rows.push(at(i).id(`kiosk-diff-file-${row[1]}`).px(10).flex().items_center().gap(10).cursor_pointer()
+            .bg(tint(t.foreground, 0.05)).border_t_1().border_color(t.border)
+            .on_click((_e, cx) => { cx.stop_propagation(); this.send({ t: "diff", click: { on: "toggle", index: row[1] } }); })
+            .child(icon(t, file.collapsed ? "chevron-right" : "chevron-down", t.dim, 12))
+            .child(div().flex_none().text_size(12.5).font_semibold().text_color(t.foreground).child(file.path))
+            .when(!!file.old_path, (el) => el.child(div().truncate().text_size(12).text_color(t.dim).child(`from ${file.old_path}`)))
+            .child(div().flex_1())
+            .when(file.added > 0, (el) => el.child(div().text_size(12).text_color(t.ansi2).child(`+${file.added}`)))
+            .when(file.removed > 0, (el) => el.child(div().text_size(12).text_color(t.ansi1).child(`-${file.removed}`))));
+          break;
+        }
+        case "note":
+          rows.push(at(i).pl(code).flex().items_center().text_size(12).text_color(t.dim).child(row[2]));
+          break;
+        case "hunk":
+          rows.push(at(i).bg(tint(t.accent, 0.06)).pl(code).flex().items_center().whitespace_nowrap().overflow_hidden().text_color(t.muted).child(row[1]));
+          break;
+        case "line": {
+          const [, kind, oldNumber, newNumber, text, runs, wide] = row;
+          oldNumbers[i] = oldNumber === null ? "" : String(oldNumber);
+          newNumbers[i] = newNumber === null ? "" : String(newNumber);
+          signs[i] = kind === " " ? "" : kind;
+          if (kind !== " ") rows.push(at(i).bg(tint(kind === "+" ? t.ansi2 : t.ansi1, settings().dark ? 0.14 : 0.12)));
+          const spans = [];
+          if (runs === null) {
+            spans.push([text, "plain"]);
+          } else {
+            const characters = Array.from(text);
+            let from = 0;
+            for (let r = 0; r < runs.length; r += 2) {
+              spans.push([characters.slice(from, from + runs[r]).join(""), d.tones[runs[r + 1]]]);
+              from += runs[r];
+            }
+          }
+          if (wide) {
+            rows.push(at(i).pl(code).flex().whitespace_nowrap().overflow_hidden()
+              .children(spans.map(([span, tone]) => div().flex_none().text_color(syntaxColor(t, tone)).child(span))));
+            break;
+          }
+          let column = 0;
+          for (const [span, tone] of spans) {
+            const lines = layer(tone);
+            while (lines.length <= i) lines.push("");
+            lines[i] += " ".repeat(column - Array.from(lines[i]).length) + span;
+            column += Array.from(span).length;
+          }
+          break;
+        }
+        default:
+          throw new Error(`the picker sent a diff row this mod doesn't know: ${row[0]}`);
+      }
+    });
+    const column = (lines, left, width, color, right = false) =>
+      div().absolute().top(0).left(left).w(width).line_height(`${DIFF_ROW}px`).whitespace_nowrap().text_color(color)
+        .when(right, (el) => el.text_right().pr(8)).child(lines.join("\n"));
+    return div().id("kiosk-diff-body").relative().flex_1().h_full().min_w(0).overflow_hidden().py(PAD)
+      .font_family(settings().font_family).text_size(12.5)
+      .on_scroll_wheel((e, cx) => this.diffScroll(e, cx))
+      .child(div().relative().w_full().h(body.rows.length * DIFF_ROW)
+        .children(rows)
+        .child(column(oldNumbers, 0, GUTTER, t.dim, true))
+        .child(column(newNumbers, GUTTER, GUTTER, t.dim, true))
+        .child(column(signs, GUTTER * 2, SIGN, t.muted))
+        .children([...layers].map(([tone, lines]) =>
+          div().absolute().top(0).left(code).right(0).overflow_hidden().line_height(`${DIFF_ROW}px`).whitespace_nowrap()
+            .text_color(syntaxColor(t, tone)).child(lines.join("\n")))))
+      .when(body.total > body.rows.length, (el) => el.child(this.thumb(t, body.offset, body.rows.length, body.total, body.rows.length * DIFF_ROW, PAD)));
   }
 
   // A panel with one centred line of news, such as the picker starting.

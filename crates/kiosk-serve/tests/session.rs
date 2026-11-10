@@ -221,7 +221,7 @@ fn typing_filters_and_enter_opens_the_selection() {
     );
 
     client
-        .send(&json!({ "t": "viewport", "list": 10, "bases": 5, "help": 10, "scan_warnings": 5 }));
+        .send(&json!({ "t": "viewport", "list": 10, "bases": 5, "help": 10, "scan_warnings": 5, "diff": 20 }));
     let view = client.view_until(|view| {
         picker_list(view).is_some_and(|list| list["rows"].as_array().unwrap().len() == 2)
     });
@@ -574,10 +574,11 @@ fn a_session_opens_on_the_tab_asked_for_and_launching_it_again_closes() {
         ..two_repo_start(&search_dir, mock_backend())
     });
     let view = client.view_until(|view| tab_body(view, "diff").is_some());
-    assert_eq!(
-        view["body"]["detail"],
-        "It will show the changes in /work/repo"
-    );
+    assert_eq!(view["body"]["title"], "Diff");
+    let view = client.view_until(|view| {
+        tab_body(view, "diff").is_some_and(|body| body["message"]["busy"] == false)
+    });
+    assert_eq!(view["body"]["message"]["text"], "Nothing to diff");
     client.send(&json!({ "t": "launch", "tab": "picker" }));
     client.view_until(|view| picker_list(view).is_some());
     client.send(&json!({ "t": "launch", "tab": "picker" }));
@@ -636,4 +637,61 @@ fn hello_lists_the_tabs_and_a_launch_during_setup_counts() {
     assert_eq!(client.end(), json!({ "t": "exit", "outcome": "quit" }));
     session.join().unwrap().unwrap();
     assert!(!config_path.exists());
+}
+
+#[test]
+fn the_diff_tab_shows_a_checkouts_changes_and_moves_through_them() {
+    let root = tempfile::tempdir().unwrap();
+    let search_dir = root.path().to_path_buf();
+    let repo = root.path().join("work");
+    std::fs::create_dir(&repo).unwrap();
+    kiosk_core::git::test_fixtures::init_test_repo(&repo);
+    std::fs::write(repo.join("a.rs"), "fn a() {}\n").unwrap();
+    std::fs::write(repo.join("b.rs"), "fn b() {}\n").unwrap();
+    let (mut client, session, hello) = connect(move || Start {
+        current_cwd: Some(repo),
+        tab: TabId::Diff,
+        ..two_repo_start(&search_dir, mock_backend())
+    });
+    for chord in ["ctrl-d", "ctrl-u", "pagedown"] {
+        assert!(
+            hello["chords"].as_array().unwrap().contains(&json!(chord)),
+            "{chord} unclaimed: {hello}"
+        );
+    }
+    client.send(&json!({ "t": "viewport", "list": 10, "bases": 5, "help": 10, "scan_warnings": 5, "diff": 3 }));
+    let view = client.view_until(|view| {
+        tab_body(view, "diff").is_some_and(|body| body["body"]["rows"].is_array())
+    });
+    let body = &view["body"];
+    let files = body["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|file| file["path"].as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(files, ["a.rs", "b.rs"]);
+    assert_eq!(body["ranges"][0]["label"], "All changes");
+    assert_eq!(body["ranges"][1]["label"], "Uncommitted");
+    assert_eq!(body["body"]["rows"][0], json!(["file", 0]));
+    assert_eq!(body["body"]["rows"].as_array().unwrap().len(), 3);
+    let line = &body["body"]["rows"][2];
+    assert_eq!(line[0], "line");
+    assert_eq!(line[1], "+");
+    assert_eq!(line[4], "fn a() {}");
+
+    client.key("n", Some("n"));
+    let view = client
+        .view_until(|view| tab_body(view, "diff").is_some_and(|body| body["current_file"] == 1));
+    assert_eq!(view["body"]["body"]["rows"][0], json!(["file", 1]));
+    client.send(&json!({ "t": "diff", "click": { "on": "file", "index": 0 } }));
+    client.view_until(|view| tab_body(view, "diff").is_some_and(|body| body["current_file"] == 0));
+    client.send(&json!({ "t": "diff", "click": { "on": "toggle", "index": 0 } }));
+    let view = client.view_until(|view| {
+        tab_body(view, "diff").is_some_and(|body| body["files"][0]["collapsed"] == true)
+    });
+    assert_eq!(view["body"]["body"]["rows"][1][0], "note");
+    client.key("escape", None);
+    assert_eq!(client.end(), json!({ "t": "exit", "outcome": "quit" }));
+    session.join().unwrap().unwrap();
 }

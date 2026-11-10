@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 
 /// Bumped whenever a message changes shape, so a frontend and a picker from different
 /// versions refuse each other rather than misread each other.
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// Refuses a client that speaks another version of the protocol, saying which to update.
 pub fn check_client(protocol: u32) -> anyhow::Result<()> {
@@ -113,12 +113,13 @@ pub enum ClientMessage {
     Paste {
         text: String,
     },
-    /// How many rows each list has room for.
+    /// How many rows each list has room for, and the diff tab's body.
     Viewport {
         list: usize,
         bases: usize,
         help: usize,
         scan_warnings: usize,
+        diff: usize,
     },
     /// A click on the row at `position` of the list in front, or on one of its buttons.
     /// `id` is the item the row showed, so a click on a row that has since moved does
@@ -136,9 +137,12 @@ pub enum ClientMessage {
     /// Closes the dialog or overlay in front without acting on it: a cancel button, or a
     /// click beside it.
     Dismiss,
-    /// A wheel or trackpad scroll over the list in front, in rows.
+    /// A wheel or trackpad scroll over the list in front, in rows, and over the diff tab's
+    /// code, in columns to the right.
     Scroll {
         delta: i32,
+        #[serde(default)]
+        columns: i32,
     },
     /// A click on a setup wizard folder mode.
     FolderMode {
@@ -147,6 +151,10 @@ pub enum ClientMessage {
     /// A click on a setup wizard path completion.
     Completion {
         index: usize,
+    },
+    /// A click in the diff tab.
+    Diff {
+        click: DiffClick,
     },
     /// A click on a tab in the tab bar.
     ShowTab {
@@ -159,6 +167,18 @@ pub enum ClientMessage {
     },
     /// The frontend is closing, as if the user had quit.
     Close,
+}
+
+/// A click in the diff tab, on one of its ranges or files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(tag = "on", rename_all = "snake_case")]
+pub enum DiffClick {
+    /// Show range `index`.
+    Range { index: usize },
+    /// Scroll to file `index`.
+    File { index: usize },
+    /// Collapse or expand file `index`.
+    Toggle { index: usize },
 }
 
 /// What a click does to the row it lands on.
@@ -282,6 +302,12 @@ mod tests {
         assert_eq!(
             parse(r#"{"t":"launch","tab":"picker"}"#),
             ClientMessage::Launch { tab: TabId::Picker }
+        );
+        assert_eq!(
+            parse(r#"{"t":"diff","click":{"on":"toggle","index":2}}"#),
+            ClientMessage::Diff {
+                click: DiffClick::Toggle { index: 2 }
+            }
         );
         assert_eq!(parse(r#"{"t":"dismiss"}"#), ClientMessage::Dismiss);
         assert_eq!(parse(r#"{"t":"close"}"#), ClientMessage::Close);

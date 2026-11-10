@@ -9,6 +9,7 @@
 mod git;
 pub mod highlight;
 mod patch;
+pub mod tab;
 
 use std::{fmt, path::PathBuf};
 

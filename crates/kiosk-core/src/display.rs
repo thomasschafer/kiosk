@@ -31,6 +31,28 @@ pub fn sanitized_positions(value: &str, positions: &[usize]) -> Vec<usize> {
     starts
 }
 
+/// Columns between tab stops when a line of code shows tabs as spaces.
+pub const TAB_WIDTH: usize = 4;
+
+/// A line of code as shown in a column grid: tabs as spaces to the next tab stop, control
+/// characters as visible escapes and a final carriage return (a CRLF line ending) dropped.
+/// Also how many shown characters each of the line's characters became.
+pub fn code_chars(text: &str) -> (Vec<char>, Vec<usize>) {
+    let text = text.strip_suffix('\r').unwrap_or(text);
+    let mut chars: Vec<char> = Vec::with_capacity(text.len());
+    let mut widths = Vec::with_capacity(text.len());
+    for character in text.chars() {
+        let before = chars.len();
+        if character == '\t' {
+            chars.extend(std::iter::repeat_n(' ', TAB_WIDTH - before % TAB_WIDTH));
+        } else {
+            chars.extend(shown(character));
+        }
+        widths.push(chars.len() - before);
+    }
+    (chars, widths)
+}
+
 /// How `sanitize` shows one character: a control character as its visible escape.
 fn shown(character: char) -> impl Iterator<Item = char> {
     let control = character.is_control();

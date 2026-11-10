@@ -65,9 +65,10 @@ pub enum Endpoint {
 }
 
 /// The arguments every diff is read with. Git's config can't change what kiosk parses:
-/// colour, external diff tools and text conversion are off, object ids are written whole and
-/// blank context lines keep their leading space.
-const DIFF_ARGS: [&str; 11] = [
+/// colour, external diff tools and text conversion are off, object ids are written whole,
+/// blank context lines keep their leading space and submodules are patched like files rather
+/// than summarised.
+const DIFF_ARGS: [&str; 12] = [
     "-c",
     "diff.suppressBlankEmpty=false",
     "diff",
@@ -79,6 +80,7 @@ const DIFF_ARGS: [&str; 11] = [
     "--no-ext-diff",
     "--no-textconv",
     "--find-renames",
+    "--submodule=short",
 ];
 
 /// Runs git, answering `None` when it fails, for questions whose answer can be "no": a ref

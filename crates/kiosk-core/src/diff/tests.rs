@@ -400,3 +400,29 @@ fn runs_that_dont_cover_a_line_are_not_used() {
     };
     assert_eq!(highlighted.runs(&removed), None);
 }
+
+#[test]
+fn a_submodule_is_patched_like_a_file_whatever_diff_submodule_says() {
+    let (_temp, dir) = repo();
+    run_test_git(&dir, &["config", "diff.submodule", "log"]);
+    let pinned = git_output(&dir, &["rev-parse", "HEAD"]);
+    run_test_git(
+        &dir,
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("160000,{pinned},sub"),
+        ],
+    );
+    run_test_git(&dir, &["commit", "-q", "-m", "add sub"]);
+    let id = ObjectId::parse(&git_output(&dir, &["rev-parse", "HEAD"])).unwrap();
+    let target = Target::checkout(&dir).unwrap().unwrap();
+    let files = target.diff(&Range::Commit(id)).unwrap();
+    assert_eq!(paths(&files), ["sub"]);
+    assert_eq!(files[0].new.as_ref().unwrap().mode, 0o160_000);
+    assert_eq!(
+        added_lines(&files[0]),
+        [format!("Subproject commit {pinned}")]
+    );
+}

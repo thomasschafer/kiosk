@@ -290,7 +290,12 @@ impl Target {
 
     /// `file`'s lines highlighted on each side, as far as they can be.
     pub fn highlight(&self, file: &FileDiff) -> Result<Highlighted> {
-        if file.content == FileContent::Binary {
+        // A binary file has no lines, and nor does a rename or mode change with no hunks:
+        // reading and parsing both sides would be for nothing.
+        let FileContent::Text { hunks } = &file.content else {
+            return Ok(Highlighted::default());
+        };
+        if hunks.iter().all(|hunk| hunk.lines.is_empty()) {
             return Ok(Highlighted::default());
         }
         let side = |side: &Option<Side>| -> Result<Option<Vec<Vec<highlight::Run>>>> {

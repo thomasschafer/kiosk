@@ -253,6 +253,8 @@ fn renames_are_found_with_their_old_and_new_paths() {
         files[0].new.as_ref().unwrap().path,
         Path::new("new name.txt")
     );
+    // Nothing changed inside, so there are no lines to highlight.
+    assert_eq!(target.highlight(&files[0]).unwrap(), Highlighted::default());
 }
 
 #[test]

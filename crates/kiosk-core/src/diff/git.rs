@@ -290,3 +290,18 @@ impl WorkingTreeIndex {
         [("GIT_INDEX_FILE", self.path.as_os_str())]
     }
 }
+
+/// The content of blob `id`, unless it is bigger than `limit` bytes.
+pub fn blob(root: &Path, id: &ObjectId, limit: usize) -> Result<Option<Vec<u8>>> {
+    let size = run_git(root, ["cat-file", "-s", id.as_str()])?;
+    let size: usize = String::from_utf8_lossy(&size.stdout)
+        .trim()
+        .parse()
+        .with_context(|| format!("git cat-file -s {id} printed no size"))?;
+    if size > limit {
+        return Ok(None);
+    }
+    Ok(Some(
+        run_git(root, ["cat-file", "blob", id.as_str()])?.stdout,
+    ))
+}

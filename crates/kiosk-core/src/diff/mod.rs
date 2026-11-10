@@ -7,6 +7,7 @@
 //! its number on each side it is on, so a line can be pointed at by file, side and number.
 
 mod git;
+pub mod highlight;
 mod patch;
 
 use std::{fmt, path::PathBuf};
@@ -146,6 +147,29 @@ pub struct Line {
     pub missing_newline: bool,
 }
 
+/// A file's lines highlighted on each side it is on.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Highlighted {
+    old: Option<Vec<Vec<highlight::Run>>>,
+    new: Option<Vec<Vec<highlight::Run>>>,
+}
+
+impl Highlighted {
+    /// `line`'s runs, from the side it is on (the new side for context), or `None` when that
+    /// side went unhighlighted or its runs don't cover the line's text exactly.
+    pub fn runs(&self, line: &Line) -> Option<&[highlight::Run]> {
+        let (side, number) = match line.kind {
+            LineKind::Removed => (&self.old, line.old?),
+            LineKind::Added | LineKind::Context => (&self.new, line.new?),
+        };
+        let runs = side
+            .as_ref()?
+            .get(usize::try_from(number).ok()?.checked_sub(1)?)?;
+        (runs.iter().map(|run| run.chars).sum::<usize>() == line.text.chars().count())
+            .then_some(runs.as_slice())
+    }
+}
+
 /// What the diff tab diffs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Target {
@@ -249,6 +273,30 @@ impl Target {
                 .map(|commit| Range::Commit(commit.id.clone())),
         );
         ranges
+    }
+
+    /// `file`'s lines highlighted on each side, as far as they can be.
+    pub fn highlight(&self, file: &FileDiff) -> Result<Highlighted> {
+        if file.content == FileContent::Binary {
+            return Ok(Highlighted::default());
+        }
+        let side = |side: &Option<Side>| -> Result<Option<Vec<Vec<highlight::Run>>>> {
+            let Some(side) = side else {
+                return Ok(None);
+            };
+            let Some(content) = git::blob(&self.root, &side.id, highlight::MAX_HIGHLIGHT_BYTES)?
+            else {
+                return Ok(None);
+            };
+            Ok(highlight::highlight(
+                &side.path,
+                &String::from_utf8_lossy(&content),
+            ))
+        };
+        Ok(Highlighted {
+            old: side(&file.old)?,
+            new: side(&file.new)?,
+        })
     }
 
     /// The files `range` changed.

@@ -341,3 +341,62 @@ fn a_checkout_whose_folder_ends_in_a_newline_is_found_exactly() {
         ["new.txt"]
     );
 }
+
+#[test]
+fn each_line_is_highlighted_from_its_own_side_of_the_whole_file() {
+    let (_temp, dir) = repo();
+    commit_file(&dir, "a.rs", "/* opened\nkept */\nfn old() {}\n", "a");
+    fs::write(dir.join("a.rs"), "/* opened\nkept */\nfn new() {}\n").unwrap();
+    let target = Target::checkout(&dir).unwrap().unwrap();
+    let files = target.diff(&Range::Uncommitted).unwrap();
+    let highlighted = target.highlight(&files[0]).unwrap();
+    let FileContent::Text { hunks } = &files[0].content else {
+        panic!("binary");
+    };
+    let line = |kind, text: &str| {
+        hunks[0]
+            .lines
+            .iter()
+            .find(|line| line.kind == kind && line.text == text)
+            .unwrap()
+    };
+    // The comment opened on an earlier line, which only highlighting the whole file knows.
+    let kept = highlighted
+        .runs(line(LineKind::Context, "kept */"))
+        .unwrap();
+    assert_eq!(kept[0].tone, highlight::SyntaxTone::Comment);
+    for (kind, text) in [
+        (LineKind::Removed, "fn old() {}"),
+        (LineKind::Added, "fn new() {}"),
+    ] {
+        let runs = highlighted.runs(line(kind, text)).unwrap();
+        assert_eq!(runs[0].tone, highlight::SyntaxTone::Keyword, "{text}");
+    }
+}
+
+#[test]
+fn runs_that_dont_cover_a_line_are_not_used() {
+    let highlighted = Highlighted {
+        old: None,
+        new: Some(vec![vec![highlight::Run {
+            chars: 2,
+            tone: highlight::SyntaxTone::Keyword,
+        }]]),
+    };
+    let line = |text: &str| Line {
+        kind: LineKind::Added,
+        old: None,
+        new: Some(1),
+        text: text.into(),
+        missing_newline: false,
+    };
+    assert!(highlighted.runs(&line("fn")).is_some());
+    assert_eq!(highlighted.runs(&line("fn x")), None);
+    let removed = Line {
+        kind: LineKind::Removed,
+        old: Some(1),
+        new: None,
+        ..line("fn")
+    };
+    assert_eq!(highlighted.runs(&removed), None);
+}

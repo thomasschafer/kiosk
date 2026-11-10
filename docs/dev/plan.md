@@ -151,10 +151,13 @@ Throwaway work that answers a question; record the answer under decisions.
 
 ### 3. Diff tab: core
 
-- [ ] Base resolution and the list of ranges.
-- [ ] Untracked files in the uncommitted range.
-- [ ] Patch parsing, renames, binary and mode changes; lockfiles, binaries and huge files
-      collapsed.
+- [x] Base resolution and the list of ranges (`kiosk_core::diff`).
+- [x] Untracked files in the uncommitted range, through a copy of the checkout's index with
+      everything added, so the checkout's own index is left alone. Adding writes blobs into
+      the repository, as `git add` does; git prunes them in time.
+- [x] Patch parsing, with renames, binary and mode changes. Paths, modes and object ids come
+      from `--raw -z` records, so quoting never matters; only hunks come from the patch.
+- [ ] Lockfiles, binaries and huge files collapsed in the view.
 - [ ] Unified view with syntax highlighting.
 - [ ] Empty states: not a repository, a remote machine's space, the default branch itself,
       detached HEAD, a branch without a checkout.

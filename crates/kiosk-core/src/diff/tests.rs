@@ -207,6 +207,19 @@ fn a_branch_without_a_checkout_shows_only_its_commits() {
 }
 
 #[test]
+fn without_commits_of_its_own_a_checkout_offers_only_its_uncommitted_changes() {
+    let (_temp, dir) = repo();
+    run_test_git(&dir, &["checkout", "-q", "-b", "feat"]);
+    fs::write(dir.join("new.txt"), "new\n").unwrap();
+    let target = Target::checkout(&dir).unwrap().unwrap();
+    assert!(target.base().is_some());
+    let commits = target.commits().unwrap();
+    assert_eq!(commits, []);
+    // Everything since the base would be the same diff again.
+    assert_eq!(target.ranges(&commits), [Range::Uncommitted]);
+}
+
+#[test]
 fn a_new_repository_diffs_its_files_against_nothing() {
     let temp = tempfile::tempdir().unwrap();
     run_test_git(temp.path(), &["init", "-q", "-b", "main"]);

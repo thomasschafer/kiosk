@@ -347,11 +347,10 @@ fn range_entry(ready: &Ready, range: &Range) -> RangeEntry {
         Range::All => RangeEntry {
             label: "All changes".into(),
             detail: match ready.commits.len() {
-                0 if ready.target.has_working_tree() => "uncommitted work".into(),
-                1 if ready.target.has_working_tree() => "1 commit and uncommitted work".into(),
+                1 if ready.target.has_working_tree() => "1 commit and uncommitted changes".into(),
                 1 => "1 commit".into(),
                 count if ready.target.has_working_tree() => {
-                    format!("{count} commits and uncommitted work")
+                    format!("{count} commits and uncommitted changes")
                 }
                 count => format!("{count} commits"),
             },

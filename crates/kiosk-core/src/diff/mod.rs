@@ -274,10 +274,12 @@ impl Target {
         }
     }
 
-    /// The ranges there are to show, in the order to offer them.
+    /// The ranges there are to show, in the order to offer them. Everything since the base
+    /// is only offered when the target has commits of its own, as otherwise it is the
+    /// uncommitted changes again.
     pub fn ranges(&self, commits: &[Commit]) -> Vec<Range> {
         let mut ranges = Vec::new();
-        if self.base.is_some() {
+        if self.base.is_some() && (!commits.is_empty() || !self.working_tree) {
             ranges.push(Range::All);
         }
         if self.working_tree {

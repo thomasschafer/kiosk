@@ -534,7 +534,8 @@ fn switching_range_mid_refresh_keeps_what_the_refresh_was_for() {
     else {
         panic!("{:?}", tab.changes);
     };
-    assert_eq!(paths, &[path]);
+    // The watch may have added changes of its own, such as git writing objects.
+    assert!(paths.contains(&path), "{paths:?}");
 }
 
 #[test]

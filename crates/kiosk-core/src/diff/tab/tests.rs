@@ -112,7 +112,7 @@ fn the_tab_shows_everything_first_then_switches_range_on_request() {
 }
 
 #[test]
-fn files_lay_out_as_headers_hunks_and_lines_and_lockfiles_start_collapsed() {
+fn one_file_lays_out_at_a_time_as_its_header_hunks_and_lines_and_lockfiles_start_collapsed() {
     let temp = feature_repo();
     fs::write(temp.path().join("Cargo.lock"), "lock\n".repeat(10)).unwrap();
     let mut tab = DiffTab::new(Some(temp.path().to_path_buf()), DiffLayout::Unified);
@@ -124,11 +124,12 @@ fn files_lay_out_as_headers_hunks_and_lines_and_lockfiles_start_collapsed() {
         shown.files[0].collapse_reason,
         Some(CollapseReason::Generated)
     );
+    assert_eq!(shown.rows, [Row::File(0), Row::Note(0, Note::Collapsed)]);
+    tab.act(DiffAction::NextFile);
+    let shown = tab.shown().unwrap();
     assert_eq!(
-        shown.rows[..6],
+        shown.rows[..4],
         [
-            Row::File(0),
-            Row::Note(0, Note::Collapsed),
             Row::File(1),
             Row::Hunk { file: 1, hunk: 0 },
             Row::Line {
@@ -143,6 +144,11 @@ fn files_lay_out_as_headers_hunks_and_lines_and_lockfiles_start_collapsed() {
             },
         ]
     );
+    assert!(
+        shown.rows.iter().all(|row| row.file() == 1),
+        "only the current file"
+    );
+    tab.act(DiffAction::PreviousFile);
     tab.act(DiffAction::ToggleFile(Some(0)));
     let shown = tab.shown().unwrap();
     assert!(!shown.files[0].collapsed);
@@ -200,7 +206,7 @@ fn leaving_a_range_stops_its_worker() {
 }
 
 #[test]
-fn moving_between_files_that_all_fit_changes_the_current_file_without_scrolling() {
+fn moving_between_files_shows_each_from_its_top() {
     let temp = feature_repo();
     let mut tab = DiffTab::new(Some(temp.path().to_path_buf()), DiffLayout::Unified);
     tab.set_viewport(100);
@@ -236,6 +242,8 @@ fn a_missing_final_newline_gets_a_note_after_its_line() {
         .iter()
         .position(|file| file.diff.path() == Path::new("b.rs"))
         .unwrap();
+    tab.act(DiffAction::ShowFile(b));
+    let shown = tab.shown().unwrap();
     let rows = shown
         .rows
         .iter()
@@ -274,6 +282,8 @@ fn scrolling_sideways_stops_with_some_of_the_widest_line_still_shown() {
     let mut tab = DiffTab::new(Some(temp.path().to_path_buf()), DiffLayout::Unified);
     tab.start();
     wait(&mut tab, highlighted);
+    assert_eq!(paths(&tab), ["a.rs", "b.rs", "wide.rs"]);
+    tab.act(DiffAction::ShowFile(2));
     let column = |tab: &DiffTab| tab.shown().unwrap().column;
     tab.act(DiffAction::ScrollColumns(-8));
     assert_eq!(column(&tab), 0);
@@ -311,8 +321,19 @@ fn sideways_scrolling_reaches_the_end_of_a_line_whose_controls_show_as_escapes()
     let mut tab = DiffTab::new(Some(temp.path().to_path_buf()), DiffLayout::Unified);
     tab.start();
     wait(&mut tab, highlighted);
+    let escapes = paths(&tab)
+        .iter()
+        .position(|path| path == "escapes.txt")
+        .unwrap();
+    tab.act(DiffAction::ShowFile(escapes));
     tab.act(DiffAction::ScrollColumns(1000));
     assert_eq!(tab.shown().unwrap().column, 180 - MIN_COLUMNS_SHOWN);
+    tab.act(DiffAction::PreviousFile);
+    assert_eq!(
+        tab.shown().unwrap().column,
+        0,
+        "a file with shorter lines starts within them"
+    );
 }
 
 #[test]
@@ -803,14 +824,12 @@ fn the_file_filter_shows_only_matching_files_and_is_kept_or_dropped() {
         ["docs/guide.md", "src/app.rs", "src/lib.rs", "src/main.rs"]
     );
     let shown_paths = |tab: &DiffTab| {
-        let shown = tab.shown().unwrap();
-        shown
-            .rows
+        tab.shown()
+            .unwrap()
+            .files
             .iter()
-            .filter_map(|row| match row {
-                Row::File(file) => Some(shown.files[*file].diff.path().display().to_string()),
-                _ => None,
-            })
+            .filter(|file| !file.hidden)
+            .map(|file| file.diff.path().display().to_string())
             .collect::<Vec<_>>()
     };
 
@@ -846,7 +865,9 @@ fn the_file_filter_shows_only_matching_files_and_is_kept_or_dropped() {
         3,
         "no further than the last shown"
     );
-    tab.act(DiffAction::Top);
+    tab.act(DiffAction::PreviousFile);
+    assert_eq!(tab.shown().unwrap().current_file, 2);
+    tab.act(DiffAction::PreviousFile);
     tab.act(DiffAction::PreviousFile);
     assert_eq!(
         tab.shown().unwrap().current_file,
@@ -898,6 +919,7 @@ fn filtering_out_the_wide_lines_brings_the_code_back_into_view_and_a_hidden_file
     let mut tab = DiffTab::new(Some(dir.to_path_buf()), DiffLayout::Unified);
     tab.start();
     wait(&mut tab, highlighted);
+    tab.act(DiffAction::ShowFile(1));
     tab.act(DiffAction::ScrollColumns(200));
     assert_eq!(tab.shown().unwrap().column, 200);
     tab.open_filter();
@@ -942,5 +964,51 @@ fn ranges_say_how_far_ahead_the_branch_is_and_uncommitted_needs_no_more() {
             ("All changes", Some("2 commits ahead of main + uncommitted")),
             ("Uncommitted", None),
         ]
+    );
+}
+
+#[test]
+fn scrolling_and_paging_stay_within_the_file_showing() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path();
+    init_test_repo(dir);
+    let lines = |count: usize| {
+        (1..=count)
+            .map(|n| format!("line {n}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n"
+    };
+    fs::write(dir.join("a.txt"), lines(30)).unwrap();
+    fs::write(dir.join("b.txt"), lines(5)).unwrap();
+    let mut tab = DiffTab::new(Some(dir.to_path_buf()), DiffLayout::Unified);
+    tab.set_viewport(10);
+    tab.start();
+    wait(&mut tab, highlighted);
+    let in_a = |tab: &DiffTab| {
+        let shown = tab.shown().unwrap();
+        shown.current_file == 0 && shown.rows.iter().all(|row| row.file() == 0)
+    };
+    for _ in 0..5 {
+        tab.act(DiffAction::Page(1));
+    }
+    assert!(in_a(&tab));
+    let rows = tab.shown().unwrap().rows.len();
+    assert_eq!(
+        tab.shown().unwrap().offset,
+        rows - 10,
+        "at the end of a.txt"
+    );
+    tab.act(DiffAction::Scroll(50));
+    tab.act(DiffAction::Bottom);
+    assert!(in_a(&tab), "the end of the file, not the next");
+    tab.act(DiffAction::NextFile);
+    let shown = tab.shown().unwrap();
+    assert_eq!((shown.current_file, shown.offset), (1, 0));
+    tab.act(DiffAction::Page(-3));
+    assert_eq!(
+        tab.shown().unwrap().current_file,
+        1,
+        "nor back into the one before"
     );
 }

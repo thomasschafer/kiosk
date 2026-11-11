@@ -14,7 +14,10 @@ use kiosk_core::{
         Opened,
         mock::{BackendCall, MockBackend},
     },
-    config::{CoreConfig, LoadedConfig, NoExtension, SearchDirEntry},
+    config::{
+        CoreConfig, EditorConfig, LoadedConfig, NoExtension, SearchDirEntry,
+        on_open::OnOpenPaneDirection,
+    },
     git::{GitProvider, Repo, mock::MockGitProvider},
     product::TEST_PRODUCT,
     tabs::TabId,
@@ -869,4 +872,118 @@ fn preferences_kiosk_cant_read_are_reported_and_never_saved_over() {
         std::fs::read_to_string(&preferences).unwrap(),
         "diff_layout = \"sideways\"\n"
     );
+}
+
+/// A checkout with an uncommitted second line in `a.rs`, and a diff tab start for it with
+/// `editor` in the config.
+fn editor_start(
+    root: &Path,
+    editor: Option<EditorConfig>,
+    backend: Arc<MockBackend>,
+) -> Start<MockBackend, NoExtension> {
+    let repo = root.join("work");
+    std::fs::create_dir(&repo).unwrap();
+    kiosk_core::git::test_fixtures::init_test_repo(&repo);
+    std::fs::write(repo.join("a.rs"), "fn a() {}\n").unwrap();
+    kiosk_core::git::test_fixtures::run_test_git(&repo, &["add", "a.rs"]);
+    kiosk_core::git::test_fixtures::run_test_git(&repo, &["commit", "-q", "-m", "a"]);
+    std::fs::write(repo.join("a.rs"), "fn a() {}\nfn more() {}\n").unwrap();
+    let mut start = Start {
+        current_cwd: Some(repo),
+        tab: TabId::Diff,
+        ..two_repo_start(root, backend)
+    };
+    start.loaded.core.editor = editor;
+    start
+}
+
+fn hx() -> EditorConfig {
+    EditorConfig {
+        command: "hx {file}:{line}".into(),
+        direction: OnOpenPaneDirection::Down,
+    }
+}
+
+/// Waits for the diff tab to show its rows, then presses `o`.
+fn open_in_editor(client: &mut Client) {
+    client.send(&json!({ "t": "viewport", "list": 10, "bases": 5, "help": 10, "scan_warnings": 5, "diff": 10, "side_by_side": true }));
+    client.view_until(|view| {
+        tab_body(view, "diff").is_some_and(|body| body["body"]["rows"].is_array())
+    });
+    client.key("o", Some("o"));
+}
+
+#[test]
+fn o_opens_the_file_at_the_change_in_the_editor_beside_the_checkout() {
+    let root = tempfile::tempdir().unwrap();
+    let backend = mock_backend();
+    backend
+        .run_beside_results
+        .lock()
+        .unwrap()
+        .push_back(Ok(Opened {
+            warning: Some("on_open: pane 1 split failed: too small".into()),
+        }));
+    backend.notify_results.lock().unwrap().push_back(Ok(()));
+    let start = editor_start(root.path(), Some(hx()), Arc::clone(&backend));
+    let (mut client, session, _) = connect(move || start);
+    open_in_editor(&mut client);
+    assert_eq!(client.end(), json!({ "t": "exit", "outcome": "opened" }));
+    session.join().unwrap().unwrap();
+
+    let calls = backend.calls();
+    let Some(BackendCall::RunBeside {
+        checkout,
+        command,
+        direction,
+    }) = calls
+        .iter()
+        .find(|call| matches!(call, BackendCall::RunBeside { .. }))
+    else {
+        panic!("the editor didn't open: {calls:?}");
+    };
+    assert!(checkout.ends_with("work"), "{}", checkout.display());
+    assert_eq!(
+        *command,
+        hx().command_for(&checkout.join("a.rs"), 2).unwrap()
+    );
+    assert_eq!(*direction, OnOpenPaneDirection::Down);
+    assert!(calls.contains(&BackendCall::Notify {
+        title: TEST_PRODUCT.name.into(),
+        body: "on_open: pane 1 split failed: too small".into(),
+    }));
+}
+
+#[test]
+fn without_an_editor_or_when_it_cannot_open_the_diff_tab_says_why_and_stays() {
+    let root = tempfile::tempdir().unwrap();
+    let start = editor_start(root.path(), None, mock_backend());
+    let (mut client, session, _) = connect(move || start);
+    open_in_editor(&mut client);
+    let view = client
+        .view_until(|view| tab_body(view, "diff").is_some_and(|body| body["notice"].is_string()));
+    let notice = view["body"]["notice"].as_str().unwrap();
+    assert!(notice.contains("set the [editor] command"), "{notice}");
+    client.key("j", Some("j"));
+    client.view_until(|view| tab_body(view, "diff").is_some_and(|body| body["notice"].is_null()));
+    client.key("escape", None);
+    assert_eq!(client.end()["outcome"], "quit");
+    session.join().unwrap().unwrap();
+
+    let root = tempfile::tempdir().unwrap();
+    let backend = mock_backend();
+    backend
+        .run_beside_results
+        .lock()
+        .unwrap()
+        .push_back(Err(kiosk_core::backend::mock::MockError("no pane".into())));
+    let start = editor_start(root.path(), Some(hx()), backend);
+    let (mut client, session, _) = connect(move || start);
+    open_in_editor(&mut client);
+    let view = client
+        .view_until(|view| tab_body(view, "diff").is_some_and(|body| body["notice"].is_string()));
+    assert_eq!(view["body"]["notice"], "Couldn't open the file: no pane");
+    client.key("escape", None);
+    assert_eq!(client.end()["outcome"], "quit");
+    session.join().unwrap().unwrap();
 }

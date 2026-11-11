@@ -16,7 +16,7 @@ use std::{
 use anyhow::bail;
 
 use super::{
-    Commit, FileContent, FileDiff, Highlighted, LineKind, Range, Target, pairs,
+    Commit, FileContent, FileDiff, Highlighted, Hunk, LineKind, Range, Target, pairs,
     watch::{Places, Watch},
 };
 use crate::{
@@ -229,6 +229,16 @@ pub enum DiffAction {
     SelectRange(usize),
     /// Collapse or expand file `n`, or with `None` the file at the top of the screen.
     ToggleFile(Option<usize>),
+}
+
+/// A file to open in an editor, at a line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Place {
+    /// The checkout the file is in.
+    pub checkout: PathBuf,
+    pub file: PathBuf,
+    /// From 1, in the file as it is now.
+    pub line: u32,
 }
 
 /// Background work that reports on a channel, stopped when dropped.
@@ -453,6 +463,8 @@ pub struct DiffTab {
     changes: Option<Changes>,
     /// Reading the diff again after changes.
     refresh: Option<Refresh>,
+    /// Why the file couldn't be opened in an editor, until the person does something else.
+    open_error: Option<String>,
 }
 
 #[derive(Debug)]
@@ -545,6 +557,7 @@ impl DiffTab {
             refresh_error: None,
             changes: None,
             refresh: None,
+            open_error: None,
         }
     }
 
@@ -569,6 +582,7 @@ impl DiffTab {
     }
 
     pub fn toggle_layout(&mut self) {
+        self.open_error = None;
         self.layout = self.layout.toggled();
         self.lay_out_again();
     }
@@ -682,11 +696,17 @@ impl DiffTab {
         }
     }
 
-    /// Why the tab isn't showing the latest changes, if it may not be.
+    /// Why opening a file failed, or why the tab isn't showing the latest changes, if it may
+    /// not be.
     pub fn notice(&self) -> Option<String> {
-        self.watch_error
+        self.open_error
             .as_ref()
-            .map(|error| format!("Not following changes: {error}"))
+            .map(|error| format!("Couldn't open the file: {error}"))
+            .or_else(|| {
+                self.watch_error
+                    .as_ref()
+                    .map(|error| format!("Not following changes: {error}"))
+            })
             .or_else(|| {
                 self.refresh_error
                     .as_ref()
@@ -852,6 +872,7 @@ impl DiffTab {
 
     /// Shows the diff tab's key bindings.
     pub fn show_help(&mut self, keys: &KeysConfig) {
+        self.open_error = None;
         self.help = Some(HelpOverlayState::for_mode(keys, BindingMode::Diff));
     }
 
@@ -873,7 +894,45 @@ impl DiffTab {
         }
     }
 
+    /// The file the person is on, at the line they're looking at, to open in an editor.
+    pub fn place(&self) -> Result<Place, String> {
+        let nothing = || "there's no file showing".to_owned();
+        let DiffState::Ready(ready) = &self.state else {
+            return Err(nothing());
+        };
+        let RangeContent::Shown(shown) = &ready.content else {
+            return Err(nothing());
+        };
+        if !ready.target.has_working_tree() {
+            return Err("only the files of a checkout can be opened".into());
+        }
+        let (file, line) = shown.place(self.viewport).ok_or_else(nothing)?;
+        let diff = &shown.files[file].diff;
+        let Some(new) = &diff.new else {
+            return Err(format!("{} was deleted", diff.path().display()));
+        };
+        let checkout = ready.target.root().to_path_buf();
+        let path = checkout.join(&new.path);
+        if !path.exists() {
+            return Err(format!(
+                "{} is no longer in the checkout",
+                new.path.display()
+            ));
+        }
+        Ok(Place {
+            checkout,
+            file: path,
+            line,
+        })
+    }
+
+    /// Shows why opening the file in an editor failed, until the person does something else.
+    pub fn show_open_error(&mut self, error: String) {
+        self.open_error = Some(error);
+    }
+
     pub fn act(&mut self, action: DiffAction) {
+        self.open_error = None;
         match action {
             DiffAction::NextRange => self.step_range(1),
             DiffAction::PreviousRange => self.step_range(-1),
@@ -1020,6 +1079,27 @@ impl DiffTab {
 /// Scrolled right as far as it goes, the widest line still shows this many columns.
 const MIN_COLUMNS_SHOWN: usize = 20;
 
+/// Where line `index` of `hunk` is in the new file: its own number, or for a removed line,
+/// that of the line now in its place.
+fn new_position(hunk: &Hunk, index: usize) -> u32 {
+    if let Some(number) = hunk.lines[index].new {
+        return number;
+    }
+    let before = hunk.lines[..index]
+        .iter()
+        .filter(|line| line.new.is_some())
+        .count();
+    // A hunk with no new lines starts after the line before it.
+    let first = if hunk.new_len == 0 {
+        hunk.new_start.saturating_add(1)
+    } else {
+        hunk.new_start
+    };
+    first
+        .saturating_add(u32::try_from(before).unwrap_or(u32::MAX))
+        .max(1)
+}
+
 fn max_offset(rows: usize, viewport: usize) -> usize {
     rows.saturating_sub(viewport)
 }
@@ -1161,6 +1241,50 @@ impl Shown {
             } => line(file, hunk, new.or(old)?),
             Row::File(_) | Row::Note(..) | Row::Hunk { .. } => None,
         }
+    }
+
+    /// The current file and the line in it, by its number in the new file, that the person is
+    /// looking at: the first changed line on screen, or else the first line on screen, or
+    /// else its first change. `None` without files.
+    fn place(&self, viewport: usize) -> Option<(usize, u32)> {
+        let file = self.current_file;
+        let FileContent::Text { hunks } = &self.files.get(file)?.diff.content else {
+            return Some((file, 1));
+        };
+        let end = self.offset.saturating_add(viewport).min(self.rows.len());
+        let on_screen: Vec<(usize, usize)> = self.rows[self.offset.min(end)..end]
+            .iter()
+            .filter_map(|row| match *row {
+                Row::Line {
+                    file: of,
+                    hunk,
+                    line,
+                } if of == file => Some((hunk, line)),
+                Row::Pair {
+                    file: of,
+                    hunk,
+                    old,
+                    new,
+                } if of == file => Some((hunk, new.or(old)?)),
+                _ => None,
+            })
+            .collect();
+        let changed =
+            |&(hunk, line): &(usize, usize)| hunks[hunk].lines[line].kind != LineKind::Context;
+        let everywhere = || {
+            hunks
+                .iter()
+                .enumerate()
+                .flat_map(|(index, hunk)| (0..hunk.lines.len()).map(move |line| (index, line)))
+        };
+        let line = on_screen
+            .iter()
+            .copied()
+            .find(changed)
+            .or_else(|| on_screen.first().copied())
+            .or_else(|| everywhere().find(changed))
+            .map_or(1, |(hunk, line)| new_position(&hunks[hunk], line));
+        Some((file, line))
     }
 
     /// The file whose rows include row `row`.

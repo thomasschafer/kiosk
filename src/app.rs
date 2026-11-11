@@ -33,7 +33,7 @@ use kiosk_core::{
         identity::focus_or_create_folder,
         on_open::{self, PaneSplitRequest, PaneSplitResponse},
     },
-    config::OnOpenConfig,
+    config::{OnOpenConfig, on_open::OnOpenPaneDirection},
 };
 
 /// Where new checkouts go, below the user's home: the same place as the herdr
@@ -264,20 +264,19 @@ impl Notices for kiosk_serve::Notifier {
     }
 }
 
-/// An `[on_open]` pane's command, to be typed into the pane's new terminal by
-/// `type_commands`.
+/// A command to be typed into a pane's new terminal by `type_commands`.
 #[derive(Debug, PartialEq, Eq)]
 struct Typing {
-    /// The pane's place in `[on_open]`, from 1.
+    /// The pane's place in `[on_open]`, from 1, for saying which failed.
     pane: usize,
     terminal: String,
     command: String,
 }
 
 /// Types each command into its terminal, all at once, as each waits for its new shell to
-/// start. Returns a warning for those that didn't reach their terminal.
-fn type_commands(host: &dyn AppHost, typing: &[Typing]) -> Option<String> {
-    let errors: Vec<String> = std::thread::scope(|scope| {
+/// start. Returns why each that didn't reach its terminal failed, by its pane.
+fn type_commands(host: &dyn AppHost, typing: &[Typing]) -> Vec<(usize, AppError)> {
+    std::thread::scope(|scope| {
         let sends: Vec<_> = typing
             .iter()
             .map(|typing| {
@@ -296,16 +295,17 @@ fn type_commands(host: &dyn AppHost, typing: &[Typing]) -> Option<String> {
             .into_iter()
             .filter_map(|(pane, send)| match send.join() {
                 Ok(Ok(_)) => None,
-                Ok(Err(error)) => Some(format!("pane {pane} run failed: {error}")),
+                Ok(Err(error)) => Some((pane, error)),
                 Err(panic) => std::panic::resume_unwind(panic),
             })
             .collect()
-    });
-    (!errors.is_empty()).then(|| format!("on_open: {}", errors.join("; ")))
+    })
 }
 
 /// The title of the notice for `[on_open]` commands that weren't typed.
 const ON_OPEN_FAILED: &str = "Kiosk couldn't run every [on_open] command";
+/// The title of the notice for an editor command that wasn't typed.
+const EDITOR_FAILED: &str = "Kiosk couldn't open the editor";
 
 impl HerdrApp {
     /// New checkouts go in `placement`, notifications go to `notices`, and `[on_open]`
@@ -505,6 +505,31 @@ impl HerdrApp {
         )
     }
 
+    /// Types `typing` in the background, after the picker has closed, saving a notice titled
+    /// `title` with what `describe` makes of the failures if any command doesn't arrive.
+    fn type_later(
+        &self,
+        typing: Vec<Typing>,
+        title: &'static str,
+        describe: fn(Vec<(usize, AppError)>) -> String,
+    ) {
+        if typing.is_empty() {
+            return;
+        }
+        let host = Arc::clone(&self.host);
+        let later = Arc::clone(&self.later);
+        self.background.spawn(move || {
+            let failed = type_commands(host.as_ref(), &typing);
+            if failed.is_empty() {
+                return;
+            }
+            let warning = describe(failed);
+            if let Err(error) = later.save(title, &warning) {
+                eprintln!("{title}: {warning} (and the notice couldn't be saved: {error})");
+            }
+        });
+    }
+
     /// The main checkout of the repository `folder` is in, if any.
     fn main_checkout(&self, folder: &Path) -> Result<Option<PathBuf>, AppError> {
         if let Some(known) = self
@@ -617,20 +642,46 @@ impl Backend for HerdrApp {
             number += 1;
             self.pane_open(request, command, number, &mut typing)
         });
-        if !typing.is_empty() {
-            let host = Arc::clone(&self.host);
-            let later = Arc::clone(&self.later);
-            self.background.spawn(move || {
-                if let Some(warning) = type_commands(host.as_ref(), &typing)
-                    && let Err(error) = later.save(ON_OPEN_FAILED, &warning)
-                {
-                    eprintln!(
-                        "{ON_OPEN_FAILED}: {warning} (and the notice couldn't be saved: {error})"
-                    );
-                }
-            });
-        }
+        self.type_later(typing, ON_OPEN_FAILED, |failed| {
+            let failed: Vec<String> = failed
+                .into_iter()
+                .map(|(pane, error)| format!("pane {pane} run failed: {error}"))
+                .collect();
+            format!("on_open: {}", failed.join("; "))
+        });
         Ok(Opened { warning })
+    }
+
+    fn run_beside(
+        &self,
+        checkout: &Path,
+        command: &str,
+        direction: OnOpenPaneDirection,
+    ) -> Result<Opened, AppError> {
+        checked(args::absolute("checkout", checkout))?;
+        checked(args::nonempty("command", command))?;
+        let folder = checked(args::utf8_path("checkout", checkout))?;
+        let repo = self
+            .main_checkout(checkout)?
+            .unwrap_or_else(|| checkout.to_path_buf());
+        let opened = self.open_checkout(&repo, checkout)?;
+        let created: PaneCreated = self.command_json(
+            "terminal.open",
+            &json!({ "place": direction.as_str(), "folder": folder }),
+        )?;
+        self.type_later(
+            vec![Typing {
+                pane: 1,
+                terminal: created.terminal,
+                command: command.into(),
+            }],
+            EDITOR_FAILED,
+            |failed| {
+                let (_, error) = failed.into_iter().next().expect("one command failed");
+                format!("the command didn't reach its pane: {error}")
+            },
+        );
+        Ok(opened)
     }
 
     fn open_folder(&self, folder: &Path) -> Result<Opened, AppError> {

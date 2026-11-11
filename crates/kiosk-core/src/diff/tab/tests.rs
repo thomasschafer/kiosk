@@ -536,3 +536,130 @@ fn switching_range_mid_refresh_keeps_what_the_refresh_was_for() {
     };
     assert_eq!(paths, &[path]);
 }
+
+#[test]
+fn opening_in_an_editor_goes_to_the_change_being_looked_at() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path();
+    init_test_repo(dir);
+    let original = (1..=40)
+        .map(|n| format!("line {n}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    commit(dir, "long.txt", &original);
+    commit(dir, "gone.txt", "bye\n");
+    fs::write(
+        dir.join("long.txt"),
+        original
+            .replace("line 5\n", "line five\n")
+            .replace("line 30\n", "line thirty\n"),
+    )
+    .unwrap();
+    fs::remove_file(dir.join("gone.txt")).unwrap();
+    let mut tab = DiffTab::new(Some(dir.to_path_buf()), DiffLayout::Unified);
+    tab.set_viewport(8);
+    tab.start();
+    wait(&mut tab, highlighted);
+    tab.act(DiffAction::SelectRange(1));
+    wait(&mut tab, highlighted);
+    assert_eq!(paths(&tab), ["gone.txt", "long.txt"]);
+
+    let error = tab.place().unwrap_err();
+    assert_eq!(error, "gone.txt was deleted");
+
+    tab.act(DiffAction::NextFile);
+    let place = tab.place().unwrap();
+    assert_eq!(place.file, place.checkout.join("long.txt"));
+    assert_eq!(
+        place.line, 5,
+        "the first change on screen, though context is above it"
+    );
+
+    let second_hunk = tab
+        .shown()
+        .unwrap()
+        .rows
+        .iter()
+        .position(|row| matches!(row, Row::Hunk { file: 1, hunk: 1 }))
+        .unwrap();
+    let offset = tab.shown().unwrap().offset;
+    tab.act(DiffAction::Scroll((second_hunk + 1 - offset).cast_signed()));
+    assert!(top_text(&tab).starts_with("line 2"), "{}", top_text(&tab));
+    assert_eq!(tab.place().unwrap().line, 30);
+    tab.toggle_layout();
+    assert_eq!(tab.shown().unwrap().layout, DiffLayout::SideBySide);
+    assert_eq!(tab.place().unwrap().line, 30);
+
+    fs::remove_file(dir.join("long.txt")).unwrap();
+    assert_eq!(
+        tab.place().unwrap_err(),
+        "long.txt is no longer in the checkout"
+    );
+}
+
+#[test]
+fn an_error_opening_the_editor_shows_until_the_person_moves_on() {
+    let mut tab = DiffTab::new(None, DiffLayout::Unified);
+    assert_eq!(tab.place().unwrap_err(), "there's no file showing");
+    tab.show_open_error("no editor".into());
+    assert_eq!(
+        tab.notice().as_deref(),
+        Some("Couldn't open the file: no editor")
+    );
+    tab.act(DiffAction::Scroll(1));
+    assert_eq!(tab.notice(), None);
+}
+
+fn hunk(new_start: u32, new_len: u32, kinds: &[LineKind]) -> Hunk {
+    let mut old = 1;
+    let mut new = new_start;
+    let lines = kinds
+        .iter()
+        .map(|&kind| {
+            let (old_number, new_number) = match kind {
+                LineKind::Context => (Some(old), Some(new)),
+                LineKind::Removed => (Some(old), None),
+                LineKind::Added => (None, Some(new)),
+            };
+            old += u32::from(old_number.is_some());
+            new += u32::from(new_number.is_some());
+            super::super::Line {
+                kind,
+                old: old_number,
+                new: new_number,
+                text: String::new(),
+                missing_newline: false,
+            }
+        })
+        .collect();
+    Hunk {
+        old_start: 1,
+        old_len: 0,
+        new_start,
+        new_len,
+        section: String::new(),
+        lines,
+    }
+}
+
+#[test]
+fn a_removed_line_opens_at_the_line_now_in_its_place() {
+    use LineKind::{Added, Context, Removed};
+    let middle = hunk(
+        7,
+        6,
+        &[
+            Context, Context, Context, Removed, Context, Context, Context,
+        ],
+    );
+    assert_eq!(new_position(&middle, 2), 9);
+    assert_eq!(new_position(&middle, 3), 10);
+    assert_eq!(new_position(&middle, 4), 10);
+    let replaced = hunk(4, 2, &[Removed, Removed, Added, Added]);
+    assert_eq!(new_position(&replaced, 0), 4);
+    assert_eq!(new_position(&replaced, 1), 4);
+    // Everything after line 12 was removed, and from the top of a file that is now empty.
+    assert_eq!(new_position(&hunk(12, 0, &[Removed, Removed]), 1), 13);
+    assert_eq!(new_position(&hunk(0, 0, &[Removed]), 0), 1);
+}

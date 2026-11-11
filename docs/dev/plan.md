@@ -200,7 +200,13 @@ Throwaway work that answers a question; record the answer under decisions.
       is reported and the next change tries again; a failed watch is retried after 5 s, and
       then everything is read again, as what changed meanwhile isn't known. The index is
       copied by reading and writing it, as a macOS clone shows up as a change to it.
-- [ ] Open the file at the line in an editor, through a configurable command.
+- [x] Open the file at the line in an editor: `o` types `[editor] command` (`{file}` and
+      `{line}` filled in, the path quoted for the shell) into a new pane split off the focused
+      pane of the checkout's space, then closes kiosk. Typing it into a shell rather than
+      running it lets `$EDITOR` and aliases work, and leaves the shell when the editor quits.
+      The line is the first changed line on screen, else the first line on screen, else the
+      file's first change, by its number in the file now; a removed line opens at the line in
+      its place. Deleted files, and a branch's files without its checkout, can't be opened.
 - [ ] Search within the diff, and filter files.
 
 ### 5. Ways in
@@ -221,8 +227,8 @@ Throwaway work that answers a question; record the answer under decisions.
 
 Once the diff tab is finished and polished:
 
-- [ ] Drop `experimental_tabs`, document the tab and diff keys in the README, and ship the
-      launcher mods (phase 2's last item).
+- [ ] Drop `experimental_tabs`, document the tab and diff keys and `[editor]` in the
+      README, and ship the launcher mods (phase 2's last item).
 - [ ] Record the README preview again (`scripts/app-sandbox/run.sh record`): the
       repository and branch pickers, then the diff tab. Show the whole window scaled up, as
       on a smaller screen, rather than cropped, so it reads on small displays; and record once

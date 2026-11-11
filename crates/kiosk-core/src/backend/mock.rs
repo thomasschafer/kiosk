@@ -8,8 +8,9 @@ use std::{
 };
 
 use super::{
-    Annotations, Annotator, Backend, CheckoutState, Freshness, KnownCheckout, ManagedWorktrees,
-    NativeWorktrees, Opened, RemoveError, Removed, WorktreePlacement, Worktrees,
+    super::config::on_open::OnOpenPaneDirection, Annotations, Annotator, Backend, CheckoutState,
+    Freshness, KnownCheckout, ManagedWorktrees, NativeWorktrees, Opened, RemoveError, Removed,
+    WorktreePlacement, Worktrees,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,6 +38,11 @@ pub enum BackendCall {
     },
     OpenFolder {
         folder: PathBuf,
+    },
+    RunBeside {
+        checkout: PathBuf,
+        command: String,
+        direction: OnOpenPaneDirection,
     },
     Notify {
         title: String,
@@ -82,6 +88,7 @@ pub struct MockBackend {
     /// Holds `open_checkout`, once recorded, until the flag is set.
     pub open_checkout_gate: Option<Arc<(Mutex<bool>, Condvar)>>,
     pub open_folder_results: Queue<Opened>,
+    pub run_beside_results: Queue<Opened>,
     pub notify_results: Queue<()>,
     pub open_branch_results: Queue<Opened>,
     pub create_branch_results: Queue<Opened>,
@@ -113,6 +120,7 @@ impl MockBackend {
             open_checkout_results: Mutex::default(),
             open_checkout_gate: None,
             open_folder_results: Mutex::default(),
+            run_beside_results: Mutex::default(),
             notify_results: Mutex::default(),
             open_branch_results: Mutex::default(),
             create_branch_results: Mutex::default(),
@@ -186,6 +194,20 @@ impl Backend for MockBackend {
             folder: folder.into(),
         });
         next(&self.open_folder_results, "open_folder")
+    }
+
+    fn run_beside(
+        &self,
+        checkout: &Path,
+        command: &str,
+        direction: OnOpenPaneDirection,
+    ) -> Result<Opened, MockError> {
+        self.record(BackendCall::RunBeside {
+            checkout: checkout.into(),
+            command: command.into(),
+            direction,
+        });
+        next(&self.run_beside_results, "run_beside")
     }
 
     fn notify(&self, title: &str, body: &str) -> Result<(), MockError> {

@@ -9,9 +9,11 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::product::Product;
 
+pub mod editor;
 pub mod keys;
 pub mod on_open;
 pub mod worktrees;
+pub use editor::EditorConfig;
 pub use keys::KeysConfig;
 pub use on_open::OnOpenConfig;
 pub use worktrees::ManagedWorktreesConfig;
@@ -19,6 +21,7 @@ pub use worktrees::ManagedWorktreesConfig;
 /// The Rust source of the config types, for generating their reference documentation.
 pub const SOURCES: &[&str] = &[
     include_str!("mod.rs"),
+    include_str!("editor.rs"),
     include_str!("keys.rs"),
     include_str!("on_open.rs"),
     include_str!("worktrees.rs"),
@@ -168,6 +171,10 @@ pub struct CoreConfig {
     #[doc(hidden)]
     #[serde(default)]
     pub experimental_tabs: bool,
+    /// The editor the diff tab opens files in. Left out of the README with the tabs.
+    #[doc(hidden)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub editor: Option<EditorConfig>,
     /// Customize key bindings grouped by where they are active.
     pub keys: KeysConfig,
 }
@@ -180,6 +187,7 @@ struct RawCoreConfig {
     search_dirs: Vec<SearchDirEntry>,
     include_non_git: bool,
     experimental_tabs: bool,
+    editor: Option<EditorConfig>,
     keys: keys::RawKeysConfig,
 }
 
@@ -189,6 +197,7 @@ impl RawCoreConfig {
             search_dirs: self.search_dirs,
             include_non_git: self.include_non_git,
             experimental_tabs: self.experimental_tabs,
+            editor: self.editor,
             keys: KeysConfig::from_raw(self.keys, product).map_err(anyhow::Error::msg)?,
         })
     }
@@ -414,7 +423,7 @@ fn parse_part<T: DeserializeOwned>(contents: &str) -> Result<(T, Vec<IgnoredKey>
     let deserializer = toml::Deserializer::parse(contents).context("invalid config TOML")?;
     let value = serde_ignored::deserialize(deserializer, |path| {
         ignored.push(IgnoredKey {
-            path: path.to_string(),
+            path: key_path(&path),
             top_level: top_level_key(&path),
             is_top_level: matches!(
                 &path,
@@ -424,6 +433,28 @@ fn parse_part<T: DeserializeOwned>(contents: &str) -> Result<(T, Vec<IgnoredKey>
     })
     .context("invalid config TOML")?;
     Ok((value, ignored))
+}
+
+/// `path` as it is written in the file, such as `keys.general.x`: an optional or newtype
+/// value is written as what it holds, so it adds nothing.
+fn key_path(path: &serde_ignored::Path<'_>) -> String {
+    use serde_ignored::Path;
+    let join = |parent: &Path<'_>, part: String| {
+        let parent = key_path(parent);
+        if parent.is_empty() {
+            part
+        } else {
+            format!("{parent}.{part}")
+        }
+    };
+    match path {
+        Path::Root => String::new(),
+        Path::Map { parent, key } => join(parent, key.clone()),
+        Path::Seq { parent, index } => join(parent, index.to_string()),
+        Path::Some { parent }
+        | Path::NewtypeStruct { parent }
+        | Path::NewtypeVariant { parent } => key_path(parent),
+    }
 }
 
 fn top_level_key(path: &serde_ignored::Path<'_>) -> Option<String> {
@@ -538,6 +569,9 @@ pub fn load_config<E: ConfigExtension>(product: &Product) -> Result<LoadedConfig
 }
 
 fn validate_core(config: &CoreConfig) -> Result<()> {
+    if let Some(editor) = &config.editor {
+        editor.validate()?;
+    }
     for entry in &config.search_dirs {
         let (path, depth) = entry.path_and_depth();
         if path.trim().is_empty() {
@@ -610,6 +644,24 @@ mod tests {
 
         let error = parse_config::<TestExtension>(&TEST_PRODUCT, "[extra]\nlevel = 9").unwrap_err();
         assert!(format!("{error:#}").contains("at most 3"), "{error:#}");
+    }
+
+    #[test]
+    fn the_editor_is_read_and_checked() {
+        let (core, warnings) =
+            parse("[editor]\ncommand = \"hx {file}:{line}\"\nsplit = 1\n").unwrap();
+        assert_eq!(
+            core.editor,
+            Some(EditorConfig {
+                command: "hx {file}:{line}".into(),
+                direction: on_open::OnOpenPaneDirection::Right,
+            })
+        );
+        let messages: Vec<_> = warnings.iter().map(|w| w.message.as_str()).collect();
+        assert_eq!(messages, ["unknown config key ignored: editor.split"]);
+        assert_eq!(parse("").unwrap().0.editor, None);
+        let error = parse("[editor]\ncommand = \"hx\"\n").unwrap_err();
+        assert!(format!("{error:#}").contains("{file}"), "{error:#}");
     }
 
     #[test]

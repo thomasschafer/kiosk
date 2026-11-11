@@ -379,6 +379,27 @@ sb key Escape
 wait_view '.overlay == null'
 sb key Escape
 wait_closed
+
+check "o opens the current file at its change in the [editor], in a pane beside the checkout's"
+marker=$HOME/sb/editor
+rm -f "$marker"
+printf 'search_dirs = ["~/code"]\nexperimental_tabs = true\n\n[editor]\ncommand = "echo {file}:{line} > %s"\n' \
+  "$marker" >"$config"
+space_terminals() {
+  sb ls | jq --arg folder "$folder" '[.spaces[] | select(.folder == $folder) | .tabs[].terminals[]] | length'
+}
+before=$(space_terminals)
+: >"$trace"
+sb "do" mod.open '{"name":"kiosk-diff"}' >/dev/null
+wait_view '.screen == "diff" and (.body.rows | length) > 0'
+sleep 0.7
+sb key o
+wait_closed
+for _ in $(seq 100); do [[ -s $marker ]] && break; sleep 0.1; done
+[[ $(cat "$marker" 2>/dev/null) == "$folder/main.rs:3" ]] ||
+  fail "the editor command was not typed for main.rs at its changed line: $(cat "$marker" 2>/dev/null)"
+[[ $(space_terminals) == $((before + 1)) ]] || fail "the editor did not open in a pane beside the checkout's"
+sb shot "$shots/diff-editor.png" >/dev/null
 printf 'search_dirs = ["~/code"]\n' >"$config"
 
 check "without a config, the setup wizard writes one and the picker starts"

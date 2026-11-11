@@ -29,5 +29,7 @@ pub enum Action {
     ShowHelp,
     ShowScanWarnings,
     CloseOverlay,
+    /// Keeps what was typed into the field in front and leaves it.
+    Accept,
     Noop,
 }

@@ -782,3 +782,144 @@ fn a_match_left_of_the_screen_is_scrolled_back_to_and_a_paste_searches_once() {
     // `me` starts at column 9, after the tab's four columns and `find `.
     assert_eq!(tab.shown().unwrap().column, 1);
 }
+
+#[test]
+fn the_file_filter_shows_only_matching_files_and_is_kept_or_dropped() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path();
+    init_test_repo(dir);
+    for name in ["src/app.rs", "src/lib.rs", "docs/guide.md", "src/main.rs"] {
+        fs::create_dir_all(dir.join(name).parent().unwrap()).unwrap();
+        fs::write(dir.join(name), format!("token in {name}\n")).unwrap();
+    }
+    let mut tab = DiffTab::new(Some(dir.to_path_buf()), DiffLayout::Unified);
+    tab.set_viewport(20);
+    tab.start();
+    wait(&mut tab, highlighted);
+    tab.act(DiffAction::SelectRange(1));
+    wait(&mut tab, highlighted);
+    assert_eq!(
+        paths(&tab),
+        ["docs/guide.md", "src/app.rs", "src/lib.rs", "src/main.rs"]
+    );
+    let shown_paths = |tab: &DiffTab| {
+        let shown = tab.shown().unwrap();
+        shown
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                Row::File(file) => Some(shown.files[*file].diff.path().display().to_string()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+
+    tab.open_filter();
+    for character in "srs".chars() {
+        tab.filter_action(Action::Insert(character));
+    }
+    assert_eq!(
+        shown_paths(&tab),
+        ["src/app.rs", "src/lib.rs", "src/main.rs"]
+    );
+    assert_eq!(tab.shown().unwrap().current_file, 1, "the first file left");
+    let retype = |tab: &mut DiffTab, text: &str| {
+        tab.filter_action(Action::Edit(crate::state::TextEdit::Clear));
+        for character in text.chars() {
+            tab.filter_action(Action::Insert(character));
+        }
+    };
+    retype(&mut tab, "main");
+    assert_eq!(shown_paths(&tab), ["src/main.rs"]);
+    retype(&mut tab, "zzz");
+    assert_eq!(shown_paths(&tab), Vec::<String>::new());
+    retype(&mut tab, "srs");
+
+    tab.filter_action(Action::Accept);
+    assert!(!tab.filter.as_ref().unwrap().editing, "the filter is kept");
+    tab.act(DiffAction::NextFile);
+    assert_eq!(tab.shown().unwrap().current_file, 2);
+    tab.act(DiffAction::NextFile);
+    tab.act(DiffAction::NextFile);
+    assert_eq!(
+        tab.shown().unwrap().current_file,
+        3,
+        "no further than the last shown"
+    );
+    tab.act(DiffAction::Top);
+    tab.act(DiffAction::PreviousFile);
+    assert_eq!(
+        tab.shown().unwrap().current_file,
+        1,
+        "not back to a hidden file"
+    );
+
+    tab.open_search();
+    for character in "token".chars() {
+        tab.search_action(Action::Insert(character));
+    }
+    assert_eq!(
+        tab.search.as_ref().unwrap().found.len(),
+        3,
+        "only the files that show are searched"
+    );
+    tab.search_action(Action::CloseOverlay);
+
+    fs::write(dir.join("src/new.rs"), "new\n").unwrap();
+    fs::write(dir.join("docs/more.md"), "more\n").unwrap();
+    wait(&mut tab, |tab| {
+        tab.shown().is_some_and(|shown| shown.files.len() == 6)
+    });
+    assert_eq!(
+        shown_paths(&tab),
+        ["src/app.rs", "src/lib.rs", "src/main.rs", "src/new.rs"],
+        "the filter applies to a refreshed diff"
+    );
+
+    tab.open_filter();
+    assert!(tab.filter.as_ref().unwrap().editing);
+    assert_eq!(tab.filter.as_ref().unwrap().input.text, "srs");
+    tab.filter_action(Action::CloseOverlay);
+    assert!(tab.filter.is_none());
+    assert_eq!(shown_paths(&tab).len(), 6);
+
+    tab.open_filter();
+    tab.filter_action(Action::Accept);
+    assert!(tab.filter.is_none(), "an empty filter isn't kept");
+}
+
+#[test]
+fn filtering_out_the_wide_lines_brings_the_code_back_into_view_and_a_hidden_file_is_left_alone() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path();
+    init_test_repo(dir);
+    fs::write(dir.join("wide.txt"), format!("{}\n", "x".repeat(300))).unwrap();
+    fs::write(dir.join("short.txt"), "short line\n").unwrap();
+    let mut tab = DiffTab::new(Some(dir.to_path_buf()), DiffLayout::Unified);
+    tab.start();
+    wait(&mut tab, highlighted);
+    tab.act(DiffAction::ScrollColumns(200));
+    assert_eq!(tab.shown().unwrap().column, 200);
+    tab.open_filter();
+    for character in "short".chars() {
+        tab.filter_action(Action::Insert(character));
+    }
+    assert_eq!(tab.shown().unwrap().column, 0);
+
+    tab.filter_action(Action::Insert('z'));
+    assert!(tab.shown().unwrap().files.iter().all(|file| file.hidden));
+    assert_eq!(
+        tab.place().unwrap_err(),
+        "there's no file showing",
+        "a hidden file isn't opened"
+    );
+    tab.act(DiffAction::ToggleFile(None));
+    assert!(
+        tab.shown()
+            .unwrap()
+            .files
+            .iter()
+            .all(|file| !file.collapsed),
+        "nor collapsed"
+    );
+}

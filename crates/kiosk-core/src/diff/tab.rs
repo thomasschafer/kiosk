@@ -14,6 +14,7 @@ use std::{
 };
 
 use anyhow::bail;
+use fuzzy_matcher::{FuzzyMatcher, skim::SkimMatcherV2};
 
 use super::{
     Commit, FileContent, FileDiff, Highlighted, Hunk, LineKind, Range, Target, pairs,
@@ -121,6 +122,8 @@ pub struct ShownFile {
     /// For each hunk, each line's words changed from its partner, once the worker has
     /// compared them alongside highlighting.
     pub changes: Option<LineChanges>,
+    /// Left out by the file filter.
+    pub hidden: bool,
 }
 
 /// For each hunk of a file, each line's changed words (see [`pairs::changed_lines`]).
@@ -252,6 +255,21 @@ impl Search {
             .enumerate()
             .take_while(move |(_, found)| found.line_key() == line)
             .map(move |(index, found)| (found, self.current == Some(start + index)))
+    }
+}
+
+/// Showing only the files whose paths match what is typed.
+#[derive(Debug, Default)]
+pub struct FileFilter {
+    pub input: TextInput,
+    /// Whether keys go to the field, rather than the filter only being kept.
+    pub editing: bool,
+}
+
+impl FileFilter {
+    /// What the files are filtered by, or `None` when nothing is typed.
+    fn query(&self) -> Option<&str> {
+        Some(self.input.text.as_str()).filter(|query| !query.is_empty())
     }
 }
 
@@ -491,6 +509,8 @@ pub struct DiffTab {
     open_error: Option<String>,
     /// The search, while its field is open.
     pub search: Option<Search>,
+    /// The file filter, while it is typed or kept.
+    pub filter: Option<FileFilter>,
 }
 
 #[derive(Debug)]
@@ -585,6 +605,7 @@ impl DiffTab {
             refresh: None,
             open_error: None,
             search: None,
+            filter: None,
         }
     }
 
@@ -889,7 +910,9 @@ impl DiffTab {
                     widest: 0,
                     layout,
                 };
+                shown.hide_unmatched(self.filter.as_ref().and_then(FileFilter::query));
                 shown.lay_out();
+                shown.current_file = shown.next_shown(0, 1).unwrap_or(0);
                 ready.content = RangeContent::Shown(shown);
             }
             Event::Highlighted(index, highlighted, changes) => {
@@ -970,10 +993,82 @@ impl DiffTab {
         })
     }
 
-    /// Opens the search field, empty.
+    /// Opens the search field, empty, leaving the file filter as it is.
     pub fn open_search(&mut self) {
         self.open_error = None;
+        if let Some(filter) = &mut self.filter {
+            filter.editing = false;
+        }
         self.search = Some(Search::default());
+    }
+
+    /// Opens the file filter's field, with what it kept, in place of the search.
+    pub fn open_filter(&mut self) {
+        self.open_error = None;
+        self.search = None;
+        self.filter.get_or_insert_with(FileFilter::default).editing = true;
+    }
+
+    /// Applies `action` to the file filter's field: typing filters again, accepting keeps the
+    /// filter and leaves the field, and closing drops the filter.
+    pub fn filter_action(&mut self, action: Action) {
+        let Some(filter) = &mut self.filter else {
+            return;
+        };
+        match action {
+            Action::Insert(character) => {
+                filter.input.insert_char(character);
+                self.filter_again();
+            }
+            Action::Edit(edit) if filter.input.apply(edit) => self.filter_again(),
+            Action::Accept if filter.query().is_some() => filter.editing = false,
+            Action::Accept | Action::CloseOverlay => {
+                self.filter = None;
+                self.filter_again();
+            }
+            _ => {}
+        }
+    }
+
+    /// Adds pasted `text` to the file filter's field, then filters once.
+    pub fn filter_paste(&mut self, text: &str) {
+        let Some(filter) = &mut self.filter else {
+            return;
+        };
+        for character in text.chars().filter(|character| !character.is_control()) {
+            filter.input.insert_char(character);
+        }
+        self.filter_again();
+    }
+
+    /// Hides the files the filter leaves out and shows the rest from the top, keeping the
+    /// current file if it still shows.
+    fn filter_again(&mut self) {
+        let query = self
+            .filter
+            .as_ref()
+            .and_then(FileFilter::query)
+            .map(str::to_owned);
+        let Some(shown) = self.shown_mut() else {
+            return;
+        };
+        if !shown.hide_unmatched(query.as_deref()) {
+            return;
+        }
+        shown.lay_out();
+        // Some of the widest line left stays in view, as when scrolling.
+        shown.column = shown
+            .column
+            .min(shown.widest.saturating_sub(MIN_COLUMNS_SHOWN));
+        if shown
+            .files
+            .get(shown.current_file)
+            .is_none_or(|file| file.hidden)
+        {
+            shown.current_file = shown.next_shown(0, 1).unwrap_or(0);
+        }
+        shown.offset = shown.file_row(shown.current_file).unwrap_or(0);
+        self.find_again(false);
     }
 
     /// Applies `action` to the open search: typing searches again from the top of the
@@ -1029,8 +1124,15 @@ impl DiffTab {
             search.current = None;
             return;
         };
+        // A file the filter leaves out has nothing to find, as it doesn't show.
         search.found = search::find(
-            shown.files.iter().map(|file| &file.diff.content),
+            shown.files.iter().map(|file| {
+                if file.hidden {
+                    &FileContent::Binary
+                } else {
+                    &file.diff.content
+                }
+            }),
             &search.input.text,
         );
         let top = shown.top_line();
@@ -1149,9 +1251,18 @@ impl DiffTab {
             widest: 0,
             layout,
         };
+        shown.hide_unmatched(self.filter.as_ref().and_then(FileFilter::query));
         shown.lay_out();
-        let index_of = |path: &Path| shown.files.iter().position(|file| file.diff.path() == path);
-        shown.current_file = current.and_then(|path| index_of(&path)).unwrap_or(0);
+        let index_of = |path: &Path| {
+            shown
+                .files
+                .iter()
+                .position(|file| file.diff.path() == path && !file.hidden)
+        };
+        shown.current_file = current
+            .and_then(|path| index_of(&path))
+            .or_else(|| shown.next_shown(0, 1))
+            .unwrap_or(0);
         if let Some((path, number, into)) = top
             && let Some(file) = index_of(&path)
             && let Some(header) = shown.file_row(file)
@@ -1279,6 +1390,7 @@ impl ShownFile {
             added,
             removed,
             changes: None,
+            hidden: false,
         }
     }
 }
@@ -1291,6 +1403,9 @@ impl Shown {
         self.rows.clear();
         self.widest = 0;
         for (index, file) in self.files.iter().enumerate() {
+            if file.hidden {
+                continue;
+            }
             self.rows.push(Row::File(index));
             let hunks = match &file.diff.content {
                 FileContent::Binary => {
@@ -1391,7 +1506,8 @@ impl Shown {
     /// else its first change. `None` without files.
     fn place(&self, viewport: usize) -> Option<(usize, u32)> {
         let file = self.current_file;
-        let FileContent::Text { hunks } = &self.files.get(file)?.diff.content else {
+        let shown_file = self.files.get(file).filter(|file| !file.hidden)?;
+        let FileContent::Text { hunks } = &shown_file.diff.content else {
             return Some((file, 1));
         };
         let end = self.offset.saturating_add(viewport).min(self.rows.len());
@@ -1493,6 +1609,34 @@ impl Shown {
         }
     }
 
+    /// Hides the files whose paths don't match `filter` by the picker's fuzzy matching, or
+    /// none without one. Returns whether that changed which files show.
+    fn hide_unmatched(&mut self, filter: Option<&str>) -> bool {
+        let matcher = SkimMatcherV2::default();
+        let mut changed = false;
+        for file in &mut self.files {
+            let hidden = filter.is_some_and(|filter| {
+                matcher
+                    .fuzzy_match(&file.diff.path().to_string_lossy(), filter)
+                    .is_none()
+            });
+            changed |= file.hidden != hidden;
+            file.hidden = hidden;
+        }
+        changed
+    }
+
+    /// The first file from `from` on, stepping by `step`, that the filter leaves showing.
+    fn next_shown(&self, from: usize, step: isize) -> Option<usize> {
+        let mut file = from;
+        loop {
+            if !self.files.get(file)?.hidden {
+                return Some(file);
+            }
+            file = file.checked_add_signed(step)?;
+        }
+    }
+
     /// The file whose rows include row `row`.
     pub fn file_at(&self, row: usize) -> Option<usize> {
         self.rows.get(row).map(|row| row.file())
@@ -1524,29 +1668,34 @@ impl Shown {
             DiffAction::Top => scroll_to(self, 0),
             DiffAction::Bottom => {
                 scroll_to(self, last);
-                self.current_file = self.files.len().saturating_sub(1);
+                if let Some(file) = self.next_shown(self.files.len().saturating_sub(1), -1) {
+                    self.current_file = file;
+                }
             }
             DiffAction::NextFile => {
-                self.show_file(
-                    (self.current_file + 1).min(self.files.len().saturating_sub(1)),
-                    viewport,
-                );
+                if let Some(file) = self.next_shown(self.current_file + 1, 1) {
+                    self.show_file(file, viewport);
+                }
             }
             DiffAction::PreviousFile => {
                 // From below its header, back to the current file's header; from its header,
                 // to the file before.
                 let header = self.file_row(self.current_file);
                 let file = if header.is_some_and(|header| header < self.offset) {
-                    self.current_file
+                    Some(self.current_file)
                 } else {
-                    self.current_file.saturating_sub(1)
+                    self.current_file
+                        .checked_sub(1)
+                        .and_then(|file| self.next_shown(file, -1))
                 };
-                self.show_file(file, viewport);
+                if let Some(file) = file {
+                    self.show_file(file, viewport);
+                }
             }
             DiffAction::ShowFile(file) => self.show_file(file, viewport),
             DiffAction::ToggleFile(file) => {
                 let index = file.unwrap_or(self.current_file);
-                let Some(file) = self.files.get_mut(index) else {
+                let Some(file) = self.files.get_mut(index).filter(|file| !file.hidden) else {
                     return;
                 };
                 if !matches!(&file.diff.content, FileContent::Text { hunks } if !hunks.is_empty()) {

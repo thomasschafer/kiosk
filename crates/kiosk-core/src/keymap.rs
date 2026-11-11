@@ -195,6 +195,19 @@ pub fn search_field_action(input: KeyInput, keys: &KeysConfig) -> Option<Action>
     }
 }
 
+/// What a key does in the diff tab's file filter: `enter` keeps the filter and leaves the
+/// field, `esc` drops the filter, and the rest edit or type.
+pub fn filter_field_action(input: KeyInput, keys: &KeysConfig) -> Option<Action> {
+    match (input.chord.code, input.chord.modifiers) {
+        (KeyCode::Esc, KeyModifiers::NONE) => Some(Action::CloseOverlay),
+        (KeyCode::Enter, KeyModifiers::NONE) => Some(Action::Accept),
+        _ => keys
+            .text_edit(input.chord)
+            .map(Action::Edit)
+            .or_else(|| input.typed().map(Action::Insert)),
+    }
+}
+
 /// The scan warnings view only scrolls, and closes with `esc` or the key that opened it.
 /// `opening` is what the chord does in the mode underneath, so that key always closes the
 /// view, and `scrolling` what it does in the view.
@@ -244,7 +257,8 @@ pub fn command_to_action(command: Command, state: &AppState) -> Option<Action> {
         | Command::ToggleFile
         | Command::ToggleLayout
         | Command::OpenInEditor
-        | Command::Search => None,
+        | Command::Search
+        | Command::FilterFiles => None,
         Command::Quit => Some(Action::Quit),
         Command::Help => Some(Action::ShowHelp),
         Command::DismissToast => (!state.toasts.is_empty()).then_some(Action::DismissToast),

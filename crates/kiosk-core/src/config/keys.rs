@@ -256,6 +256,7 @@ commands! {
     ToggleLayout => "toggle_layout", "Switch between unified and side by side";
     OpenInEditor => "open_in_editor", "Open the file at this line in your editor";
     Search => "search", "Search the changes";
+    FilterFiles => "filter_files", "Show only the files whose paths match";
     NextRange => "next_range", "Show the next range of changes";
     PreviousRange => "previous_range", "Show the previous range of changes";
     NextTab => "next_tab", "Show the next tab";
@@ -314,7 +315,8 @@ impl Command {
             | Self::ToggleFile
             | Self::ToggleLayout
             | Self::OpenInEditor
-            | Self::Search => return None,
+            | Self::Search
+            | Self::FilterFiles => return None,
         })
     }
 }
@@ -544,6 +546,7 @@ impl Default for KeysConfig {
                 ("s", Command::ToggleLayout),
                 ("o", Command::OpenInEditor),
                 ("/", Command::Search),
+                ("f", Command::FilterFiles),
             ]),
         }
     }
@@ -1012,6 +1015,7 @@ const DIFF: &[Command] = &[
     Command::ToggleLayout,
     Command::OpenInEditor,
     Command::Search,
+    Command::FilterFiles,
 ];
 const LIST_NAVIGATION: &[Command] = &[Command::Noop, Command::MoveUp, Command::MoveDown];
 const MODAL: &[Command] = &[Command::Noop, Command::Open, Command::Back];

@@ -835,7 +835,8 @@ export default class Kiosk extends View {
         v_flex().min_w(0).flex_1()
           .child(div().truncate().text_color(t.foreground).child(range.label))
           .child(div().truncate().text_size(11.5).text_color(t.dim).child(range.detail))).h(40));
-    const files = d.files.map((file, i) => {
+    const files = d.files.flatMap((file, i) => {
+      if (file.hidden) return [];
       const slash = file.path.lastIndexOf("/");
       return sideRow(`kiosk-file-${i}`, i === d.current_file, () => this.send({ t: "diff", click: { on: "file", index: i } }),
         div().flex_none().w(14).text_size(11).font_semibold().text_color(changeColor(t, file.change)).child(file.change.charAt(0).toUpperCase()),
@@ -848,14 +849,17 @@ export default class Kiosk extends View {
     });
     const sidebar = v_flex().id("kiosk-diff-sidebar").w(SIDEBAR).flex_none().h_full().min_h(0).p(PAD).border_r_1().border_color(t.border).overflow_y_scrollbar()
       .when(ranges.length > 0, (el) => el.child(label("Ranges")).children(ranges))
-      .when(files.length > 0, (el) => el.child(label(`Files · ${files.length}`)).children(files));
+      .when(d.files.length > 0, (el) => el.child(label(d.filter ? `Files · ${d.filter.shown} of ${d.filter.total}` : `Files · ${d.files.length}`)).children(files));
     const header = h_flex().h(DIFF_HEADER).flex_none().px(EDGE).gap(10).items_center().border_b_1().border_color(t.border)
       .child(icon(t, "git-branch", t.muted, ICON))
       .child(div().min_w(0).truncate().text_size(14).font_semibold().child(d.title))
       .when(!!d.subtitle, (el) => el.child(div().min_w(0).truncate().text_size(12.5).text_color(t.muted).child(d.subtitle)))
-      .when(!!d.notice && !d.search, (el) => el.child(div().flex_1()).child(h_flex().min_w(0).gap(8).items_center().text_size(12.5).text_color(t.blocked)
+      .child(div().flex_1())
+      // A notice, such as why a file didn't open, shows beside an open field, which keeps its width.
+      .when(!!d.notice, (el) => el.child(h_flex().min_w(0).gap(8).items_center().text_size(12.5).text_color(t.blocked)
         .child(div().flex_none().size(7).rounded(4).bg(t.blocked)).child(div().min_w(0).truncate().child(d.notice))))
-      .when(!!d.search, (el) => el.child(div().flex_1()).child(this.diffSearch(t, d.search)));
+      .when(!!d.search, (el) => el.child(this.diffSearch(t, d.search)))
+      .when(!d.search && !!d.filter, (el) => el.child(this.diffFilter(t, d.filter)));
     const main = d.message
       ? v_flex().flex_1().h_full().items_center().justify_center().gap(6)
         .child(h_flex().gap(10).items_center().when(d.message.busy, (el) => el.child(spinner(t, t.accent, 14)))
@@ -881,6 +885,16 @@ export default class Kiosk extends View {
       .child(icon(t, "search", t.muted, 14))
       .child(h_flex().flex_1().min_w(0).items_center().overflow_hidden().child(queryText(t, search.query, search.placeholder, true, 13)))
       .when(count !== "", (el) => el.child(div().flex_none().text_size(12).text_color(search.count === 0 ? t.blocked : t.muted).child(count)));
+  }
+
+  // The diff tab's file filter: a field while it is typed, and kept, a quieter one saying
+  // what it filters by.
+  diffFilter(t, filter) {
+    return h_flex().id("kiosk-diff-filter").w(340).flex_none().h(30).px(10).gap(8).items_center().rounded(7)
+      .border_1().border_color(filter.editing ? t.accent : t.border).bg(filter.editing ? t.background : tint(t.foreground, 0.04))
+      .child(icon(t, "folder", t.muted, 14))
+      .child(h_flex().flex_1().min_w(0).items_center().overflow_hidden().child(queryText(t, filter.query, filter.placeholder, filter.editing, 13)))
+      .child(div().flex_none().text_size(12).text_color(filter.shown === 0 ? t.blocked : t.muted).child(`${filter.shown} of ${filter.total} files`));
   }
 
   // The rows on screen: headers and notes across the whole width, and code in one pane, or

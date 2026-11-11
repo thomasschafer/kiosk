@@ -1025,3 +1025,57 @@ fn slash_searches_the_diff_marking_matches_and_esc_ends_the_search() {
     assert_eq!(client.end()["outcome"], "quit");
     session.join().unwrap().unwrap();
 }
+
+#[test]
+fn f_filters_the_diffs_files_and_enter_keeps_the_filter() {
+    let root = tempfile::tempdir().unwrap();
+    let search_dir = root.path().to_path_buf();
+    let repo = root.path().join("work");
+    std::fs::create_dir(&repo).unwrap();
+    kiosk_core::git::test_fixtures::init_test_repo(&repo);
+    std::fs::write(repo.join("a.rs"), "fn a() {}\n").unwrap();
+    std::fs::write(repo.join("b.rs"), "fn b() {}\n").unwrap();
+    let (mut client, session, _) = connect(move || Start {
+        current_cwd: Some(repo),
+        tab: TabId::Diff,
+        ..two_repo_start(&search_dir, mock_backend())
+    });
+    client.send(&json!({ "t": "viewport", "list": 10, "bases": 5, "help": 10, "scan_warnings": 5, "diff": 10, "side_by_side": true }));
+    client.view_until(|view| {
+        tab_body(view, "diff").is_some_and(|body| body["body"]["rows"].is_array())
+    });
+    client.key("f", Some("f"));
+    client.type_text("zz");
+    let view = client.view_until(|view| {
+        tab_body(view, "diff").is_some_and(|body| body["filter"]["query"]["before"] == "zz")
+    });
+    assert_eq!(view["body"]["message"]["text"], "No files match the filter");
+    client.key("backspace", None);
+    client.key("backspace", None);
+    client.type_text("b");
+    let view = client
+        .view_until(|view| tab_body(view, "diff").is_some_and(|body| body["filter"]["shown"] == 1));
+    let body = &view["body"];
+    assert_eq!(body["filter"]["total"], 2);
+    assert_eq!(body["filter"]["editing"], true);
+    assert_eq!(body["files"][0]["hidden"], true);
+    assert_eq!(body["files"][1]["hidden"], false);
+    assert_eq!(body["current_file"], 1);
+    assert_eq!(body["body"]["rows"][0], json!(["file", 1]));
+
+    client.key("enter", None);
+    client.view_until(|view| {
+        tab_body(view, "diff").is_some_and(|body| body["filter"]["editing"] == false)
+    });
+    // Keys act on the tab again, the filter kept: `f` opens it to edit rather than typing.
+    client.key("f", Some("f"));
+    let view = client.view_until(|view| {
+        tab_body(view, "diff").is_some_and(|body| body["filter"]["editing"] == true)
+    });
+    assert_eq!(view["body"]["filter"]["query"]["before"], "b");
+    client.key("escape", None);
+    client.view_until(|view| tab_body(view, "diff").is_some_and(|body| body["filter"].is_null()));
+    client.key("escape", None);
+    assert_eq!(client.end()["outcome"], "quit");
+    session.join().unwrap().unwrap();
+}

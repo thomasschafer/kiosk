@@ -362,8 +362,11 @@ printf 'live\n' >"$folder/live.txt"
 wait_view '[.files[].path] | index("live.txt") != null'
 rm "$folder/live.txt"
 wait_view '[.files[].path] | index("live.txt") == null'
+# One file shows at a time: `n` shows the next on its own, and `p` goes back.
 sb key n
-wait_view '.current_file == 1'
+wait_view '.current_file == 1 and ([.body.rows[] | select(.[0] == "file") | .[1]] == [1])'
+sb key p
+wait_view '.current_file == 0 and .body.rows[0] == ["file", 0]'
 sb key s
 wait_view '.body.side_by_side and ([.body.rows[] | select(.[0] == "pair")] | length) > 0'
 # The changed word in the edited line is marked on both sides.

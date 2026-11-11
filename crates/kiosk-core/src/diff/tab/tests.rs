@@ -887,3 +887,39 @@ fn the_file_filter_shows_only_matching_files_and_is_kept_or_dropped() {
     tab.filter_action(Action::Accept);
     assert!(tab.filter.is_none(), "an empty filter isn't kept");
 }
+
+#[test]
+fn filtering_out_the_wide_lines_brings_the_code_back_into_view_and_a_hidden_file_is_left_alone() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path();
+    init_test_repo(dir);
+    fs::write(dir.join("wide.txt"), format!("{}\n", "x".repeat(300))).unwrap();
+    fs::write(dir.join("short.txt"), "short line\n").unwrap();
+    let mut tab = DiffTab::new(Some(dir.to_path_buf()), DiffLayout::Unified);
+    tab.start();
+    wait(&mut tab, highlighted);
+    tab.act(DiffAction::ScrollColumns(200));
+    assert_eq!(tab.shown().unwrap().column, 200);
+    tab.open_filter();
+    for character in "short".chars() {
+        tab.filter_action(Action::Insert(character));
+    }
+    assert_eq!(tab.shown().unwrap().column, 0);
+
+    tab.filter_action(Action::Insert('z'));
+    assert!(tab.shown().unwrap().files.iter().all(|file| file.hidden));
+    assert_eq!(
+        tab.place().unwrap_err(),
+        "there's no file showing",
+        "a hidden file isn't opened"
+    );
+    tab.act(DiffAction::ToggleFile(None));
+    assert!(
+        tab.shown()
+            .unwrap()
+            .files
+            .iter()
+            .all(|file| !file.collapsed),
+        "nor collapsed"
+    );
+}

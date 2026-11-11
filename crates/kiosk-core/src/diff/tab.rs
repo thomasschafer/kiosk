@@ -1056,6 +1056,10 @@ impl DiffTab {
             return;
         }
         shown.lay_out();
+        // Some of the widest line left stays in view, as when scrolling.
+        shown.column = shown
+            .column
+            .min(shown.widest.saturating_sub(MIN_COLUMNS_SHOWN));
         if shown
             .files
             .get(shown.current_file)
@@ -1502,7 +1506,8 @@ impl Shown {
     /// else its first change. `None` without files.
     fn place(&self, viewport: usize) -> Option<(usize, u32)> {
         let file = self.current_file;
-        let FileContent::Text { hunks } = &self.files.get(file)?.diff.content else {
+        let shown_file = self.files.get(file).filter(|file| !file.hidden)?;
+        let FileContent::Text { hunks } = &shown_file.diff.content else {
             return Some((file, 1));
         };
         let end = self.offset.saturating_add(viewport).min(self.rows.len());
@@ -1690,7 +1695,7 @@ impl Shown {
             DiffAction::ShowFile(file) => self.show_file(file, viewport),
             DiffAction::ToggleFile(file) => {
                 let index = file.unwrap_or(self.current_file);
-                let Some(file) = self.files.get_mut(index) else {
+                let Some(file) = self.files.get_mut(index).filter(|file| !file.hidden) else {
                     return;
                 };
                 if !matches!(&file.diff.content, FileContent::Text { hunks } if !hunks.is_empty()) {

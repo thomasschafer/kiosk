@@ -854,10 +854,12 @@ export default class Kiosk extends View {
       .child(icon(t, "git-branch", t.muted, ICON))
       .child(div().min_w(0).truncate().text_size(14).font_semibold().child(d.title))
       .when(!!d.subtitle, (el) => el.child(div().min_w(0).truncate().text_size(12.5).text_color(t.muted).child(d.subtitle)))
-      .when(!!d.notice && !d.search && !d.filter, (el) => el.child(div().flex_1()).child(h_flex().min_w(0).gap(8).items_center().text_size(12.5).text_color(t.blocked)
+      .child(div().flex_1())
+      // A notice, such as why a file didn't open, shows beside an open field, which keeps its width.
+      .when(!!d.notice, (el) => el.child(h_flex().min_w(0).gap(8).items_center().text_size(12.5).text_color(t.blocked)
         .child(div().flex_none().size(7).rounded(4).bg(t.blocked)).child(div().min_w(0).truncate().child(d.notice))))
-      .when(!!d.search, (el) => el.child(div().flex_1()).child(this.diffSearch(t, d.search)))
-      .when(!d.search && !!d.filter, (el) => el.child(div().flex_1()).child(this.diffFilter(t, d.filter)));
+      .when(!!d.search, (el) => el.child(this.diffSearch(t, d.search)))
+      .when(!d.search && !!d.filter, (el) => el.child(this.diffFilter(t, d.filter)));
     const main = d.message
       ? v_flex().flex_1().h_full().items_center().justify_center().gap(6)
         .child(h_flex().gap(10).items_center().when(d.message.busy, (el) => el.child(spinner(t, t.accent, 14)))

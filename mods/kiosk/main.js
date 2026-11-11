@@ -1206,7 +1206,9 @@ export default class Kiosk extends View {
     const name = h_flex().flex_none().max_w("60%").min_w(0).items_center().text_size(13.5)
       .when(!!remote, (el) => el.child(div().flex_none().text_color(t.dim).child(`${remote?.name}/`)))
       .child(h_flex().min_w(0).overflow_hidden().whitespace_nowrap().text_color(remote ? t.foreground : toneColor(t, r.name.tone)).when(selected, (el) => el.font_medium())
-        .children(marked(r.name.text, r.matches, t.accent)));
+        .children(marked(r.name.text, r.matches, t.accent)))
+      .when(!!r.qualifier, (el) => el.child(h_flex().flex_none().ml(5).whitespace_nowrap().text_color(toneColor(t, r.qualifier?.tone))
+        .children(marked(r.qualifier?.text ?? "", r.qualifier?.matches ?? [], t.accent))));
     return h_flex().id(`kiosk-row-${id}`).h(ROW).flex_none().px(INSET).rounded(7).gap(ICON_GAP).items_center().cursor_pointer()
       .when(selected, (el) => el.bg(selectedFill(t)))
       .when(!selected, (el) => el.hover((s) => s.bg(t.hover)))

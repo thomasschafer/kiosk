@@ -754,3 +754,30 @@ fn searching_goes_through_the_matches_expanding_files_and_follows_changes() {
     tab.search_action(Action::CloseOverlay);
     assert!(tab.search.is_none());
 }
+
+#[test]
+fn a_match_left_of_the_screen_is_scrolled_back_to_and_a_paste_searches_once() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path();
+    init_test_repo(dir);
+    commit(dir, "a.txt", "start\n");
+    fs::write(
+        dir.join("a.txt"),
+        format!("\tfind me {}\n", "x".repeat(200)),
+    )
+    .unwrap();
+    let mut tab = DiffTab::new(Some(dir.to_path_buf()), DiffLayout::Unified);
+    tab.set_viewport(10);
+    tab.start();
+    wait(&mut tab, highlighted);
+    tab.act(DiffAction::ScrollColumns(100));
+    assert_eq!(tab.shown().unwrap().column, 100);
+
+    tab.open_search();
+    tab.search_paste("me\u{7}");
+    let search = tab.search.as_ref().unwrap();
+    assert_eq!(search.input.text, "me", "control characters aren't typed");
+    assert_eq!(search.current, Some(0));
+    // `me` starts at column 9, after the tab's four columns and `find `.
+    assert_eq!(tab.shown().unwrap().column, 1);
+}

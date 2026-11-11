@@ -557,9 +557,7 @@ fn handle_diff_message(
     if diff.search.is_some() {
         match message {
             ClientMessage::Paste { text } => {
-                for character in text.chars().filter(|character| !character.is_control()) {
-                    diff.search_action(Action::Insert(character));
-                }
+                diff.search_paste(text);
                 return Step::Continue;
             }
             ClientMessage::Key { .. } => {

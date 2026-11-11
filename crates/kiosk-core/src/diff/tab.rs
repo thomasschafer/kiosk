@@ -994,6 +994,17 @@ impl DiffTab {
         }
     }
 
+    /// Adds pasted `text` to the search's field, then searches once.
+    pub fn search_paste(&mut self, text: &str) {
+        let Some(search) = &mut self.search else {
+            return;
+        };
+        for character in text.chars().filter(|character| !character.is_control()) {
+            search.input.insert_char(character);
+        }
+        self.find_again(true);
+    }
+
     /// The range's diff, if it shows, and the search, if it is open.
     fn shown_and_search(&mut self) -> (Option<&mut Shown>, Option<&mut Search>) {
         let shown = match &mut self.state {
@@ -1208,6 +1219,8 @@ impl DiffTab {
 
 /// Scrolled right as far as it goes, the widest line still shows this many columns.
 const MIN_COLUMNS_SHOWN: usize = 20;
+/// The columns shown before a match scrolled back to.
+const MATCH_MARGIN: usize = 8;
 
 /// Where line `index` of `hunk` is in the new file: its own number, or for a removed line,
 /// that of the line now in its place.
@@ -1467,6 +1480,16 @@ impl Shown {
             self.offset = row
                 .saturating_sub(viewport / 3)
                 .min(max_offset(self.rows.len(), viewport));
+        }
+        // Scrolled right past the match, back to a little before it. How far right the screen
+        // reaches isn't known here, so a match beyond it is left for the person to scroll to.
+        if let FileContent::Text { hunks } = &self.files[found.file].diff.content {
+            let text = &hunks[found.hunk].lines[found.line].text;
+            let (_, widths) = crate::display::code_chars(text);
+            let start: usize = widths.iter().take(found.chars.start).sum();
+            if start < self.column {
+                self.column = start.saturating_sub(MATCH_MARGIN);
+            }
         }
     }
 

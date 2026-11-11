@@ -326,9 +326,13 @@ function toneColor(t, tone) {
 
 // `spans` ([text, tone] pairs) split where the changed words `changed` ([start, length, ...]
 // in characters) begin and end, each piece with whether it is changed.
-function markChanged(spans, changed) {
+function markChanged(spans, changed, stride = 2) {
+  // What marks the column: false, or with `stride` 3 (`[start, length, current, ...]`), the
+  // mark's third value plus one, so a current match is told apart.
   const isChanged = (at) => {
-    for (let k = 0; k < changed.length; k += 2) if (at >= changed[k] && at < changed[k] + changed[k + 1]) return true;
+    for (let k = 0; k < changed.length; k += stride) {
+      if (at >= changed[k] && at < changed[k] + changed[k + 1]) return stride === 3 ? changed[k + 2] + 1 : true;
+    }
     return false;
   };
   const pieces = [];
@@ -995,11 +999,12 @@ export default class Kiosk extends View {
       }
       if (line.wide) {
         // Matches are marked in place of changed words, as one line can't show both here.
-        const found = line.found && line.found.filter((_, k) => k % 3 !== 2);
-        const marked = found ? tint(t.ansi3, 0.45) : mark;
+        const pieces = line.found ? markChanged(spans, line.found, 3) : markChanged(spans, line.changed ?? []);
+        const marked = (value) => !line.found ? mark : tint(t.ansi3, value === 2 ? 0.55 : 0.3);
         wideRows.push(row(i).pl(code).flex().whitespace_nowrap().overflow_hidden()
-          .children(markChanged(spans, found ?? line.changed ?? []).map(([span, tone, changed]) =>
-            div().flex_none().text_color(syntaxColor(t, tone)).when(changed, (el) => el.bg(marked).rounded(2)).child(span))));
+          .children(pieces.map(([span, tone, changed]) =>
+            div().flex_none().text_color(syntaxColor(t, tone)).when(!!changed, (el) => el.bg(marked(changed)).rounded(2))
+              .when(!!line.found && changed === 2, (el) => el.border_1().border_color(t.ansi3)).child(span))));
         return;
       }
       let column = 0;

@@ -515,6 +515,8 @@ fn hints(keys: &KeysConfig) -> Vec<Hint> {
             .map(|key| Hint::for_key(key, "collapse")),
         keys.diff_key(Command::ToggleLayout)
             .map(|key| Hint::for_key(key, "layout")),
+        keys.diff_key(Command::OpenInEditor)
+            .map(|key| Hint::for_key(key, "edit")),
         keys.layer_key(KeyLayer::Tabs, Command::NextTab)
             .map(|key| Hint::for_key(key, "next tab")),
         keys.diff_key(Command::Help)
@@ -666,6 +668,7 @@ mod tests {
                 ("[/]".into(), "range"),
                 ("e".into(), "collapse"),
                 ("s".into(), "layout"),
+                ("o".into(), "edit"),
                 ("ctrl+pagedown".into(), "next tab"),
                 ("ctrl+h".into(), "help"),
                 ("esc".into(), "quit"),

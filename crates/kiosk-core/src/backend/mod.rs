@@ -24,6 +24,8 @@ pub(crate) mod worktree;
 pub use annotation::{Annotations, Annotator, Label, Tone};
 pub use placement::WorktreePlacement;
 
+use crate::config::on_open::OnOpenPaneDirection;
+
 pub trait Backend: Send + Sync + 'static {
     /// How the backend identifies a session that shows a checkout or folder.
     type SessionId: Clone + PartialEq + fmt::Debug + Send + Sync + 'static;
@@ -43,6 +45,15 @@ pub trait Backend: Send + Sync + 'static {
     fn open_checkout(&self, repo: &Path, checkout: &Path) -> Result<Opened, Self::Error>;
     /// Focuses the session in `folder`, a folder outside any repository, or opens one.
     fn open_folder(&self, folder: &Path) -> Result<Opened, Self::Error>;
+    /// Focuses the session showing `checkout`, or opens one, and runs `command` in a new
+    /// pane split off its focused pane towards `direction`, starting in the checkout. The
+    /// new pane keeps focus.
+    fn run_beside(
+        &self,
+        checkout: &Path,
+        command: &str,
+        direction: OnOpenPaneDirection,
+    ) -> Result<Opened, Self::Error>;
     /// Tells the user something after the picker has closed.
     fn notify(&self, title: &str, body: &str) -> Result<(), Self::Error>;
     fn worktrees(&self) -> Worktrees<'_, Self>;

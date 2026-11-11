@@ -224,7 +224,7 @@ fn parse_section(section: &[u8]) -> Result<FileContent> {
 }
 
 /// `@@ -old_start[,old_len] +new_start[,new_len] @@ section`.
-fn parse_hunk_header(line: &[u8]) -> Result<Hunk> {
+pub(super) fn parse_hunk_header(line: &[u8]) -> Result<Hunk> {
     let line = String::from_utf8_lossy(line);
     let rest = line
         .strip_prefix("@@ -")

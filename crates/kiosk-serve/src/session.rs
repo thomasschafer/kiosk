@@ -12,7 +12,7 @@ use crossterm::event::{KeyCode, KeyModifiers};
 use kiosk_core::{
     backend::Backend,
     config::{
-        LoadedConfig,
+        EditorConfig, LoadedConfig,
         keys::{KeyChord, KeysConfig},
     },
     diff::tab::{DiffAction, DiffTab},
@@ -114,14 +114,18 @@ pub fn run<B: Backend, E>(
         session.no_search_dirs(path.as_deref())?;
         return session.finish(Outcome::Quit);
     }
+    let editor = loaded.core.editor.clone();
     let start = kiosk_core::start::prepare(product, loaded, current_cwd.as_deref())?;
     let outcome = session.tabs(
         start,
         git,
         backend,
         tabs,
-        current_cwd.as_deref(),
-        preferences.as_deref(),
+        Context {
+            current_cwd: current_cwd.as_deref(),
+            preferences: preferences.as_deref(),
+            editor: editor.as_ref(),
+        },
     )?;
     session.finish(outcome)
 }
@@ -148,6 +152,8 @@ struct Session<'a> {
 enum Step {
     Continue,
     Finish(Outcome),
+    /// Open the diff tab's current file in the editor.
+    OpenInEditor,
 }
 
 impl Session<'_> {
@@ -294,16 +300,20 @@ impl Session<'_> {
         git: Arc<dyn GitProvider>,
         backend: Option<Arc<B>>,
         mut tabs: Tabs,
-        current_cwd: Option<&Path>,
-        preferences_file: Option<&Path>,
+        context: Context<'_>,
     ) -> Result<Outcome> {
+        let Context {
+            current_cwd,
+            preferences: mut preferences_file,
+            editor,
+        } = context;
         let kiosk_core::start::PickerStart {
             mut state,
             search_dirs,
             keys,
         } = start;
+        let editor_backend = backend.clone();
         let picker = Picker::start(git, backend, keys, search_dirs, &state);
-        let mut preferences_file = preferences_file;
         let layout = match preferences_file.map(preferences::load).transpose() {
             Ok(preferences) => preferences.unwrap_or_default().diff_layout,
             Err(error) => {
@@ -357,8 +367,19 @@ impl Session<'_> {
                     &mut tabs,
                     &mut diff,
                 );
-                if let Step::Finish(outcome) = step {
-                    return Ok(outcome);
+                match step {
+                    Step::Finish(outcome) => return Ok(outcome),
+                    Step::OpenInEditor => {
+                        if let Some(outcome) = open_in_editor(
+                            &mut diff,
+                            editor,
+                            editor_backend.as_deref(),
+                            state.product.name,
+                        ) {
+                            return Ok(outcome);
+                        }
+                    }
+                    Step::Continue => {}
                 }
                 if diff.layout() != saved_layout {
                     saved_layout = diff.layout();
@@ -373,6 +394,54 @@ impl Session<'_> {
                 }
                 timeout = Duration::ZERO;
             }
+        }
+    }
+}
+
+/// What the tabs need besides the picker's start.
+#[derive(Clone, Copy)]
+struct Context<'a> {
+    /// Where the user is, for the picker's preselection and what the diff tab diffs.
+    current_cwd: Option<&'a Path>,
+    /// Where choices such as the diff layout are kept, if anywhere.
+    preferences: Option<&'a Path>,
+    editor: Option<&'a EditorConfig>,
+}
+
+/// Opens the diff tab's current file at its line in `editor`, beside the checkout's session,
+/// returning how the session ends if it did. If it didn't, the tab says why.
+fn open_in_editor<B: Backend>(
+    diff: &mut DiffTab,
+    editor: Option<&EditorConfig>,
+    backend: Option<&B>,
+    product: &str,
+) -> Option<Outcome> {
+    let opened = (|| {
+        let editor = editor.ok_or(
+            "set the [editor] command in the config, such as command = \"hx {file}:{line}\"",
+        )?;
+        let backend = backend.ok_or("there's nothing to open an editor in")?;
+        let place = diff.place()?;
+        let command = editor
+            .command_for(&place.file, place.line)
+            .map_err(|error| format!("{error:#}"))?;
+        backend
+            .run_beside(&place.checkout, &command, editor.direction)
+            .map(|opened| (backend, opened))
+            .map_err(|error| error.to_string())
+    })();
+    match opened {
+        Ok((backend, opened)) => {
+            if let Some(warning) = opened.warning
+                && let Err(error) = backend.notify(product, &warning)
+            {
+                eprintln!("{product}: {warning} (notification failed: {error})");
+            }
+            Some(Outcome::Opened)
+        }
+        Err(error) => {
+            diff.show_open_error(error);
+            None
         }
     }
 }
@@ -522,6 +591,7 @@ fn handle_diff_message(
                 diff.toggle_layout();
                 None
             }
+            Some(Command::OpenInEditor) => return Step::OpenInEditor,
             _ => None,
         },
     };

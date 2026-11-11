@@ -629,6 +629,8 @@ pub struct TestExtension {
         let reference = config_reference::<TestExtension>(&docs(ORDER)).unwrap();
         for hidden in [
             "experimental_tabs",
+            "[editor]",
+            "open_in_editor",
             "[keys.tabs]",
             "[keys.diff]",
             "next_tab",

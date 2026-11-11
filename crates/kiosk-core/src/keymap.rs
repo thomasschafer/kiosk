@@ -221,7 +221,8 @@ pub fn command_to_action(command: Command, state: &AppState) -> Option<Action> {
         | Command::NextRange
         | Command::PreviousRange
         | Command::ToggleFile
-        | Command::ToggleLayout => None,
+        | Command::ToggleLayout
+        | Command::OpenInEditor => None,
         Command::Quit => Some(Action::Quit),
         Command::Help => Some(Action::ShowHelp),
         Command::DismissToast => (!state.toasts.is_empty()).then_some(Action::DismissToast),

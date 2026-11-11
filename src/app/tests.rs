@@ -199,6 +199,8 @@ impl AppHost for FakeApp {
                 let id = format!("sp{}", state.next_id);
                 state.next_id += 1;
                 let output = json!({ "space": id, "tab": "tb", "terminal": pane.terminal });
+                // The new space shows at once, with its pane focused.
+                state.focused_pane = Some(pane.pane.clone());
                 state.spaces.push(FakeSpace {
                     id,
                     machine: None,
@@ -208,8 +210,14 @@ impl AppHost for FakeApp {
             }
             "space.select" => {
                 let id = args["id"].as_str().unwrap();
-                if !state.spaces.iter().any(|space| space.id == id) {
+                let Some(space) = state.spaces.iter().find(|space| space.id == id) else {
                     return Err(refused("no such space"));
+                };
+                // The app focuses the pane focused last in the space; this fake only knows
+                // the focus is in the space or not, and starts it at the first pane.
+                let focused = state.focused_pane.as_ref();
+                if !space.panes.iter().any(|pane| Some(&pane.pane) == focused) {
+                    state.focused_pane = Some(space.panes[0].pane.clone());
                 }
                 json!({ "ok": true })
             }
@@ -962,14 +970,14 @@ fn commands_that_cannot_be_typed_are_reported_with_their_pane() {
     };
     fixture.app.state.lock().unwrap().refuse_send = true;
 
-    let warning = type_commands(fixture.app.as_ref(), &[typing(1), typing(3)]);
+    let failed = type_commands(fixture.app.as_ref(), &[typing(1), typing(3)]);
 
     assert_eq!(
-        warning.as_deref(),
-        Some(&*format!(
-            "on_open: pane 1 run failed: {error}; pane 3 run failed: {error}",
-            error = refused("no such terminal")
-        ))
+        failed,
+        [
+            (1, refused("no such terminal")),
+            (3, refused("no such terminal"))
+        ]
     );
 }
 
@@ -1187,6 +1195,98 @@ fn on_open_commands_that_fail_are_saved_for_the_mod_to_show_later() {
     };
     assert_eq!(title, ON_OPEN_FAILED);
     assert!(body.contains("no such terminal"), "{body}");
+}
+
+#[test]
+fn an_editor_opens_beside_the_focused_pane_of_the_space_showing_the_checkout() {
+    let fixture = Fixture::new();
+    fixture.app.add_space(Path::new("/elsewhere"));
+    let shown = fixture.app.add_space(&fixture.repo);
+    let mut state = fixture.app.state.lock().unwrap();
+    state.focused_pane = Some(state.spaces[0].panes[0].pane.clone());
+    drop(state);
+
+    let opened = fixture
+        .backend
+        .run_beside(&fixture.repo, "hx a.rs:3", OnOpenPaneDirection::Down)
+        .unwrap();
+
+    assert_eq!(opened, Opened::default());
+    let folder = fixture.repo.to_str().unwrap();
+    assert_eq!(
+        fixture.app.commands(),
+        [
+            ("space.select".into(), json!({ "id": shown.id })),
+            (
+                "terminal.open".into(),
+                json!({ "place": "down", "folder": folder })
+            ),
+        ]
+    );
+    let space = &fixture.app.spaces()[1];
+    let [_, editor] = space.panes.as_slice() else {
+        panic!(
+            "expected the editor beside the space's pane, got {:?}",
+            space.panes
+        );
+    };
+    assert_eq!(
+        fixture.app.state.lock().unwrap().focused_pane.as_ref(),
+        Some(&editor.pane),
+        "the editor keeps focus"
+    );
+    assert_eq!(fixture.app.state.lock().unwrap().typed, []);
+    fixture.background.wait();
+    assert_eq!(
+        fixture.app.state.lock().unwrap().typed,
+        [(editor.terminal.clone(), "hx a.rs:3".into())]
+    );
+}
+
+#[test]
+fn an_editor_for_a_checkout_no_space_shows_opens_in_a_new_space() {
+    let fixture = Fixture::new();
+    let linked = fixture.linked("feature");
+
+    fixture
+        .backend
+        .run_beside(&linked, "hx a.rs:3", OnOpenPaneDirection::Right)
+        .unwrap();
+    fixture.background.wait();
+
+    assert_eq!(fixture.app.command_names(), ["space.new", "terminal.open"]);
+    let spaces = fixture.app.spaces();
+    let [space] = spaces.as_slice() else {
+        panic!("expected one space, got {spaces:?}");
+    };
+    assert_eq!(space.panes.len(), 2);
+    assert_eq!(
+        fixture.app.state.lock().unwrap().typed,
+        [(space.panes[1].terminal.clone(), "hx a.rs:3".into())]
+    );
+}
+
+#[test]
+fn an_editor_command_that_cannot_be_typed_is_saved_for_the_mod_to_show_later() {
+    let fixture = Fixture::new();
+    fixture.app.add_space(&fixture.repo);
+    fixture.app.state.lock().unwrap().refuse_send = true;
+
+    fixture
+        .backend
+        .run_beside(&fixture.repo, "hx a.rs:3", OnOpenPaneDirection::Right)
+        .unwrap();
+    fixture.background.wait();
+
+    let later = fixture.later.0.lock().unwrap();
+    let [(title, body)] = later.as_slice() else {
+        panic!("expected one saved notice, got {later:?}");
+    };
+    assert_eq!(title, EDITOR_FAILED);
+    assert!(
+        body.starts_with("the command didn't reach its pane:") && body.contains("no such terminal"),
+        "{body}"
+    );
 }
 
 #[cfg(unix)]

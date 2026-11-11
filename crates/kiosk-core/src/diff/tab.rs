@@ -911,8 +911,8 @@ impl DiffTab {
                     layout,
                 };
                 shown.hide_unmatched(self.filter.as_ref().and_then(FileFilter::query));
-                shown.lay_out();
                 shown.current_file = shown.next_shown(0, 1).unwrap_or(0);
+                shown.lay_out();
                 ready.content = RangeContent::Shown(shown);
             }
             Event::Highlighted(index, highlighted, changes) => {
@@ -1055,19 +1055,15 @@ impl DiffTab {
         if !shown.hide_unmatched(query.as_deref()) {
             return;
         }
-        shown.lay_out();
-        // Some of the widest line left stays in view, as when scrolling.
-        shown.column = shown
-            .column
-            .min(shown.widest.saturating_sub(MIN_COLUMNS_SHOWN));
         if shown
             .files
             .get(shown.current_file)
             .is_none_or(|file| file.hidden)
         {
             shown.current_file = shown.next_shown(0, 1).unwrap_or(0);
+            shown.offset = 0;
         }
-        shown.offset = shown.file_row(shown.current_file).unwrap_or(0);
+        shown.lay_out();
         self.find_again(false);
     }
 
@@ -1252,17 +1248,18 @@ impl DiffTab {
             layout,
         };
         shown.hide_unmatched(self.filter.as_ref().and_then(FileFilter::query));
-        shown.lay_out();
-        let index_of = |path: &Path| {
+        let index_of = |shown: &Shown, path: &Path| {
             shown
                 .files
                 .iter()
                 .position(|file| file.diff.path() == path && !file.hidden)
         };
         shown.current_file = current
-            .and_then(|path| index_of(&path))
+            .and_then(|path| index_of(&shown, &path))
             .or_else(|| shown.next_shown(0, 1))
             .unwrap_or(0);
+        shown.lay_out();
+        let index_of = |path: &Path| index_of(&shown, path);
         if let Some((path, number, into)) = top
             && let Some(file) = index_of(&path)
             && let Some(header) = shown.file_row(file)
@@ -1398,14 +1395,31 @@ impl ShownFile {
 impl Shown {
     /// Lays the files out as rows, keeping what was at the top of the screen there: the same
     /// line, whichever layout it is now in, or else the same hunk or file.
+    /// Lays out the current file's rows, one file showing at a time, keeping the row at the
+    /// top of the screen where it is still laid out, and some of the widest line in view.
     fn lay_out(&mut self) {
         let anchor = self.rows.get(self.offset).copied();
         self.rows.clear();
         self.widest = 0;
-        for (index, file) in self.files.iter().enumerate() {
-            if file.hidden {
-                continue;
-            }
+        if self
+            .files
+            .get(self.current_file)
+            .is_none_or(|file| file.hidden)
+        {
+            // With every file filtered out, nothing shows.
+            let Some(file) = self.next_shown(0, 1) else {
+                self.offset = 0;
+                return;
+            };
+            self.current_file = file;
+        }
+        let current = self.current_file;
+        for (index, file) in self
+            .files
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| *index == current)
+        {
             self.rows.push(Row::File(index));
             let hunks = match &file.diff.content {
                 FileContent::Binary => {
@@ -1471,6 +1485,10 @@ impl Shown {
                 .or_else(|| self.file_row(anchor.file()))
                 .unwrap_or(0);
         }
+        self.offset = self.offset.min(self.rows.len().saturating_sub(1));
+        self.column = self
+            .column
+            .min(self.widest.saturating_sub(MIN_COLUMNS_SHOWN));
     }
 
     /// The line `row` shows by its number in the file: in the new file, or the old one for a
@@ -1572,8 +1590,10 @@ impl Shown {
         let Some(file) = self.files.get_mut(found.file) else {
             return;
         };
-        if file.collapsed {
-            file.collapsed = false;
+        let collapsed = std::mem::replace(&mut file.collapsed, false);
+        if collapsed || self.current_file != found.file {
+            self.current_file = found.file;
+            self.offset = 0;
             self.lay_out();
         }
         let Some(row) = self.rows.iter().position(|row| match *row {
@@ -1666,33 +1686,22 @@ impl Shown {
                 scroll_to(self, self.offset.saturating_add_signed(pages * page));
             }
             DiffAction::Top => scroll_to(self, 0),
-            DiffAction::Bottom => {
-                scroll_to(self, last);
-                if let Some(file) = self.next_shown(self.files.len().saturating_sub(1), -1) {
-                    self.current_file = file;
-                }
-            }
+            DiffAction::Bottom => scroll_to(self, last),
             DiffAction::NextFile => {
                 if let Some(file) = self.next_shown(self.current_file + 1, 1) {
-                    self.show_file(file, viewport);
+                    self.show_file(file);
                 }
             }
             DiffAction::PreviousFile => {
-                // From below its header, back to the current file's header; from its header,
-                // to the file before.
-                let header = self.file_row(self.current_file);
-                let file = if header.is_some_and(|header| header < self.offset) {
-                    Some(self.current_file)
-                } else {
-                    self.current_file
-                        .checked_sub(1)
-                        .and_then(|file| self.next_shown(file, -1))
-                };
-                if let Some(file) = file {
-                    self.show_file(file, viewport);
+                if let Some(file) = self
+                    .current_file
+                    .checked_sub(1)
+                    .and_then(|file| self.next_shown(file, -1))
+                {
+                    self.show_file(file);
                 }
             }
-            DiffAction::ShowFile(file) => self.show_file(file, viewport),
+            DiffAction::ShowFile(file) => self.show_file(file),
             DiffAction::ToggleFile(file) => {
                 let index = file.unwrap_or(self.current_file);
                 let Some(file) = self.files.get_mut(index).filter(|file| !file.hidden) else {
@@ -1702,8 +1711,7 @@ impl Shown {
                     return;
                 }
                 file.collapsed = !file.collapsed;
-                self.lay_out();
-                self.show_file(index, viewport);
+                self.show_file(index);
             }
             DiffAction::NextRange | DiffAction::PreviousRange | DiffAction::SelectRange(_) => {
                 unreachable!("the tab changes range")
@@ -1711,21 +1719,15 @@ impl Shown {
         }
     }
 
-    /// Makes `file` current, scrolling its header to the top unless all of it is on screen.
-    fn show_file(&mut self, file: usize, viewport: usize) {
-        let Some(header) = self.file_row(file) else {
+    /// Shows `file`, from its top, unless the filter leaves it out.
+    fn show_file(&mut self, file: usize) {
+        if self.files.get(file).is_none_or(|file| file.hidden) {
             return;
-        };
-        self.current_file = file;
-        let end = self
-            .rows
-            .iter()
-            .rposition(|row| row.file() == file)
-            .map_or(header, |last| last + 1);
-        let on_screen = header >= self.offset && end <= self.offset + viewport;
-        if !on_screen {
-            self.offset = header.min(max_offset(self.rows.len(), viewport));
         }
+        self.current_file = file;
+        self.offset = 0;
+        self.lay_out();
+        self.offset = 0;
     }
 }
 

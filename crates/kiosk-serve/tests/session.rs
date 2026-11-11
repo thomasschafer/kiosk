@@ -693,8 +693,12 @@ fn the_diff_tab_shows_a_checkouts_changes_and_moves_through_them() {
         .map(|file| file["path"].as_str().unwrap().to_owned())
         .collect::<Vec<_>>();
     assert_eq!(files, ["a.rs", "b.rs"]);
-    assert_eq!(body["ranges"][0]["label"], "All changes");
-    assert_eq!(body["ranges"][1]["label"], "Uncommitted");
+    // Without commits of its own, everything since the base would only repeat what's
+    // uncommitted.
+    assert_eq!(
+        body["ranges"],
+        json!([{ "label": "Uncommitted", "detail": null }])
+    );
     assert_eq!(body["body"]["rows"][0], json!(["file", 0]));
     assert_eq!(body["body"]["rows"].as_array().unwrap().len(), 3);
     let line = &body["body"]["rows"][2];

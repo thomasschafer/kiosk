@@ -923,3 +923,24 @@ fn filtering_out_the_wide_lines_brings_the_code_back_into_view_and_a_hidden_file
         "nor collapsed"
     );
 }
+
+#[test]
+fn ranges_say_how_far_ahead_the_branch_is_and_uncommitted_needs_no_more() {
+    let temp = feature_repo();
+    let mut tab = DiffTab::new(Some(temp.path().to_path_buf()), DiffLayout::Unified);
+    tab.start();
+    wait(&mut tab, highlighted);
+    let view = crate::view::diff::diff(&mut tab, &crate::config::KeysConfig::default(), 10);
+    let ranges: Vec<_> = view
+        .ranges
+        .iter()
+        .map(|range| (range.label.as_str(), range.detail.as_deref()))
+        .collect();
+    assert_eq!(
+        ranges[..2],
+        [
+            ("All changes", Some("2 commits ahead of main + uncommitted")),
+            ("Uncommitted", None),
+        ]
+    );
+}

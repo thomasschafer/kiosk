@@ -388,7 +388,10 @@ function keyLabel(key) {
     const arrows = { up: "↑", down: "↓", left: "←", right: "→" };
     // Other named keys are capitalised as keyboards print them: F1, Home, PageUp.
     const capitalised = { pageup: "PageUp", pagedown: "PageDown" }[rest] ?? rest.charAt(0).toUpperCase() + rest.slice(1);
-    const base = names[rest] ?? arrows[rest.toLowerCase()] ?? (rest.length === 1 ? rest.toUpperCase() : capitalised);
+    // A letter on its own is written as it is typed, so `n` doesn't read as shift+n; after a
+    // modifier it is a capital, as the app writes chords (⌃H), the shift shown when it's held.
+    const letter = rest.length === 1 && (out ? rest.toUpperCase() : rest);
+    const base = names[rest] ?? arrows[rest.toLowerCase()] ?? (letter || capitalised);
     return out + base;
   }).join("/");
 }

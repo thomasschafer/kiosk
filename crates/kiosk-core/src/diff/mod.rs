@@ -321,6 +321,15 @@ impl Target {
         })
     }
 
+    /// Where line `line` of `path` as `commit` left it is in the checkout's file now: moved
+    /// by the lines changed above it since, or at the change if it was changed itself.
+    pub fn line_now(&self, commit: &ObjectId, path: &std::path::Path, line: u32) -> Result<u32> {
+        Ok(line_after(
+            &git::hunks_since(&self.root, commit, path)?,
+            line,
+        ))
+    }
+
     /// The files `range` changed.
     pub fn diff(&self, range: &Range) -> Result<Vec<FileDiff>> {
         let to = |head: Option<&ObjectId>| -> Result<git::Endpoint> {
@@ -352,6 +361,34 @@ impl Target {
             ),
         }
     }
+}
+
+/// Where line `line` of a file is after `hunks`, which changed it, in order: moved by those
+/// above it, or for a line a hunk changed, where that hunk's new lines are.
+fn line_after(hunks: &[Hunk], line: u32) -> u32 {
+    let mut shift = 0_i64;
+    for hunk in hunks {
+        // A hunk that changes no old lines inserts after line `old_start`.
+        let below = if hunk.old_len == 0 {
+            line <= hunk.old_start
+        } else {
+            line < hunk.old_start
+        };
+        if below {
+            break;
+        }
+        if line < hunk.old_start.saturating_add(hunk.old_len) {
+            // With no new lines, the hunk removed them after line `new_start`.
+            let start = if hunk.new_len == 0 {
+                hunk.new_start.saturating_add(1)
+            } else {
+                hunk.new_start
+            };
+            return start.max(1);
+        }
+        shift += i64::from(hunk.new_len) - i64::from(hunk.old_len);
+    }
+    u32::try_from((i64::from(line) + shift).max(1)).unwrap_or(u32::MAX)
 }
 
 #[cfg(test)]

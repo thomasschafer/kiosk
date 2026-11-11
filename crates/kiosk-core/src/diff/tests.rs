@@ -468,3 +468,60 @@ fn a_change_made_as_the_index_was_written_is_still_seen() {
     assert_eq!(paths(&files), ["a.txt"]);
     assert_eq!(added_lines(&files[0]), ["bbb"]);
 }
+
+fn header(old_start: u32, old_len: u32, new_start: u32, new_len: u32) -> Hunk {
+    Hunk {
+        old_start,
+        old_len,
+        new_start,
+        new_len,
+        section: String::new(),
+        lines: Vec::new(),
+    }
+}
+
+#[test]
+fn a_line_moves_by_the_changes_above_it_and_a_changed_line_goes_to_its_change() {
+    // Three lines inserted after line 2, line 10 replaced by two, lines 20-21 removed.
+    let hunks = [
+        header(2, 0, 3, 3),
+        header(10, 1, 14, 2),
+        header(20, 2, 24, 0),
+    ];
+    assert_eq!(line_after(&hunks, 1), 1);
+    assert_eq!(line_after(&hunks, 2), 2);
+    assert_eq!(line_after(&hunks, 3), 6);
+    assert_eq!(line_after(&hunks, 10), 14);
+    assert_eq!(line_after(&hunks, 11), 15);
+    assert_eq!(line_after(&hunks, 21), 25);
+    assert_eq!(line_after(&hunks, 22), 24);
+    assert_eq!(line_after(&[], 7), 7);
+    assert_eq!(line_after(&[header(1, 3, 0, 0)], 2), 1);
+}
+
+#[test]
+fn a_commits_line_is_found_in_the_file_as_it_is_now() {
+    let (_temp, dir) = repo();
+    let lines = |lines: &[&str]| lines.join("\n") + "\n";
+    commit_file(&dir, "a.txt", &lines(&["1", "2", "3", "4", "5"]), "first");
+    let changed = commit_file(
+        &dir,
+        "a.txt",
+        &lines(&["1", "2", "3", "four", "5"]),
+        "change",
+    );
+    commit_file(
+        &dir,
+        "a.txt",
+        &lines(&["new", "new", "1", "2", "3", "four", "5"]),
+        "later",
+    );
+    fs::write(
+        dir.join("a.txt"),
+        lines(&["new", "new", "1", "2", "3", "four", "5", "more"]),
+    )
+    .unwrap();
+    let target = Target::checkout(&dir).unwrap().unwrap();
+    assert_eq!(target.line_now(&changed, Path::new("a.txt"), 4).unwrap(), 6);
+    assert_eq!(target.line_now(&changed, Path::new("a.txt"), 1).unwrap(), 3);
+}

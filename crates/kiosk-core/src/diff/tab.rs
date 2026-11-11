@@ -919,6 +919,14 @@ impl DiffTab {
                 new.path.display()
             ));
         }
+        // A commit's lines may have moved in the checkout since.
+        let line = match &ready.ranges[ready.range] {
+            Range::Commit(id) => ready
+                .target
+                .line_now(id, &new.path, line)
+                .map_err(|error| format!("{error:#}"))?,
+            Range::All | Range::Uncommitted => line,
+        };
         Ok(Place {
             checkout,
             file: path,

@@ -9,7 +9,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 
-use super::{Base, FileDiff, ObjectId, patch};
+use super::{Base, FileDiff, Hunk, ObjectId, patch};
 use crate::git::{
     LOCAL_DEFAULT_BRANCHES, path_from_bytes, remote_default_branch, run_git, run_git_with_env,
 };
@@ -252,6 +252,33 @@ pub fn diff(root: &Path, from: Option<&ObjectId>, to: &Endpoint) -> Result<Vec<F
         }
     };
     patch::parse(&output.stdout)
+}
+
+/// The hunks, without their lines, that changed `path` in the working tree since `commit`.
+pub fn hunks_since(root: &Path, commit: &ObjectId, path: &Path) -> Result<Vec<Hunk>> {
+    let path = path
+        .to_str()
+        .with_context(|| format!("{} isn't valid UTF-8", path.display()))?;
+    let output = run_git(
+        root,
+        [
+            "--literal-pathspecs",
+            "diff",
+            "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
+            "-U0",
+            commit.as_str(),
+            "--",
+            path,
+        ],
+    )?;
+    output
+        .stdout
+        .split(|&byte| byte == b'\n')
+        .filter(|line| line.starts_with(b"@@ "))
+        .map(patch::parse_hunk_header)
+        .collect()
 }
 
 /// The id of the empty tree, which differs between SHA-1 and SHA-256 repositories.

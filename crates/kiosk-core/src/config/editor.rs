@@ -33,6 +33,11 @@ impl EditorConfig {
         if !self.command.contains(FILE) {
             bail!("[editor] command must contain {FILE}, where the file's path goes");
         }
+        if quoted_placeholder(&self.command) {
+            // Inside the command's own quotes, the path's quoting would be part of the path,
+            // and a shell would expand what the path holds, such as `$(...)`.
+            bail!("[editor] command must leave {FILE} unquoted: kiosk quotes the path itself");
+        }
         Ok(())
     }
 
@@ -45,6 +50,28 @@ impl EditorConfig {
             .replace(LINE, &line.to_string())
             .replace(FILE, &file))
     }
+}
+
+/// Whether `{file}` is inside quotes in `command`, as a POSIX shell, fish, cmd or PowerShell
+/// would read them: within `'...'` or `"..."`, with a backslash escaping the next character
+/// outside single quotes.
+fn quoted_placeholder(command: &str) -> bool {
+    let mut quote = None;
+    let mut characters = command.char_indices();
+    while let Some((index, character)) = characters.next() {
+        if quote.is_some() && command[index..].starts_with(FILE) {
+            return true;
+        }
+        match (quote, character) {
+            (None | Some('"'), '\\') => {
+                characters.next();
+            }
+            (None, '\'' | '"') => quote = Some(character),
+            (Some(open), _) if open == character => quote = None,
+            _ => {}
+        }
+    }
+    false
 }
 
 /// `path` as one word for the shell the pane runs, quoted where it needs to be. Paths the
@@ -102,10 +129,27 @@ mod tests {
     }
 
     #[test]
-    fn the_command_must_say_where_the_file_goes() {
-        editor("hx {file}").validate().unwrap();
+    fn the_command_must_say_where_the_file_goes_and_leave_it_unquoted() {
+        for command in [
+            "hx {file}",
+            r#"sh -c 'e "$0"' {file}"#,
+            r#"e "a\"b" {file}"#,
+            r"e \' {file}",
+        ] {
+            editor(command)
+                .validate()
+                .unwrap_or_else(|error| panic!("{command}: {error}"));
+        }
         let error = editor("hx").validate().unwrap_err().to_string();
         assert!(error.contains("{file}"), "{error}");
+        for command in [
+            r#"nvim "{file}""#,
+            "nvim '{file}'",
+            r#"e "+{line} {file}:x""#,
+        ] {
+            let error = editor(command).validate().unwrap_err().to_string();
+            assert!(error.contains("unquoted"), "{command}: {error}");
+        }
     }
 
     #[test]
@@ -124,11 +168,12 @@ mod tests {
             "${EDITOR} +3 /repo/a",
             "braces that aren't placeholders stay"
         );
+        let quote = if cfg!(windows) { '"' } else { '\'' };
         assert_eq!(
             editor("e {file}")
                 .command_for(Path::new("/repo/{line}"), 3)
                 .unwrap(),
-            "e '/repo/{line}'"
+            format!("e {quote}/repo/{{line}}{quote}")
         );
     }
 

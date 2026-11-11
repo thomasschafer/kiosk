@@ -10,6 +10,7 @@ mod git;
 pub mod highlight;
 pub mod pairs;
 mod patch;
+pub mod search;
 pub mod tab;
 pub mod watch;
 

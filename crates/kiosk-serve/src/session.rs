@@ -554,6 +554,23 @@ fn handle_diff_message(
         }
         return Step::Continue;
     }
+    if diff.search.is_some() {
+        match message {
+            ClientMessage::Paste { text } => {
+                diff.search_paste(text);
+                return Step::Continue;
+            }
+            ClientMessage::Key { .. } => {
+                if let Some(action) =
+                    input.and_then(|input| keymap::search_field_action(input, keys))
+                {
+                    diff.search_action(action);
+                }
+                return Step::Continue;
+            }
+            _ => {}
+        }
+    }
     let action = match message {
         ClientMessage::Scroll { delta, columns } => {
             if *columns != 0 {
@@ -592,6 +609,10 @@ fn handle_diff_message(
                 None
             }
             Some(Command::OpenInEditor) => return Step::OpenInEditor,
+            Some(Command::Search) => {
+                diff.open_search();
+                None
+            }
             _ => None,
         },
     };

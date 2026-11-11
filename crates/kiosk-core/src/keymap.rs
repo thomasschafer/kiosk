@@ -174,6 +174,27 @@ pub fn help_overlay_action(
     input.typed().map(Action::Insert)
 }
 
+/// What a key does in the diff tab's search field: `enter` goes to the next match and
+/// `shift+enter` the previous, as do the list keys, `esc` ends the search, and the rest edit
+/// or type.
+pub fn search_field_action(input: KeyInput, keys: &KeysConfig) -> Option<Action> {
+    match (input.chord.code, input.chord.modifiers) {
+        (KeyCode::Esc, KeyModifiers::NONE) => return Some(Action::CloseOverlay),
+        (KeyCode::Enter, KeyModifiers::NONE) => return Some(Action::MoveSelection(1)),
+        (KeyCode::Enter, KeyModifiers::SHIFT) => return Some(Action::MoveSelection(-1)),
+        _ => {}
+    }
+    match keys.command_for(BindingMode::Choice, input.chord) {
+        Some(Command::MoveDown) => Some(Action::MoveSelection(1)),
+        Some(Command::MoveUp) => Some(Action::MoveSelection(-1)),
+        Some(_) => None,
+        None => keys
+            .text_edit(input.chord)
+            .map(Action::Edit)
+            .or_else(|| input.typed().map(Action::Insert)),
+    }
+}
+
 /// The scan warnings view only scrolls, and closes with `esc` or the key that opened it.
 /// `opening` is what the chord does in the mode underneath, so that key always closes the
 /// view, and `scrolling` what it does in the view.
@@ -222,7 +243,8 @@ pub fn command_to_action(command: Command, state: &AppState) -> Option<Action> {
         | Command::PreviousRange
         | Command::ToggleFile
         | Command::ToggleLayout
-        | Command::OpenInEditor => None,
+        | Command::OpenInEditor
+        | Command::Search => None,
         Command::Quit => Some(Action::Quit),
         Command::Help => Some(Action::ShowHelp),
         Command::DismissToast => (!state.toasts.is_empty()).then_some(Action::DismissToast),

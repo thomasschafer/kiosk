@@ -257,8 +257,9 @@ function sideBySideFits(width) {
 // What each syntax tone looks like in the app's theme, by the tone names the picker sends.
 function syntaxColor(t, tone) {
   switch (tone) {
+    // The theme's dimmest grey all but disappears behind code, so comments are a step up.
     case "comment":
-      return t.dim;
+      return t.muted;
     case "keyword":
       return t.ansi5;
     case "string":
@@ -954,7 +955,9 @@ export default class Kiosk extends View {
         .child(this.codePane(t, d.tones, left, ["oldNumber"], height).border_r_1().border_color(t.border))
         .child(this.codePane(t, d.tones, right, ["newNumber"], height))
       : h_flex().absolute().top(0).left(0).right(0).h(height).child(this.codePane(t, d.tones, left, ["oldNumber", "newNumber"], height));
-    return div().id("kiosk-diff-body").relative().flex_1().h_full().min_w(0).overflow_hidden().py(PAD)
+    // Code sits on the terminal's background, as in an editor: in a dark theme it is darker
+    // than the panel round it, which gives the text and the changes more to stand out from.
+    return div().id("kiosk-diff-body").relative().flex_1().h_full().min_w(0).overflow_hidden().py(PAD).bg(t.background)
       .font_family(settings().font_family).text_size(12.5)
       .on_scroll_wheel((e, cx) => this.diffScroll(e, cx))
       .child(div().relative().w_full().h(height).child(probe).child(panes).children(across))
@@ -981,8 +984,8 @@ export default class Kiosk extends View {
       signs.push(line && line.kind !== " " ? line.kind : "");
       if (!line) return;
       const color = line.kind === "+" ? t.ansi2 : t.ansi1;
-      if (line.kind !== " ") boxes.push(row(i).bg(tint(color, dark ? 0.14 : 0.12)));
-      const mark = tint(color, dark ? 0.32 : 0.28);
+      if (line.kind !== " ") boxes.push(row(i).bg(tint(color, dark ? 0.2 : 0.16)));
+      const mark = tint(color, dark ? 0.42 : 0.34);
       // A wide line's characters aren't a column each, so its changed words are marked in
       // its own text below rather than by position.
       if (line.changed && this.column && !line.wide) {

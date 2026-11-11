@@ -59,6 +59,11 @@ wrong.
 - The default range is everything since the merge-base, including uncommitted and untracked
   changes: what the PR would be if you committed now. Narrower ranges are uncommitted
   changes alone and each commit.
+  Everything since the merge-base is only offered when the branch has commits of its own,
+  as otherwise it is the uncommitted changes again.
+- The body shows one file at a time, as lazygit does: scrolling and paging stay in it, and
+  the file keys, the file list and search move between files. It always says which file
+  is showing, and only that file is laid out.
 - Diffs come from the git CLI, as the rest of kiosk does, parsed in Rust. Rust keeps the
   whole diff and sends only the visible rows. Syntax highlighting uses syntect over whole
   files (not hunks, which break multi-line strings and comments), with scopes mapped to the

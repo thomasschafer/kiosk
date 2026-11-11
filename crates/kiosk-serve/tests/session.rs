@@ -999,8 +999,11 @@ fn slash_searches_the_diff_marking_matches_and_esc_ends_the_search() {
     });
     client.key("/", Some("/"));
     client.type_text("more");
-    let view = client
-        .view_until(|view| tab_body(view, "diff").is_some_and(|body| body["search"]["count"] == 1));
+    let view = client.view_until(|view| {
+        tab_body(view, "diff").is_some_and(|body| {
+            body["search"]["query"]["before"] == "more" && body["search"]["count"] == 1
+        })
+    });
     let body = &view["body"];
     assert_eq!(body["search"]["query"]["before"], "more");
     assert_eq!(body["search"]["current"], 0);

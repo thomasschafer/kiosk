@@ -1054,6 +1054,26 @@ fn rows_mark_where_the_search_matched_their_names() {
 }
 
 #[test]
+fn a_repo_shares_its_name_with_others_shows_what_tells_it_apart_in_a_quieter_tone() {
+    let mut state = state_with_repos(&["dotfiles", "notes"]);
+    state.repo_view.entries[0].disambiguator = Some("../Work".into());
+    let view = picker(&mut state, &KeysConfig::default(), VIEWPORTS);
+    assert_eq!(
+        texts(&list(&view).rows[0]),
+        expected(&[("dotfiles", Tone::Normal), ("(../Work)", Tone::Muted)])
+    );
+    assert_eq!(list(&view).rows[1].qualifier, None);
+
+    // Searched as `dotfiles (../Work)`, with each part's matches its own.
+    state.repo_view.list.input.text = "dotwork".into();
+    let view = picker(&mut state, &KeysConfig::default(), VIEWPORTS);
+    let row = &list(&view).rows[0];
+    assert_eq!(row.name.text, "dotfiles");
+    assert_eq!(row.matches, [0, 1, 2]);
+    assert_eq!(row.qualifier.as_ref().unwrap().matches, [4, 5, 6, 7]);
+}
+
+#[test]
 fn loading_shows_its_message_and_how_to_close() {
     let mut state = state_with_repos(&["a"]);
     state.mode = Mode::Loading {

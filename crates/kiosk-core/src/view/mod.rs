@@ -186,6 +186,8 @@ pub struct Row {
     /// Which characters of `name` the search matched (character indices, ascending), for a
     /// frontend to mark.
     pub matches: Vec<usize>,
+    /// What follows the name to tell it apart from others of the same name.
+    pub qualifier: Option<Qualifier>,
     /// What kind of item it is beyond its name, in the order a terminal writes them.
     pub badges: Vec<Badge>,
     /// The backend's labels, drawn at the end of the row.
@@ -194,6 +196,15 @@ pub struct Row {
     pub open: bool,
     /// What else can be done to the row beyond opening it.
     pub actions: RowActions,
+}
+
+/// Text after a row's name that tells it apart from rows of the same name, such as `(../Work)`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Qualifier {
+    pub text: String,
+    pub tone: Tone,
+    /// Which characters of `text` the search matched, as [`Row::matches`] are of the name.
+    pub matches: Vec<usize>,
 }
 
 /// Something a row says about its item besides the name.
@@ -235,7 +246,8 @@ impl Badge {
 }
 
 impl Row {
-    /// The name and badges as a terminal writes them: `origin/feature`, `main (worktree) *`.
+    /// The name, qualifier and badges as a terminal writes them: `origin/feature`,
+    /// `main (worktree) *`, `dotfiles (../Work)`.
     pub fn segments(&self) -> Vec<Segment> {
         let name = self.badges.iter().find_map(|badge| match badge {
             Badge::Remote { name } => Some(format!("{name}/{}", self.name.text)),
@@ -245,6 +257,11 @@ impl Row {
             name.unwrap_or_else(|| self.name.text.clone()),
             self.name.tone,
         ))
+        .chain(
+            self.qualifier
+                .iter()
+                .map(|qualifier| Segment::new(qualifier.text.clone(), qualifier.tone)),
+        )
         .chain(self.badges.iter().filter_map(|badge| {
             badge
                 .suffix()
@@ -578,12 +595,26 @@ pub fn repo_list(state: &mut AppState, viewport_rows: usize) -> ListView {
 }
 
 fn repo_row(entry: &RepoEntry, annotations: &AnnotationIndex, query: &str) -> Row {
-    let name = entry.display_name();
+    let name = &entry.repo.name;
+    // The list is searched by the name and qualifier together, as `display_name` joins them.
+    let (matches, qualifier) = match entry.qualifier() {
+        Some(qualifier) => {
+            let [matches, _, qualifier_matches] = matches_in(query, [name, " ", &qualifier]);
+            let qualifier = Qualifier {
+                text: sanitize(&qualifier).into_owned(),
+                tone: Tone::Muted,
+                matches: qualifier_matches,
+            };
+            (matches, Some(qualifier))
+        }
+        None => (name_matches(query, "", name), None),
+    };
     Row {
         id: repo_id(entry),
         position: 0,
-        name: Segment::new(sanitize(&name).into_owned(), Tone::Normal),
-        matches: name_matches(query, "", &name),
+        name: Segment::new(sanitize(name).into_owned(), Tone::Normal),
+        matches,
+        qualifier,
         badges: if entry.repo.is_git {
             Vec::new()
         } else {
@@ -605,12 +636,25 @@ fn repo_actions(entry: &RepoEntry) -> RowActions {
 /// Where `query` matched `name`, which was searched as `prefix` and `name` together: the
 /// matched characters' positions in `name` as `sanitize` shows it.
 fn name_matches(query: &str, prefix: &str, name: &str) -> Vec<usize> {
-    let skipped = prefix.chars().count();
-    let in_name: Vec<usize> = match_positions(query, &format!("{prefix}{name}"))
-        .into_iter()
-        .filter_map(|position| position.checked_sub(skipped))
-        .collect();
-    sanitized_positions(name, &in_name)
+    let [_, matches] = matches_in(query, [prefix, name]);
+    matches
+}
+
+/// Where `query` matched each of `parts`, which were searched joined together: each part's
+/// matched characters' positions in it as `sanitize` shows it.
+fn matches_in<const N: usize>(query: &str, parts: [&str; N]) -> [Vec<usize>; N] {
+    let positions = match_positions(query, &parts.concat());
+    let mut start = 0;
+    parts.map(|part| {
+        let end = start + part.chars().count();
+        let in_part: Vec<usize> = positions
+            .iter()
+            .filter(|position| (start..end).contains(*position))
+            .map(|position| position - start)
+            .collect();
+        start = end;
+        sanitized_positions(part, &in_part)
+    })
 }
 
 /// The branch list, scrolled so its selection is among its `viewport_rows` rows.
@@ -735,6 +779,7 @@ fn branch_row(
         position: 0,
         name,
         matches: name_matches(query, &prefix, &branch.name),
+        qualifier: None,
         badges,
         labels: self::labels(labels),
         open: branch.is_open(),
@@ -750,6 +795,7 @@ pub fn base_list(repo: &Path, flow: &mut BaseBranchSelection, viewport_rows: usi
         position: 0,
         name: Segment::new(sanitize(base).into_owned(), Tone::Normal),
         matches: name_matches(&search, "", base),
+        qualifier: None,
         badges: Vec::new(),
         labels: Vec::new(),
         open: false,

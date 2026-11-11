@@ -35,11 +35,20 @@ impl RepoEntry {
         }
     }
 
+    /// The name the list is searched by: the repository's name, then its qualifier if it has
+    /// one.
     pub fn display_name(&self) -> String {
-        self.disambiguator.as_ref().map_or_else(
+        self.qualifier().map_or_else(
             || self.repo.name.clone(),
-            |suffix| format!("{} ({suffix})", self.repo.name),
+            |qualifier| format!("{} {qualifier}", self.repo.name),
         )
+    }
+
+    /// What tells it apart from repositories of the same name, such as `(../Work)`.
+    pub fn qualifier(&self) -> Option<String> {
+        self.disambiguator
+            .as_ref()
+            .map(|disambiguator| format!("({disambiguator})"))
     }
 }
 

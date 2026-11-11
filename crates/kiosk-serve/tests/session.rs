@@ -987,3 +987,38 @@ fn without_an_editor_or_when_it_cannot_open_the_diff_tab_says_why_and_stays() {
     assert_eq!(client.end()["outcome"], "quit");
     session.join().unwrap().unwrap();
 }
+
+#[test]
+fn slash_searches_the_diff_marking_matches_and_esc_ends_the_search() {
+    let root = tempfile::tempdir().unwrap();
+    let start = editor_start(root.path(), None, mock_backend());
+    let (mut client, session, _) = connect(move || start);
+    client.send(&json!({ "t": "viewport", "list": 10, "bases": 5, "help": 10, "scan_warnings": 5, "diff": 10, "side_by_side": true }));
+    client.view_until(|view| {
+        tab_body(view, "diff").is_some_and(|body| body["body"]["rows"].is_array())
+    });
+    client.key("/", Some("/"));
+    client.type_text("more");
+    let view = client
+        .view_until(|view| tab_body(view, "diff").is_some_and(|body| body["search"]["count"] == 1));
+    let body = &view["body"];
+    assert_eq!(body["search"]["query"]["before"], "more");
+    assert_eq!(body["search"]["current"], 0);
+    let rows = body["body"]["rows"].as_array().unwrap();
+    let found: Vec<_> = rows
+        .iter()
+        .filter(|row| row[0] == "line" && !row[8].is_null())
+        .map(|row| (row[4].clone(), row[8].clone()))
+        .collect();
+    assert_eq!(found, [(json!("fn more() {}"), json!([3, 4, 1]))]);
+    // Keys type into the search while it is open, rather than acting on the tab.
+    client.key("o", Some("o"));
+    client.view_until(|view| {
+        tab_body(view, "diff").is_some_and(|body| body["search"]["query"]["before"] == "moreo")
+    });
+    client.key("escape", None);
+    client.view_until(|view| tab_body(view, "diff").is_some_and(|body| body["search"].is_null()));
+    client.key("escape", None);
+    assert_eq!(client.end()["outcome"], "quit");
+    session.join().unwrap().unwrap();
+}

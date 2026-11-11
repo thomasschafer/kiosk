@@ -17,13 +17,14 @@ use anyhow::bail;
 
 use super::{
     Commit, FileContent, FileDiff, Highlighted, Hunk, LineKind, Range, Target, pairs,
+    search::{self, Found},
     watch::{Places, Watch},
 };
 use crate::{
     config::keys::{BindingMode, KeysConfig},
     keyboard::Action,
     preferences::DiffLayout,
-    state::HelpOverlayState,
+    state::{HelpOverlayState, TextInput},
 };
 
 /// How long changes must settle before the diff is read again, so a burst of saves or a
@@ -229,6 +230,29 @@ pub enum DiffAction {
     SelectRange(usize),
     /// Collapse or expand file `n`, or with `None` the file at the top of the screen.
     ToggleFile(Option<usize>),
+}
+
+/// Searching the range for text, while the search field is open.
+#[derive(Debug, Default)]
+pub struct Search {
+    pub input: TextInput,
+    /// Every match in the range showing, in order.
+    pub found: Vec<Found>,
+    /// The match the person is on.
+    pub current: Option<usize>,
+}
+
+impl Search {
+    /// The matches in a line, by its file, hunk and place in the hunk, each with whether it
+    /// is the current one.
+    pub fn in_line(&self, line: (usize, usize, usize)) -> impl Iterator<Item = (&Found, bool)> {
+        let start = self.found.partition_point(|found| found.line_key() < line);
+        self.found[start..]
+            .iter()
+            .enumerate()
+            .take_while(move |(_, found)| found.line_key() == line)
+            .map(move |(index, found)| (found, self.current == Some(start + index)))
+    }
 }
 
 /// A file to open in an editor, at a line.
@@ -465,6 +489,8 @@ pub struct DiffTab {
     refresh: Option<Refresh>,
     /// Why the file couldn't be opened in an editor, until the person does something else.
     open_error: Option<String>,
+    /// The search, while its field is open.
+    pub search: Option<Search>,
 }
 
 #[derive(Debug)]
@@ -558,6 +584,7 @@ impl DiffTab {
             changes: None,
             refresh: None,
             open_error: None,
+            search: None,
         }
     }
 
@@ -783,6 +810,15 @@ impl DiffTab {
     }
 
     fn apply(&mut self, event: Event) {
+        // A new diff of the range is searched again.
+        let searched = matches!(event, Event::Diffed(_) | Event::Refreshed { .. });
+        self.apply_event(event);
+        if searched {
+            self.find_again(false);
+        }
+    }
+
+    fn apply_event(&mut self, event: Event) {
         match event {
             Event::Resolved { target, commits } => {
                 let ranges = target.ranges(&commits);
@@ -932,6 +968,92 @@ impl DiffTab {
             file: path,
             line,
         })
+    }
+
+    /// Opens the search field, empty.
+    pub fn open_search(&mut self) {
+        self.open_error = None;
+        self.search = Some(Search::default());
+    }
+
+    /// Applies `action` to the open search: typing searches again from the top of the
+    /// screen, moving goes to the next or previous match, and closing ends the search.
+    pub fn search_action(&mut self, action: Action) {
+        let Some(search) = &mut self.search else {
+            return;
+        };
+        match action {
+            Action::CloseOverlay => self.search = None,
+            Action::MoveSelection(by) => self.step_found(if by < 0 { -1 } else { 1 }),
+            Action::Insert(character) => {
+                search.input.insert_char(character);
+                self.find_again(true);
+            }
+            Action::Edit(edit) if search.input.apply(edit) => self.find_again(true),
+            _ => {}
+        }
+    }
+
+    /// The range's diff, if it shows, and the search, if it is open.
+    fn shown_and_search(&mut self) -> (Option<&mut Shown>, Option<&mut Search>) {
+        let shown = match &mut self.state {
+            DiffState::Ready(ready) => match &mut ready.content {
+                RangeContent::Shown(shown) => Some(shown),
+                RangeContent::Loading(_) | RangeContent::Failed(_) => None,
+            },
+            _ => None,
+        };
+        (shown, self.search.as_mut())
+    }
+
+    /// Finds the search's text in the range showing again, making the first match at or
+    /// below the top of the screen current, and with `show`, scrolling to it.
+    fn find_again(&mut self, show: bool) {
+        let viewport = self.viewport;
+        let (shown, Some(search)) = self.shown_and_search() else {
+            return;
+        };
+        let Some(shown) = shown else {
+            search.found.clear();
+            search.current = None;
+            return;
+        };
+        search.found = search::find(
+            shown.files.iter().map(|file| &file.diff.content),
+            &search.input.text,
+        );
+        let top = shown.top_line();
+        search.current = search
+            .found
+            .iter()
+            .position(|found| found.line_key() >= top)
+            .or((!search.found.is_empty()).then_some(0));
+        if show && let Some(current) = search.current {
+            shown.show_found(&search.found[current], viewport);
+        }
+    }
+
+    /// Moves `by` matches on, round to the other end, and scrolls to the match.
+    fn step_found(&mut self, by: isize) {
+        let viewport = self.viewport;
+        let (Some(shown), Some(search)) = self.shown_and_search() else {
+            return;
+        };
+        let count = search.found.len();
+        if count == 0 {
+            return;
+        }
+        let current = match search.current {
+            Some(current) => current
+                .cast_signed()
+                .saturating_add(by)
+                .rem_euclid(count.cast_signed())
+                .cast_unsigned(),
+            None if by < 0 => count - 1,
+            None => 0,
+        };
+        search.current = Some(current);
+        shown.show_found(&search.found[current], viewport);
     }
 
     /// Shows why opening the file in an editor failed, until the person does something else.
@@ -1293,6 +1415,59 @@ impl Shown {
             .or_else(|| everywhere().find(changed))
             .map_or(1, |(hunk, line)| new_position(&hunks[hunk], line));
         Some((file, line))
+    }
+
+    /// The line at the top of the screen, or the first after it, as a [`Found::line_key`];
+    /// a file or hunk header comes before its lines.
+    fn top_line(&self) -> (usize, usize, usize) {
+        self.rows[self.offset.min(self.rows.len())..]
+            .iter()
+            .find_map(|row| match *row {
+                Row::File(file) => Some((file, 0, 0)),
+                Row::Hunk { file, hunk } => Some((file, hunk, 0)),
+                Row::Line { file, hunk, line } => Some((file, hunk, line)),
+                Row::Pair {
+                    file,
+                    hunk,
+                    old,
+                    new,
+                } => Some((file, hunk, old.into_iter().chain(new).min()?)),
+                Row::Note(..) => None,
+            })
+            .unwrap_or((usize::MAX, 0, 0))
+    }
+
+    /// Scrolls `found` onto the screen, a third of the way down if it isn't on it, expanding
+    /// its file if it is collapsed, and makes its file current.
+    fn show_found(&mut self, found: &Found, viewport: usize) {
+        let Some(file) = self.files.get_mut(found.file) else {
+            return;
+        };
+        if file.collapsed {
+            file.collapsed = false;
+            self.lay_out();
+        }
+        let Some(row) = self.rows.iter().position(|row| match *row {
+            Row::Line { file, hunk, line } => (file, hunk, line) == found.line_key(),
+            Row::Pair {
+                file,
+                hunk,
+                old,
+                new,
+            } => {
+                (file, hunk) == (found.file, found.hunk)
+                    && (old == Some(found.line) || new == Some(found.line))
+            }
+            _ => false,
+        }) else {
+            return;
+        };
+        self.current_file = found.file;
+        if row < self.offset || row >= self.offset + viewport {
+            self.offset = row
+                .saturating_sub(viewport / 3)
+                .min(max_offset(self.rows.len(), viewport));
+        }
     }
 
     /// The file whose rows include row `row`.

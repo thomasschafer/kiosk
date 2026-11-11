@@ -663,3 +663,94 @@ fn a_removed_line_opens_at_the_line_now_in_its_place() {
     assert_eq!(new_position(&hunk(12, 0, &[Removed, Removed]), 1), 13);
     assert_eq!(new_position(&hunk(0, 0, &[Removed]), 0), 1);
 }
+
+#[test]
+fn searching_goes_through_the_matches_expanding_files_and_follows_changes() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path();
+    init_test_repo(dir);
+    let original = (1..=40)
+        .map(|n| format!("line {n}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    commit(dir, "a.txt", &original);
+    let edited = original
+        .replace("line 3\n", "needle one\n")
+        .replace("line 30\n", "Needle two\n");
+    fs::write(dir.join("a.txt"), &edited).unwrap();
+    fs::write(dir.join("Cargo.lock"), "needle three\n").unwrap();
+    let mut tab = DiffTab::new(Some(dir.to_path_buf()), DiffLayout::Unified);
+    tab.set_viewport(6);
+    tab.start();
+    wait(&mut tab, highlighted);
+    tab.act(DiffAction::SelectRange(1));
+    wait(&mut tab, highlighted);
+    assert_eq!(paths(&tab), ["Cargo.lock", "a.txt"]);
+    assert!(tab.shown().unwrap().files[0].collapsed);
+
+    tab.open_search();
+    for character in "needle".chars() {
+        tab.search_action(Action::Insert(character));
+    }
+    let current = |tab: &DiffTab| {
+        let search = tab.search.as_ref().unwrap();
+        let found = &search.found[search.current.unwrap()];
+        (found.file, found.line_key(), search.found.len())
+    };
+    let on_screen = |tab: &DiffTab| {
+        let shown = tab.shown().unwrap();
+        let search = tab.search.as_ref().unwrap();
+        let found = &search.found[search.current.unwrap()];
+        shown.rows[shown.offset..(shown.offset + 6).min(shown.rows.len())]
+            .iter()
+            .any(|row| matches!(*row, Row::Line { file, hunk, line } if (file, hunk, line) == found.line_key()))
+    };
+    assert_eq!(current(&tab).0, 0);
+    assert_eq!(
+        current(&tab).2,
+        3,
+        "case is ignored for a query in lower case"
+    );
+    assert!(
+        !tab.shown().unwrap().files[0].collapsed,
+        "a match in a collapsed file expands it"
+    );
+    assert!(on_screen(&tab));
+
+    tab.search_action(Action::MoveSelection(1));
+    assert_eq!(current(&tab).0, 1);
+    assert_eq!(tab.shown().unwrap().current_file, 1);
+    assert!(on_screen(&tab));
+    tab.search_action(Action::MoveSelection(1));
+    assert!(on_screen(&tab));
+    let last = current(&tab).1;
+    tab.search_action(Action::MoveSelection(1));
+    assert_eq!(
+        current(&tab).0,
+        0,
+        "moving on from the last match goes to the first"
+    );
+    tab.search_action(Action::MoveSelection(-1));
+    assert_eq!(current(&tab).1, last);
+
+    tab.search_action(Action::Insert('X'));
+    assert_eq!(tab.search.as_ref().unwrap().found, []);
+    assert_eq!(tab.search.as_ref().unwrap().current, None);
+    tab.search_action(Action::Edit(crate::state::TextEdit::Backspace));
+    assert_eq!(current(&tab).2, 3);
+
+    fs::write(
+        dir.join("a.txt"),
+        edited.replace("line 20\n", "needle four\n"),
+    )
+    .unwrap();
+    wait(&mut tab, |tab| {
+        tab.search
+            .as_ref()
+            .is_some_and(|search| search.found.len() == 4)
+    });
+
+    tab.search_action(Action::CloseOverlay);
+    assert!(tab.search.is_none());
+}

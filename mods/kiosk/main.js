@@ -23,7 +23,7 @@ const TITLE = "Kiosk";
 const VERSION = "0.8.0";
 const REPOSITORY = "github.com/thomasschafer/kiosk";
 // The protocol this mod speaks; the picker refuses a different one.
-const PROTOCOL = 6;
+const PROTOCOL = 7;
 
 // The dialog's share of the window, as mod.json opens it. Kiosk draws its own panel inside
 // it (mod.json's frame is none): hung from the top, and as tall as what it shows, so a short
@@ -849,8 +849,9 @@ export default class Kiosk extends View {
       .child(icon(t, "git-branch", t.muted, ICON))
       .child(div().min_w(0).truncate().text_size(14).font_semibold().child(d.title))
       .when(!!d.subtitle, (el) => el.child(div().min_w(0).truncate().text_size(12.5).text_color(t.muted).child(d.subtitle)))
-      .when(!!d.notice, (el) => el.child(div().flex_1()).child(h_flex().min_w(0).gap(8).items_center().text_size(12.5).text_color(t.blocked)
-        .child(div().flex_none().size(7).rounded(4).bg(t.blocked)).child(div().min_w(0).truncate().child(d.notice))));
+      .when(!!d.notice && !d.search, (el) => el.child(div().flex_1()).child(h_flex().min_w(0).gap(8).items_center().text_size(12.5).text_color(t.blocked)
+        .child(div().flex_none().size(7).rounded(4).bg(t.blocked)).child(div().min_w(0).truncate().child(d.notice))))
+      .when(!!d.search, (el) => el.child(div().flex_1()).child(this.diffSearch(t, d.search)));
     const main = d.message
       ? v_flex().flex_1().h_full().items_center().justify_center().gap(6)
         .child(h_flex().gap(10).items_center().when(d.message.busy, (el) => el.child(spinner(t, t.accent, 14)))
@@ -866,13 +867,25 @@ export default class Kiosk extends View {
       .child(this.footer(t, d.hints));
   }
 
+  // The diff tab's search field, with how many matches there are and which is current.
+  diffSearch(t, search) {
+    const count = search.count === 0
+      ? (search.query.before || search.query.after ? "No matches" : "")
+      : `${search.current === null ? "-" : search.current + 1} of ${search.count}`;
+    return h_flex().id("kiosk-diff-search").w(340).flex_none().h(30).px(10).gap(8).items_center().rounded(7)
+      .border_1().border_color(t.accent).bg(t.background)
+      .child(icon(t, "search", t.muted, 14))
+      .child(h_flex().flex_1().min_w(0).items_center().overflow_hidden().child(queryText(t, search.query, search.placeholder, true, 13)))
+      .when(count !== "", (el) => el.child(div().flex_none().text_size(12).text_color(search.count === 0 ? t.blocked : t.muted).child(count)));
+  }
+
   // The rows on screen: headers and notes across the whole width, and code in one pane, or
   // two side by side.
   diffBody(t, d) {
     const body = d.body;
     const count = body.rows.length;
     // One code line, as a pane draws it, from a `line` row or a side of a `pair` row.
-    const side = ([kind, oldNumber, newNumber, text, runs, wide, changed]) => ({ kind, oldNumber, newNumber, text, runs, wide, changed });
+    const side = ([kind, oldNumber, newNumber, text, runs, wide, changed, found]) => ({ kind, oldNumber, newNumber, text, runs, wide, changed, found });
     const left = new Array(count).fill(null);
     const right = new Array(count).fill(null);
     const across = [];
@@ -960,6 +973,15 @@ export default class Kiosk extends View {
             .w(line.changed[k + 1] * this.column).rounded(2).bg(mark));
         }
       }
+      // What the search found, under the text like changed words, the current match strongest.
+      if (line.found && this.column && !line.wide) {
+        for (let k = 0; k < line.found.length; k += 3) {
+          const current = line.found[k + 2] === 1;
+          boxes.push(div().absolute().top(i * DIFF_ROW).h(DIFF_ROW).left(code + line.found[k] * this.column)
+            .w(line.found[k + 1] * this.column).rounded(2).bg(tint(t.ansi3, current ? 0.55 : 0.3))
+            .when(current, (el) => el.border_1().border_color(t.ansi3)));
+        }
+      }
       const spans = [];
       if (line.runs === null) {
         spans.push([line.text, "plain"]);
@@ -972,9 +994,12 @@ export default class Kiosk extends View {
         }
       }
       if (line.wide) {
+        // Matches are marked in place of changed words, as one line can't show both here.
+        const found = line.found && line.found.filter((_, k) => k % 3 !== 2);
+        const marked = found ? tint(t.ansi3, 0.45) : mark;
         wideRows.push(row(i).pl(code).flex().whitespace_nowrap().overflow_hidden()
-          .children(markChanged(spans, line.changed ?? []).map(([span, tone, changed]) =>
-            div().flex_none().text_color(syntaxColor(t, tone)).when(changed, (el) => el.bg(mark).rounded(2)).child(span))));
+          .children(markChanged(spans, found ?? line.changed ?? []).map(([span, tone, changed]) =>
+            div().flex_none().text_color(syntaxColor(t, tone)).when(changed, (el) => el.bg(marked).rounded(2)).child(span))));
         return;
       }
       let column = 0;

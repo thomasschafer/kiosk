@@ -207,7 +207,13 @@ Throwaway work that answers a question; record the answer under decisions.
       The line is the first changed line on screen, else the first line on screen, else the
       file's first change, by its number in the file now; a removed line opens at the line in
       its place. Deleted files, and a branch's files without its checkout, can't be opened.
-- [ ] Search within the diff, and filter files.
+- [x] Search within the diff: `/` opens a field in the header; typing finds the text in every
+      line of the range (ignoring case unless the query has a capital), marks the matches and
+      goes to the first at or below the top of the screen. `enter` and `shift+enter` (or the
+      list keys) go round the matches, expanding a collapsed file a match is in, and `esc`
+      ends the search. A new diff of the range, after a change or another range, is searched
+      again.
+- [ ] Filter the files shown by their paths.
 
 ### 5. Ways in
 

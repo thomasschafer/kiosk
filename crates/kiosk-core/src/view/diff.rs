@@ -2,11 +2,12 @@
 //! the rows on screen.
 //!
 //! Rows are compact arrays, as a screen of them is sent on every scroll: `["file", n]`,
-//! `["note", n, text]`, `["hunk", text]` and `["line", kind, old, new, text, runs, wide]`,
-//! where `n` indexes the files, `kind` is `+`, `-` or a space, and `runs` is
-//! `[chars, tone, chars, tone, ...]` with tones indexing [`DiffView::tones`], or null for a
-//! line shown plain. `wide` says the line has a character not one column wide, so it can't be
-//! drawn in a column grid.
+//! `["note", n, text]`, `["hunk", text]` and
+//! `["line", kind, old, new, text, runs, wide, changed, found]`, where `n` indexes the files,
+//! `kind` is `+`, `-` or a space, and `runs` is `[chars, tone, chars, tone, ...]` with tones
+//! indexing [`DiffView::tones`], or null for a line shown plain. `wide` says the line has a
+//! character not one column wide, so it can't be drawn in a column grid. `changed` is
+//! `[start, length, ...]` and `found` `[start, length, current, ...]` in shown columns.
 
 use serde::Serialize;
 use unicode_width::UnicodeWidthChar;
@@ -16,14 +17,16 @@ use crate::{
     diff::{
         Change, FileContent, Range,
         highlight::{Run, SyntaxTone},
-        tab::{CollapseReason, DiffState, DiffTab, Note, RangeContent, Ready, Row, ShownFile},
+        tab::{
+            CollapseReason, DiffState, DiffTab, Note, RangeContent, Ready, Row, Search, ShownFile,
+        },
     },
     display::{code_chars, sanitize},
     path::display,
     preferences::DiffLayout,
 };
 
-use super::{Hint, OverlayView, help_view};
+use super::{Hint, OverlayView, Query, help_view};
 
 /// The tones a line's runs index, in order.
 pub const TONES: &[SyntaxTone] = &[
@@ -62,8 +65,19 @@ pub struct DiffView {
     pub body: Option<Body>,
     pub tones: &'static [SyntaxTone],
     pub hints: Vec<Hint>,
+    /// The search field, while it is open.
+    pub search: Option<SearchView>,
     /// Help, over the tab.
     pub overlay: Option<OverlayView>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SearchView {
+    pub query: Query,
+    pub placeholder: &'static str,
+    /// How many matches there are in the range, and which the person is on, from 0.
+    pub count: usize,
+    pub current: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -109,7 +123,7 @@ pub enum RowView {
     File(&'static str, usize),
     Note(&'static str, usize, String),
     Hunk(&'static str, String),
-    /// `["line", kind, old, new, text, runs, wide, changed]`.
+    /// `["line", kind, old, new, text, runs, wide, changed, found]`.
     Line(
         &'static str,
         &'static str,
@@ -119,12 +133,14 @@ pub enum RowView {
         Option<Vec<u32>>,
         bool,
         Option<Vec<u32>>,
+        Option<Vec<u32>>,
     ),
-    /// `["pair", old, new]`, each side `[kind, number, text, runs, wide, changed]` or null.
+    /// `["pair", old, new]`, each side `[kind, number, text, runs, wide, changed, found]` or
+    /// null.
     Pair(&'static str, Option<SideView>, Option<SideView>),
 }
 
-/// One side of a side-by-side row: `[kind, number, text, runs, wide, changed]`.
+/// One side of a side-by-side row: `[kind, number, text, runs, wide, changed, found]`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SideView(
     &'static str,
@@ -132,6 +148,7 @@ pub struct SideView(
     String,
     Option<Vec<u32>>,
     bool,
+    Option<Vec<u32>>,
     Option<Vec<u32>>,
 );
 
@@ -144,6 +161,9 @@ struct ShownLine {
     /// The words changed from its partner on the other side, as `[start, length, ...]` in
     /// shown columns, or `None` when it has no partner or the whole line changed.
     changed: Option<Vec<u32>>,
+    /// What the search found in it, as `[start, length, current, ...]` in shown columns, or
+    /// `None` for nothing.
+    found: Option<Vec<u32>>,
 }
 
 /// The diff tab, with help over it in `help_rows` rows if it shows.
@@ -153,8 +173,15 @@ pub fn diff(tab: &mut DiffTab, keys: &KeysConfig, help_rows: usize) -> DiffView 
         .as_mut()
         .map(|help| OverlayView::Help(help_view(help, false, help_rows)));
     let notice = tab.notice().map(|notice| sanitize(&notice).into_owned());
+    let search = tab.search.as_ref().map(|search| SearchView {
+        query: Query::new(&search.input),
+        placeholder: "Search the changes",
+        count: search.found.len(),
+        current: search.current,
+    });
     DiffView {
         notice,
+        search,
         overlay,
         ..body(tab, keys)
     }
@@ -178,6 +205,7 @@ fn body(tab: &DiffTab, keys: &KeysConfig) -> DiffView {
         body: None,
         tones: TONES,
         hints: hints.clone(),
+        search: None,
         overlay: None,
     };
     match &tab.state {
@@ -196,11 +224,19 @@ fn body(tab: &DiffTab, keys: &KeysConfig) -> DiffView {
             Some(sanitize(error).into_owned()),
             false,
         ),
-        DiffState::Ready(ready) => ready_view(ready, tab.viewport(), keys, hints),
+        DiffState::Ready(ready) => {
+            ready_view(ready, tab.viewport(), tab.search.as_ref(), keys, hints)
+        }
     }
 }
 
-fn ready_view(ready: &Ready, viewport: usize, keys: &KeysConfig, hints: Vec<Hint>) -> DiffView {
+fn ready_view(
+    ready: &Ready,
+    viewport: usize,
+    search: Option<&Search>,
+    keys: &KeysConfig,
+    hints: Vec<Hint>,
+) -> DiffView {
     let target = &ready.target;
     let title = sanitize(&target.head().to_string()).into_owned();
     // On the default branch itself, saying it's compared with itself says nothing.
@@ -225,6 +261,7 @@ fn ready_view(ready: &Ready, viewport: usize, keys: &KeysConfig, hints: Vec<Hint
         body: None,
         tones: TONES,
         hints,
+        search: None,
         overlay: None,
     };
     match &ready.content {
@@ -261,7 +298,7 @@ fn ready_view(ready: &Ready, viewport: usize, keys: &KeysConfig, hints: Vec<Hint
                 total: shown.rows.len(),
                 rows: shown.rows[shown.offset..end]
                     .iter()
-                    .map(|row| row_view(&shown.files, *row, shown.column, keys))
+                    .map(|row| row_view(&shown.files, *row, shown.column, search, keys))
                     .collect(),
             });
         }
@@ -325,7 +362,21 @@ fn file_entry(file: &ShownFile) -> FileEntry {
     }
 }
 
-fn row_view(files: &[ShownFile], row: Row, column: usize, keys: &KeysConfig) -> RowView {
+fn row_view(
+    files: &[ShownFile],
+    row: Row,
+    column: usize,
+    search: Option<&Search>,
+    keys: &KeysConfig,
+) -> RowView {
+    let shown_line = |file: usize, hunk: usize, line: usize| {
+        let found: Vec<_> = search
+            .into_iter()
+            .flat_map(|search| search.in_line((file, hunk, line)))
+            .map(|(found, current)| (found.chars.clone(), current))
+            .collect();
+        shown_line(&files[file], hunk, line, &found, column)
+    };
     match row {
         Row::File(file) => RowView::File("file", file),
         Row::Note(index, note) => {
@@ -342,12 +393,12 @@ fn row_view(files: &[ShownFile], row: Row, column: usize, keys: &KeysConfig) -> 
             );
             if !hunk.section.is_empty() {
                 header.push(' ');
-                header.push_str(&code_line(&hunk.section, None, None, 0).0);
+                header.push_str(&code_line(&hunk.section, None, None, &[], 0).0);
             }
             RowView::Hunk("hunk", header)
         }
         Row::Line { file, hunk, line } => {
-            let shown = shown_line(&files[file], hunk, line, column);
+            let shown = shown_line(file, hunk, line);
             let line = text_line(&files[file], hunk, line);
             RowView::Line(
                 "line",
@@ -358,6 +409,7 @@ fn row_view(files: &[ShownFile], row: Row, column: usize, keys: &KeysConfig) -> 
                 shown.runs,
                 shown.wide,
                 shown.changed,
+                shown.found,
             )
         }
         Row::Pair {
@@ -369,7 +421,7 @@ fn row_view(files: &[ShownFile], row: Row, column: usize, keys: &KeysConfig) -> 
             let side = |index: Option<usize>, old_side: bool| {
                 index.map(|index| {
                     let line = text_line(&files[file], hunk, index);
-                    let shown = shown_line(&files[file], hunk, index, column);
+                    let shown = shown_line(file, hunk, index);
                     SideView(
                         // A context line is on both sides, so each side shows it as context.
                         shown.kind,
@@ -378,6 +430,7 @@ fn row_view(files: &[ShownFile], row: Row, column: usize, keys: &KeysConfig) -> 
                         shown.runs,
                         shown.wide,
                         shown.changed,
+                        shown.found,
                     )
                 })
             };
@@ -394,8 +447,15 @@ fn text_line(file: &ShownFile, hunk: usize, line: usize) -> &crate::diff::Line {
 }
 
 /// Line `line` of hunk `hunk` of `file` as shown from column `column`, its words that
-/// changed from its partner marked.
-fn shown_line(file: &ShownFile, hunk: usize, line: usize, column: usize) -> ShownLine {
+/// changed from its partner and what the search `found` in it, with whether each is the
+/// current match, marked.
+fn shown_line(
+    file: &ShownFile,
+    hunk: usize,
+    line: usize,
+    found: &[(std::ops::Range<usize>, bool)],
+    column: usize,
+) -> ShownLine {
     let text = text_line(file, hunk, line);
     let runs = file
         .highlighted
@@ -405,7 +465,7 @@ fn shown_line(file: &ShownFile, hunk: usize, line: usize, column: usize) -> Show
         .changes
         .as_ref()
         .and_then(|changes| changes[hunk][line].as_deref());
-    let (shown_text, runs, changed) = code_line(&text.text, runs, changed, column);
+    let (shown_text, runs, changed, found) = code_line(&text.text, runs, changed, found, column);
     ShownLine {
         kind: match text.kind {
             crate::diff::LineKind::Added => "+",
@@ -418,6 +478,7 @@ fn shown_line(file: &ShownFile, hunk: usize, line: usize, column: usize) -> Show
         text: shown_text,
         runs,
         changed,
+        found,
     }
 }
 
@@ -449,14 +510,19 @@ fn note_text(file: &ShownFile, note: Note, keys: &KeysConfig) -> String {
     }
 }
 
+/// The shown columns of a line, then what was found in it, marked as current or not.
+type CodeLine = (String, Option<Vec<u32>>, Option<Vec<u32>>, Option<Vec<u32>>);
+
 /// `text` as [`code_chars`] shows it, from column `from`, with `runs` stretched to match and
-/// flattened to `[chars, tone index, ...]`.
+/// flattened to `[chars, tone index, ...]`, and the `changed` and `found` character spans in
+/// shown columns.
 fn code_line(
     text: &str,
     runs: Option<&[Run]>,
     changed: Option<&[std::ops::Range<usize>]>,
+    found: &[(std::ops::Range<usize>, bool)],
     from: usize,
-) -> (String, Option<Vec<u32>>, Option<Vec<u32>>) {
+) -> CodeLine {
     let (shown_chars, widths) = code_chars(text);
     // Where each of the line's characters starts among the shown ones, then where it ends.
     let mut starts = Vec::with_capacity(widths.len() + 1);
@@ -487,18 +553,24 @@ fn code_line(
         }
         flat
     });
-    let changed = changed.map(|spans| {
-        spans
+    // A span of characters as the columns of it right of `from`: where they start and how
+    // many there are.
+    let columns = |span: &std::ops::Range<usize>| {
+        let start = starts[span.start.min(widths.len())].max(from);
+        let end = starts[span.end.min(widths.len())];
+        (end > start).then(|| [count(start - from), count(end - start)])
+    };
+    let changed = changed.map(|spans| spans.iter().filter_map(columns).flatten().collect());
+    let found = (!found.is_empty()).then(|| {
+        found
             .iter()
-            .filter_map(|span| {
-                let start = starts[span.start.min(widths.len())].max(from);
-                let end = starts[span.end.min(widths.len())];
-                (end > start).then(|| [count(start - from), count(end - start)])
+            .filter_map(|(span, current)| {
+                columns(span).map(|[start, length]| [start, length, u32::from(*current)])
             })
             .flatten()
             .collect()
     });
-    (visible, runs, changed)
+    (visible, runs, changed, found)
 }
 
 fn hints(keys: &KeysConfig) -> Vec<Hint> {
@@ -515,6 +587,8 @@ fn hints(keys: &KeysConfig) -> Vec<Hint> {
             .map(|key| Hint::for_key(key, "collapse")),
         keys.diff_key(Command::ToggleLayout)
             .map(|key| Hint::for_key(key, "layout")),
+        keys.diff_key(Command::Search)
+            .map(|key| Hint::for_key(key, "search")),
         keys.diff_key(Command::OpenInEditor)
             .map(|key| Hint::for_key(key, "edit")),
         keys.layer_key(KeyLayer::Tabs, Command::NextTab)
@@ -544,7 +618,7 @@ mod tests {
             run(1, SyntaxTone::Keyword),
             run(2, SyntaxTone::String),
         ];
-        let (text, flat, _) = code_line("\tx\t\"", Some(&runs[..]), None, 0);
+        let (text, flat, _, _) = code_line("\tx\t\"", Some(&runs[..]), None, &[], 0);
         assert_eq!(text, "    x   \"");
         let index =
             |wanted| u32::try_from(TONES.iter().position(|tone| *tone == wanted).unwrap()).unwrap();
@@ -554,18 +628,19 @@ mod tests {
 
     #[test]
     fn controls_are_escaped_and_a_crlf_ending_is_dropped() {
-        let (text, flat, _) = code_line(
+        let (text, flat, _, _) = code_line(
             "a\u{1b}b\r",
             Some(&[run(4, SyntaxTone::Plain)][..]),
             None,
+            &[],
             0,
         );
         assert_eq!(text, "a\\u{1b}b");
         // `\u{1b}` is six characters, and the carriage return is gone.
         assert_eq!(flat.unwrap(), [8, 0]);
         assert_eq!(
-            code_line("plain", None, None, 0),
-            ("plain".into(), None, None)
+            code_line("plain", None, None, &[], 0),
+            ("plain".into(), None, None, None)
         );
     }
 
@@ -576,7 +651,7 @@ mod tests {
             run(3, SyntaxTone::Plain),
             run(4, SyntaxTone::String),
         ];
-        let (text, flat, _) = code_line("let x \"a\";", Some(&runs[..]), None, 4);
+        let (text, flat, _, _) = code_line("let x \"a\";", Some(&runs[..]), None, &[], 4);
         assert_eq!(text, "x \"a\";");
         let string = u32::try_from(
             TONES
@@ -587,8 +662,8 @@ mod tests {
         .unwrap();
         assert_eq!(flat.unwrap(), [2, 0, 4, string]);
         assert_eq!(
-            code_line("short", None, None, 10),
-            (String::new(), None, None)
+            code_line("short", None, None, &[], 10),
+            (String::new(), None, None, None)
         );
     }
 
@@ -599,21 +674,40 @@ mod tests {
     )]
     fn changed_words_follow_tabs_escapes_and_the_scroll() {
         // A tab before the change pushes it right; scrolled past the tab, it starts at 0.
-        let (_, _, changed) = code_line("\tab = 1", None, Some(&[6..7][..]), 0);
+        let (_, _, changed, _) = code_line("\tab = 1", None, Some(&[6..7][..]), &[], 0);
         assert_eq!(changed.unwrap(), [9, 1]);
-        let (_, _, changed) = code_line("\tab = 1", None, Some(&[6..7][..]), 9);
+        let (_, _, changed, _) = code_line("\tab = 1", None, Some(&[6..7][..]), &[], 9);
         assert_eq!(changed.unwrap(), [0, 1]);
-        let (_, _, changed) = code_line("x\u{1b}y", None, Some(&[1..2][..]), 0);
+        let (_, _, changed, _) = code_line("x\u{1b}y", None, Some(&[1..2][..]), &[], 0);
         assert_eq!(changed.unwrap(), [1, 6]);
-        let (_, _, changed) = code_line("abc", None, Some(&[0..1][..]), 2);
+        let (_, _, changed, _) = code_line("abc", None, Some(&[0..1][..]), &[], 2);
         assert_eq!(changed.unwrap(), Vec::<u32>::new());
+    }
+
+    #[test]
+    fn matches_are_placed_in_shown_columns_with_the_current_one_marked() {
+        let (_, _, _, found) = code_line("\tab ab", None, None, &[(1..3, false), (4..6, true)], 0);
+        assert_eq!(found.unwrap(), [4, 2, 0, 7, 2, 1]);
+        let (_, _, _, found) = code_line("\tab ab", None, None, &[(1..3, false), (4..6, true)], 6);
+        assert_eq!(
+            found.unwrap(),
+            [1, 2, 1],
+            "a match scrolled out of view is left out"
+        );
+        assert_eq!(code_line("ab", None, None, &[], 0).3, None);
     }
 
     #[test]
     fn a_very_long_line_is_converted_in_one_pass() {
         let long = "x".repeat(200_000);
         let started = std::time::Instant::now();
-        let (text, _, _) = code_line(&long, Some(&[run(200_000, SyntaxTone::Plain)][..]), None, 0);
+        let (text, _, _, _) = code_line(
+            &long,
+            Some(&[run(200_000, SyntaxTone::Plain)][..]),
+            None,
+            &[],
+            0,
+        );
         assert_eq!(text.len(), 200_000);
         assert!(
             started.elapsed() < std::time::Duration::from_secs(1),
@@ -633,19 +727,20 @@ mod tests {
             Some(vec![1, 2]),
             false,
             Some(vec![0, 1]),
+            Some(vec![0, 1, 1]),
         );
         assert_eq!(
             serde_json::to_string(&line).unwrap(),
-            r#"["line","+",null,3,"x",[1,2],false,[0,1]]"#
+            r#"["line","+",null,3,"x",[1,2],false,[0,1],[0,1,1]]"#
         );
         let pair = RowView::Pair(
             "pair",
             None,
-            Some(SideView("+", Some(3), "x".into(), None, false, None)),
+            Some(SideView("+", Some(3), "x".into(), None, false, None, None)),
         );
         assert_eq!(
             serde_json::to_string(&pair).unwrap(),
-            r#"["pair",null,["+",3,"x",null,false,null]]"#
+            r#"["pair",null,["+",3,"x",null,false,null,null]]"#
         );
         assert_eq!(
             serde_json::to_string(&RowView::File("file", 2)).unwrap(),
@@ -668,6 +763,7 @@ mod tests {
                 ("[/]".into(), "range"),
                 ("e".into(), "collapse"),
                 ("s".into(), "layout"),
+                ("/".into(), "search"),
                 ("o".into(), "edit"),
                 ("ctrl+pagedown".into(), "next tab"),
                 ("ctrl+h".into(), "help"),

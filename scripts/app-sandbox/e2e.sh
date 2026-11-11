@@ -372,6 +372,18 @@ sleep 0.5
 sb shot "$shots/diff-side-by-side.png" >/dev/null
 sb key s
 wait_view '.body.side_by_side == false'
+# `/` searches: the edited line's match is marked and current, and enter goes round to it again.
+sb key slash
+wait_view '.search != null'
+sb type changed
+wait_view '.search.count == 1 and .search.current == 0 and
+  ([.body.rows[] | select(.[0] == "line" and .[8] != null) | .[8]] == [[13, 7, 1]])'
+sb key Return
+wait_view '.search.current == 0'
+sleep 0.5
+sb shot "$shots/diff-search.png" >/dev/null
+sb key Escape
+wait_view '.search == null'
 sb key ctrl+h
 wait_view '.overlay.kind == "help" and .overlay.entries[0].name == "diff"'
 sb shot "$shots/diff-help.png" >/dev/null

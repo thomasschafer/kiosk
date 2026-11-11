@@ -697,7 +697,7 @@ fn the_diff_tab_shows_a_checkouts_changes_and_moves_through_them() {
     // uncommitted.
     assert_eq!(
         body["ranges"],
-        json!([{ "label": "Uncommitted", "detail": "staged, unstaged and untracked" }])
+        json!([{ "label": "Uncommitted", "detail": null }])
     );
     assert_eq!(body["body"]["rows"][0], json!(["file", 0]));
     assert_eq!(body["body"]["rows"].as_array().unwrap().len(), 3);

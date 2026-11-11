@@ -834,7 +834,8 @@ export default class Kiosk extends View {
       sideRow(`kiosk-range-${i}`, i === d.range, () => this.send({ t: "diff", click: { on: "range", index: i } }),
         v_flex().min_w(0).flex_1()
           .child(div().truncate().text_color(t.foreground).child(range.label))
-          .child(div().truncate().text_size(11.5).text_color(t.dim).child(range.detail))).h(40));
+          .when(range.detail !== null, (el) => el.child(div().truncate().text_size(11.5).text_color(t.dim).child(range.detail))))
+        .when(range.detail !== null, (el) => el.h(40)));
     const files = d.files.flatMap((file, i) => {
       if (file.hidden) return [];
       const slash = file.path.lastIndexOf("/");

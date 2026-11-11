@@ -104,7 +104,8 @@ pub struct Message {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RangeEntry {
     pub label: String,
-    pub detail: String,
+    /// What the range holds, where its label doesn't say.
+    pub detail: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -344,20 +345,29 @@ fn ready_view(
 
 fn range_entry(ready: &Ready, range: &Range) -> RangeEntry {
     match range {
-        Range::All => RangeEntry {
-            label: "All changes".into(),
-            detail: match ready.commits.len() {
-                1 if ready.target.has_working_tree() => "1 commit and uncommitted changes".into(),
-                1 => "1 commit".into(),
-                count if ready.target.has_working_tree() => {
-                    format!("{count} commits and uncommitted changes")
-                }
-                count => format!("{count} commits"),
-            },
-        },
+        Range::All => {
+            let count = ready.commits.len();
+            let commits = if count == 1 {
+                "1 commit".to_owned()
+            } else {
+                format!("{count} commits")
+            };
+            let ahead = match ready.target.base() {
+                Some(base) => format!("{commits} ahead of {}", sanitize(&base.name)),
+                None => commits,
+            };
+            RangeEntry {
+                label: "All changes".into(),
+                detail: Some(if ready.target.has_working_tree() {
+                    format!("{ahead} + uncommitted")
+                } else {
+                    ahead
+                }),
+            }
+        }
         Range::Uncommitted => RangeEntry {
             label: "Uncommitted".into(),
-            detail: "staged, unstaged and untracked".into(),
+            detail: None,
         },
         Range::Commit(id) => {
             let commit = ready.commits.iter().find(|commit| &commit.id == id);
@@ -366,10 +376,10 @@ fn range_entry(ready: &Ready, range: &Range) -> RangeEntry {
                     || id.short().to_owned(),
                     |commit| sanitize(&commit.summary).into_owned(),
                 ),
-                detail: match commit {
+                detail: Some(match commit {
                     Some(commit) => format!("{} · {}", id.short(), sanitize(&commit.author)),
                     None => id.short().to_owned(),
-                },
+                }),
             }
         }
     }

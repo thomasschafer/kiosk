@@ -559,6 +559,7 @@ pub(crate) fn process_action<B: Backend>(
             }
         }
         Action::CloseOverlay => state.overlay = None,
+        Action::Accept => unreachable!("only the diff tab's fields are accepted"),
         Action::Noop => {}
     }
     None

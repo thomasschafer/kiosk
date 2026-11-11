@@ -30,10 +30,6 @@ pub struct TabEntry {
 /// What the tab that shows draws.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "tab", rename_all = "snake_case")]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "one body is built per view and sent as it is"
-)]
 pub enum TabBody {
     Picker(PickerView),
     Diff(DiffView),

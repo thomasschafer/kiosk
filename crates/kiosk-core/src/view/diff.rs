@@ -67,8 +67,21 @@ pub struct DiffView {
     pub hints: Vec<Hint>,
     /// The search field, while it is open.
     pub search: Option<SearchView>,
+    /// The file filter, while it is typed or kept.
+    pub filter: Option<FilterView>,
     /// Help, over the tab.
     pub overlay: Option<OverlayView>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FilterView {
+    pub query: Query,
+    pub placeholder: &'static str,
+    /// Whether keys go to the field; otherwise the filter is only kept.
+    pub editing: bool,
+    /// How many of the range's files the filter leaves, of how many.
+    pub shown: usize,
+    pub total: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -103,6 +116,8 @@ pub struct FileEntry {
     pub added: usize,
     pub removed: usize,
     pub collapsed: bool,
+    /// Left out by the file filter.
+    pub hidden: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -179,9 +194,20 @@ pub fn diff(tab: &mut DiffTab, keys: &KeysConfig, help_rows: usize) -> DiffView 
         count: search.found.len(),
         current: search.current,
     });
+    let filter = tab.filter.as_ref().map(|filter| {
+        let files = tab.shown().map_or(&[][..], |shown| &shown.files[..]);
+        FilterView {
+            query: Query::new(&filter.input),
+            placeholder: "Filter the files",
+            editing: filter.editing,
+            shown: files.iter().filter(|file| !file.hidden).count(),
+            total: files.len(),
+        }
+    });
     DiffView {
         notice,
         search,
+        filter,
         overlay,
         ..body(tab, keys)
     }
@@ -206,6 +232,7 @@ fn body(tab: &DiffTab, keys: &KeysConfig) -> DiffView {
         tones: TONES,
         hints: hints.clone(),
         search: None,
+        filter: None,
         overlay: None,
     };
     match &tab.state {
@@ -262,6 +289,7 @@ fn ready_view(
         tones: TONES,
         hints,
         search: None,
+        filter: None,
         overlay: None,
     };
     match &ready.content {
@@ -284,6 +312,14 @@ fn ready_view(
             if shown.files.is_empty() {
                 view.message = Some(Message {
                     text: "No changes".into(),
+                    detail: None,
+                    busy: false,
+                });
+                return view;
+            }
+            if shown.files.iter().all(|file| file.hidden) {
+                view.message = Some(Message {
+                    text: "No files match the filter".into(),
                     detail: None,
                     busy: false,
                 });
@@ -359,6 +395,7 @@ fn file_entry(file: &ShownFile) -> FileEntry {
         added: file.added,
         removed: file.removed,
         collapsed: file.collapsed,
+        hidden: file.hidden,
     }
 }
 
@@ -589,6 +626,8 @@ fn hints(keys: &KeysConfig) -> Vec<Hint> {
             .map(|key| Hint::for_key(key, "layout")),
         keys.diff_key(Command::Search)
             .map(|key| Hint::for_key(key, "search")),
+        keys.diff_key(Command::FilterFiles)
+            .map(|key| Hint::for_key(key, "filter")),
         keys.diff_key(Command::OpenInEditor)
             .map(|key| Hint::for_key(key, "edit")),
         keys.layer_key(KeyLayer::Tabs, Command::NextTab)
@@ -764,6 +803,7 @@ mod tests {
                 ("e".into(), "collapse"),
                 ("s".into(), "layout"),
                 ("/".into(), "search"),
+                ("f".into(), "filter"),
                 ("o".into(), "edit"),
                 ("ctrl+pagedown".into(), "next tab"),
                 ("ctrl+h".into(), "help"),

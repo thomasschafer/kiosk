@@ -520,6 +520,45 @@ fn handle_message<B: Backend>(
     }
 }
 
+/// The diff tab's fields that can have the keyboard.
+enum Field {
+    Filter,
+    Search,
+}
+
+/// Sends what is typed or pasted to the diff tab's field that has the keyboard, if one
+/// does: the file filter while it is being typed, else the search. Returns whether one did.
+fn type_into_field(
+    message: &ClientMessage,
+    input: Option<KeyInput>,
+    keys: &KeysConfig,
+    diff: &mut DiffTab,
+) -> bool {
+    let field = if diff.filter.as_ref().is_some_and(|filter| filter.editing) {
+        Field::Filter
+    } else if diff.search.is_some() {
+        Field::Search
+    } else {
+        return false;
+    };
+    match (message, field) {
+        (ClientMessage::Paste { text }, Field::Filter) => diff.filter_paste(text),
+        (ClientMessage::Paste { text }, Field::Search) => diff.search_paste(text),
+        (ClientMessage::Key { .. }, Field::Filter) => {
+            if let Some(action) = input.and_then(|input| keymap::filter_field_action(input, keys)) {
+                diff.filter_action(action);
+            }
+        }
+        (ClientMessage::Key { .. }, Field::Search) => {
+            if let Some(action) = input.and_then(|input| keymap::search_field_action(input, keys)) {
+                diff.search_action(action);
+            }
+        }
+        _ => return false,
+    }
+    true
+}
+
 /// What a key, click or scroll does in the diff tab.
 fn handle_diff_message(
     message: &ClientMessage,
@@ -554,22 +593,8 @@ fn handle_diff_message(
         }
         return Step::Continue;
     }
-    if diff.search.is_some() {
-        match message {
-            ClientMessage::Paste { text } => {
-                diff.search_paste(text);
-                return Step::Continue;
-            }
-            ClientMessage::Key { .. } => {
-                if let Some(action) =
-                    input.and_then(|input| keymap::search_field_action(input, keys))
-                {
-                    diff.search_action(action);
-                }
-                return Step::Continue;
-            }
-            _ => {}
-        }
+    if type_into_field(message, input, keys, diff) {
+        return Step::Continue;
     }
     let action = match message {
         ClientMessage::Scroll { delta, columns } => {
@@ -611,6 +636,10 @@ fn handle_diff_message(
             Some(Command::OpenInEditor) => return Step::OpenInEditor,
             Some(Command::Search) => {
                 diff.open_search();
+                None
+            }
+            Some(Command::FilterFiles) => {
+                diff.open_filter();
                 None
             }
             _ => None,

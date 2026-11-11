@@ -384,6 +384,19 @@ sleep 0.5
 sb shot "$shots/diff-search.png" >/dev/null
 sb key Escape
 wait_view '.search == null'
+# `f` filters the files by path; enter keeps the filter, and `f` then `esc` drops it.
+sb key f
+sb type notes
+wait_view '.filter.shown == 1 and .filter.total == 2 and ([.files[] | select(.hidden | not) | .path] == ["notes.txt"])
+  and ([.body.rows[] | select(.[0] == "file") | .[1]] == [1])'
+sb key Return
+wait_view '.filter.editing == false'
+sleep 0.5
+sb shot "$shots/diff-filter.png" >/dev/null
+sb key f
+wait_view '.filter.editing'
+sb key Escape
+wait_view '.filter == null and ([.files[] | select(.hidden)] | length) == 0'
 sb key ctrl+h
 wait_view '.overlay.kind == "help" and .overlay.entries[0].name == "diff"'
 sb shot "$shots/diff-help.png" >/dev/null

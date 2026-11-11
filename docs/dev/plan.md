@@ -213,7 +213,11 @@ Throwaway work that answers a question; record the answer under decisions.
       list keys) go round the matches, expanding a collapsed file a match is in, and `esc`
       ends the search. A new diff of the range, after a change or another range, is searched
       again.
-- [ ] Filter the files shown by their paths.
+- [x] Filter the files shown by their paths: `f` opens a field in the search's place that
+      shows only the files whose paths match, by the picker's fuzzy matching, in the list and
+      the body. `enter` keeps the filter and gives the keys back, `f` edits it again and `esc`
+      drops it. File keys skip the files left out, search only looks in those shown, and a
+      refreshed diff is filtered the same way.
 
 ### 5. Ways in
 

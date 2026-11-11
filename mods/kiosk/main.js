@@ -245,7 +245,7 @@ function viewportFor(height, toast, tabbed) {
     help: fit(panel - TITLE_BAR - BORDER - BAR - BORDER - (toast ? NOTICE : 0) - 2 * PAD, HELP_ROW, 4, 18),
     scan_warnings: fit(panel - TITLE_BAR - BORDER - 2 * PAD - BORDER - FOOTER, WARNING_ROW, 2, 8),
     // The diff tab fills the dialog: its tab bar, header and footer, then rows.
-    diff: fit(panel - TAB_BAR - DIFF_HEADER - BORDER - FOOTER - 2 * PAD, DIFF_ROW, 1, 500),
+    diff: fit(panel - TAB_BAR - DIFF_HEADER - BORDER - FOOTER - PAD, DIFF_ROW, 1, 500),
   };
 }
 
@@ -917,8 +917,10 @@ export default class Kiosk extends View {
       switch (row[0]) {
         case "file": {
           const file = d.files[row[1]];
+          // The header is the first row, right under the tab's own, so it needs no line of its
+          // own above; one below sets it apart from the code.
           across.push(at(i).id(`kiosk-diff-file-${row[1]}`).px(10).flex().items_center().gap(10).cursor_pointer()
-            .bg(tint(t.foreground, 0.05)).border_t_1().border_color(t.border)
+            .bg(tint(t.foreground, 0.05)).border_b_1().border_color(t.border)
             .on_click((_e, cx) => { cx.stop_propagation(); this.send({ t: "diff", click: { on: "toggle", index: row[1] } }); })
             .child(icon(t, file.collapsed ? "chevron-right" : "chevron-down", t.dim, 12))
             .child(div().flex_none().text_size(12.5).font_semibold().text_color(t.foreground).child(file.path))
@@ -954,18 +956,20 @@ export default class Kiosk extends View {
           cx.notify();
         }
       });
+    // The panes fill the body, so the line between them runs its whole height.
     const panes = body.side_by_side
-      ? h_flex().absolute().top(0).left(0).right(0).h(height).gap(1)
-        .child(this.codePane(t, d.tones, left, ["oldNumber"], height).border_r_1().border_color(t.border))
-        .child(this.codePane(t, d.tones, right, ["newNumber"], height))
-      : h_flex().absolute().top(0).left(0).right(0).h(height).child(this.codePane(t, d.tones, left, ["oldNumber", "newNumber"], height));
+      ? h_flex().absolute().top(0).left(0).right(0).bottom(0).gap(1)
+        .child(this.codePane(t, d.tones, left, ["oldNumber"]).border_r_1().border_color(t.border))
+        .child(this.codePane(t, d.tones, right, ["newNumber"]))
+      : h_flex().absolute().top(0).left(0).right(0).bottom(0).child(this.codePane(t, d.tones, left, ["oldNumber", "newNumber"]));
     // Code sits on the terminal's background, as in an editor: in a dark theme it is darker
     // than the panel round it, which gives the text and the changes more to stand out from.
-    return div().id("kiosk-diff-body").relative().flex_1().h_full().min_w(0).overflow_hidden().py(PAD).bg(t.background)
+    // The first row starts at the body's top edge; only its foot keeps some room.
+    return div().id("kiosk-diff-body").relative().flex_1().h_full().min_w(0).overflow_hidden().pb(PAD).bg(t.background)
       .font_family(settings().font_family).text_size(12.5)
       .on_scroll_wheel((e, cx) => this.diffScroll(e, cx))
-      .child(div().relative().w_full().h(height).child(probe).child(panes).children(across))
-      .when(body.total > count, (el) => el.child(this.thumb(t, body.offset, count, body.total, height, PAD)));
+      .child(div().relative().w_full().h_full().child(probe).child(panes).children(across))
+      .when(body.total > count, (el) => el.child(this.thumb(t, body.offset, count, body.total, height, 0)));
   }
 
   // One pane of code: the lines in `lines`, their runs' tones indexing `tones` (by row, null for none), their numbers in the
@@ -973,7 +977,7 @@ export default class Kiosk extends View {
   // characters and spaces elsewhere, stacked so a monospace font lines them up: far fewer
   // elements than one per run. Lines with characters wider or narrower than a column are
   // drawn on their own.
-  codePane(t, tones, lines, numbers, height) {
+  codePane(t, tones, lines, numbers) {
     const code = numbers.length * GUTTER + SIGN;
     const columns = numbers.map(() => []);
     const signs = [];
@@ -1039,7 +1043,7 @@ export default class Kiosk extends View {
     const text = (rows, left, width, color, right = false) =>
       div().absolute().top(0).left(left).w(width).line_height(`${DIFF_ROW}px`).whitespace_nowrap().text_color(color)
         .when(right, (el) => el.text_right().pr(8)).child(rows.join("\n"));
-    return div().relative().flex_1().min_w(0).h(height).overflow_hidden()
+    return div().relative().flex_1().min_w(0).h_full().overflow_hidden()
       .children(boxes)
       .children(columns.map((rows, c) => text(rows, c * GUTTER, GUTTER, t.dim, true)))
       .child(text(signs, numbers.length * GUTTER, SIGN, t.muted))

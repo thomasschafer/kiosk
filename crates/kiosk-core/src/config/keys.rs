@@ -246,12 +246,12 @@ commands! {
     ScrollUp => "scroll_up", "Scroll up a line";
     PageDown => "page_down", "Scroll down a screen";
     PageUp => "page_up", "Scroll up a screen";
-    ScrollTop => "scroll_top", "Scroll to the top";
-    ScrollBottom => "scroll_bottom", "Scroll to the bottom";
+    ScrollTop => "scroll_top", "Scroll to the top of the file";
+    ScrollBottom => "scroll_bottom", "Scroll to the bottom of the file";
     ScrollLeft => "scroll_left", "Scroll long lines left";
     ScrollRight => "scroll_right", "Scroll long lines right";
     NextFile => "next_file", "Show the next file";
-    PreviousFile => "previous_file", "Show the previous file, or the top of this one";
+    PreviousFile => "previous_file", "Show the previous file";
     ToggleFile => "toggle_file", "Collapse or expand the current file";
     ToggleLayout => "toggle_layout", "Switch between unified and side by side";
     OpenInEditor => "open_in_editor", "Open the file at this line in your editor";

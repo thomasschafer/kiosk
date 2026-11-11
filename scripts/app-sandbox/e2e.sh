@@ -345,7 +345,9 @@ printf 'untracked\n' >"$folder/notes.txt"
 sb "do" mod.open '{"name":"kiosk-diff"}' >/dev/null
 wait_view '.screen == "diff" and (.body.rows | length) > 0'
 [[ $(last_view | jq -c '[.files[].path]') == '["main.rs","notes.txt"]' ]] || fail "unexpected files"
-[[ $(last_view | jq -r '.ranges[0].label') == "All changes" ]] || fail "the first range isn't all changes"
+# On main itself there are no commits of its own, so all the changes would repeat what's
+# uncommitted, and only that is offered.
+[[ $(last_view | jq -c '[.ranges[].label]') == '["Uncommitted"]' ]] || fail "unexpected ranges"
 # The changed line is highlighted: its string is in the string tone.
 # Rows come before their highlighting, so wait for the string tone to arrive. The `$`s are
 # jq's, so the single quotes are meant.
@@ -362,8 +364,6 @@ rm "$folder/live.txt"
 wait_view '[.files[].path] | index("live.txt") == null'
 sb key n
 wait_view '.current_file == 1'
-sb key bracketright
-wait_view '.range == 1 and .ranges[1].label == "Uncommitted"'
 sb key s
 wait_view '.body.side_by_side and ([.body.rows[] | select(.[0] == "pair")] | length) > 0'
 # The changed word in the edited line is marked on both sides.
